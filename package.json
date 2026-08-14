@@ -1,0 +1,51 @@
+{
+  "name": "dsh-notifier",
+  "version": "0.1.0",
+  "description": "DSH 统一通知推送插件：一个 notify() API 打天下 + 多渠道 adapter（telegram/dingtalk/feishu/wxpusher/pushplus/serverchan/bark/webhook），两条触发线（session/event 自动推送 + agent 工具调用）共用 adapter 注册表。零运行时依赖（只用 fetch + node:crypto）。",
+  "type": "module",
+  "main": "src/index.mjs",
+  "exports": {
+    ".": "./src/index.mjs",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "test",
+    "scripts",
+    "cordis.patch.yml"
+  ],
+  "scripts": {
+    "test": "node --test"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/THEWOLFWALKER/dsh-notifier.git"
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "plugin",
+    "notify",
+    "notification",
+    "dingtalk",
+    "feishu",
+    "wxpusher",
+    "pushplus",
+    "serverchan",
+    "bark",
+    "telegram",
+    "webhook"
+  ]
+}

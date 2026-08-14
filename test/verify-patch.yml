@@ -1,0 +1,11 @@
+# dsh-notifier 本地验证 patch：覆盖 dsh-notifier 行的 config，
+# 加入指向本机 mock webhook server 的渠道。
+- id: dsh-notifier
+  config:
+    enabled: true
+    debounceMs: 10000
+    summaryMaxChars: 500
+    titlePrefix: '[dsh-verify]'
+    channels:
+      - type: webhook
+        url: http://127.0.0.1:9999/hook
