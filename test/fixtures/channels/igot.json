@@ -1,0 +1,17 @@
+{
+  "type": "igot",
+  "validConfig": { "key": "igot-key-001" },
+  "invalidConfig": {},
+  "message": { "title": "构建完成", "content": "全部用例通过", "level": "active" },
+  "expectedRequests": [
+    {
+      "url": "https://push.hellyw.com/igot-key-001",
+      "method": "POST",
+      "bodyJson": { "title": "构建完成", "content": "全部用例通过", "automaticallyCopy": 0 }
+    }
+  ],
+  "successResponses": [{ "status": 200, "body": "{\"ret\":0,\"data\":{\"id\":\"x\"}}" }],
+  "failResponse": { "status": 200, "body": "{\"ret\":201,\"errMsg\":\"无效的key\"}" },
+  "errorMatch": "无效的key|推送失败",
+  "secretFields": ["key"]
+}

@@ -2,8 +2,12 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { resolveConfig, normalizeMessage, maskChannelConfig, CHANNEL_TYPES } from '../src/config.mjs'
 
-test('CHANNEL_TYPES 覆盖全部 8 个渠道', () => {
-  assert.deepEqual([...CHANNEL_TYPES].sort(), ['bark', 'dingtalk', 'feishu', 'pushplus', 'serverchan', 'telegram', 'webhook', 'wxpusher'])
+test('CHANNEL_TYPES 覆盖全部渠道（8 个既有 + 15 个 spec + 2 个 token 型 + bell 本地）', () => {
+  assert.deepEqual([...CHANNEL_TYPES].sort(), [
+    'bark', 'bell', 'chanify', 'dingtalk', 'discord', 'feishu', 'gchat', 'gotify', 'igot', 'mattermost',
+    'ntfy', 'onebot', 'pushdeer', 'pushover', 'pushplus', 'qmsg', 'qq-bot', 'serverchan', 'slack',
+    'teams', 'telegram', 'webhook', 'wecom', 'wecom-app', 'wxpusher', 'xizhi',
+  ])
 })
 
 test('合法配置全部解析为已启用渠道', () => {
@@ -20,7 +24,10 @@ test('合法配置全部解析为已启用渠道', () => {
       { type: 'webhook', url: 'http://127.0.0.1:9/hook' },
     ],
   })
-  assert.deepEqual(resolved.channels.map((entry) => entry.type).sort(), CHANNEL_TYPES.slice().sort())
+  assert.deepEqual(
+    resolved.channels.map((entry) => entry.type).sort(),
+    ['bark', 'dingtalk', 'feishu', 'pushplus', 'serverchan', 'telegram', 'webhook', 'wxpusher'],
+  )
   assert.equal(resolved.skipped.length, 0)
 })
 
@@ -36,7 +43,7 @@ test('enabled: false 的渠道被跳过；未知类型被跳过', () => {
   const resolved = resolveConfig({
     channels: [
       { type: 'telegram', botToken: 't', chatId: 'c', enabled: false },
-      { type: 'slack', url: 'x' },
+      { type: 'definitely-not-a-channel', url: 'x' },
       { type: 'webhook', url: 'http://h' },
     ],
   })

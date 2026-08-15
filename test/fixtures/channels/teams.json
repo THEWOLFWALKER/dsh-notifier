@@ -1,0 +1,32 @@
+{
+  "type": "teams",
+  "validConfig": { "webhook": "https://outlook.office365.com/webhook/abc/IncomingWebhook/def/xyz" },
+  "invalidConfig": {},
+  "message": { "title": "构建完成", "content": "全部用例通过", "level": "active" },
+  "expectedRequests": [
+    {
+      "url": "https://outlook.office365.com/webhook/abc/IncomingWebhook/def/xyz",
+      "method": "POST",
+      "bodyJson": {
+        "type": "message",
+        "attachments": [
+          {
+            "contentType": "application/vnd.microsoft.card.adaptive",
+            "content": {
+              "type": "AdaptiveCard",
+              "version": "1.4",
+              "body": [
+                { "type": "TextBlock", "text": "构建完成", "weight": "Bolder", "wrap": true },
+                { "type": "TextBlock", "text": "全部用例通过", "wrap": true }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "successResponses": [{ "status": 200, "body": "1" }],
+  "failResponse": { "status": 404, "body": "" },
+  "errorMatch": "404|HTTP",
+  "secretFields": ["webhook"]
+}

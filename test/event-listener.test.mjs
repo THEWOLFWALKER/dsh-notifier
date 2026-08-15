@@ -240,3 +240,103 @@ test('createTrailingDebounce.flush 立即触发 pending 任务', () => {
   assert.equal(debounce.pendingCount(), 0)
   debounce.dispose()
 })
+
+// ---------- 阶段 2：规则引擎（事件分控 / 关键词 / 宽限窗） ----------
+
+test('createEventListener: events.turnEnd 按结束原因分控', async () => {
+  const { ctx, listeners } = fakeCtx()
+  const pushes = []
+  const notifier = { notifyAll: async (msg) => { pushes.push(msg); return { ok: true, delivered: [], failed: [] } }, flush: async () => {} }
+  const resolved = {
+    enabled: true, debounceMs: 10, summaryMaxChars: 100, titlePrefix: '',
+    // 注意：这里传的是 resolveConfig 归一化后的形状（生产路径 index.mjs -> resolveConfig -> listener）
+    events: { turnEnd: { enabled: true, kinds: { completed: false } } }, // 只要完成类
+  }
+  const dispose = createEventListener(ctx, notifier, resolved)
+  const session = makeSession('s1')
+  listeners['session/event'][0](session, { type: 'turn/end', seq: 1, data: { reason: { kind: 'completed' } } })
+  await new Promise((resolve) => setTimeout(resolve, 60))
+  assert.equal(pushes.length, 0, 'completed 被分控拦下')
+  listeners['session/event'][0](session, { type: 'turn/end', seq: 2, data: { reason: { kind: 'error' } } })
+  await new Promise((resolve) => setTimeout(resolve, 60))
+  assert.equal(pushes.length, 1, 'error 不受 completed 开关影响')
+  dispose()
+})
+
+test('createEventListener: events 整类开关关闭时静默（不占 dedup 名额）', async () => {
+  const { ctx, listeners } = fakeCtx()
+  const pushes = []
+  const notifier = { notifyAll: async (msg) => { pushes.push(msg); return { ok: true, delivered: [], failed: [] } }, flush: async () => {} }
+  const resolved = {
+    enabled: true, debounceMs: 10, summaryMaxChars: 100, titlePrefix: '',
+    events: { approval: false, agentError: false },
+  }
+  const dispose = createEventListener(ctx, notifier, resolved)
+  listeners['session/event'][0](makeSession('s1'), { type: 'approval/asked', seq: 1, data: {} })
+  listeners['agent/error'][0]({ agent: { id: 'a1', session: makeSession('s1') }, turn: 1, step: 1, error: new Error('x') })
+  await new Promise((resolve) => setTimeout(resolve, 40))
+  assert.equal(pushes.length, 0)
+  dispose()
+})
+
+test('createEventListener: 关键词 exclude 拦截推送，include 白名单放行', async () => {
+  const { ctx, listeners } = fakeCtx()
+  const pushes = []
+  const notifier = { notifyAll: async (msg) => { pushes.push(msg); return { ok: true, delivered: [], failed: [] } }, flush: async () => {} }
+  const resolved = {
+    enabled: true, debounceMs: 10, summaryMaxChars: 100, titlePrefix: '',
+    keywords: { exclude: ['heartbeat'] },
+  }
+  const dispose = createEventListener(ctx, notifier, resolved)
+  // turn/error 的 detail 是「任务执行出错」；用 approval 携带可控文本更直接
+  listeners['session/event'][0](makeSession('s1'), {
+    type: 'approval/asked', seq: 1, data: { toolName: 'bash', reason: '例行 heartbeat 检查' },
+  })
+  assert.equal(pushes.length, 0, 'exclude 命中应拦截')
+  listeners['session/event'][0](makeSession('s1'), {
+    type: 'approval/asked', seq: 2, data: { toolName: 'bash', reason: '需要部署生产环境' },
+  })
+  assert.equal(pushes.length, 1, '未命中放行')
+  dispose()
+})
+
+test('createEventListener: 宽限窗内用户接管（user/* 事件）取消打扰', async () => {
+  const { ctx, listeners } = fakeCtx()
+  const pushes = []
+  const notifier = { notifyAll: async (msg) => { pushes.push(msg); return { ok: true, delivered: [], failed: [] } }, flush: async () => {} }
+  const resolved = {
+    enabled: true, debounceMs: 10, summaryMaxChars: 100, titlePrefix: '',
+    graceSeconds: 0.05, // 测试用亚秒窗
+  }
+  const dispose = createEventListener(ctx, notifier, resolved)
+  const session = makeSession('s1')
+  listeners['session/event'][0](session, { type: 'turn/end', seq: 1, data: { reason: { kind: 'completed' } } })
+  await new Promise((resolve) => setTimeout(resolve, 20)) // 防抖到期，进宽限窗
+  listeners['session/event'][0](session, { type: 'user/message', seq: 2, data: { text: '我看到了' } })
+  await new Promise((resolve) => setTimeout(resolve, 100)) // 宽限窗早已到期
+  assert.equal(pushes.length, 0, '用户接管后不打扰')
+  dispose()
+})
+
+test('createEventListener: 宽限窗到期无人接管则正常送达；dispose flush 宽限窗任务', async () => {
+  const { ctx, listeners } = fakeCtx()
+  const pushes = []
+  const notifier = { notifyAll: async (msg) => { pushes.push(msg); return { ok: true, delivered: [], failed: [] } }, flush: async () => {} }
+  const resolved = {
+    enabled: true, debounceMs: 10, summaryMaxChars: 100, titlePrefix: '',
+    graceSeconds: 0.05,
+  }
+  const dispose = createEventListener(ctx, notifier, resolved)
+  const session = makeSession('s1')
+  listeners['session/event'][0](session, { type: 'turn/end', seq: 1, data: { reason: { kind: 'completed' } } })
+  await new Promise((resolve) => setTimeout(resolve, 150))
+  assert.equal(pushes.length, 1, '无人接管，到期送达')
+
+  // dispose 路径：宽限窗未到期即卸载（headless 退出），flush 送达
+  listeners['session/event'][0](session, { type: 'turn/end', seq: 3, data: { reason: { kind: 'completed' } } })
+  await new Promise((resolve) => setTimeout(resolve, 20)) // 防抖到期进宽限窗
+  const cleanup = dispose()
+  assert.ok(cleanup instanceof Promise)
+  await cleanup
+  assert.equal(pushes.length, 2, 'dispose flush 宽限窗内待发任务')
+})

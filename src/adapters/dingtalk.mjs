@@ -37,6 +37,8 @@ export function resolve(cfg = {}) {
   return {
     webhook,
     secret: str(cfg.secret),
+    // 分级语义对接（阶段 3）：timeSensitive 消息 @所有人（默认关，不改变基线行为）
+    atAllOnTimeSensitive: cfg.atAllOnTimeSensitive === true,
     timeoutMs: num(cfg.timeoutMs, 10000, 1000, 60000),
   }
 }
@@ -45,6 +47,9 @@ export function resolve(cfg = {}) {
 export async function send(resolved, msg) {
   const url = signedUrl(resolved.webhook, resolved.secret || undefined)
   const body = { msgtype: 'markdown', markdown: { title: msg.title, text: msg.content } }
+  if (resolved.atAllOnTimeSensitive && msg.level === 'timeSensitive') {
+    body.at = { isAtAll: true }
+  }
   const response = await postJson(url, body, { timeoutMs: resolved.timeoutMs, channel: 'dingtalk' })
   const payload = await responseJson(response, 'dingtalk')
   if (typeof payload?.errcode !== 'number') {

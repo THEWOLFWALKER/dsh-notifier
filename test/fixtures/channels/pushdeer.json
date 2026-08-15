@@ -1,0 +1,17 @@
+{
+  "type": "pushdeer",
+  "validConfig": { "pushKey": "pd-key-001" },
+  "invalidConfig": {},
+  "message": { "title": "构建完成", "content": "全部用例通过", "level": "active" },
+  "expectedRequests": [
+    {
+      "url": "https://api2.pushdeer.com/message/push",
+      "method": "POST",
+      "bodyForm": { "pushkey": "pd-key-001", "text": "构建完成", "desp": "全部用例通过", "type": "markdown" }
+    }
+  ],
+  "successResponses": [{ "status": 200, "body": "{\"code\":0,\"content\":{\"result\":[{}]}}" }],
+  "failResponse": { "status": 200, "body": "{\"code\":1,\"error\":\"key不存在\"}" },
+  "errorMatch": "不存在|code",
+  "secretFields": ["pushKey"]
+}

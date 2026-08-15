@@ -3,17 +3,44 @@
 // 共用 adapter 注册表（config.mjs 解析出的已启用渠道），未配置的渠道静默跳过并在日志提示。
 
 import { ADAPTERS, normalizeMessage, channelResult } from './config.mjs'
+import { resolveRouting, routeTargets, retryPolicyOf, sendWithRetry, normalizeLevel } from './routing.mjs'
+import { sendSegmented } from './inbound/segment.mjs'
 
 /**
  * 创建一个 notifier：内部持有「已启用渠道」列表。
  * @param ctx - cordis 插件上下文（提供 logger）。
  * @param channels - resolveConfig 返回的已启用渠道 [{ type, config }]。
- * @returns { notify, notifyAll, channelCount }
+ * @param {object} [options]
+ * @param {object} [options.routing] - routing 配置原值（resolveRouting 解析）；未配置时广播全部渠道（基线行为）。
+ * @param {object} [options.retry] - 重试覆盖（{ enabled?, attempts?, backoffMs? }）；仅配置 routing 后生效。
+ * @param {object} [options.segment] - 出站分段（{ enabled?, maxCodepoints? }）；默认开、1200 码点。
+ * @param {(record: object) => void} [options.onSend] - 每次广播结束的回调（通知账本用，阶段 6）。
+ * @returns { notify, notifyAll, flush, channelCount }
  */
-export function createNotifier(ctx, channels) {
+export function createNotifier(ctx, channels, options = {}) {
   const logger = ctx?.logger
   const warn = (...args) => {
     try { logger?.warn?.('[dsh-notifier]', ...args) } catch { /* 日志失败绝不致命 */ }
+  }
+  const routing = options.routing !== undefined ? resolveRouting(options.routing) : resolveRouting()
+  const segment = (options.segment !== null && typeof options.segment === 'object')
+    ? options.segment
+    : { enabled: true, maxCodepoints: 1200 }
+
+  /** 包装单渠道发送：分段开启且超预算时切段顺序送达，任一段失败即整体失败。 */
+  const sendOne = (type, config, msg) => {
+    const adapter = ADAPTERS[type]
+    if (segment.enabled === false) return adapter.send(config, msg)
+    return sendSegmented((piece) => adapter.send(config, piece), msg, { maxCodepoints: segment.maxCodepoints })
+      .then(({ sent, total, error }) => {
+        if (error === null) return undefined
+        if (sent > 0) {
+          const partial = new Error(`分段送达中断：${sent}/${total} 段成功`)
+          partial.cause = error
+          throw partial
+        }
+        throw error
+      })
   }
 
   // 在途推送账本：flush 时等待它们完成（headless 一次性运行退出前也能送达）。
@@ -38,10 +65,9 @@ export function createNotifier(ctx, channels) {
       warn(`渠道 "${type || '(空)'}" 未配置，已跳过推送（可用类型：${Object.keys(ADAPTERS).join('/')}）`)
       return channelResult(type || '(空)', 'skipped')
     }
-    const adapter = ADAPTERS[type]
     return track((async () => {
       try {
-        await adapter.send(entry.config, normalized)
+        await sendOne(type, entry.config, normalized)
         return channelResult(type, 'sent')
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error)
@@ -51,33 +77,44 @@ export function createNotifier(ctx, channels) {
     })())
   }
 
-  /** 广播到所有已启用渠道：每个渠道独立 try/catch，互不拖累。 */
+  /** 广播到路由命中的渠道：按 level 走路由矩阵（未配置时全部渠道，向后兼容）；每渠道独立 try/catch，互不拖累。 */
   async function notifyAll(msg) {
     const normalized = normalizeMessage(msg)
     if (channels.length === 0) {
       warn('未配置任何已启用渠道，notifyAll 无操作')
       return { ok: false, delivered: [], skipped: [], failed: [] }
     }
+    const targets = routeTargets(routing, channels, normalized)
     const delivered = []
     const failed = []
     const skipped = []
-    const batch = channels.map(async (entry) => {
+    const retry = routing.configured
+      ? retryPolicyOf(normalizeLevel(normalized.level), options.retry)
+      : { attempts: 1, backoffMs: 0 }
+    const batch = targets.map(async (target) => {
       try {
-        await ADAPTERS[entry.type].send(entry.config, normalized)
-        delivered.push(entry.type)
+        await sendWithRetry(
+          () => sendOne(target.type, target.entry.config, target.message),
+          { ...retry, onRetry: (attempt, error) => warn(`渠道 "${target.type}" 第 ${attempt} 次失败，准备重试: ${error instanceof Error ? error.message : String(error)}`) },
+        )
+        delivered.push(target.type)
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error)
-        warn(`渠道 "${entry.type}" 推送失败: ${reason}`)
-        failed.push({ channel: entry.type, error: reason })
+        warn(`渠道 "${target.type}" 推送失败: ${reason}`)
+        failed.push({ channel: target.type, error: reason })
       }
     })
     await track(Promise.all(batch))
-    return {
+    const outcome = {
       ok: failed.length === 0,
       delivered,
       skipped,
       failed,
     }
+    if (typeof options.onSend === 'function') {
+      try { options.onSend({ time: new Date().toISOString(), message: normalized, ...outcome }) } catch { /* 账本失败绝不影响推送 */ }
+    }
+    return outcome
   }
 
   return {

@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [22]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+      - run: node --version
+      # 零运行时依赖：无需 npm install，直接跑 node:test
+      # 显式钉到 test/ 下两种命名：默认发现 glob（test-*）会误吞 scripts/test-channel.mjs
+      - name: Run tests
+        run: node --test "test/*.test.mjs" "test/*.spec.mjs"
+      - name: Verify zero runtime dependencies
+        run: |
+          if [ -f package-lock.json ]; then npm ls --prod --all; fi
+          node -e "const p=require('./package.json'); const deps=Object.keys(p.dependencies??{}); if(deps.length>0){console.error('发现运行时依赖:',deps);process.exit(1)} console.log('OK: 零运行时依赖')"
+      - name: Regenerate channel matrix (check README drift)
+        run: |
+          node scripts/gen-channel-matrix.mjs --check

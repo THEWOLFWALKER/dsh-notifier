@@ -4,6 +4,7 @@
 // approval/asked 与 agent/error 即时推送。dedup：按 session.id:seq / agent.id:turn:step 去重（24h）。
 
 import { basename } from 'node:path'
+import { createKeywordFilter, createGraceQueue } from './rules.mjs'
 
 /** 取会话所属工作区名：cwd 末段，否则 session id。 */
 export function workspaceNameOf(session) {
@@ -156,20 +157,45 @@ export function createTrailingDebounce(windowMs = 10000) {
  * 订阅事件总线做自动推送。
  * @param ctx - cordis 上下文（ctx.on + ctx.logger）。
  * @param notifier - createNotifier 返回的 { notifyAll }。
- * @param resolvedConfig - resolveConfig 返回的 { enabled, debounceMs, ... }。
+ * @param resolvedConfig - resolveConfig 返回的 { enabled, debounceMs, events, keywords, graceSeconds, ... }。
  * @returns 反注册函数。
  */
 export function createEventListener(ctx, notifier, resolvedConfig) {
   const enabled = resolvedConfig.enabled !== false
+  const events = resolvedConfig.events ?? { turnEnd: { enabled: true, kinds: {} }, approval: true, agentError: true }
+  const keywords = createKeywordFilter(resolvedConfig.keywords)
   const debounce = createTrailingDebounce(resolvedConfig.debounceMs ?? 10000)
+  // 空闲宽限窗：turn 结束后等 N 秒再打扰；期间用户输入（user/* 事件）即取消。
+  // approval/agent/error 不进宽限窗——它们等人决策，晚到等于没到。
+  const grace = createGraceQueue({ seconds: resolvedConfig.graceSeconds ?? 0 })
   const dedup = createDedupLedger()
   const warn = (message) => {
     try { ctx?.logger?.warn?.('[dsh-notifier]', message) } catch { /* 日志失败绝不致命 */ }
   }
 
+  /** 事件粒度门：配置关掉的事件线/结束原因直接静默（不占 dedup 名额）。
+   *  容忍两种形状：resolveConfig 归一化的 { enabled, kinds } 与原始的 { completed: false } 直传。 */
+  const eventAllowed = (intent) => {
+    if (intent.event === 'turn/end') {
+      const turnEnd = events.turnEnd
+      if (turnEnd === false) return false
+      if (turnEnd?.enabled === false) return false
+      const kinds = turnEnd?.kinds ?? (turnEnd ?? {})
+      return kinds[intent.kind] !== false
+    }
+    if (intent.event === 'approval/asked') return events.approval !== false
+    return events.agentError !== false
+  }
+
   const push = (intent, session) => {
     const assistantText = intent.event === 'turn/end' ? lastAssistantText(session) : ''
     const message = intentToMessage(intent, { assistantText, config: resolvedConfig })
+    // 关键词规则（include 白名单 / exclude 黑名单，黑名单优先）拦下即静默跳过
+    const reason = keywords.why(`${message.title}\n${message.content}`)
+    if (reason !== undefined) {
+      warn(`关键词规则拦截推送（${reason}）`)
+      return Promise.resolve(undefined)
+    }
     return notifier.notifyAll(message).catch((error) => {
       warn(`自动推送失败: ${error instanceof Error ? error.message : String(error)}`)
     })
@@ -178,13 +204,20 @@ export function createEventListener(ctx, notifier, resolvedConfig) {
   const sessionListener = (session, event) => {
     if (!enabled) return
     if (session == null || event == null) return
+    // 用户活动信号：任何 user/* 事件（发消息/编辑）都证明人在键盘，取消宽限窗内待发打扰
+    if (typeof event.type === 'string' && event.type.startsWith('user/')) {
+      grace.activity()
+      return
+    }
     const intent = intentOfSessionEvent(event)
     if (intent === undefined) return
+    if (!eventAllowed(intent)) return
     const key = `${session.id ?? '(anon)'}:${event.seq ?? 0}`
     if (!dedup.test(key)) return
     if (intent.event === 'turn/end') {
-      // turn/end 按 session 尾沿防抖：合并同 session 短时间内的多次回合结束
-      debounce.schedule(String(session.id), () => push(intent, session))
+      // turn/end 双段延迟：先按 session 尾沿防抖合并（10s），到期后再进宽限窗
+      // （graceSeconds 内用户接管即取消）。「任务完成」类打扰让位于「人在键盘」。
+      debounce.schedule(String(session.id), () => grace.schedule(String(session.id), () => push(intent, session)))
     } else {
       push(intent, session)
     }
@@ -192,6 +225,7 @@ export function createEventListener(ctx, notifier, resolvedConfig) {
 
   const errorListener = (payload = {}) => {
     if (!enabled) return
+    if (events.agentError === false) return
     const agent = payload.agent
     const agentId = agent?.id ?? agent?.session?.id
     if (agentId === undefined || agentId === null) return
@@ -208,10 +242,10 @@ export function createEventListener(ctx, notifier, resolvedConfig) {
     // 某些宿主不提供 agent/error 总线：静默降级，session/event 触发线不受影响
   }
 
-  // 返回可被 cordis await 的清理：flush 未到期的 turn/end 防抖任务，并等待所有在途推送完成。
+  // 返回可被 cordis await 的清理：flush 未到期的 turn/end 防抖与宽限窗任务，并等待所有在途推送完成。
   // headless 一次性运行在 appExit 前会 dispose 整个树（5s 宽限），Pending 通知因此能送达。
   return () => {
-    const triggered = debounce.flush()
+    const triggered = [...debounce.flush(), ...grace.flush()]
     disposeSession?.()
     if (disposeError != null) disposeError()
     return Promise.allSettled([...triggered, notifier.flush()]).then(() => undefined)

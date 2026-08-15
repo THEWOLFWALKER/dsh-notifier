@@ -37,6 +37,8 @@ export function resolve(cfg = {}) {
   return {
     webhook,
     secret: str(cfg.secret),
+    // 分级语义对接（阶段 3）：timeSensitive 消息 @指定成员（open_id，需在飞书后台可查；默认关）
+    atOpenId: str(cfg.atOpenId),
     timeoutMs: num(cfg.timeoutMs, 10000, 1000, 60000),
   }
 }
@@ -44,11 +46,14 @@ export function resolve(cfg = {}) {
 /** 发送 interactive 卡片；飞书 code !== 0 时抛带中文指引的错误。 */
 export async function send(resolved, msg) {
   const url = signedUrl(resolved.webhook, resolved.secret || undefined)
+  const atPrefix = resolved.atOpenId !== '' && msg.level === 'timeSensitive'
+    ? `<at user_id="${resolved.atOpenId}"></at>\n`
+    : ''
   const body = {
     msg_type: 'interactive',
     card: {
       header: { title: { tag: 'plain_text', content: msg.title } },
-      elements: [{ tag: 'markdown', content: msg.content }],
+      elements: [{ tag: 'markdown', content: `${atPrefix}${msg.content}` }],
     },
   }
   const response = await postJson(url, body, { timeoutMs: resolved.timeoutMs, channel: 'feishu' })

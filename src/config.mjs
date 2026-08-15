@@ -14,8 +14,16 @@ import * as pushplus from './adapters/pushplus.mjs'
 import * as serverchan from './adapters/serverchan.mjs'
 import * as bark from './adapters/bark.mjs'
 import * as webhook from './adapters/webhook.mjs'
+import * as bell from './adapters/bell.mjs'
+// 阶段 1 新增：spec 引擎吃声明表产出 adapter + token 型代码适配器。
+import { SPEC_CHANNELS } from './adapters/spec-channels.mjs'
+import { makeSpecAdapters, secretFieldsOfTable } from './adapters/_engine.mjs'
+import * as qqBot from './adapters/qq-bot.mjs'
+import * as wecomApp from './adapters/wecom-app.mjs'
 
-/** adapter 注册表：type -> { type, resolve, send }。 */
+const SPEC_ADAPTERS = makeSpecAdapters(SPEC_CHANNELS)
+
+/** adapter 注册表：type -> { type, resolve, send }。既有 8 个零改动；spec 渠道由引擎产出。 */
 export const ADAPTERS = Object.freeze({
   telegram,
   dingtalk,
@@ -25,11 +33,15 @@ export const ADAPTERS = Object.freeze({
   serverchan,
   bark,
   webhook,
+  bell,
+  ...SPEC_ADAPTERS,
+  'qq-bot': qqBot,
+  'wecom-app': wecomApp,
 })
 
 export const CHANNEL_TYPES = Object.freeze(Object.keys(ADAPTERS))
 
-/** 每渠道的 secret 键：这些字段在日志/诊断里必须脱敏。 */
+/** 每渠道的 secret 键：这些字段在日志/诊断里必须脱敏。spec 渠道由声明表自动登记。 */
 const SECRET_FIELDS = {
   telegram: ['botToken'],
   dingtalk: ['webhook', 'secret'],
@@ -39,11 +51,40 @@ const SECRET_FIELDS = {
   serverchan: ['sct', 'sendKey', 'sctKey'],
   bark: ['key', 'barkUrl'],
   webhook: ['url', 'headers'],
+  ...secretFieldsOfTable(SPEC_CHANNELS),
+  'qq-bot': ['appId', 'appSecret'],
+  'wecom-app': ['corpid', 'secret'],
 }
 
 /** 取某渠道的 secret 键列表（未知渠道返回空数组）。 */
 export function secretFieldsOf(type) {
   return SECRET_FIELDS[type] ?? []
+}
+
+/**
+ * 解析 ${ENV:NAME} 式环境变量引用（全值替换）。
+ * 「通知器是密钥集中器」：让密钥可以不落 profile 明文；缺失环境变量返回空串
+ * （渠道会因校验失败被跳过，reason 里带字段名与来源指引）。
+ */
+const ENV_REF = /^\$\{ENV:([A-Za-z_][A-Za-z0-9_]*)\}$/
+
+export function resolveEnvRef(value) {
+  if (typeof value !== 'string') return value
+  const match = ENV_REF.exec(value.trim())
+  if (match === null) return value
+  return process.env[match[1]] ?? ''
+}
+
+/** 递归把配置对象里的 ${ENV:NAME} 字符串值替换为环境变量值。 */
+export function resolveEnvRefs(value) {
+  if (typeof value === 'string') return resolveEnvRef(value)
+  if (Array.isArray(value)) return value.map(resolveEnvRefs)
+  if (value !== null && typeof value === 'object') {
+    const out = {}
+    for (const [key, item] of Object.entries(value)) out[key] = resolveEnvRefs(item)
+    return out
+  }
+  return value
 }
 
 /** 归一化一条通知消息：确保 title/content 为字符串，补齐 level/group。 */
@@ -96,6 +137,48 @@ export function resolveConfig(config = {}) {
     : 500
   const titlePrefix = typeof raw.titlePrefix === 'string' ? raw.titlePrefix.trim() : ''
 
+  // 事件粒度开关（阶段 2 规则引擎）：默认全开。turnEnd 支持两种写法：
+  //   turnEnd: false                     → 整类关闭
+  //   turnEnd: { completed: false, ... } → 按结束原因分控（未知原因键默认放行，不吞新事件）
+  const rawEvents = (raw.events !== null && typeof raw.events === 'object') ? raw.events : {}
+  const rawTurnEnd = rawEvents.turnEnd
+  const turnEndKinds = (kindMap) => {
+    const defaults = { completed: true, error: true, blocked: true, aborted: true, 'max-tokens': true, interrupted: true }
+    if (kindMap === null || typeof kindMap !== 'object' || Array.isArray(kindMap)) return defaults
+    const out = { ...defaults }
+    for (const [kind, enabled] of Object.entries(kindMap)) {
+      if (typeof enabled === 'boolean') out[kind] = enabled
+    }
+    return out
+  }
+  const events = {
+    turnEnd: {
+      enabled: rawTurnEnd !== false,
+      kinds: turnEndKinds(rawTurnEnd),
+    },
+    approval: rawEvents.approval !== false,
+    agentError: rawEvents.agentError !== false,
+  }
+
+  // agent 工具滑动窗口调用上限（阶段 6）：防 prompt injection 把用户渠道刷成垃圾出口；0 = 不限。
+  const toolRateLimitPerMinute = typeof raw.toolRateLimitPerMinute === 'number' && Number.isFinite(raw.toolRateLimitPerMinute)
+    ? Math.max(0, Math.trunc(raw.toolRateLimitPerMinute))
+    : 10
+
+  // 空闲宽限窗（阶段 2 规则引擎）：turn 结束后等 N 秒，期间用户在页面/终端输入即取消打扰。
+  const graceSeconds = typeof raw.graceSeconds === 'number' && Number.isFinite(raw.graceSeconds)
+    ? Math.max(0, Math.trunc(raw.graceSeconds))
+    : 0
+
+  // 出站收敛分段（阶段 5）：超预算长文本按 Unicode 码点切段（含（i/n）前缀）顺序送达。
+  const rawSegment = (raw.segment !== null && typeof raw.segment === 'object') ? raw.segment : {}
+  const segment = {
+    enabled: rawSegment.enabled !== false,
+    maxCodepoints: typeof rawSegment.maxCodepoints === 'number' && Number.isFinite(rawSegment.maxCodepoints)
+      ? Math.max(60, Math.trunc(rawSegment.maxCodepoints))
+      : 1200,
+  }
+
   const channels = []
   const skipped = []
   const rawChannels = Array.isArray(raw.channels) ? raw.channels : []
@@ -116,7 +199,8 @@ export function resolveConfig(config = {}) {
       continue
     }
     try {
-      const resolved = adapter.resolve(row)
+      // 密钥环境变量引用（${ENV:NAME}）先于校验解析，密钥可不落 profile 明文
+      const resolved = adapter.resolve(resolveEnvRefs(row))
       channels.push({ type, config: resolved })
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error)
@@ -124,7 +208,23 @@ export function resolveConfig(config = {}) {
     }
   }
 
-  return { enabled, debounceMs, summaryMaxChars, titlePrefix, channels, skipped }
+  return {
+    enabled,
+    debounceMs,
+    summaryMaxChars,
+    titlePrefix,
+    events,
+    toolRateLimitPerMinute,
+    graceSeconds,
+    routing: (raw.routing !== null && typeof raw.routing === 'object') ? raw.routing : {},
+    inbound: (raw.inbound !== null && typeof raw.inbound === 'object') ? raw.inbound : {},
+    approval: (raw.approval !== null && typeof raw.approval === 'object') ? raw.approval : {},
+    segment,
+    digest: (raw.digest !== null && typeof raw.digest === 'object') ? raw.digest : {},
+    keywords: (raw.keywords !== null && typeof raw.keywords === 'object') ? raw.keywords : {},
+    channels,
+    skipped,
+  }
 }
 
 /** 单渠道发送结果（供 notify()/notifyAll() 与工具渲染）。 */

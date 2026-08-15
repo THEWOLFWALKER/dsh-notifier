@@ -1,0 +1,17 @@
+{
+  "type": "mattermost",
+  "validConfig": { "server": "https://mm.example.com", "hookId": "hookid-001" },
+  "invalidConfig": {},
+  "message": { "title": "构建完成", "content": "全部用例通过", "level": "active" },
+  "expectedRequests": [
+    {
+      "url": "https://mm.example.com/hooks/hookid-001",
+      "method": "POST",
+      "bodyJson": { "text": "构建完成\n\n全部用例通过" }
+    }
+  ],
+  "successResponses": [{ "status": 200, "body": "ok" }],
+  "failResponse": { "status": 404, "body": "" },
+  "errorMatch": "404|HTTP",
+  "secretFields": ["webhook", "hookId"]
+}

@@ -22,13 +22,14 @@ export function resolve(cfg = {}) {
   return { botToken, chatId, apiBase, timeoutMs: num(cfg.timeoutMs, 10000, 1000, 60000) }
 }
 
-/** 发送一条通知到指定 chat。 */
+/** 发送一条通知到指定 chat。msg.silent（路由覆盖）映射为原生 disable_notification：静默送达不响铃。 */
 export async function send(resolved, msg) {
   const url = `${resolved.apiBase}/bot${resolved.botToken}/sendMessage`
   const body = {
     chat_id: resolved.chatId,
     text: msg.title.length > 0 ? `${msg.title}\n\n${msg.content}` : msg.content,
     disable_web_page_preview: true,
+    ...(msg.silent === true ? { disable_notification: true } : {}),
   }
   const response = await postJson(url, body, { timeoutMs: resolved.timeoutMs, channel: 'telegram' })
   const payload = await responseJson(response, 'telegram', { requireKey: 'ok', successValue: true })

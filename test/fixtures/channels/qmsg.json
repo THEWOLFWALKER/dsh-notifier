@@ -1,0 +1,17 @@
+{
+  "type": "qmsg",
+  "validConfig": { "key": "qmsg-key-001", "qq": "10000,10001" },
+  "invalidConfig": { "key": "qmsg-key-001" },
+  "message": { "title": "构建完成", "content": "全部用例通过", "level": "active" },
+  "expectedRequests": [
+    {
+      "url": "https://qmsg.zendee.cn/send/qmsg-key-001",
+      "method": "POST",
+      "bodyForm": { "msg": "构建完成\n全部用例通过", "qq": "10000,10001" }
+    }
+  ],
+  "successResponses": [{ "status": 200, "body": "{\"success\":true,\"code\":0,\"reason\":\"操作成功\"}" }],
+  "failResponse": { "status": 200, "body": "{\"success\":false,\"code\":1,\"reason\":\"key错误\"}" },
+  "errorMatch": "key错误|推送失败",
+  "secretFields": ["key"]
+}

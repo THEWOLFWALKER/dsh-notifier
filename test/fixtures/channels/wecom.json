@@ -1,0 +1,17 @@
+{
+  "type": "wecom",
+  "validConfig": { "key": "wecom-robot-key-001" },
+  "invalidConfig": {},
+  "message": { "title": "构建完成", "content": "全部用例通过", "level": "active" },
+  "expectedRequests": [
+    {
+      "url": "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=wecom-robot-key-001",
+      "method": "POST",
+      "bodyJson": { "msgtype": "markdown", "markdown": { "content": "构建完成\n\n全部用例通过" } }
+    }
+  ],
+  "successResponses": [{ "status": 200, "body": "{\"errcode\":0,\"errmsg\":\"ok\"}" }],
+  "failResponse": { "status": 200, "body": "{\"errcode\":93100,\"errmsg\":\"robots not allowed to send message\"}" },
+  "errorMatch": "93100|不可用",
+  "secretFields": ["webhook", "key"]
+}

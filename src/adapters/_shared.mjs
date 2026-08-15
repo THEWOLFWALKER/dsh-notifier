@@ -91,6 +91,55 @@ export async function postForm(url, payload, { timeoutMs = 10000, channel = '渠
   }
 }
 
+/** 统一 GET（token 换取用），带超时与错误分类；返回原始 Response（2xx 才 resolve）。 */
+export async function getJson(url, { headers = {}, timeoutMs = 10000, channel = '渠道' } = {}) {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const response = await fetch(url, { method: 'GET', headers, signal: controller.signal })
+    if (!response.ok) {
+      const text = (await response.text().catch(() => '')).slice(0, 200)
+      throw new NotifyError(`${channel}返回 HTTP ${response.status}${text.length > 0 ? `: ${text}` : ''}`, ERROR_CODES.HTTP_ERROR)
+    }
+    return response
+  } catch (error) {
+    if (error instanceof NotifyError) throw error
+    const timedOut = error instanceof Error && error.name === 'AbortError'
+    if (timedOut) throw new NotifyError(`${channel}请求超时（${timeoutMs}ms）`, ERROR_CODES.TIMEOUT)
+    const detail = error instanceof Error ? error.message : String(error)
+    throw new NotifyError(`${channel}请求失败: ${detail}`, ERROR_CODES.NETWORK_ERROR)
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/** 统一纯文本 body POST（ntfy 用，参数走 HTTP 头），带超时与错误分类。 */
+export async function postText(url, text, { headers = {}, timeoutMs = 10000, channel = '渠道' } = {}) {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: String(text ?? ''),
+      signal: controller.signal,
+    })
+    if (!response.ok) {
+      const bodyText = (await response.text().catch(() => '')).slice(0, 200)
+      throw new NotifyError(`${channel}返回 HTTP ${response.status}${bodyText.length > 0 ? `: ${bodyText}` : ''}`, ERROR_CODES.HTTP_ERROR)
+    }
+    return response
+  } catch (error) {
+    if (error instanceof NotifyError) throw error
+    const timedOut = error instanceof Error && error.name === 'AbortError'
+    if (timedOut) throw new NotifyError(`${channel}请求超时（${timeoutMs}ms）`, ERROR_CODES.TIMEOUT)
+    const detail = error instanceof Error ? error.message : String(error)
+    throw new NotifyError(`${channel}请求失败: ${detail}`, ERROR_CODES.NETWORK_ERROR)
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 /** 读响应 JSON，解析失败抛 API_ERROR（带中文指引）。 */
 export async function responseJson(response, channel, { requireKey, successValue } = {}) {
   let body
