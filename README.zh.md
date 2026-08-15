@@ -16,6 +16,7 @@ DeepSeek Harness（DSH）的统一通知推送插件。前端一个极简 `notif
 - **分级路由** —— `timeSensitive` / `active` / `passive` 三级映射到各渠道原生送达语义（静默推送、优先级标头、@提醒），并配分档重试。
 - **远程审批（可选）** —— 在手机上通过 Telegram 按钮回答 agent 的审批请求；沉默永远不会批准，超时自动回落到桌面。见[远程审批](#远程审批可选)。
 - **远程会话（可选）** —— 在手机上和你的 agent 对话：纯文本按 agent 状态以 `followup`（空闲）或 `inject`（忙碌）投递，`!` 前缀中途纠偏（steer），合并窗把手机上的碎片输入拼回整句。见[远程会话](#远程会话可选)。
+- **多 agent 路由（v0.3.2）** —— agent × 通道构成双向多对多矩阵：出站 `route:agents`（默认以 workspace 名为键，精确 agentId 为高级键）、入站 `route:channels` 通道默认 agent；会话创建即自动建档，`quiet` 仅静音出站推送，审批按 agent 分流 —— 另有 `/agent` 命令族与 `scripts/route.mjs` CLI。零配置用户行为完全不变。见[多 agent 路由](#多-agent-路由v032)。
 - **长消息分段** —— 超出渠道预算的出站消息自动切成带 `（i/n）` 前缀的多段按序送达；任一段失败即整体失败。
 - **防打扰规则** —— 事件按结果分控、关键词 include/exclude（字面量或正则）、空闲宽限窗：turn 结束后 `graceSeconds` 秒内你在键盘上输入，通知即取消。见[防打扰规则](#防打扰规则与本地响铃可选)。
 - **通知账本 + 每日摘要（可选）** —— 每次广播追加落账到本地 JSONL；启动时对昨日流量推送一条 `passive` 摘要。账本任何失败绝不影响送达。见[通知账本](#通知账本与每日摘要可选)。
@@ -108,7 +109,7 @@ insert:
 
 ## 远程审批（可选）
 
-审批请求可以在手机上回答。v0.3.0 起支持 5 个入站通道（telegram / feishu / qq / wxpusher / wechat，见[入站通道](#入站通道v030)）；telegram / feishu / qq / wechat 均为长连接或长轮询 —— **不需要公网 IP**（仅 wxpusher 回调需要公网可达）。整个回传栈仅在 `inbound.allowUsers` 非空时启动（默认全拒白名单）。
+审批请求可以在手机上回答。v0.3.0 起支持 5 个入站通道（telegram / feishu / qq / wxpusher / wechat，见[入站通道](#入站通道v030)）；telegram / feishu / qq / wechat 均为长连接或长轮询 —— **不需要公网 IP**（仅 wxpusher 回调需要公网可达）。整个回传栈仅在 `inbound.allowUsers` 非空时启动（默认全拒白名单）。v0.3.2 起审批通知按 agent 分流 —— 只发该 agent 绑定的通道（见[多 agent 路由](#多-agent-路由v032)）。
 
 ```yaml
 insert:
@@ -217,9 +218,15 @@ node scripts/channel-login.mjs wechat    # 等价 node scripts/wechat-login.mjs
 |---|---|
 | `/status` | 查看绑定关系与所有活跃 agent 状态 |
 | `/bind <sessionId>` | 固定投递到某个会话（跨重启保留） |
-| `/unbind` | 解除固定；回到默认的最近活跃 agent |
+| `/unbind` | 解除固定；回到通道默认 agent（未配置则最近活跃） |
 | `/stop` | 取消所绑定 agent 的当前 turn |
+| `/agent` | 列出 workspace / 活跃会话及出站通道（v0.3.2） |
+| `/agent use <workspace \| sid 前缀>` | 智能切换当前对话到该 agent（v0.3.2） |
+| `/agent back` | 当前对话回到通道默认 agent（v0.3.2） |
+| `/route` | 显示当前双向解析结果，排障用（v0.3.2） |
 | `/help` | 命令帮助 |
+
+`/agent` 命令族与 `/route` 服务 v0.3.2 多 agent 路由，详见[多 agent 路由](#多-agent-路由v032)。
 
 ```yaml
 inbound:
@@ -230,6 +237,136 @@ inbound:
 ```
 
 未知命令会当普通文本处理，不会吞消息。回执（命令反馈、「无活跃会话」提示）目前仅支持 Telegram。
+
+## 多 agent 路由（v0.3.2）
+
+agent 与通道不再绑死：一个 agent 可以推多个通道，一个通道可以默认指向一个 agent —— 双向多对多矩阵。默认路由键是 **workspace 名**（稳定、人类可读，同项目的多个会话天然聚合）；**精确 agentId** 作为高级键保留，供会话粒度控制。会话创建即自动建档，矩阵落在 `state.json`，聊天命令与 CLI 都能改 —— 不碰 YAML。
+
+### 路由矩阵
+
+| 方向 | 键 | 含义 |
+|---|---|---|
+| 出站：agent → 通道 | `route:agents` | 键 = workspace 名（默认）或精确 agentId（高级、会话粒度，优先于 workspace 条目）；值 = 出站 `channels` + `quiet` |
+| 入站：通道 → agent | `route:channels` | `<channel>.defaultAgent` = workspace 名或 agentId —— 对话没有显式绑定时的默认去向 |
+
+两个方向都走显式兜底链（先命中先得）：
+
+```
+出站  resolveOutbound(sessionId, workspace):
+  route:sessions[sessionId].outbound   # 会话覆盖 diff（最高）
+  ?? route:agents[sessionId]           # 精确 agentId 条目（高级键）
+  ?? route:agents[workspace]           # workspace 条目（默认键）
+  ?? 全局渠道池                          # v0.3.0 行为
+
+入站  resolveInbound(channel, userId):
+  bind:<channel>:<userId>              # 显式 /bind 或 /agent use
+  ?? route:channels[channel].defaultAgent
+       agentId   → 该会话（若仍活跃）
+       workspace → 1 个活跃会话 → 直接投递
+                   多个活跃会话 → 投最近活跃，回执附目标会话 id
+  ?? 仅一个 agent 在跑 → 该 agent      # 单 agent 自动兜底
+  ?? 最近活跃 agent                     # 最后兜底（v0.3.2 之前的行为）
+```
+
+会话在 `agent/created` 时以 workspace 名自动建档，新会话即刻继承通道与设置 —— 无需任何配置。Agent 主动调用的 `notify` 工具走同一条链（上下文拿得到 agent id 就按 agent 分流，否则全局池，工具签名不变）。`quiet` 只静音出站推送：账本照常记账，入站与审批永不被静音。
+
+### 命令族
+
+`/agent` 命令族加入会话命令集：
+
+| 命令 | 作用 |
+|---|---|
+| `/agent` | 列出 workspace / 活跃会话及各自出站通道 |
+| `/agent use <workspace \| sid 前缀>` | 智能切换当前对话到该 agent —— workspace 名精确匹配（该 workspace 多活跃会话取最近活跃）、sessionId 精确匹配、或 ≥ 4 位 sid 前缀；前缀歧义时列出候选 |
+| `/agent back` | 当前对话回到通道默认 agent |
+| `/route` | 显示双向完整解析结果（会话 → 通道 → 设置、通道 → agent），排障专用 |
+
+`/bind` `/unbind` `/status` `/stop` 保留原语义（sessionId 级精细操作）不变。
+
+示例 —— 两个 workspace、两条通道（`api-server` → dingtalk，`docs` → telegram），从 Telegram 对话：
+
+```
+你          /agent
+通知        • api-server — 9f2c… → dingtalk
+            • docs       — 41ab… → telegram
+你          /agent use api-server
+通知        当前对话已切到 api-server（9f2c…）；它的推送仍只发 dingtalk
+你          重跑部署测试
+通知        [已按 followup 投给 api-server；其 turn/end 只推 dingtalk，不进本对话]
+你          /route
+通知        对话 → api-server（9f2c…）
+            api-server → dingtalk · telegram 默认 → docs
+你          /agent back
+通知        已回到 telegram 默认：docs（41ab…）
+```
+
+### 路由 CLI
+
+`scripts/route.mjs` 在宿主之外查看 / 修改路由矩阵（退出码 0/1，可脚本化）：
+
+```bash
+node scripts/route.mjs show                                  # 三张表全量：agent 绑定 / 通道默认 / 会话台账
+node scripts/route.mjs show api-server                       # 单个 agent 绑定条目
+node scripts/route.mjs set api-server --channels dingtalk,bark   # workspace 出站通道（渠道类型白名单校验）
+node scripts/route.mjs set api-server --quiet                # 静音其出站（账本照记）
+node scripts/route.mjs set api-server --no-quiet             # 取消静音
+node scripts/route.mjs set api-server --channels ''          # 显式空集 → 该键出站全静默
+node scripts/route.mjs set 9f2c41ab --channels dingtalk      # 高级：精确 agentId 条目（会话粒度）
+node scripts/route.mjs set api-server --reset                # 删除整条绑定 → 回落全局池
+node scripts/route.mjs default telegram docs                 # 入站：telegram 默认进 docs
+node scripts/route.mjs default telegram --clear              # 清除该默认
+node scripts/route.mjs test 9f2c41ab --workspace api-server  # 打印出站解析链（L1 diff → L2 agentId → L3 workspace → L4 全局池）
+node scripts/route.mjs test 9f2c41ab --global telegram,bark  # 按自定义全局池解析
+node scripts/route.mjs show --state ~/.dsh/dsh-notifier      # 指定非默认 stateDir（默认 $DSH_HOME/dsh-notifier）
+```
+
+### 数据与配置
+
+`state.json` 新增三个键（与 `bind:*`、扫码凭证同一个 0600 store）。`route:sessions` 由插件写入，只存 **diff** —— 未覆盖字段实时跟随上游，改默认后所有会话立即生效：
+
+```json
+{
+  "route:agents": {
+    "api-server": { "channels": ["dingtalk", "bark"] },
+    "9f2c41ab-…": { "quiet": true }
+  },
+  "route:channels": {
+    "telegram": { "defaultAgent": "docs" }
+  },
+  "route:sessions": {
+    "9f2c41ab-…": {
+      "inherit": "api-server",
+      "workspace": "api-server",
+      "outbound": { "quiet": true },
+      "inbound": [{ "channel": "telegram", "userId": "987654321" }],
+      "createdAt": 1760000000000,
+      "lastActiveAt": 1760000123400
+    }
+  }
+}
+```
+
+`agent/disposed` 后会话记录保留 `route.sessionTtlHours` 小时（默认 24）供同 id 重连（通道与绑定原样恢复）；窗口过后条目与入站挂钩一起回收（`bind:*` 不清 —— 过期绑定只会收到既有的「会话不存在」回执）。
+
+```yaml
+route:
+  sessionTtlHours: 24   # dispose 后会话记录保留窗，单位小时（默认 24）
+```
+
+`quiet: true`（会话或 agent 条目）的语义：出站不推但照常写账本；入站消息与审批不受影响 —— 静音审批等于审批永远超时回落桌面，而沉默永不批准。
+
+### 兼容性
+
+- 未配置任何 `route:*` 的存量用户：出站走全局池、入站走原有链路，行为逐字节不变。
+- 单 agent 用户：解析链在「唯一 agent」层自动命中，零感知、零配置。
+- YAML 语义不变（仍只做 bootstrap）；一切新状态都在 `state.json`（0600）。
+- `dependencies` 保持为空，零新增依赖。
+
+### 审批分流
+
+- 审批卡片 / 通知只发该 agent 解析出的通道集合，不再全局广播。
+- 编号回复通道（qq / wxpusher / wechat / dingtalk）自动附带「回复 `1` 批准 / `2` 拒绝」。
+- `quiet` 对审批不生效；回执走消息到达的原通道。
 
 ## 防打扰规则与本地响铃（可选）
 

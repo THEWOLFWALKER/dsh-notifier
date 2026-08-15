@@ -77,14 +77,33 @@ export function createNotifier(ctx, channels, options = {}) {
     })())
   }
 
-  /** 广播到路由命中的渠道：按 level 走路由矩阵（未配置时全部渠道，向后兼容）；每渠道独立 try/catch，互不拖累。 */
-  async function notifyAll(msg) {
+  /**
+   * 广播到路由命中的渠道：按 level 走路由矩阵（未配置时全部渠道，向后兼容）；每渠道独立 try/catch，互不拖累。
+   * v0.3.2 出站分流（可选 options，与全局 level 路由是 AND 关系）：
+   *  - channelTypes：agent/会话路由解析出的目标类型集合；命中 level 路由后再按此过滤
+   *    （未传/非数组 = 不过滤，全量广播——旧调用方零感知）。
+   *  - quiet：true = 本次静音——不走任何渠道发送，但仍写通知账本（skipped 标 '(quiet)'）。
+   * @param {object} msg - 通知消息（normalizeMessage 归一）。
+   * @param {{ channelTypes?: string[], quiet?: boolean }} [options] - v0.3.2 分流选项。
+   */
+  async function notifyAll(msg, sendOptions = {}) {
     const normalized = normalizeMessage(msg)
+    const quiet = sendOptions?.quiet === true
+    const filterTypes = Array.isArray(sendOptions?.channelTypes) ? sendOptions.channelTypes : null
+    if (quiet) {
+      // 静音不等于没发生：账本照记（delivered 空、skipped 标记），方便晨报反映被静音的流量
+      const quietOutcome = { ok: true, delivered: [], skipped: ['(quiet)'], failed: [] }
+      if (typeof options.onSend === 'function') {
+        try { options.onSend({ time: new Date().toISOString(), message: normalized, ...quietOutcome }) } catch { /* 账本失败绝不影响 */ }
+      }
+      return quietOutcome
+    }
     if (channels.length === 0) {
       warn('未配置任何已启用渠道，notifyAll 无操作')
       return { ok: false, delivered: [], skipped: [], failed: [] }
     }
     const targets = routeTargets(routing, channels, normalized)
+      .filter((target) => filterTypes === null || filterTypes.includes(target.type))
     const delivered = []
     const failed = []
     const skipped = []

@@ -19,6 +19,9 @@ import { createWechatIlinkInbound, resolveWechatInboundConfig, ACCOUNT_KEY } fro
 import { createDingtalkInbound, resolveDingtalkInboundConfig } from './inbound/dingtalk-stream.mjs'
 import { registerApprovalHandler } from './approval/router.mjs'
 import { registerConversationRouter } from './inbound/conversation.mjs'
+// v0.3.2：路由引擎（双向解析链 + 会话台账，src/routing/*.mjs）
+import { createAgentRouter } from './routing/agent-router.mjs'
+import { createSessionRegistry } from './routing/session-registry.mjs'
 
 export const name = 'dsh-notifier'
 export const inject = ['tools', 'agents']
@@ -59,8 +62,41 @@ export function apply(ctx, config = {}) {
   const notifier = createNotifier(ctx, resolved.channels, { segment: resolved.segment, routing: resolved.routing, onSend })
 
   const disposers = []
-  disposers.push(createEventListener(ctx, notifier, resolved))
-  const disposeTool = registerNotifyTool(ctx, notifier, { rateLimitPerMinute: resolved.toolRateLimitPerMinute })
+
+  // 阶段 4/5：inbound 回传栈。白名单（inbound.allowUsers）为空 = 整栈不启动（默认全拒）。
+  const inboundRaw = resolved.inbound ?? {}
+  const approvalRaw = resolved.approval ?? {}
+  // v0.3.1：state store 提前创建（只读加载，无写副作用）——qq/feishu/dingtalk 的
+  // 扫码凭证回退在 resolve 阶段就要读 store；必须先于下方各通道的 resolve 块
+  // （TDZ：声明前引用会 ReferenceError，v0.3.1 首版曾把创建放在 resolve 之后，已修）。
+  // v0.3.2：进一步前移到事件监听/工具注册之前——路由引擎（router/registry）也以它为持久层。
+  const stateDir = typeof inboundRaw.stateDir === 'string' && inboundRaw.stateDir.trim() !== ''
+    ? inboundRaw.stateDir.trim()
+    : defaultStateDir()
+  const store = createStore(`${stateDir}/state.json`)
+
+  // v0.3.2 路由引擎装配（设计稿 §7）：store 之后、inbound 白名单块之前创建，
+  // 注入四条触发线（事件推送 / notify 工具 / 审批 / 会话路由）。
+  // route 原值直取（config.route 为对象时；sessionTtlHours 由 registry 自行归一，缺省 24h）。
+  // 未配置任何 route:* 的存量用户：解析链全程回落全局渠道池，行为零感知（§6 兼容红线）。
+  const routeRaw = (config.route !== null && typeof config.route === 'object') ? config.route : {}
+  const registry = createSessionRegistry({ ctx, store, ttlHours: routeRaw.sessionTtlHours, logger })
+  const router = createAgentRouter({
+    store,
+    agentsList: () => { try { return ctx.agents.list() } catch { return [] } },
+  })
+  try {
+    const migrated = registry.migrateLegacyBinds()
+    if (migrated > 0) warn(`route:sessions 迁移：为旧 bind 绑定补建 ${migrated} 条会话记录`)
+  } catch { /* 迁移失败静默：绝不弄崩启动 */ }
+  disposers.push(() => registry.dispose())
+
+  disposers.push(createEventListener(ctx, notifier, resolved, { router, registry }))
+  const disposeTool = registerNotifyTool(ctx, notifier, {
+    rateLimitPerMinute: resolved.toolRateLimitPerMinute,
+    router,
+    channelTypes: () => resolved.channels.map((entry) => entry.type),
+  })
   if (disposeTool != null) disposers.push(disposeTool)
   const disposeTestTool = registerNotifyTestTool(ctx, notifier, { rateLimitPerMinute: resolved.toolRateLimitPerMinute })
   if (disposeTestTool != null) disposers.push(disposeTestTool)
@@ -80,16 +116,8 @@ export function apply(ctx, config = {}) {
     } catch { /* 晨报任何异常静默：账本绝不拖累启动 */ }
   }
 
-  // 阶段 4：inbound 回传栈。白名单（inbound.allowUsers）为空 = 整栈不启动（默认全拒）。
-  const inboundRaw = resolved.inbound ?? {}
-  const approvalRaw = resolved.approval ?? {}
-  // v0.3.1：state store 提前创建（只读加载，无写副作用）——qq/feishu/dingtalk 的
-  // 扫码凭证回退在 resolve 阶段就要读 store；必须先于下方各通道的 resolve 块
-  // （TDZ：声明前引用会 ReferenceError，v0.3.1 首版曾把创建放在 resolve 之后，已修）。
-  const stateDir = typeof inboundRaw.stateDir === 'string' && inboundRaw.stateDir.trim() !== ''
-    ? inboundRaw.stateDir.trim()
-    : defaultStateDir()
-  const store = createStore(`${stateDir}/state.json`)
+  // 阶段 4：inbound 白名单（allowUsers 为空 = 整栈不启动，默认全拒）。
+  // inboundRaw / approvalRaw / store 已随 v0.3.2 路由装配前移到 notifier 之后创建。
   const allowUsers = (Array.isArray(inboundRaw.allowUsers) ? inboundRaw.allowUsers : [])
     .map((id) => String(id).trim())
     .filter((id) => id !== '')
@@ -271,6 +299,7 @@ export function apply(ctx, config = {}) {
       store,
       interactive: interactiveInstances,
       approvalConfig: approvalRaw,
+      router, // v0.3.2 审批分流：request.agent 可解析时只发绑定通道（quiet 对审批不生效）
       logger,
     })
     disposers.push(disposeApproval)
@@ -291,6 +320,9 @@ export function apply(ctx, config = {}) {
       store,
       reply: replyViaChannel,
       config: inboundRaw.conversation,
+      router, // v0.3.2 入站解析链（bind > 通道默认 > 单 agent > 最近活跃）
+      registry, // 会话台账（/agent 命令族数据源、活跃信号、入站对话挂钩）
+      channelTypes: () => resolved.channels.map((entry) => entry.type), // 全局渠道池快照（分流过滤白名单）
       logger,
     })
     disposers.push(disposeConversation)
@@ -340,3 +372,6 @@ export { segmentText, countCodepoints, sendSegmented } from './inbound/segment.m
 export { createLedger, yesterdayWindow, classifyTitle, composeDigest } from './ledger.mjs'
 export { runChannelTest, TEST_MESSAGE } from './health.mjs'
 export { createRateLimiter } from './tool-register.mjs'
+// v0.3.2：路由引擎（双向解析链 + 会话台账；供测试、CLI 与其它插件复用）
+export { createAgentRouter } from './routing/agent-router.mjs'
+export { createSessionRegistry, workspaceOf } from './routing/session-registry.mjs'

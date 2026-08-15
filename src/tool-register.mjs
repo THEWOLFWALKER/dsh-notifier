@@ -4,6 +4,7 @@
 
 import { CHANNEL_TYPES } from './config.mjs'
 import { TEST_MESSAGE } from './health.mjs'
+import { workspaceOf } from './routing/session-registry.mjs'
 
 /**
  * 滑动窗口限流器（阶段 6）：防 prompt injection 把用户渠道刷成垃圾出口。
@@ -89,6 +90,11 @@ function renderNotify(value) {
  * @param notifier - createNotifier 返回的 { notify, notifyAll, channelCount }。
  * @param {object} [options]
  * @param {number} [options.rateLimitPerMinute=10] - 每分钟调用上限（0 = 不限）。
+ * @param {object} [options.router] - v0.3.2 agent 路由引擎（可空，向后兼容）：执行上下文
+ *   能取到 agentId 且广播（未指定 channel）时，按该 agent 的绑定通道集合分流（设计稿 §8-5）；
+ *   缺省 / 取不到 agentId / 解析异常 = 全局池广播（v0.3.1 行为不变）。
+ * @param {() => string[]} [options.channelTypes] - 全局已启用渠道类型快照函数
+ *   （resolveOutbound 的兜底池与过滤白名单）；缺省回落 notifier.channels。
  */
 export function registerNotifyTool(ctx, notifier, options = {}) {
   if (ctx?.tools?.register === undefined) {
@@ -96,6 +102,8 @@ export function registerNotifyTool(ctx, notifier, options = {}) {
     return null
   }
   const limiter = createRateLimiter({ limitPerMinute: options.rateLimitPerMinute ?? 10 })
+  const router = options.router ?? null
+  const globalChannelTypes = typeof options.channelTypes === 'function' ? options.channelTypes : null
 
   return ctx.tools.register({
     name: 'notify',
@@ -109,7 +117,7 @@ export function registerNotifyTool(ctx, notifier, options = {}) {
       schema: notifySchema,
       render: (_args, value) => renderNotify(value),
     },
-    async execute(rawArgs) {
+    async execute(rawArgs, execContext) {
       const args = rawArgs ?? {}
       if (typeof args.message !== 'string' || args.message.trim() === '') {
         throw new Error('message 不能为空')
@@ -122,6 +130,7 @@ export function registerNotifyTool(ctx, notifier, options = {}) {
         return { ok: false, skipped: true, channel: args.channel, delivered: [], failed: [] }
       }
       if (typeof args.channel === 'string' && args.channel.trim() !== '') {
+        // 单渠道路径不分流：agent 已显式点名渠道，路由过滤只会添乱（v0.3.1 行为原样保留）
         const result = await notifier.notify(args.channel.trim(), message)
         if (result.skipped === true) {
           return { ok: false, skipped: true, channel: result.channel, delivered: [], failed: [] }
@@ -131,7 +140,31 @@ export function registerNotifyTool(ctx, notifier, options = {}) {
         }
         return { ok: false, channel: result.channel, delivered: [], failed: [{ channel: result.channel, error: result.error?.message ?? String(result.error) }] }
       }
-      const broadcast = await notifier.notifyAll(message)
+      // v0.3.2 广播分流（设计稿 §8-5）：工具执行上下文能取到 agentId 且注入了 router 时，
+      // 广播按该 agent 的绑定通道集合过滤。agentId 三级防御兜底——宿主工具调用上下文
+      // 形态不一（agent 裸对象 / { session } 包裹 / 直接给 session），全取不到则不分流。
+      // 注意：quiet 永不作用于本工具——这是 agent 显式要求推送，静音（quiet）只管事件
+      // 自动推送（event-listener）；把 quiet 带进来会让「agent 主动喊人」被无声吞掉。
+      // 任何解析异常一律回落无过滤广播（全局池，向后兼容，绝不弄崩工具调用）。
+      const agentId = execContext?.agent?.id ?? execContext?.agent?.session?.id ?? execContext?.session?.id ?? null
+      let sendOptions = undefined
+      if (agentId !== null && String(agentId) !== '' && router !== null) {
+        try {
+          const globalTypes = globalChannelTypes !== null
+            ? globalChannelTypes()
+            : (Array.isArray(notifier?.channels) ? notifier.channels : [])
+          const resolved = router.resolveOutbound(
+            String(agentId),
+            workspaceOf(execContext?.agent ?? execContext?.session ?? {}),
+            Array.isArray(globalTypes) ? globalTypes : [],
+          )
+          sendOptions = { channelTypes: resolved.channelTypes }
+        } catch { /* 解析异常回落全局广播 */ }
+      }
+      // 无分流时保持旧调用形状（notifyAll 只收一个参数），旧宿主/旧测试零感知
+      const broadcast = sendOptions === undefined
+        ? await notifier.notifyAll(message)
+        : await notifier.notifyAll(message, sendOptions)
       return {
         ok: broadcast.failed.length === 0,
         delivered: broadcast.delivered,

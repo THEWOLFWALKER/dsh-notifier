@@ -156,13 +156,20 @@ export function createTrailingDebounce(windowMs = 10000) {
 /**
  * 订阅事件总线做自动推送。
  * @param ctx - cordis 上下文（ctx.on + ctx.logger）。
- * @param notifier - createNotifier 返回的 { notifyAll }。
+ * @param notifier - createNotifier 返回的 { notifyAll, channels }。
  * @param resolvedConfig - resolveConfig 返回的 { enabled, debounceMs, events, keywords, graceSeconds, ... }。
+ * @param {object} [wiring] - v0.3.2 路由装配（全部可选，缺省 = v0.3.0 广播行为，零感知）。
+ * @param {ReturnType<typeof import('./routing/agent-router.mjs').createAgentRouter>} [wiring.router]
+ *   - agent 路由引擎：事件带 session 时按「会话 diff > 精确 agentId > workspace > 全局池」解析出站目标与 quiet。
+ * @param {ReturnType<typeof import('./routing/session-registry.mjs').createSessionRegistry>} [wiring.registry]
+ *   - 会话注册表：出站事件时 touch（活跃信号 + 惰性建档兜底，agent/created 未触达的会话也进台账）。
  * @returns 反注册函数。
  */
-export function createEventListener(ctx, notifier, resolvedConfig) {
+export function createEventListener(ctx, notifier, resolvedConfig, wiring = {}) {
   const enabled = resolvedConfig.enabled !== false
   const events = resolvedConfig.events ?? { turnEnd: { enabled: true, kinds: {} }, approval: true, agentError: true }
+  const router = wiring.router ?? null
+  const registry = wiring.registry ?? null
   const keywords = createKeywordFilter(resolvedConfig.keywords)
   const debounce = createTrailingDebounce(resolvedConfig.debounceMs ?? 10000)
   // 空闲宽限窗：turn 结束后等 N 秒再打扰；期间用户输入（user/* 事件）即取消。
@@ -187,6 +194,22 @@ export function createEventListener(ctx, notifier, resolvedConfig) {
     return events.agentError !== false
   }
 
+  /**
+   * v0.3.2 出站分流：事件带 session 时按解析链算出 { channelTypes, quiet }。
+   * router 缺失 / session 无 id / 解析异常一律回落「不过滤、不静音」（广播，向后兼容）。
+   */
+  const resolveOutboundOf = (session) => {
+    if (router === null || session?.id === undefined || session?.id === null) return {}
+    try {
+      const globalTypes = Array.isArray(notifier?.channels) ? notifier.channels : []
+      const resolved = router.resolveOutbound(String(session.id), workspaceNameOf(session), globalTypes)
+      return { channelTypes: resolved.channelTypes, quiet: resolved.quiet }
+    } catch (error) {
+      warn(`出站路由解析失败，本次按全局广播: ${error instanceof Error ? error.message : String(error)}`)
+      return {}
+    }
+  }
+
   const push = (intent, session) => {
     const assistantText = intent.event === 'turn/end' ? lastAssistantText(session) : ''
     const message = intentToMessage(intent, { assistantText, config: resolvedConfig })
@@ -196,7 +219,11 @@ export function createEventListener(ctx, notifier, resolvedConfig) {
       warn(`关键词规则拦截推送（${reason}）`)
       return Promise.resolve(undefined)
     }
-    return notifier.notifyAll(message).catch((error) => {
+    // v0.3.2：会话活跃信号 + 惰性建档（agent/created 兜底路径）
+    if (registry !== null && session?.id !== undefined && session?.id !== null) {
+      try { registry.touch(String(session.id)) } catch { /* 台账失败绝不影响推送 */ }
+    }
+    return notifier.notifyAll(message, resolveOutboundOf(session)).catch((error) => {
       warn(`自动推送失败: ${error instanceof Error ? error.message : String(error)}`)
     })
   }

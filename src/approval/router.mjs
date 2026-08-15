@@ -11,6 +11,7 @@
 
 import { createEscalationChain } from './escalation.mjs'
 import { normalizeInbound } from '../inbound/_contract.mjs'
+import { workspaceOf } from '../routing/session-registry.mjs'
 
 const OUTCOME_ALLOWED = 'allowed-once'
 const OUTCOME_REJECTED = 'rejected'
@@ -46,10 +47,14 @@ const DEFAULT_ESCALATION_STAGES = [
  * @param {{ mode?: 'observe'|'answer', timeoutMs?: number, numberedReply?: boolean,
  *           escalation?: { enabled?: boolean, stages?: Array<object> } }} [deps.approvalConfig]
  * @param {object} [deps.logger]
+ * @param {ReturnType<typeof import('../routing/agent-router.mjs').createAgentRouter>} [deps.router]
+ *   - v0.3.2 审批分流：request.agent 可解析时，审批只发该 agent 绑定的通道（替代全局广播）。
+ *     审批不受 quiet 影响——静音审批 = 审批永远超时回落桌面，违背「沉默永不批准」的可预期性。
  * @returns {() => void} 反注册函数
  */
 export function registerApprovalHandler(deps) {
   const { ctx, notifier, bus, vault, store } = deps
+  const router = deps.router ?? null
   const approvalConfig = deps.approvalConfig ?? {}
   const mode = approvalConfig.mode === 'answer' ? 'answer' : 'observe'
   const timeoutMs = Math.max(1000, Number(approvalConfig.timeoutMs) || 120000)
@@ -116,14 +121,34 @@ export function registerApprovalHandler(deps) {
     },
   }
 
+  /**
+   * v0.3.2 审批分流：request.agent 有 id 时按 agent 解析链算目标通道集合。
+   * 返回 null = 不分流（全局广播，向后兼容）；解析异常同样回落 null。
+   */
+  function resolveApprovalChannels(request) {
+    if (router === null) return null
+    const agentId = request?.agent?.id ?? request?.agent?.session?.id ?? null
+    if (agentId === null) return null
+    try {
+      const globalTypes = Array.isArray(notifier?.channels) ? notifier.channels : []
+      const { channelTypes } = router.resolveOutbound(String(agentId), workspaceOf(request.agent), globalTypes)
+      return channelTypes
+    } catch {
+      return null
+    }
+  }
+
   async function pushApproval(key, token, request) {
     const title = `需要批准：${request.toolName}`
     const content = `${request.reason ?? 'agent 请求执行一个需要授权的操作'}\n\n批准将仅对本次调用生效（token 单次核销）。`
+    const channelTypes = resolveApprovalChannels(request)
     const pushedTo = []
     const buttonChannels = []
     const textChannels = []
-    // 交互渠道：带按钮卡片（逐通道逐目标推送；单渠道失败降级为纯通知）
+    // 交互渠道：带按钮卡片（逐通道逐目标推送；单渠道失败降级为纯通知）。
+    // v0.3.2 分流：channelTypes 非空时只推解析出的通道（审批不广播到无关 agent 的通道）。
     for (const inbound of interactive) {
+      if (channelTypes !== null && !channelTypes.includes(inbound.channel)) continue
       let anySuccess = false
       for (const target of inbound.notifyTargets()) {
         const card = await inbound.sendApprovalCard({
@@ -156,7 +181,7 @@ export function registerApprovalHandler(deps) {
         ? `${content}\n\n（${channelNotes.join('；')}；无按钮渠道可回复 1 批准 / 2 拒绝）`
         : `${content}\n\n（本渠道无按钮：回复 1 批准 / 2 拒绝）`,
       level: 'timeSensitive',
-    }).catch(() => {})
+    }, channelTypes !== null ? { channelTypes } : {}).catch(() => {})
     return pushedTo
   }
 
@@ -208,12 +233,13 @@ export function registerApprovalHandler(deps) {
 
       // 升级链与 wait 并行：每到一个 stage 再推一轮更高 level 提醒
       const startedAt = Date.now()
+      const escalateChannelTypes = resolveApprovalChannels(request) // 与首轮同一份分流（agent 绑定变更轮次间不重读）
       escalation.start(key, (_key, stage) => {
         notifier.notifyAll({
           title: `${request?.toolName ?? '操作'} 仍在等待批准`,
           content: `${stage.note ?? '仍在等待批准'}（已等待 ${Math.round((Date.now() - startedAt) / 1000)}s）。\n回复 1 批准 / 2 拒绝${cardChannelNames !== '' ? `，或点击 ${cardChannelNames} 卡片按钮` : ''}。`,
           level: stage.level ?? 'timeSensitive',
-        }).catch(() => {})
+        }, escalateChannelTypes !== null ? { channelTypes: escalateChannelTypes } : {}).catch(() => {})
       })
 
       const decision = await bus.wait(key, timeoutMs)

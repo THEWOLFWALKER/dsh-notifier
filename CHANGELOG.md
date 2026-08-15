@@ -3,6 +3,40 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 SemVer。
 DSH 处于 developer preview，0.x 阶段的次版本号提升允许小幅破坏性变更（会在条目中标注）。
 
+## [0.3.2] - 2026-08-15
+
+多 agent × 多通道路由引擎：workspace/agentId 双键路由矩阵（双向）、会话台账生命周期、`/agent` 命令族与 `/route` 排障、审批/工具/事件三线分流、`scripts/route.mjs` CLI。未配置任何 `route:*` 的存量用户行为逐字节不变。测试 391 → 493（+102）。
+
+### Added（路由引擎）
+
+- `src/routing/agent-router.mjs`：双向解析链。出站「会话 diff > 精确 agentId 条目 > workspace 条目 > 全局渠道池」字段级链（channels 与 quiet 各自独立走链、绑定引用未启用渠道自动剔除）；入站「显式 bind > 通道默认 agent（精确 agentId 直接用；workspace 名下多活跃会话投最近活跃并标 ambiguous）> 唯一 agent > 最近活跃」。`route:agents` / `route:channels` / `route:sessions` 读写 API（字段级 patch、显式 null 删键回落上游、空条目整键回收）+ `describe` 逐层排障文本。store/agentsList 全防御：任何故障按「无此数据」处理。
+- `src/routing/session-registry.mjs`：会话台账（会话生命周期唯一写入口）。`agent/created` 自动建档（inherit = workspace 名）；`agent/disposed` 只标 disposedAt，保留 `route.sessionTtlHours`（默认 24h）供同 id resume 重连；回收惰性化（常规调用内联摊销 60s + dispose 后 ttl 到期点定时兜底 ≤5min）；touch 活跃信号 5s 摊销写盘防写放大；入站对话挂钩 attach/detach；旧 `bind:*` 迁移补档。事件注册失败降级惰性建档、存储失败退化内存态，绝不弄崩宿主。
+
+### Added（命令族与 CLI）
+
+- `/agent`：活跃会话分组视图（workspace | sid 8 位前缀 | 状态 | 出站通道集合 | quiet）；`/agent use <workspace|sid 前缀>`：智能绑定（workspace 精确 > sessionId 精确 > ≥4 位前缀唯一命中；歧义列候选）；`/agent back`：回通道默认；`/route`：双向解析排障（出站逐层 describe + 入站来源层/歧义标记/通道默认 agent）。入站多活跃会话消歧回执（「已投 <sid>…用 /agent use 或 /bind 精确指定」）。`/bind` `/unbind` 同步维护台账挂钩，`/help` 全量更新。
+- `scripts/route.mjs`：路由 CLI（`show [key]` / `set <key> --channels/--quiet/--no-quiet/--reset` / `default <channel> <agentKey>|--clear` / `test <sid> --workspace/--global`）。宿主外查看与修改三张表；set 渠道类型白名单校验、`--channels ''` 显式空集（该键出站全静默）、`--reset` 整条删除；test 打印出站解析链并注明宿主运行时按已启用渠道过滤。
+
+### Added（三线分流接线）
+
+- `src/event-listener.mjs`：出站事件按解析链分流（`channelTypes` 过滤 + `quiet` 静音——不推仍写账本）+ 会话活跃信号 touch；router 缺失/无 session/解析异常回落全局广播（向后兼容）。
+- `src/approval/router.mjs`：审批卡片与通知只发该 agent 绑定通道（升级链同轮次同一集合）；`quiet` 对审批不生效——沉默审批 = 审批永远超时回落桌面。
+- `src/tool-register.mjs`：notify 工具广播按执行上下文 agentId 分流（agent / agent.session / session 三级防御取 id；单渠道点名不分流；quiet 永不作用于工具——agent 显式要求推送）；无上下文/解析异常回落全局池，旧调用形状逐字节不变。
+- `src/index.mjs`：router/registry 装配（store 进一步前移至事件监听之前，v0.3.1 TDZ 修复语义保留）+ 四线注入（事件/工具/审批/会话）+ 旧 `bind:*` 迁移；导出 `createAgentRouter` / `createSessionRegistry` / `workspaceOf`。
+
+### Added（测试）
+
+- `test/agent-router.test.mjs`（32）/ `test/session-registry.test.mjs`（25）/ `test/conversation.route.test.mjs`（16）/ `test/route-cli.test.mjs`（14）/ `test/wiring.route.test.mjs`（15）。
+
+### Fixed
+
+- `src/inbound/conversation.mjs`：`mergeWindowMs: 0` 被 `Number(0) || 默认` 吞成 1500——README 承诺的「0 = 关闭合并（每条原样投递）」从未生效，立即投递分支不可达。修复归一逻辑（undefined/null/NaN → 默认，0 合法）并补回归；`/unbind` `/status` `/help` 文案对齐 v0.3.2 语义（解绑后走通道默认路由，而非「最近活跃会话」）。
+
+### Changed
+
+- `package.json`：版本 0.3.2。
+- README 双语：新增「多 agent 路由（v0.3.2）」章节（路由矩阵 / 命令族 / 路由 CLI / 数据与配置 / 兼容性 / 审批分流），命令表补入 `/agent` `/route` 族。
+
 ## [0.3.1] - 2026-08-15
 
 官方扫码授权 + 钉钉 Stream 入站：qq / dingtalk / feishu 支持官方扫码创建/绑定（凭证 0600 落盘，`inbound.<channel>: {}` 零配置启用）；新增钉钉 Stream 入站通道，双向回传升至六通道。测试 329 → 391（+62）。

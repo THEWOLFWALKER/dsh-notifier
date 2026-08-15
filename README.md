@@ -14,6 +14,7 @@ Unified notification push plugin for DeepSeek Harness (DSH). One minimal `notify
 - **Level-based routing** — `timeSensitive` / `active` / `passive` levels map to per-channel delivery semantics (silent push, priority headers, @-mentions) with tiered retries.
 - **Remote approval (optional)** — answer agent approval requests from your phone via Telegram buttons; silence never approves, falls back to the desktop. See [Remote Approval](#remote-approval-双向回传可选).
 - **Remote conversation (optional)** — chat with your agent from your phone: plain text is delivered as `followup` (idle) or `inject` (busy), `!` prefix steers mid-turn, and a merge window reassembles rapid-fire mobile typing. See [Conversation](#conversation-远程会话可选).
+- **Multi-agent routing (v0.3.2)** — a bidirectional many-to-many matrix between agents and channels: outbound `route:agents` (keyed by workspace name by default, exact agentId as the advanced key) and inbound `route:channels` defaults; sessions auto-register on creation, `quiet` mutes the outbound push only, and approvals split-route to the bound channels — plus an `/agent` command family and a `scripts/route.mjs` CLI. Zero-config setups behave exactly as before. See [Multi-agent routing](#multi-agent-routing-v032).
 - **Long-message segmentation** — outbound messages over the per-channel budget are split into `（i/n）`-prefixed segments, delivered in order; any segment failing fails the whole send.
 - **Anti-disturb rules** — per-result event gating, keyword include/exclude (literal or regex), and an idle grace window: if you type within `graceSeconds` after a turn ends, the notification is cancelled. See [Rules](#rules--local-bell-防打扰规则可选).
 - **Notification ledger & daily digest (optional)** — every broadcast is appended to a local JSONL ledger; on startup you get one `passive` summary of yesterday's traffic. Ledger failures never affect delivery. See [Ledger](#ledger--daily-digest-通知账本可选).
@@ -106,7 +107,7 @@ insert:
 
 ## Remote Approval (双向回传，可选)
 
-Approval requests can be answered from your phone. Six inbound channels ship today (telegram / feishu / qq / wxpusher / wechat / dingtalk — see [Inbound channels](#inbound-channels-v030)); all but the wxpusher callback are long-lived connections or long polling — **no public IP required**. The whole stack only starts when `inbound.allowUsers` is non-empty (default-deny whitelist).
+Approval requests can be answered from your phone. Six inbound channels ship today (telegram / feishu / qq / wxpusher / wechat / dingtalk — see [Inbound channels](#inbound-channels-v030)); all but the wxpusher callback are long-lived connections or long polling — **no public IP required**. The whole stack only starts when `inbound.allowUsers` is non-empty (default-deny whitelist). Since v0.3.2 approval notifications are split-routed — only the channels bound to the requesting agent receive the card (see [Multi-agent routing](#multi-agent-routing-v032)).
 
 ```yaml
 insert:
@@ -215,9 +216,15 @@ Command set (processed instantly, never merged):
 |---|---|
 | `/status` | Show your binding and all live agents with status |
 | `/bind <sessionId>` | Pin delivery to one session (survives restarts) |
-| `/unbind` | Drop the pin; fall back to the most recently active agent |
+| `/unbind` | Drop the pin; fall back to the channel default agent, or the most recently active one if unset |
 | `/stop` | Cancel the bound agent's current turn |
+| `/agent` | List workspaces / live sessions and their outbound channels (v0.3.2) |
+| `/agent use <workspace \| sid prefix>` | Smart-switch this chat to that agent (v0.3.2) |
+| `/agent back` | Return this chat to its channel default agent (v0.3.2) |
+| `/route` | Show the current bidirectional resolution for troubleshooting (v0.3.2) |
 | `/help` | Command help |
+
+The `/agent` family and `/route` serve v0.3.2 multi-agent routing — see [Multi-agent routing](#multi-agent-routing-v032).
 
 ```yaml
 inbound:
@@ -228,6 +235,137 @@ inbound:
 ```
 
 Unknown commands fall through as plain text, so nothing gets swallowed. Replies (command feedback, "no active session" notices) go back through the channel the message arrived on (all six inbound channels).
+
+## Multi-agent routing (v0.3.2)
+
+Agents and channels are no longer welded together: one agent can push to several channels, one channel can default to one agent — a bidirectional many-to-many matrix. The default routing key is the **workspace name** (stable, human-readable, naturally aggregating every session of the same project); an **exact agentId** remains available as the advanced key for session-granular control. Sessions register themselves the moment they are created, the matrix lives in `state.json`, and it is editable from chat commands or the CLI — no YAML required.
+
+### Routing matrix
+
+| Direction | Key | Meaning |
+|---|---|---|
+| Outbound — agent → channels | `route:agents` | key = workspace name (default) or exact agentId (advanced, session granularity, wins over the workspace entry); value = outbound `channels` + `quiet` |
+| Inbound — channel → agent | `route:channels` | `<channel>.defaultAgent` = workspace name or agentId — the default destination for a chat with no explicit binding |
+
+Both directions resolve through explicit fallback chains (first hit wins):
+
+```
+outbound  resolveOutbound(sessionId, workspace):
+  route:sessions[sessionId].outbound   # session diff override (highest)
+  ?? route:agents[sessionId]           # exact agentId entry (advanced key)
+  ?? route:agents[workspace]           # workspace entry (default key)
+  ?? global channel pool               # v0.3.0 behavior
+
+inbound   resolveInbound(channel, userId):
+  bind:<channel>:<userId>              # explicit /bind or /agent use
+  ?? route:channels[channel].defaultAgent
+       agentId   → that session (if still active)
+       workspace → one active session → deliver
+                   several active     → most recently active,
+                                         receipt names the session id
+  ?? exactly one agent running → that agent   # single-agent auto-fallback
+  ?? most recently active agent        # final fallback (pre-v0.3.2 behavior)
+```
+
+A session is auto-registered on `agent/created` with its workspace name, so new sessions inherit channels and settings immediately — nothing to reconfigure. The agent-initiated `notify` tool rides the same chain (split-routes when its context exposes the agent id, global pool otherwise — tool signature unchanged). `quiet` mutes the outbound push only: the ledger still records every broadcast, and inbound plus approvals are never muted.
+
+### Commands
+
+The `/agent` family joins the conversation command set:
+
+| Command | Effect |
+|---|---|
+| `/agent` | List workspaces / live sessions and their outbound channels |
+| `/agent use <workspace \| sid prefix>` | Smart-switch this chat to that agent — workspace name matches exactly (its most recently active session), a full session id matches exactly, or a ≥ 4-char sid prefix; an ambiguous prefix lists the candidates |
+| `/agent back` | Return this chat to its channel default agent |
+| `/route` | Show the full bidirectional resolution (session → channels → settings, channel → agent) — built for troubleshooting |
+
+`/bind` / `/unbind` / `/status` / `/stop` keep their session-granularity semantics unchanged.
+
+Example — two workspaces on two channels (`api-server` → dingtalk, `docs` → telegram), chatting from Telegram:
+
+```
+you         /agent
+notifier    • api-server — 9f2c… → dingtalk
+            • docs       — 41ab… → telegram
+you         /agent use api-server
+notifier    this chat now talks to api-server (9f2c…); its pushes still land on dingtalk
+you         rerun the deploy tests
+notifier    [delivered to api-server as followup; its turn/end goes to dingtalk only, not here]
+you         /route
+notifier    chat → api-server (9f2c…)
+            api-server → dingtalk · telegram default → docs
+you         /agent back
+notifier    back to the telegram default: docs (41ab…)
+```
+
+### Routing CLI
+
+`scripts/route.mjs` reads and edits the matrix outside the harness (exit code 0/1, scriptable):
+
+```bash
+node scripts/route.mjs show                                  # all three tables: agent bindings / channel defaults / session ledger
+node scripts/route.mjs show api-server                       # one agent binding entry
+node scripts/route.mjs set api-server --channels dingtalk,bark   # workspace outbound channels (validated against channel types)
+node scripts/route.mjs set api-server --quiet                # mute its outbound (ledger still records)
+node scripts/route.mjs set api-server --no-quiet             # unmute
+node scripts/route.mjs set api-server --channels ''          # explicit empty set → this key never pushes
+node scripts/route.mjs set 9f2c41ab --channels dingtalk      # advanced: exact agentId entry (session granularity)
+node scripts/route.mjs set api-server --reset                # drop the whole entry → global pool
+node scripts/route.mjs default telegram docs                 # inbound: telegram defaults to docs
+node scripts/route.mjs default telegram --clear              # clear that default
+node scripts/route.mjs test 9f2c41ab --workspace api-server  # print the outbound chain (L1 diff → L2 agentId → L3 workspace → L4 global pool)
+node scripts/route.mjs test 9f2c41ab --global telegram,bark  # resolve against a custom global pool
+node scripts/route.mjs show --state ~/.dsh/dsh-notifier      # non-default stateDir (default $DSH_HOME/dsh-notifier)
+```
+
+### Data & config
+
+Three new `state.json` keys (same 0600 store as `bind:*` and scanned credentials). `route:sessions` is written by the plugin and stores **diffs only** — unset fields follow their upstream live, so changing a default applies to every session immediately:
+
+```json
+{
+  "route:agents": {
+    "api-server": { "channels": ["dingtalk", "bark"] },
+    "9f2c41ab-…": { "quiet": true }
+  },
+  "route:channels": {
+    "telegram": { "defaultAgent": "docs" }
+  },
+  "route:sessions": {
+    "9f2c41ab-…": {
+      "inherit": "api-server",
+      "workspace": "api-server",
+      "outbound": { "quiet": true },
+      "inbound": [{ "channel": "telegram", "userId": "987654321" }],
+      "createdAt": 1760000000000,
+      "lastActiveAt": 1760000123400
+    }
+  }
+}
+```
+
+After `agent/disposed`, a session keeps its record for `route.sessionTtlHours` hours (default 24) so the same id can resume with channels and bindings intact; past the window the entry and its inbound hooks are reaped (`bind:*` survives — a stale bind just gets the usual "session not found" receipt).
+
+```yaml
+route:
+  sessionTtlHours: 24   # retention window after agent/disposed, in hours (default 24)
+```
+
+`quiet: true` (on a session or an agent entry) means: outbound pushes are suppressed but still written to the ledger; inbound messages and approvals are untouched — silencing an approval would mean it always times out back to the desktop, and silence never decides.
+
+### Compatibility
+
+- Existing users with zero `route:*` keys: outbound = global pool, inbound = the pre-v0.3.2 chain — behavior byte-for-byte identical.
+- Single-agent users hit the "exactly one agent" layer automatically; nothing to notice, nothing to configure.
+- YAML semantics unchanged (bootstrap only); every new key lives in `state.json` (0600).
+- `dependencies` stays empty — zero new dependencies.
+
+### Approval routing
+
+- Approval cards / notifications go only to the channels resolved for the requesting agent — no more global broadcast.
+- Numbered-reply channels (qq / wxpusher / wechat / dingtalk) automatically append "reply `1` (approve) / `2` (reject)" to the routed notification.
+- `quiet` never applies to approvals; replies travel back on the channel they arrived on.
 
 ## Rules & local bell (防打扰规则，可选)
 
