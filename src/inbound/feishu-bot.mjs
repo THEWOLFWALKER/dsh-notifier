@@ -17,14 +17,19 @@ const SDK_PACKAGE = '@larksuiteoapi/node-sdk'
 
 /**
  * 解析并校验 inbound.feishu 配置。
+ * @param {object} raw - inbound.feishu 原始配置
+ * @param {{ envRefs?: (v: any) => any, credentials?: object }} [options]
+ *   - envRefs：${ENV:NAME} 引用解析（index 装配时已先解析一遍则传恒等）
+ *   - credentials：扫码落盘凭证回退（store 'feishu:account'，config 显式配置优先）
  * @returns {{ ok: true, config: object } | { ok: false, reason: string }}
  */
-export function resolveFeishuInboundConfig(raw, { envRefs = (v) => v } = {}) {
+export function resolveFeishuInboundConfig(raw, { envRefs = (v) => v, credentials } = {}) {
   const cfg = (raw !== null && typeof raw === 'object') ? raw : {}
-  const appId = String(envRefs(cfg.appId ?? '')).trim()
-  const appSecret = String(envRefs(cfg.appSecret ?? '')).trim()
+  const creds = (credentials !== null && typeof credentials === 'object') ? credentials : {}
+  const appId = String(envRefs(cfg.appId ?? creds.appId ?? '')).trim()
+  const appSecret = String(envRefs(cfg.appSecret ?? creds.appSecret ?? '')).trim()
   if (appId === '' || appSecret === '') {
-    return { ok: false, reason: `飞书 inbound 需要 appId 与 appSecret（当前 appId ${appId !== '' ? '已配置' : '缺失'}，appSecret ${appSecret !== '' ? '已配置' : '缺失'}）。请在飞书开放平台创建企业自建应用并填入` }
+    return { ok: false, reason: `飞书 inbound 需要 appId 与 appSecret（当前 appId ${appId !== '' ? '已配置' : '缺失'}，appSecret ${appSecret !== '' ? '已配置' : '缺失'}）。请在飞书开放平台创建企业自建应用并填入，或执行 node scripts/channel-login.mjs feishu 扫码一键创建自动写入` }
   }
   return {
     ok: true,

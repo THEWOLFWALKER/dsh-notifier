@@ -22,6 +22,7 @@ const DISPLAY_NAMES = {
   qq: 'QQ',
   wxpusher: 'WxPusher',
   wechat: '微信',
+  dingtalk: '钉钉',
 }
 
 // 升级链默认节奏：30s / 60s 各再提醒一轮（timeoutMs 默认 120s 内完成两轮升级）

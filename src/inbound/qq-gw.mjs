@@ -31,14 +31,17 @@ const OP_HEARTBEAT_ACK = 11
 
 /**
  * 解析并校验 inbound.qq 配置。
+ * @param {object} raw - inbound.qq 原始配置
+ * @param {{ credentials?: object }} [options] - 扫码落盘凭证回退（store 'qq:account'，config 显式配置优先）
  * @returns {{ ok: true, config: object } | { ok: false, reason: string }}
  */
-export function resolveQqInboundConfig(raw) {
+export function resolveQqInboundConfig(raw, options = {}) {
   const cfg = (raw !== null && typeof raw === 'object') ? raw : {}
-  const appId = String(cfg.appId ?? '').trim()
-  const appSecret = String(cfg.appSecret ?? '').trim()
+  const creds = (options.credentials !== null && typeof options.credentials === 'object') ? options.credentials : {}
+  const appId = String(cfg.appId ?? creds.appId ?? '').trim()
+  const appSecret = String(cfg.appSecret ?? creds.appSecret ?? '').trim()
   if (appId === '' || appSecret === '') {
-    return { ok: false, reason: `QQ inbound 需要 appId 与 appSecret（当前 appId ${appId !== '' ? '已配置' : '缺失'}，appSecret ${appSecret !== '' ? '已配置' : '缺失'}）。请在 QQ 开放平台 q.qq.com 机器人开发设置中获取` }
+    return { ok: false, reason: `QQ inbound 需要 appId 与 appSecret（当前 appId ${appId !== '' ? '已配置' : '缺失'}，appSecret ${appSecret !== '' ? '已配置' : '缺失'}）。请在 QQ 开放平台 q.qq.com 机器人开发设置中获取，或执行 node scripts/channel-login.mjs qq 官方扫码自动写入` }
   }
   const notifyUsers = (Array.isArray(cfg.notifyUsers) ? cfg.notifyUsers : []).map((id) => String(id).trim()).filter((id) => id !== '')
   const notifyGroups = (Array.isArray(cfg.notifyGroups) ? cfg.notifyGroups : []).map((id) => String(id).trim()).filter((id) => id !== '')

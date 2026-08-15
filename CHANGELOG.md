@@ -3,6 +3,39 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 SemVer。
 DSH 处于 developer preview，0.x 阶段的次版本号提升允许小幅破坏性变更（会在条目中标注）。
 
+## [0.3.1] - 2026-08-15
+
+官方扫码授权 + 钉钉 Stream 入站：qq / dingtalk / feishu 支持官方扫码创建/绑定（凭证 0600 落盘，`inbound.<channel>: {}` 零配置启用）；新增钉钉 Stream 入站通道，双向回传升至六通道。测试 329 → 391（+62）。
+
+### Added（官方扫码授权）
+
+- `src/inbound/_dingtalk-auth.mjs`：钉钉设备授权流（RFC 8628 形态，零依赖移植 dsh-im device-auth.mjs MIT）——init/begin/poll 三端点、七类错误码归一、baseUrl 白名单校验（https + dingtalk.com 域）、错误摘录递归脱敏（嵌套凭证字段不泄露）。
+- `src/inbound/_qq-scan.mjs`：QQ 官方扫码封装（`@tencent-connect/qqbot-connector` optionalDep）——动态 import 缺包降级 missing-sdk、导出形态防御性兼容（具名/default 两级）、批量授权数组语义取首个有效凭证。
+- `src/inbound/_feishu-register.mjs`：飞书扫码建应用（`@larksuiteoapi/node-sdk` ≥1.61.1 optionalDep）——registerApp 最小权限集（im 只读三权限，不装官方预设全家桶）、user_denied/expired 状态归一、open_id 带回供白名单提示。
+- `scripts/channel-login.mjs`：统一扫码 CLI（qq/dingtalk/feishu/wechat 四通道）——终端二维码渲染（qrcode-terminal 可选）、钉钉会话过期自动刷新 ≤3 次、瞬态错误重试/结构性错误 fail-fast、wechat 复用既有 wechat-login.mjs 子进程透传。
+
+### Added（钉钉 Stream 入站）
+
+- `src/inbound/dingtalk-stream.mjs`：Stream 长连接裸协议（逐字段对照官方 SDK 验证，零 SDK）——gettoken + 网关协商、WebSocket 注册订阅、帧 ack（code 200 + messageId）、sessionWebhook 被动回复（过期即弃）、batchSend 主动推送（token 管理器 60s 边际刷新）、robotCode 首条消息学习跨重启、msgId 60s 重推吸收窗、重连指数退避 + 抖动、主动推送复用熔断器。
+
+### Added（测试）
+
+- `test/dingtalk-auth.test.mjs`（19）/ `test/inbound.dingtalk.test.mjs`（25）/ `test/channel-login.test.mjs`（16）/ index 装配回归（2）。
+
+### Changed
+
+- `src/index.mjs`：state store 提前创建供扫码凭证回退；新增钉钉入站装配块。
+- `src/inbound/qq-gw.mjs` / `feishu-bot.mjs`：config 解析支持扫码凭证回退（显式配置优先）。
+- `package.json`：optionalDependencies 新增 qq/feishu SDK（^1.2.0 / ^1.61.1）；版本 0.3.1；keywords 新增 dingtalk/qr-login。
+- README 双语：入站通道表更新为六通道；新增扫码 CLI 说明。
+
+### Fixed
+
+- `src/index.mjs` TDZ 崩启动：state store 曾在 feishu/qq/dingtalk resolve 之后才创建，配置任一通道即 `ReferenceError: Cannot access 'store' before initialization`。修复：store 创建前移（index.test.mjs 新增回归）。
+- `src/index.mjs` 扫码「空对象即启用」承诺未实现：`inbound.feishu: {}` 等空对象被「对象非空」门槛当未配置跳过，扫码落盘凭证后无法零配置启用。修复：门槛改为「显式提供了对象」，新增扫码凭证回退启用回归。
+- `scripts/channel-login.mjs`：钉钉 poll 结构性错误（missing-field/incomplete-registration/api-error）fail-fast 不重试。
+- `src/inbound/dingtalk-stream.mjs`：resolve 提示词错别字「开放者」→「开发者」。
+
 ## [0.3.0] - 2026-08-15
 
 多通道双向回传：远程审批 / 远程会话从 telegram 单通道扩展到 5 通道（telegram / feishu / qq / wxpusher / wechat）。全部零运行时依赖（fetch + node:crypto + 原生 WebSocket）；飞书 SDK 与 qrcode-terminal 进 optionalDependencies，缺省优雅降级。测试 228 → 329（+101）。

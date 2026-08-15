@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { apply } from '../src/index.mjs'
@@ -87,4 +87,36 @@ test('apply: 未配置 inbound/approval → 不注册 approval/request，零额�
   const { ctx, listeners } = bootCtx()
   apply(ctx, { channels: [{ type: 'webhook', url: 'http://127.0.0.1:1/hook' }] })
   assert.equal(listeners['approval/request'], undefined)
+})
+
+// v0.3.1 TDZ 回归：store 曾在 feishu/qq/dingtalk resolve 之后才创建（声明前引用 →
+// ReferenceError）。配置任一 inbound 通道（含凭证不全被跳过的）都必须不崩启动。
+test('apply: 配置 inbound.feishu/qq/dingtalk 不因 store TDZ 崩启动', () => {
+  for (const channel of ['feishu', 'qq', 'dingtalk']) {
+    const { ctx, warnings } = bootCtx()
+    const stateDir = mkdtempSync(join(tmpdir(), 'dsh-notifier-tdz-'))
+    // 凭证齐全会真启动长连接，这里给凭证不全的形态：resolve 读 store 回退后仍跳过
+    apply(ctx, {
+      channels: [{ type: 'webhook', url: 'http://127.0.0.1:1/hook' }],
+      inbound: { allowUsers: ['u1'], stateDir, [channel]: {} },
+    })
+    assert.ok(
+      warnings.some((w) => w.includes(`inbound.${channel} 跳过`) || w.includes(`inbound 已启动：${channel}`)),
+      `${channel}：应出现跳过 warn 或启动提示（实际：${warnings.join(' | ')}）`,
+    )
+  }
+})
+
+// v0.3.1 扫码凭证回退：state.json 预置 feishu:account → inbound.feishu: {} 直接可用
+test('apply: 扫码凭证回退——state 预置 feishu:account 后 inbound.feishu 空配置即启用', () => {
+  const { ctx, warnings } = bootCtx()
+  const stateDir = mkdtempSync(join(tmpdir(), 'dsh-notifier-scan-'))
+  writeFileSync(join(stateDir, 'state.json'), JSON.stringify({
+    'feishu:account': { appId: 'cli_a', appSecret: 'sec', at: 0 },
+  }))
+  apply(ctx, {
+    channels: [{ type: 'webhook', url: 'http://127.0.0.1:1/hook' }],
+    inbound: { allowUsers: ['u1'], stateDir, feishu: {} },
+  })
+  assert.ok(warnings.some((w) => /inbound 已启动：feishu/.test(w)), `应启动 feishu（实际：${warnings.join(' | ')}）`)
 })

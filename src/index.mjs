@@ -16,6 +16,7 @@ import { createFeishuInbound, resolveFeishuInboundConfig } from './inbound/feish
 import { createQqInbound, resolveQqInboundConfig } from './inbound/qq-gw.mjs'
 import { createWxpusherInbound, resolveWxpusherInboundConfig } from './inbound/wxpusher-callback.mjs'
 import { createWechatIlinkInbound, resolveWechatInboundConfig, ACCOUNT_KEY } from './inbound/wechat-ilink.mjs'
+import { createDingtalkInbound, resolveDingtalkInboundConfig } from './inbound/dingtalk-stream.mjs'
 import { registerApprovalHandler } from './approval/router.mjs'
 import { registerConversationRouter } from './inbound/conversation.mjs'
 
@@ -82,6 +83,13 @@ export function apply(ctx, config = {}) {
   // 阶段 4：inbound 回传栈。白名单（inbound.allowUsers）为空 = 整栈不启动（默认全拒）。
   const inboundRaw = resolved.inbound ?? {}
   const approvalRaw = resolved.approval ?? {}
+  // v0.3.1：state store 提前创建（只读加载，无写副作用）——qq/feishu/dingtalk 的
+  // 扫码凭证回退在 resolve 阶段就要读 store；必须先于下方各通道的 resolve 块
+  // （TDZ：声明前引用会 ReferenceError，v0.3.1 首版曾把创建放在 resolve 之后，已修）。
+  const stateDir = typeof inboundRaw.stateDir === 'string' && inboundRaw.stateDir.trim() !== ''
+    ? inboundRaw.stateDir.trim()
+    : defaultStateDir()
+  const store = createStore(`${stateDir}/state.json`)
   const allowUsers = (Array.isArray(inboundRaw.allowUsers) ? inboundRaw.allowUsers : [])
     .map((id) => String(id).trim())
     .filter((id) => id !== '')
@@ -94,19 +102,38 @@ export function apply(ctx, config = {}) {
     : (tgOutbound != null && String(tgOutbound.config.chatId ?? '') !== '' ? [String(tgOutbound.config.chatId)] : [])
   const approvalWanted = approvalRaw.mode === 'answer' || approvalRaw.mode === 'observe'
 
-  // 飞书 inbound：显式配置 inbound.feishu（appId + appSecret）时启用；
+  // 飞书 inbound：显式配置 inbound.feishu（可为空对象——空 = 走扫码 CLI 落盘凭证）时启用；
   // 配置不全只在加载期 warn 跳过（与其他渠道同规矩，绝不弄崩启动）。
-  const fsRaw = (inboundRaw.feishu !== null && typeof inboundRaw.feishu === 'object') ? inboundRaw.feishu : {}
-  const feishuResolved = Object.keys(fsRaw).length > 0 ? resolveFeishuInboundConfig(fsRaw) : null
+  // v0.3.1：凭证缺省回落扫码 CLI 落盘的 feishu:account（config 显式配置优先）。
+  // 注意门槛是「显式提供了对象」而非「对象非空」——扫码授权的承诺就是 inbound.feishu: {} 即启用。
+  const fsWanted = inboundRaw.feishu !== null && typeof inboundRaw.feishu === 'object'
+  const fsRaw = fsWanted ? inboundRaw.feishu : {}
+  const feishuResolved = fsWanted
+    ? resolveFeishuInboundConfig(fsRaw, { credentials: store.get('feishu:account') })
+    : null
   if (feishuResolved !== null && !feishuResolved.ok) warn(`inbound.feishu 跳过: ${feishuResolved.reason}`)
   const feishuOk = feishuResolved?.ok === true
 
-  // QQ 官方机器人 inbound：显式配置 inbound.qq（appId + appSecret）时启用；
+  // QQ 官方机器人 inbound：显式配置 inbound.qq（可为空对象——空 = 走扫码 CLI 落盘凭证）时启用；
   // 裸协议实现（WS 网关 + REST），无 SDK 依赖。
-  const qqRaw = (inboundRaw.qq !== null && typeof inboundRaw.qq === 'object') ? inboundRaw.qq : {}
-  const qqResolved = Object.keys(qqRaw).length > 0 ? resolveQqInboundConfig(qqRaw) : null
+  // v0.3.1：凭证缺省回落扫码 CLI 落盘的 qq:account（config 显式配置优先）。
+  const qqWanted = inboundRaw.qq !== null && typeof inboundRaw.qq === 'object'
+  const qqRaw = qqWanted ? inboundRaw.qq : {}
+  const qqResolved = qqWanted
+    ? resolveQqInboundConfig(qqRaw, { credentials: store.get('qq:account') })
+    : null
   if (qqResolved !== null && !qqResolved.ok) warn(`inbound.qq 跳过: ${qqResolved.reason}`)
   const qqOk = qqResolved?.ok === true
+
+  // 钉钉 Stream inbound（v0.3.1 新增）：显式配置 inbound.dingtalk（appKey + appSecret，
+  // 或空对象走扫码落盘凭证）时启用；Stream 裸协议长连接，审批走编号回复。
+  const dtWanted = inboundRaw.dingtalk !== null && typeof inboundRaw.dingtalk === 'object'
+  const dtRaw = dtWanted ? inboundRaw.dingtalk : {}
+  const dingtalkResolved = dtWanted
+    ? resolveDingtalkInboundConfig(dtRaw, { credentials: store.get('dingtalk:account') })
+    : null
+  if (dingtalkResolved !== null && !dingtalkResolved.ok) warn(`inbound.dingtalk 跳过: ${dingtalkResolved.reason}`)
+  const dingtalkOk = dingtalkResolved?.ok === true
 
   // WxPusher inbound：显式配置 inbound.wxpusher（appToken）时启用；
   // 回调需公网可达（frp/反代由用户解决），密径即凭证。
@@ -120,11 +147,7 @@ export function apply(ctx, config = {}) {
   const wechatWanted = inboundRaw.wechat !== null && typeof inboundRaw.wechat === 'object'
   const wechatRaw = wechatWanted ? inboundRaw.wechat : {}
 
-  if (allowUsers.length > 0 && (approvalWanted || inboundBotToken !== '' || feishuOk || qqOk || wxOk || wechatWanted)) {
-    const stateDir = typeof inboundRaw.stateDir === 'string' && inboundRaw.stateDir.trim() !== ''
-      ? inboundRaw.stateDir.trim()
-      : defaultStateDir()
-    const store = createStore(`${stateDir}/state.json`)
+  if (allowUsers.length > 0 && (approvalWanted || inboundBotToken !== '' || feishuOk || qqOk || wxOk || wechatWanted || dingtalkOk)) {
     const vault = createTokenVault({
       secret: typeof inboundRaw.tokenSecret === 'string' && inboundRaw.tokenSecret !== ''
         ? inboundRaw.tokenSecret
@@ -221,6 +244,23 @@ export function apply(ctx, config = {}) {
         disposers.push(() => wechatInbound.stop())
         warn(`inbound 已启动：wechat iLink 长轮询（文本审批通知 + 编号回复裁决）`)
       }
+    }
+
+    // 钉钉 Stream inbound（v0.3.1）：官方 Stream 长连接裸协议（免公网）。
+    // 审批无按钮卡片，靠「回复 1 批准 / 2 拒绝」降级（router 按 capabilities 分流文案）。
+    if (dingtalkOk) {
+      const dingtalkInbound = createDingtalkInbound({
+        config: dingtalkResolved.config,
+        bus,
+        store,
+        fallbackTargets: allowUsers,
+        logger,
+      })
+      dingtalkInbound.start()
+      interactiveInstances.push(dingtalkInbound)
+      replyTargets.set('dingtalk', dingtalkInbound)
+      disposers.push(() => dingtalkInbound.stop())
+      warn(`inbound 已启动：dingtalk Stream 长连接（文本审批通知 + 编号回复裁决）`)
     }
 
     const disposeApproval = registerApprovalHandler({

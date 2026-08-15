@@ -140,9 +140,9 @@ insert:
 - **沉默永不批准** —— 超时、解析失败、任何错误都把控制权交还桌面。
 - 待审批、去重表、轮询游标跨重启持久化（原子 JSON store）。
 
-## 入站通道（v0.3.0）
+## 入站通道（v0.3.0 + v0.3.1）
 
-四条新入站通道与 telegram 并存，全部走同一套白名单 / 审批 / 会话路由（`inbound.allowUsers` 里填对应平台的用户标识）。有按钮的通道（telegram / feishu）直接点卡片批准；无按钮的通道（qq / wxpusher / wechat）收到审批通知后**回复 `1` 批准 / `2` 拒绝**。
+五条新入站通道与 telegram 并存，全部走同一套白名单 / 审批 / 会话路由（`inbound.allowUsers` 里填对应平台的用户标识）。有按钮的通道（telegram / feishu）直接点卡片批准；无按钮的通道（qq / wxpusher / wechat / dingtalk）收到审批通知后**回复 `1` 批准 / `2` 拒绝**。
 
 | 通道 | 传输 | 凭证 | 按钮 | 公网要求 | 备注 |
 |---|---|---|---|---|---|
@@ -150,6 +150,7 @@ insert:
 | `qq` | WebSocket 网关裸协议（零 SDK） | appId + appSecret（q.qq.com） | ❌ 编号回复 | 无 | C2C 单聊 + 群 @；被动回复优先（带 msg_seq 独立配额） |
 | `wxpusher` | HTTP 回调（`send_up_cmd` 上行） | appToken | ❌ 编号回复 | **需要**（frp/反代到 `127.0.0.1:8103`） | 密径即凭证（随机 32B hex）；上行 `#{appId} 指令` |
 | `wechat` | iLink 长轮询（裸协议，零依赖） | 扫码登录（CLI 落盘） | ❌ 编号回复 | 无 | 个人号；单 token 单实例；带熔断器（3 次/60s → 开路 15s） |
+| `dingtalk` | Stream 长连接裸协议（v0.3.1，零 SDK） | appKey + appSecret（企业内部应用） | ❌ 编号回复 | 无 | `robotCode` 从首条入站消息学习；主动推送复用熔断器；被动 `sessionWebhook` 回复优先 |
 
 ```yaml
 inbound:
@@ -170,17 +171,28 @@ inbound:
   wechat: {}                               # 凭证来自登录 CLI（见下）
   # wechat:
   #   notifyUsers: ["wxid_xxx"]            # 可选：审批推送目标
+  dingtalk: {}                             # v0.3.1；扫码 CLI 落盘或如下手填
+  # dingtalk:
+  #   appKey: "dingxxx"
+  #   appSecret: "${ENV:DINGTALK_SECRET}"
+  #   notifyUsers: ["staffId_xxx"]         # 可选：审批推送目标
 ```
 
-微信（iLink 个人号）首次使用需扫码登录，凭证自动落盘（state.json，0600 权限）：
+### 一条命令扫码授权（v0.3.1）
+
+qq / 钉钉 / 飞书走官方扫码授权，微信保持 iLink 扫码登录；凭证统一落本地 state（0600），config 显式配置永远优先于扫码落盘值：
 
 ```bash
-node scripts/wechat-login.mjs          # 终端渲染二维码；--state 指定目录
+node scripts/channel-login.mjs qq        # QQ 官方扫码创建/绑定机器人（需装 @tencent-connect/qqbot-connector）
+node scripts/channel-login.mjs dingtalk  # 钉钉一键创建企业内部应用（需已加入组织的钉钉账号）
+node scripts/channel-login.mjs feishu    # 飞书一键创建自建应用（成功打印扫码者 open_id 供白名单）
+node scripts/channel-login.mjs wechat    # 等价 node scripts/wechat-login.mjs
 ```
 
 工程细节（全部有测试兜底）：
 
 - **qq**：官方 Node SDK 事实弃维，本通道为裸协议实现（IDENTIFY/RESUME/心跳/断线重连；token 自动换取缓存）。
+- **dingtalk**：对照官方 SDK 逐字段核对的 Stream 裸协议——订阅写在网关 POST body（非 WS 帧）、心跳走协议层 ping/pong 被动应答、每帧 ack（服务端 60s 重推由 msgId 去重吸收）、被动 `sessionWebhook` 回复带 `x-acs-dingtalk-access-token` 头、主动 `batchSend` 从首条入站消息学习 `robotCode` 并复用熔断器。
 - **wechat**：`context_token` 入站即学习、发送回显；`ret=-2 + unknown error` 伪装限流时剥 token 重试一次再定性；`ret=-14` 会话过期自动清凭证停用并告警重新扫码；主动消息限流触发熔断，收到新消息即复位。与 Hermes / OpenClaw 生产验证的同套 iLink 协议。
 
 ## 远程会话（可选）

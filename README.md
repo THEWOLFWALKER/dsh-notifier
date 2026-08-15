@@ -106,7 +106,7 @@ insert:
 
 ## Remote Approval (双向回传，可选)
 
-Approval requests can be answered from your phone. v0.3.0 ships five inbound channels (telegram / feishu / qq / wxpusher / wechat — see [Inbound channels](#inbound-channels-v030)); telegram / feishu / qq / wechat are long-lived connections or long polling — **no public IP required** (only the wxpusher callback needs to be publicly reachable). The whole stack only starts when `inbound.allowUsers` is non-empty (default-deny whitelist).
+Approval requests can be answered from your phone. Six inbound channels ship today (telegram / feishu / qq / wxpusher / wechat / dingtalk — see [Inbound channels](#inbound-channels-v030)); all but the wxpusher callback are long-lived connections or long polling — **no public IP required**. The whole stack only starts when `inbound.allowUsers` is non-empty (default-deny whitelist).
 
 ```yaml
 insert:
@@ -138,9 +138,9 @@ Security properties (all enforced in tests):
 - **Silence never approves** — timeout, parse failure, or any error returns control to the desktop.
 - Pending approvals, dedup table, and the polling cursor survive restarts (atomic JSON store).
 
-## Inbound channels (v0.3.0)
+## Inbound channels (v0.3.0 + v0.3.1)
 
-Four new inbound channels ride alongside telegram — same whitelist / approval / conversation routing (put the matching platform user id into `inbound.allowUsers`). Button-capable channels (telegram / feishu) approve via card buttons; button-less channels (qq / wxpusher / wechat) approve by **replying `1` (approve) / `2` (reject)**.
+Five inbound channels ride alongside telegram — same whitelist / approval / conversation routing (put the matching platform user id into `inbound.allowUsers`). Button-capable channels (telegram / feishu) approve via card buttons; button-less channels (qq / wxpusher / wechat / dingtalk) approve by **replying `1` (approve) / `2` (reject)**.
 
 | Channel | Transport | Credentials | Buttons | Public IP | Notes |
 |---|---|---|---|---|---|
@@ -148,6 +148,7 @@ Four new inbound channels ride alongside telegram — same whitelist / approval 
 | `qq` | WebSocket gateway, bare protocol (zero SDK) | appId + appSecret (q.qq.com) | ❌ numbered reply | none | C2C DMs + group @; passive replies preferred (separate msg_seq quota) |
 | `wxpusher` | HTTP callback (`send_up_cmd`) | appToken | ❌ numbered reply | **required** (frp/proxy → `127.0.0.1:8103`) | Secret path is the credential (random 32B hex); upstream `#{appId} command` |
 | `wechat` | iLink long polling (bare protocol, zero deps) | QR login via CLI | ❌ numbered reply | none | Personal account; one token = one instance; circuit breaker (3 hits/60s → open 15s) |
+| `dingtalk` | Stream long connection, bare protocol (v0.3.1, zero SDK) | appKey + appSecret (enterprise-internal app) | ❌ numbered reply | none | `robotCode` learned from the first inbound message; proactive push reuses the breaker; passive `sessionWebhook` replies preferred |
 
 ```yaml
 inbound:
@@ -168,22 +169,33 @@ inbound:
   wechat: {}                               # credentials come from the login CLI (below)
   # wechat:
   #   notifyUsers: ["wxid_xxx"]
+  dingtalk: {}                             # v0.3.1; credentials from the scan CLI or filled in below
+  # dingtalk:
+  #   appKey: "dingxxx"
+  #   appSecret: "${ENV:DINGTALK_SECRET}"
+  #   notifyUsers: ["staffId_xxx"]
 ```
 
-WeChat (iLink personal account) needs a one-time QR login; credentials are stored automatically (state.json, 0600):
+### One-command QR login (v0.3.1)
+
+Official scan-based authorization for qq / dingtalk / feishu; wechat keeps its iLink QR login. Credentials land in the local state store (0600); explicit config always wins over scanned credentials.
 
 ```bash
-node scripts/wechat-login.mjs          # renders a QR in the terminal; --state <dir>
+node scripts/channel-login.mjs qq        # QQ official QR connect → appId/appSecret (needs @tencent-connect/qqbot-connector)
+node scripts/channel-login.mjs dingtalk  # DingTalk one-click app creation (enterprise account required)
+node scripts/channel-login.mjs feishu    # Feishu one-click app creation (prints your open_id for the whitelist)
+node scripts/channel-login.mjs wechat    # or the legacy node scripts/wechat-login.mjs
 ```
 
 Engineering notes (all test-backed):
 
 - **qq**: the official Node SDK is effectively unmaintained — this channel is a bare-protocol implementation (IDENTIFY/RESUME/heartbeat/reconnect; automatic token fetch + cache).
+- **dingtalk**: bare-protocol Stream client verified field-by-field against the official SDK — subscriptions ride the gateway POST body (not WS frames), heartbeat is protocol-level ping/pong (passive), every frame is acked (60s server re-push absorbed by msgId dedup), passive `sessionWebhook` replies carry the `x-acs-dingtalk-access-token` header, proactive `batchSend` learns `robotCode` from the first inbound message and reuses the circuit breaker.
 - **wechat**: `context_token` learned on every inbound message and echoed on send; `ret=-2 + unknown error` masquerading as rate-limit triggers a tokenless retry before being counted; `ret=-14` clears credentials and disables the channel with a re-login hint; proactive-send rate limits trip the breaker, any inbound message resets it. Same iLink protocol proven in production by Hermes / OpenClaw.
 
 ## Conversation (远程会话，可选)
 
-Whitelisted users can talk to running agents from their phone. The router rides the same inbound stack as remote approval (all five inbound channels as of v0.3.0, `inbound.allowUsers` whitelist); enable it simply by filling the whitelist — no extra switch.
+Whitelisted users can talk to running agents from their phone. The router rides the same inbound stack as remote approval (all six inbound channels, `inbound.allowUsers` whitelist); enable it simply by filling the whitelist — no extra switch.
 
 Delivery semantics are picked from agent state:
 
@@ -215,7 +227,7 @@ inbound:
     steerPrefix: "!"      # single-char prefix that means steer
 ```
 
-Unknown commands fall through as plain text, so nothing gets swallowed. Replies (command feedback, "no active session" notices) go back through the channel the message arrived on (all five inbound channels).
+Unknown commands fall through as plain text, so nothing gets swallowed. Replies (command feedback, "no active session" notices) go back through the channel the message arrived on (all six inbound channels).
 
 ## Rules & local bell (防打扰规则，可选)
 
