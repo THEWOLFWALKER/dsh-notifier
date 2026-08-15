@@ -40,9 +40,38 @@ copies or substantial portions of the Software.
   依据 Apache License 2.0 授权使用；原件未随附 NOTICE 文件。
 - 完整许可证文本见 https://www.apache.org/licenses/LICENSE-2.0
 
+## Hermes weixin adapter（MIT License，随 v0.3.0 需求包提供副本）
+
+- 参考文件：`refs/weixin/weixin.py`（约 2400 行生产实现，2026-05/08 实证调优）
+- 移植范围（`src/inbound/_ilink-api.mjs` / `src/inbound/wechat-ilink.mjs` /
+  `scripts/wechat-login.mjs`）：iLink 协议常量与请求头构造（X-WECHAT-UIN 防重放、
+  channel_version 2.2.0）、getupdates 长轮询与游标、sendmessage 的 context_token 回显、
+  错误语义矩阵（ret=-14 会话过期；ret=-2 + "unknown error" 伪装限流的 stale token；
+  真限流熔断参数 3 次/60s/开路 15s、入站消息复位）、分块发送节奏、扫码登录状态机
+  （wait → scaned → scaned_but_redirect 切 host → expired 刷新 ≤3 → confirmed）。
+- 移植原则同上：「移植协议知识、不引依赖」——aiohttp 改写为原生 fetch，
+  生产参数以 Hermes 2026-08-06 调优值为准。
+- 原许可证（MIT）版权声明：
+
+```
+MIT License
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+```
+
 ## 未参考代码、仅对标叙事
 
 - caronc/apprise（MIT）：作为「通知底座」行业先例做架构对标，未移植任何代码。
+- openclaw-weixin（`@tencent-weixin/openclaw-weixin`，MIT）：iLink API 层的交叉验证来源，
+  与 Hermes 实现相互印证后取生产实证值；未直接复制其 TypeScript 代码。
 
 ## 生成义务
 

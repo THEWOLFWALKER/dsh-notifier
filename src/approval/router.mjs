@@ -10,9 +10,19 @@
 //  - observe 模式只旁观：推完卡片立即 next()，桌面照常决定
 
 import { createEscalationChain } from './escalation.mjs'
+import { normalizeInbound } from '../inbound/_contract.mjs'
 
 const OUTCOME_ALLOWED = 'allowed-once'
 const OUTCOME_REJECTED = 'rejected'
+
+// 通道名 → 用户可读名（广播文案用；telegram 显示名保持 v0.2.0 原样，测试契约不破）
+const DISPLAY_NAMES = {
+  telegram: 'Telegram',
+  feishu: '飞书',
+  qq: 'QQ',
+  wxpusher: 'WxPusher',
+  wechat: '微信',
+}
 
 // 升级链默认节奏：30s / 60s 各再提醒一轮（timeoutMs 默认 120s 内完成两轮升级）
 const DEFAULT_ESCALATION_STAGES = [
@@ -28,14 +38,17 @@ const DEFAULT_ESCALATION_STAGES = [
  * @param {ReturnType<typeof import('../inbound/bus.mjs').createInboundBus>} deps.bus
  * @param {ReturnType<typeof import('../inbound/tokens.mjs').createTokenVault>} deps.vault
  * @param {import('../inbound/store.mjs').store} deps.store - pending 账本持久化
- * @param {object} deps.telegram - createTelegramInbound 实例（可交互渠道；可为 null）
+ * @param {object} deps.telegram - （旧入口，v0.2.0 兼容）createTelegramInbound 实例；可为 null
+ * @param {object[]} [deps.interactive] - 交互渠道实例列表（v0.3.0 多通道入口；提供时优先于 deps.telegram）。
+ *   每项实现统一契约（channel/notifyTargets/sendApprovalCard/editResolved/sendText，
+ *   见 inbound/_contract.mjs）；telegram 旧形状（notifyChatIds/editResolved(chatId,messageId,text)）也接受
  * @param {{ mode?: 'observe'|'answer', timeoutMs?: number, numberedReply?: boolean,
  *           escalation?: { enabled?: boolean, stages?: Array<object> } }} [deps.approvalConfig]
  * @param {object} [deps.logger]
  * @returns {() => void} 反注册函数
  */
 export function registerApprovalHandler(deps) {
-  const { ctx, notifier, bus, vault, store, telegram } = deps
+  const { ctx, notifier, bus, vault, store } = deps
   const approvalConfig = deps.approvalConfig ?? {}
   const mode = approvalConfig.mode === 'answer' ? 'answer' : 'observe'
   const timeoutMs = Math.max(1000, Number(approvalConfig.timeoutMs) || 120000)
@@ -56,7 +69,18 @@ export function registerApprovalHandler(deps) {
   })
 
   let counter = 0
-  const interactiveTargets = telegram !== null && telegram !== undefined ? telegram.notifyChatIds() : []
+  // 交互渠道列表（统一契约）：deps.interactive 优先；未提供时回退 v0.2.0 的单 telegram 入口
+  const rawInteractive = Array.isArray(deps.interactive)
+    ? deps.interactive
+    : (deps.telegram !== null && deps.telegram !== undefined ? [deps.telegram] : [])
+  const interactive = rawInteractive
+    .map((raw) => normalizeInbound(raw))
+    .filter((entry) => entry !== null && entry.channel !== '')
+  const interactiveByChannel = new Map(interactive.map((entry) => [entry.channel, entry]))
+  // 升级提醒里的按钮渠道提示（无交互渠道时退化为纯编号回复话术）
+  const cardChannelNames = interactive
+    .map((entry) => DISPLAY_NAMES[entry.channel] ?? entry.channel)
+    .join('/')
 
   const ledger = {
     add(key, row) {
@@ -95,24 +119,40 @@ export function registerApprovalHandler(deps) {
     const title = `需要批准：${request.toolName}`
     const content = `${request.reason ?? 'agent 请求执行一个需要授权的操作'}\n\n批准将仅对本次调用生效（token 单次核销）。`
     const pushedTo = []
-    // 交互渠道：带按钮卡片（无公网要求的 Telegram 首选）
-    for (const chatId of interactiveTargets) {
-      const card = await telegram.sendApprovalCard({
-        chatId,
-        title,
-        content,
-        approvalKey: key,
-        token,
-      })
-      if (card !== null) {
-        pushedTo.push({ channel: 'telegram', chatId, userId: chatId, messageId: card.messageId })
+    const buttonChannels = []
+    const textChannels = []
+    // 交互渠道：带按钮卡片（逐通道逐目标推送；单渠道失败降级为纯通知）
+    for (const inbound of interactive) {
+      let anySuccess = false
+      for (const target of inbound.notifyTargets()) {
+        const card = await inbound.sendApprovalCard({
+          chatId: target.chatId,
+          title,
+          content,
+          approvalKey: key,
+          token,
+        })
+        if (card !== null) {
+          anySuccess = true
+          pushedTo.push({ channel: inbound.channel, chatId: target.chatId, userId: target.userId, messageId: card.messageId })
+        }
+      }
+      if (anySuccess) {
+        const name = DISPLAY_NAMES[inbound.channel] ?? inbound.channel
+        if (inbound.capabilities?.buttons !== false) buttonChannels.push(name)
+        else textChannels.push(name)
       }
     }
     // 全渠道通知（含单向渠道；无按钮渠道靠编号回复降级）
+    // 按钮渠道提示可点；无按钮渠道提示编号回复——单向广播渠道（bark 等）同样
+    // 依赖「回复 1 批准 / 2 拒绝」兜底，因此按钮场景也保留该提示（v0.2.0 文案契约）。
+    const channelNotes = []
+    if (buttonChannels.length > 0) channelNotes.push(`${buttonChannels.join('、')} 已发可点按钮`)
+    if (textChannels.length > 0) channelNotes.push(`${textChannels.join('、')} 已发审批通知`)
     await notifier.notifyAll({
       title,
-      content: pushedTo.length > 0
-        ? `${content}\n\n（Telegram 已发可点按钮；无按钮渠道可回复 1 批准 / 2 拒绝）`
+      content: channelNotes.length > 0
+        ? `${content}\n\n（${channelNotes.join('；')}；无按钮渠道可回复 1 批准 / 2 拒绝）`
         : `${content}\n\n（本渠道无按钮：回复 1 批准 / 2 拒绝）`,
       level: 'timeSensitive',
     }).catch(() => {})
@@ -121,8 +161,9 @@ export function registerApprovalHandler(deps) {
 
   async function markRemoteResolved(pushedTo, text) {
     for (const target of pushedTo ?? []) {
-      if (target.channel !== 'telegram') continue
-      await telegram.editResolved(target.chatId, target.messageId, text).catch(() => {})
+      const inbound = interactiveByChannel.get(target.channel)
+      if (inbound === undefined) continue
+      await inbound.editTarget(target, text)
     }
   }
 
@@ -169,7 +210,7 @@ export function registerApprovalHandler(deps) {
       escalation.start(key, (_key, stage) => {
         notifier.notifyAll({
           title: `${request?.toolName ?? '操作'} 仍在等待批准`,
-          content: `${stage.note ?? '仍在等待批准'}（已等待 ${Math.round((Date.now() - startedAt) / 1000)}s）。\n回复 1 批准 / 2 拒绝，或点击 Telegram 卡片按钮。`,
+          content: `${stage.note ?? '仍在等待批准'}（已等待 ${Math.round((Date.now() - startedAt) / 1000)}s）。\n回复 1 批准 / 2 拒绝${cardChannelNames !== '' ? `，或点击 ${cardChannelNames} 卡片按钮` : ''}。`,
           level: stage.level ?? 'timeSensitive',
         }).catch(() => {})
       })

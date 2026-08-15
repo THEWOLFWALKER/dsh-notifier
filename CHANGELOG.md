@@ -3,6 +3,44 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 SemVer。
 DSH 处于 developer preview，0.x 阶段的次版本号提升允许小幅破坏性变更（会在条目中标注）。
 
+## [0.3.0] - 2026-08-15
+
+多通道双向回传：远程审批 / 远程会话从 telegram 单通道扩展到 5 通道（telegram / feishu / qq / wxpusher / wechat）。全部零运行时依赖（fetch + node:crypto + 原生 WebSocket）；飞书 SDK 与 qrcode-terminal 进 optionalDependencies，缺省优雅降级。测试 228 → 329（+101）。
+
+### Added（阶段 0：入站通道契约泛化）
+
+- `src/inbound/_contract.mjs`：统一入站契约 `normalizeInbound()`——新形状（channel/start/stop/notifyTargets/sendApprovalCard/editResolved/sendText/capabilities.buttons）与 telegram 旧形状（notifyChatIds/editResolved 三参）归一；异常全部吸收（卡片失败 → null 降级纯通知）。
+- `src/approval/router.mjs` 多通道化：审批卡片并发分发到全部交互通道、单通道失败只降级不中断、`capabilities.buttons=false` 的通道自动走「回复 1 批准 / 2 拒绝」文案、回执按消息来源通道路由（editTarget）。
+- 编号回复跨通道裁决：任一通道的 `1`/`2` 都能裁决最近待决审批，首达采纳不变。
+
+### Added（阶段 1：飞书 inbound）
+
+- `src/inbound/feishu-bot.mjs`：官方 SDK 懒加载 + WebSocket 长连接（免公网）；事件归一 im.message.receive_v1 → bus envelope；交互卡片审批（按钮回调 → buildApprovalAction 同构 token 核销）；主动消息走 im/v1/messages（receive_id 修正）；SDK 未安装时中文指引后静默不可用。
+
+### Added（阶段 2：QQ 官方机器人 inbound）
+
+- `src/inbound/qq-gw.mjs`：WS 网关裸协议（op10 HELLO → IDENTIFY/RESUME → op0/op11 心跳；op7/op9 重连矩阵），零 SDK 依赖——官方 Node SDK 改名两次后事实弃维，直接实现协议本身。
+- C2C_MESSAGE_CREATE / GROUP_AT_MESSAGE_CREATE 事件；被动回复带 msg_seq（独立配额），主动消息限速门；getAppAccessToken 换取复用出站 token 管理器。
+
+### Added（阶段 3：WxPusher inbound）
+
+- `src/inbound/http-callback.mjs`：最小 HTTP 回调服务器（POST + 精确密径匹配 + 64KB 上限 + 查询串容忍 + 单次响应防重入）。
+- `src/inbound/wxpusher-callback.mjs`：`send_up_cmd` 上行（`#{appId}` 前缀词边界剥离）→ bus；`app_subscribe` 绑定学习落盘；密径（随机 32B hex）+ uid 白名单 + 可选 allowedIps 三重自防（官方无签名）；定向推送限速门 500ms（对齐官方 ~2QPS）。
+
+### Added（阶段 4：微信 iLink inbound + 登录 CLI）
+
+- `src/inbound/_ilink-api.mjs`：iLink 协议层（Hermes weixin.py MIT 移植 + openclaw-weixin 交叉验证）——请求头（X-WECHAT-UIN 逐请求重生成防重放）、base_info channel_version 2.2.0、getupdates/sendmessage/二维码登录端点、错误语义归类。
+- `src/inbound/wechat-ilink.mjs`：长轮询（35s 挂起，游标持久化重启续传）；context_token 入站即学习、发送回显；`ret=-2 + unknown error` 伪装限流 → 剥 token 重试一次再定性（不计熔断）；`ret=-14` 会话过期 → 清 ctx/游标/凭证停用通道并中文告警；长文分块（块间 2s）。
+- `src/inbound/_breaker.mjs`：通用熔断器（阈值 3/窗口 60s/开路 15s，时钟可注入）；任一入站消息复位——「用户再发一条消息即解锁」实证行为。
+- `scripts/wechat-login.mjs`：扫码登录 CLI（qrcode-terminal 可选渲染；scaned_but_redirect 跨机房切 host；expired 自动刷新 ≤3；凭证原子落盘 0600）。
+- `src/inbound/store.mjs`：state.json 权限收紧至 0600（v0.3.0 起存放 iLink bot_token）。
+
+### Compatibility
+
+- telegram 入站路径零改动（旧形状经 `_contract` 适配）；`deps.telegram` 旧入口保留。
+- 既有配置无新增必填项；四个新通道均为 opt-in（显式配置 `inbound.feishu/qq/wxpusher/wechat` 才启用）。
+- 出站适配器零改动；`npm test` 基线 228 例全绿零修改。
+
 ## [0.2.0] - 2026-08-15
 
 ### Added（阶段 0：仓库基建）

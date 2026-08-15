@@ -106,7 +106,7 @@ insert:
 
 ## Remote Approval (双向回传，可选)
 
-Approval requests can be answered from your phone. Telegram long polling is used — **no public IP / webhook required**. The whole stack only starts when `inbound.allowUsers` is non-empty (default-deny whitelist).
+Approval requests can be answered from your phone. v0.3.0 ships five inbound channels (telegram / feishu / qq / wxpusher / wechat — see [Inbound channels](#inbound-channels-v030)); telegram / feishu / qq / wechat are long-lived connections or long polling — **no public IP required** (only the wxpusher callback needs to be publicly reachable). The whole stack only starts when `inbound.allowUsers` is non-empty (default-deny whitelist).
 
 ```yaml
 insert:
@@ -138,9 +138,52 @@ Security properties (all enforced in tests):
 - **Silence never approves** — timeout, parse failure, or any error returns control to the desktop.
 - Pending approvals, dedup table, and the polling cursor survive restarts (atomic JSON store).
 
+## Inbound channels (v0.3.0)
+
+Four new inbound channels ride alongside telegram — same whitelist / approval / conversation routing (put the matching platform user id into `inbound.allowUsers`). Button-capable channels (telegram / feishu) approve via card buttons; button-less channels (qq / wxpusher / wechat) approve by **replying `1` (approve) / `2` (reject)**.
+
+| Channel | Transport | Credentials | Buttons | Public IP | Notes |
+|---|---|---|---|---|---|
+| `feishu` | WebSocket long connection (official SDK, lazy-loaded) | appId + appSecret (custom app) | ✅ card | none | Set event subscription to "long connection"; missing SDK degrades with a Chinese hint |
+| `qq` | WebSocket gateway, bare protocol (zero SDK) | appId + appSecret (q.qq.com) | ❌ numbered reply | none | C2C DMs + group @; passive replies preferred (separate msg_seq quota) |
+| `wxpusher` | HTTP callback (`send_up_cmd`) | appToken | ❌ numbered reply | **required** (frp/proxy → `127.0.0.1:8103`) | Secret path is the credential (random 32B hex); upstream `#{appId} command` |
+| `wechat` | iLink long polling (bare protocol, zero deps) | QR login via CLI | ❌ numbered reply | none | Personal account; one token = one instance; circuit breaker (3 hits/60s → open 15s) |
+
+```yaml
+inbound:
+  allowUsers: ["ou_feishu_openid"]        # user ids of the channels you actually enable
+  feishu:
+    appId: "cli_xxx"
+    appSecret: "${ENV:FEISHU_SECRET}"
+  qq:
+    appId: "102030405"
+    appSecret: "${ENV:QQ_SECRET}"
+    # notifyUsers: ["openid_xxx"]          # optional approval push targets (fallback: allowUsers)
+    # notifyGroups: ["group_openid"]
+  wxpusher:
+    appToken: "AT_xxx"
+    # webhookPath: "/hook/<random secret>" # auto-generated & printed; host/port configurable
+    # allowedIps: ["<WxPusher egress IP>"] # optional second gate
+    # notifyUids: ["UID_xxx"]
+  wechat: {}                               # credentials come from the login CLI (below)
+  # wechat:
+  #   notifyUsers: ["wxid_xxx"]
+```
+
+WeChat (iLink personal account) needs a one-time QR login; credentials are stored automatically (state.json, 0600):
+
+```bash
+node scripts/wechat-login.mjs          # renders a QR in the terminal; --state <dir>
+```
+
+Engineering notes (all test-backed):
+
+- **qq**: the official Node SDK is effectively unmaintained — this channel is a bare-protocol implementation (IDENTIFY/RESUME/heartbeat/reconnect; automatic token fetch + cache).
+- **wechat**: `context_token` learned on every inbound message and echoed on send; `ret=-2 + unknown error` masquerading as rate-limit triggers a tokenless retry before being counted; `ret=-14` clears credentials and disables the channel with a re-login hint; proactive-send rate limits trip the breaker, any inbound message resets it. Same iLink protocol proven in production by Hermes / OpenClaw.
+
 ## Conversation (远程会话，可选)
 
-Whitelisted users can talk to running agents from their phone. The router rides the same inbound stack as remote approval (Telegram long polling, `inbound.allowUsers` whitelist); enable it simply by filling the whitelist — no extra switch.
+Whitelisted users can talk to running agents from their phone. The router rides the same inbound stack as remote approval (all five inbound channels as of v0.3.0, `inbound.allowUsers` whitelist); enable it simply by filling the whitelist — no extra switch.
 
 Delivery semantics are picked from agent state:
 
@@ -172,7 +215,7 @@ inbound:
     steerPrefix: "!"      # single-char prefix that means steer
 ```
 
-Unknown commands fall through as plain text, so nothing gets swallowed. Replies (command feedback, "no active session" notices) are Telegram-only for now.
+Unknown commands fall through as plain text, so nothing gets swallowed. Replies (command feedback, "no active session" notices) go back through the channel the message arrived on (all five inbound channels).
 
 ## Rules & local bell (防打扰规则，可选)
 
@@ -241,7 +284,7 @@ insert:
 ## Development
 
 ```bash
-npm test          # node --test, 226 cases
+npm test          # node --test, 329 cases
 ```
 
 Pure ESM (`.mjs`), zero runtime dependencies. To add a channel: implement the adapter interface (`resolve(cfg)` + `send(msg)`) in `src/adapters/` and register it.

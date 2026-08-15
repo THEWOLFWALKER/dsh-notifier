@@ -108,7 +108,7 @@ insert:
 
 ## 远程审批（可选）
 
-审批请求可以在手机上回答。使用 Telegram long polling —— **不需要公网 IP / webhook**。整个回传栈仅在 `inbound.allowUsers` 非空时启动（默认全拒白名单）。
+审批请求可以在手机上回答。v0.3.0 起支持 5 个入站通道（telegram / feishu / qq / wxpusher / wechat，见[入站通道](#入站通道v030)）；telegram / feishu / qq / wechat 均为长连接或长轮询 —— **不需要公网 IP**（仅 wxpusher 回调需要公网可达）。整个回传栈仅在 `inbound.allowUsers` 非空时启动（默认全拒白名单）。
 
 ```yaml
 insert:
@@ -140,9 +140,52 @@ insert:
 - **沉默永不批准** —— 超时、解析失败、任何错误都把控制权交还桌面。
 - 待审批、去重表、轮询游标跨重启持久化（原子 JSON store）。
 
+## 入站通道（v0.3.0）
+
+四条新入站通道与 telegram 并存，全部走同一套白名单 / 审批 / 会话路由（`inbound.allowUsers` 里填对应平台的用户标识）。有按钮的通道（telegram / feishu）直接点卡片批准；无按钮的通道（qq / wxpusher / wechat）收到审批通知后**回复 `1` 批准 / `2` 拒绝**。
+
+| 通道 | 传输 | 凭证 | 按钮 | 公网要求 | 备注 |
+|---|---|---|---|---|---|
+| `feishu` | WebSocket 长连接（官方 SDK 懒加载） | appId + appSecret（自建应用） | ✅ 卡片 | 无 | 事件订阅选「长连接」模式；SDK 未装时启动即中文指引降级 |
+| `qq` | WebSocket 网关裸协议（零 SDK） | appId + appSecret（q.qq.com） | ❌ 编号回复 | 无 | C2C 单聊 + 群 @；被动回复优先（带 msg_seq 独立配额） |
+| `wxpusher` | HTTP 回调（`send_up_cmd` 上行） | appToken | ❌ 编号回复 | **需要**（frp/反代到 `127.0.0.1:8103`） | 密径即凭证（随机 32B hex）；上行 `#{appId} 指令` |
+| `wechat` | iLink 长轮询（裸协议，零依赖） | 扫码登录（CLI 落盘） | ❌ 编号回复 | 无 | 个人号；单 token 单实例；带熔断器（3 次/60s → 开路 15s） |
+
+```yaml
+inbound:
+  allowUsers: ["ou_feishu_openid"]        # 各通道白名单取交集语义：填你实际启用通道的用户标识
+  feishu:
+    appId: "cli_xxx"
+    appSecret: "${ENV:FEISHU_SECRET}"
+  qq:
+    appId: "102030405"
+    appSecret: "${ENV:QQ_SECRET}"
+    # notifyUsers: ["openid_xxx"]          # 可选：审批推送目标（缺省回落 allowUsers）
+    # notifyGroups: ["group_openid"]       # 可选：群推送目标
+  wxpusher:
+    appToken: "AT_xxx"
+    # webhookPath: "/hook/<随机密径>"      # 缺省自动生成并打印；host/port 可改
+    # allowedIps: ["<WxPusher 出口 IP>"]   # 可选第二道闸
+    # notifyUids: ["UID_xxx"]              # 可选：审批推送目标
+  wechat: {}                               # 凭证来自登录 CLI（见下）
+  # wechat:
+  #   notifyUsers: ["wxid_xxx"]            # 可选：审批推送目标
+```
+
+微信（iLink 个人号）首次使用需扫码登录，凭证自动落盘（state.json，0600 权限）：
+
+```bash
+node scripts/wechat-login.mjs          # 终端渲染二维码；--state 指定目录
+```
+
+工程细节（全部有测试兜底）：
+
+- **qq**：官方 Node SDK 事实弃维，本通道为裸协议实现（IDENTIFY/RESUME/心跳/断线重连；token 自动换取缓存）。
+- **wechat**：`context_token` 入站即学习、发送回显；`ret=-2 + unknown error` 伪装限流时剥 token 重试一次再定性；`ret=-14` 会话过期自动清凭证停用并告警重新扫码；主动消息限流触发熔断，收到新消息即复位。与 Hermes / OpenClaw 生产验证的同套 iLink 协议。
+
 ## 远程会话（可选）
 
-白名单用户可以在手机上和运行中的 agent 对话。会话路由器和远程审批共用同一套回传栈（Telegram long polling、`inbound.allowUsers` 白名单）；填上白名单即启用，没有额外开关。
+白名单用户可以在手机上和运行中的 agent 对话。会话路由器和远程审批共用同一套回传栈（v0.3.0 起支持全部 5 个入站通道、`inbound.allowUsers` 白名单）；填上白名单即启用，没有额外开关。
 
 投递语义按 agent 状态自动选择：
 
@@ -243,7 +286,7 @@ insert:
 ## 开发
 
 ```bash
-npm test          # node --test，226 个用例
+npm test          # node --test，329 个用例
 ```
 
 纯 ESM（`.mjs`），零运行时依赖。新增渠道：在 `src/adapters/` 实现适配器接口（`resolve(cfg)` + `send(msg)`）并注册。

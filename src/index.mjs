@@ -12,6 +12,10 @@ import { createStore, defaultStateDir } from './inbound/store.mjs'
 import { createTokenVault } from './inbound/tokens.mjs'
 import { createInboundBus } from './inbound/bus.mjs'
 import { createTelegramInbound } from './inbound/telegram-bot.mjs'
+import { createFeishuInbound, resolveFeishuInboundConfig } from './inbound/feishu-bot.mjs'
+import { createQqInbound, resolveQqInboundConfig } from './inbound/qq-gw.mjs'
+import { createWxpusherInbound, resolveWxpusherInboundConfig } from './inbound/wxpusher-callback.mjs'
+import { createWechatIlinkInbound, resolveWechatInboundConfig, ACCOUNT_KEY } from './inbound/wechat-ilink.mjs'
 import { registerApprovalHandler } from './approval/router.mjs'
 import { registerConversationRouter } from './inbound/conversation.mjs'
 
@@ -90,7 +94,33 @@ export function apply(ctx, config = {}) {
     : (tgOutbound != null && String(tgOutbound.config.chatId ?? '') !== '' ? [String(tgOutbound.config.chatId)] : [])
   const approvalWanted = approvalRaw.mode === 'answer' || approvalRaw.mode === 'observe'
 
-  if (allowUsers.length > 0 && (approvalWanted || inboundBotToken !== '')) {
+  // 飞书 inbound：显式配置 inbound.feishu（appId + appSecret）时启用；
+  // 配置不全只在加载期 warn 跳过（与其他渠道同规矩，绝不弄崩启动）。
+  const fsRaw = (inboundRaw.feishu !== null && typeof inboundRaw.feishu === 'object') ? inboundRaw.feishu : {}
+  const feishuResolved = Object.keys(fsRaw).length > 0 ? resolveFeishuInboundConfig(fsRaw) : null
+  if (feishuResolved !== null && !feishuResolved.ok) warn(`inbound.feishu 跳过: ${feishuResolved.reason}`)
+  const feishuOk = feishuResolved?.ok === true
+
+  // QQ 官方机器人 inbound：显式配置 inbound.qq（appId + appSecret）时启用；
+  // 裸协议实现（WS 网关 + REST），无 SDK 依赖。
+  const qqRaw = (inboundRaw.qq !== null && typeof inboundRaw.qq === 'object') ? inboundRaw.qq : {}
+  const qqResolved = Object.keys(qqRaw).length > 0 ? resolveQqInboundConfig(qqRaw) : null
+  if (qqResolved !== null && !qqResolved.ok) warn(`inbound.qq 跳过: ${qqResolved.reason}`)
+  const qqOk = qqResolved?.ok === true
+
+  // WxPusher inbound：显式配置 inbound.wxpusher（appToken）时启用；
+  // 回调需公网可达（frp/反代由用户解决），密径即凭证。
+  const wxRaw = (inboundRaw.wxpusher !== null && typeof inboundRaw.wxpusher === 'object') ? inboundRaw.wxpusher : {}
+  const wxResolved = Object.keys(wxRaw).length > 0 ? resolveWxpusherInboundConfig(wxRaw) : null
+  if (wxResolved !== null && !wxResolved.ok) warn(`inbound.wxpusher 跳过: ${wxResolved.reason}`)
+  const wxOk = wxResolved?.ok === true
+
+  // 微信 iLink inbound：显式配置 inbound.wechat（可为空对象）时启用；
+  // 凭证优先取登录 CLI 落盘的 wechat:account（需先执行 node scripts/wechat-login.mjs）。
+  const wechatWanted = inboundRaw.wechat !== null && typeof inboundRaw.wechat === 'object'
+  const wechatRaw = wechatWanted ? inboundRaw.wechat : {}
+
+  if (allowUsers.length > 0 && (approvalWanted || inboundBotToken !== '' || feishuOk || qqOk || wxOk || wechatWanted)) {
     const stateDir = typeof inboundRaw.stateDir === 'string' && inboundRaw.stateDir.trim() !== ''
       ? inboundRaw.stateDir.trim()
       : defaultStateDir()
@@ -102,6 +132,12 @@ export function apply(ctx, config = {}) {
     })
     const bus = createInboundBus({ allowUsers, store, vault, logger })
 
+    // v0.3.0 多通道装配：交互渠道实例（统一契约，approval 卡片推送用）与回执通道表。
+    // telegram 为 v0.2.0 旧形状（notifyChatIds），经 _contract.normalizeInbound 归一；
+    // 后续通道（feishu/qq/wxpusher/wechat）按统一契约逐个挂进这两个容器。
+    const interactiveInstances = []
+    const replyTargets = new Map()
+
     let telegramInbound = null
     if (inboundBotToken !== '') {
       telegramInbound = createTelegramInbound({
@@ -112,40 +148,114 @@ export function apply(ctx, config = {}) {
         logger,
       })
       telegramInbound.start()
+      interactiveInstances.push(telegramInbound)
+      replyTargets.set('telegram', telegramInbound)
       disposers.push(() => telegramInbound.stop())
       warn(`inbound 已启动：telegram 长轮询（白名单 ${allowUsers.length} 人；审批模式 ${approvalRaw.mode === 'answer' ? 'answer（远程可决）' : approvalWanted ? 'observe（只旁观）' : '未配置'}）`)
     }
+
+    // 飞书 inbound：WS 长连接（免公网）。SDK 懒加载——未安装 optionalDependencies
+    // 时 start() 内部中文指引后静默不可用，不影响其他通道。
+    if (feishuOk) {
+      const feishuInbound = createFeishuInbound({
+        config: feishuResolved.config,
+        bus,
+        fallbackTargets: allowUsers,
+        logger,
+      })
+      feishuInbound.start()
+      interactiveInstances.push(feishuInbound)
+      replyTargets.set('feishu', feishuInbound)
+      disposers.push(() => feishuInbound.stop())
+      warn(`inbound 已启动：feishu WebSocket 长连接（卡片审批 + 命令回执）`)
+    }
+
+    // QQ 官方机器人 inbound：WS 网关 + REST 裸协议。审批无按钮卡片，
+    // 靠「回复 1 批准 / 2 拒绝」降级（router 已按 capabilities 分流文案）。
+    if (qqOk) {
+      const qqInbound = createQqInbound({
+        config: qqResolved.config,
+        bus,
+        fallbackTargets: allowUsers,
+        logger,
+      })
+      qqInbound.start()
+      interactiveInstances.push(qqInbound)
+      replyTargets.set('qq', qqInbound)
+      disposers.push(() => qqInbound.stop())
+      warn(`inbound 已启动：qq WebSocket 网关（文本审批通知 + 编号回复裁决）`)
+    }
+
+    // WxPusher inbound：HTTP 回调（send_up_cmd 上行）+ appToken 定向推送回执。
+    if (wxOk) {
+      const wxInbound = createWxpusherInbound({
+        config: wxResolved.config,
+        bus,
+        store,
+        fallbackTargets: allowUsers,
+        logger,
+      })
+      wxInbound.start()
+      interactiveInstances.push(wxInbound)
+      replyTargets.set('wxpusher', wxInbound)
+      disposers.push(() => wxInbound.stop())
+      warn(`inbound 已启动：wxpusher HTTP 回调（密径鉴权 + 编号回复裁决）`)
+    }
+    // 微信 iLink inbound：getupdates 长轮询 + sendmessage 回执（裸协议，零依赖）。
+    // 凭证缺省回落登录 CLI 落盘的 wechat:account；审批无按钮，靠编号回复裁决。
+    if (wechatWanted) {
+      const wechatResolved = resolveWechatInboundConfig(wechatRaw, { credentials: store.get(ACCOUNT_KEY) })
+      if (!wechatResolved.ok) {
+        warn(`inbound.wechat 跳过: ${wechatResolved.reason}`)
+      } else {
+        const wechatInbound = createWechatIlinkInbound({
+          config: wechatResolved.config,
+          bus,
+          store,
+          fallbackTargets: allowUsers,
+          logger,
+        })
+        wechatInbound.start()
+        interactiveInstances.push(wechatInbound)
+        replyTargets.set('wechat', wechatInbound)
+        disposers.push(() => wechatInbound.stop())
+        warn(`inbound 已启动：wechat iLink 长轮询（文本审批通知 + 编号回复裁决）`)
+      }
+    }
+
     const disposeApproval = registerApprovalHandler({
       ctx,
       notifier,
       bus,
       vault,
       store,
-      telegram: telegramInbound,
+      interactive: interactiveInstances,
       approvalConfig: approvalRaw,
       logger,
     })
     disposers.push(disposeApproval)
 
     // 阶段 5：会话路由——白名单用户的文本按 idle/busy 语义投进 agent（followup/inject/steer）
-    const replyViaTelegram = async (channel, chatId, text) => {
-      if (channel === 'telegram' && telegramInbound !== null) {
-        await telegramInbound.sendText(chatId, text)
+    const replyViaChannel = async (channel, chatId, text) => {
+      const target = replyTargets.get(channel)
+      if (target !== undefined) {
+        await target.sendText(chatId, text)
         return
       }
-      warn(`回执无可用通道：${channel}（仅支持 telegram 回执）`)
+      const known = [...replyTargets.keys()].join('、')
+      warn(`回执无可用通道：${channel}（已启用回执通道：${known !== '' ? known : '无'}）`)
     }
     const disposeConversation = registerConversationRouter({
       ctx,
       bus,
       store,
-      reply: replyViaTelegram,
+      reply: replyViaChannel,
       config: inboundRaw.conversation,
       logger,
     })
     disposers.push(disposeConversation)
   } else if (approvalWanted && allowUsers.length === 0) {
-    warn('approval 已配置但 inbound.allowUsers 为空：远程审批未启动（白名单默认全拒）。请在 inbound.allowUsers 填入你的 telegram user id')
+    warn('approval 已配置但 inbound.allowUsers 为空：远程审批未启动（白名单默认全拒）。请在 inbound.allowUsers 填入你的 telegram user id 或飞书 open_id')
   }
 
   ctx.effect(() => () => {
@@ -178,6 +288,10 @@ export { createStore, defaultStateDir } from './inbound/store.mjs'
 export { createTokenVault } from './inbound/tokens.mjs'
 export { createInboundBus } from './inbound/bus.mjs'
 export { createTelegramInbound } from './inbound/telegram-bot.mjs'
+export { createFeishuInbound, resolveFeishuInboundConfig } from './inbound/feishu-bot.mjs'
+export { createQqInbound, resolveQqInboundConfig } from './inbound/qq-gw.mjs'
+export { createWxpusherInbound, resolveWxpusherInboundConfig } from './inbound/wxpusher-callback.mjs'
+export { createWechatIlinkInbound, resolveWechatInboundConfig } from './inbound/wechat-ilink.mjs'
 export { registerApprovalHandler } from './approval/router.mjs'
 export { createEscalationChain } from './approval/escalation.mjs'
 export { registerConversationRouter } from './inbound/conversation.mjs'
