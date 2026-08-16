@@ -63,17 +63,17 @@
     "schema": "omdsh-workshop-package/v1",
     "type": "plugin",
     "integration": {
-      "protocol": "harness-profile",
+      "protocol": "harness-cordis",
       "artifact": "cordis.patch.yml"
     },
     "install": {
-      "mode": "transactional",
-      "adapter": "profile-bundle",
-      "failurePolicy": "generation-rollback",
+      "mode": "guided",
+      "adapter": "third-party",
+      "failurePolicy": "manual",
       "touchesCurrentBeforeActivation": false
     },
     "lifecycle": {
-      "activation": "restart-profile",
+      "activation": "immediate",
       "dispose": "supported"
     },
     "permissions": [
@@ -81,7 +81,11 @@
       "harness:event",
       "network:outbound",
       "network:listen",
-      "files:write"
+      "file:read",
+      "file:write",
+      "subprocess:exec",
+      "shell:none",
+      "credentials:write"
     ],
     "compatibility": {
       "dshVersions": [
