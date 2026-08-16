@@ -87,11 +87,26 @@ label.fld input { flex: 1; }
 .badge.ok { color: var(--ok); border-color: var(--ok); }
 .badge.none { color: var(--muted); }
 .qr .mono { background: var(--panel2); padding: 3px 8px; border-radius: 6px; word-break: break-all; }
+/* v0.5 特性 D：移动端适配（≤768px 单列 / 导航横滚 / 宽表横滚 / 触控目标 ≥44px）。
+   纯 CSS 增量，零逻辑变更零构建；桌面端（>768px）逐字节不变。 */
+@media (max-width: 768px) {
+  header { flex-wrap: wrap; padding: 10px 12px; gap: 8px; }
+  main { padding: 12px 10px 40px; }
+  nav { flex-wrap: nowrap; overflow-x: auto; padding: 8px 10px 0; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+  nav::-webkit-scrollbar { display: none; }
+  .tabbtn { flex: 0 0 auto; }
+  label.fld { flex-direction: column; align-items: stretch; gap: 4px; }
+  label.fld span { width: auto; }
+  table { display: block; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  button { min-height: 44px; }
+  input, select { min-height: 44px; font-size: 16px; } /* 16px：iOS 聚焦不触发页面自动缩放 */
+  .stat { min-width: 104px; padding: 10px 14px; }
+}
 </style>
 </head>
 <body>
 <header>
-  <h1>dsh-notifier 管理台<small>v0.4.0</small></h1>
+  <h1>dsh-notifier 管理台<small>v0.5.0</small></h1>
   <span id="loadState"></span>
   <button id="tokenState" title="点击输入或更换访问 token"></button>
   <button id="btnRefresh">刷新</button>

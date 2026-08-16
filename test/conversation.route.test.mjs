@@ -375,3 +375,72 @@ test('mergeWindowMs: 0 = 关闭合并（README 契约回归）：每条消息立
   assert.equal(agent.calls.followup.length, 2, '不应有窗口到期后的追加投递')
   rig.dispose()
 })
+
+// ---------------------------------------------------------------- v0.5 特性 C：/quiet /unquiet
+
+test('/quiet <workspace>：写入会话级 quiet 覆盖，resolveOutbound 立即生效，回执带匹配来源', () => {
+  const alpha = makeAgent(ALPHA_1, 'running', '/home/u/proj/alpha')
+  const rig = makeRig({ agents: [alpha] })
+  rig.fire('agent/created', alpha)
+  assert.equal(rig.router.resolveOutbound(alpha.id, 'alpha', ['telegram']).quiet, false)
+
+  rig.userSays('/quiet alpha')
+  const reply = rig.replies.at(-1).text
+  assert.match(reply, /已静默 alpha \/ [0-9a-f-]+（workspace=alpha）的出站推送/)
+  assert.match(reply, /远程审批与对话不受影响/)
+  const resolved = rig.router.resolveOutbound(alpha.id, 'alpha', ['telegram'])
+  assert.equal(resolved.quiet, true, '会话级 quiet 覆盖写入 route:sessions diff')
+  rig.dispose()
+})
+
+test('/unquiet <sid>：显式 false 覆盖上游 agent 级静默（不回落），回执确认恢复', () => {
+  const alpha = makeAgent(ALPHA_1, 'running', '/home/u/proj/alpha')
+  const rig = makeRig({ agents: [alpha] })
+  rig.fire('agent/created', alpha)
+  rig.router.setAgentBinding('alpha', { quiet: true }) // 上游（agent 级）已静默
+  assert.equal(rig.router.resolveOutbound(alpha.id, 'alpha', ['telegram']).quiet, true)
+
+  rig.userSays(`/unquiet ${alpha.id}`)
+  const reply = rig.replies.at(-1).text
+  assert.match(reply, /已恢复 alpha \/ [0-9a-f-]+（sessionId 精确匹配）的出站推送/)
+  assert.equal(rig.router.resolveOutbound(alpha.id, 'alpha', ['telegram']).quiet, false, '会话级显式 false 压过 agent 级 true')
+  rig.dispose()
+})
+
+test('/quiet 目标解析：缺参出用法、未匹配出提示、多命中前缀列候选', () => {
+  const one = makeAgent(ALPHA_1, 'idle', '/home/u/proj/alpha')
+  const two = makeAgent(ALPHA_2, 'idle', '/home/u/proj/alpha')
+  const rig = makeRig({ agents: [one, two] })
+  rig.fire('agent/created', one)
+  rig.fire('agent/created', two)
+
+  rig.userSays('/quiet')
+  assert.match(rig.replies.at(-1).text, /用法：\/quiet <workspace 名/)
+  rig.userSays('/quiet nosuch')
+  assert.match(rig.replies.at(-1).text, /未匹配到会话 nosuch/)
+  rig.userSays('/unquiet aaaaaaaa') // 8 位前缀同时命中 ALPHA_1/ALPHA_2
+  const reply = rig.replies.at(-1).text
+  assert.match(reply, /前缀 aaaaaaaa 命中 2 个活跃会话/)
+  assert.ok(reply.includes(one.id) && reply.includes(two.id), '候选列出完整 sid 供精确指定')
+  rig.dispose()
+})
+
+test('/quiet 降级：router 缺省时给出不可用提示（同 /route 惯例），不当普通文本投递', () => {
+  const agent = makeAgent(ALPHA_1, 'idle', '/home/u/proj/alpha')
+  const rig = makeRig({ agents: [agent], router: null })
+  rig.fire('agent/created', agent)
+
+  rig.userSays('/quiet alpha')
+  assert.match(rig.replies.at(-1).text, /路由引擎未装配.*\/quiet 暂不可用/)
+  rig.dispose()
+})
+
+test('/help 文案补全：/quiet /unquiet 两行与状态上报说明一行', () => {
+  const rig = makeRig()
+  rig.userSays('/help')
+  const text = rig.replies.at(-1).text
+  assert.match(text, /\/quiet <workspace\|sid> — 静默该会话的出站推送/)
+  assert.match(text, /\/unquiet <workspace\|sid> — 恢复该会话的出站推送/)
+  assert.match(text, /长任务自动心跳（默认 15min 起）与疑似卡住提醒（默认 10min 无事件）/)
+  rig.dispose()
+})

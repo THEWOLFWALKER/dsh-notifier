@@ -340,3 +340,226 @@ test('createEventListener: 宽限窗到期无人接管则正常送达；dispose 
   await cleanup
   assert.equal(pushes.length, 2, 'dispose flush 宽限窗内待发任务')
 })
+
+// ---------------------------------------------------------------- v0.5 状态上报 + 动作闭环
+
+/** 假时钟+假定时器（同 turn-tracker.test 惯例；minMs=1 让 afterMs 可用毫秒级）。 */
+function fakeTimers(startMs = 1_000_000) {
+  let seq = 0
+  let nowMs = startMs
+  const timers = new Map()
+  return {
+    now: () => nowMs,
+    advance(ms) {
+      nowMs += ms
+      for (;;) {
+        const due = [...timers.entries()].filter(([, timer]) => timer.at <= nowMs)
+        if (due.length === 0) break
+        for (const [id, timer] of due) {
+          timers.delete(id)
+          timer.fn()
+        }
+      }
+    },
+    setTimeoutFn(fn, ms) {
+      seq += 1
+      timers.set(seq, { at: nowMs + ms, fn })
+      return seq
+    },
+    clearTimeoutFn(id) {
+      timers.delete(id)
+    },
+  }
+}
+
+const tickAsync = (ms = 5) => new Promise((resolve) => setTimeout(resolve, ms))
+
+test('v0.5 turn/start：默认关（旧形状直传零感知），显式开启才推送', async () => {
+  const { ctx, listeners } = fakeCtx()
+  const pushes = []
+  const notifier = { notifyAll: async (msg) => { pushes.push(msg); return { ok: true } }, flush: async () => {} }
+  const resolved = { enabled: true, debounceMs: 10, summaryMaxChars: 100, titlePrefix: '' } // 旧形状：无 events 键
+  const dispose = createEventListener(ctx, notifier, resolved)
+  listeners['session/event'][0](makeSession('s1'), { type: 'turn/start', seq: 1 })
+  await tickAsync(40)
+  assert.equal(pushes.length, 0, '默认关：不推送')
+  dispose()
+
+  const { ctx: ctx2, listeners: listeners2 } = fakeCtx()
+  const pushes2 = []
+  const notifier2 = { notifyAll: async (msg) => { pushes2.push(msg); return { ok: true } }, flush: async () => {} }
+  const dispose2 = createEventListener(ctx2, notifier2, {
+    ...resolved,
+    events: { turnStart: { enabled: true }, turnEnd: { enabled: true, kinds: {} }, approval: true, agentError: true },
+  })
+  listeners2['session/event'][0](makeSession('s1'), { type: 'turn/start', seq: 1 })
+  await tickAsync(40)
+  assert.equal(pushes2.length, 1, '开启后推送')
+  assert.match(pushes2[0].title, /任务开始/)
+  assert.equal(pushes2[0].level, 'passive')
+  assert.equal(pushes2[0].content, 'ws', '正文 = workspace 名')
+  dispose2()
+})
+
+test('v0.5 turn/start → turn/end 10s 内：尾沿合并只发一条「任务完成」', async () => {
+  const { ctx, listeners } = fakeCtx()
+  const pushes = []
+  const notifier = { notifyAll: async (msg) => { pushes.push(msg); return { ok: true } }, flush: async () => {} }
+  const dispose = createEventListener(ctx, notifier, {
+    enabled: true, debounceMs: 30, summaryMaxChars: 100, titlePrefix: '',
+    events: { turnStart: { enabled: true }, turnEnd: { enabled: true, kinds: {} }, approval: true, agentError: true },
+  })
+  const session = makeSession('s1')
+  listeners['session/event'][0](session, { type: 'turn/start', seq: 1 })
+  await tickAsync(10)
+  listeners['session/event'][0](session, { type: 'turn/end', seq: 2, data: { reason: { kind: 'completed' } } })
+  await tickAsync(60)
+  assert.equal(pushes.length, 1, 'start 被 end 替换（supersede），只发一条')
+  assert.match(pushes[0].title, /任务完成/)
+  dispose()
+})
+
+test('v0.5 stall：timeSensitive 直推 + 文案含 /stop hint；心跳：passive + 摘录', () => {
+  const { ctx, listeners } = fakeCtx()
+  const pushes = []
+  const notifier = { notifyAll: async (msg) => { pushes.push(msg); return { ok: true } }, flush: async () => {} }
+  const t = fakeTimers()
+  const dispose = createEventListener(ctx, notifier, {
+    enabled: true, debounceMs: 10, summaryMaxChars: 500, titlePrefix: '',
+    events: {
+      turnStart: { enabled: false },
+      turnEnd: { enabled: true, kinds: {} }, approval: true, agentError: true,
+      longRunning: { enabled: true, firstAfterMs: 900_000, everyMs: 900_000 },
+      stall: { enabled: true, afterMs: 600_000 },
+    },
+  }, {
+    trackerOverrides: { now: t.now, setTimeoutFn: t.setTimeoutFn, clearTimeoutFn: t.clearTimeoutFn, minMs: 1 },
+  })
+  const session = makeSession('sess-stall-1234', [
+    { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '正在跑长测试' }] } } },
+  ])
+  listeners['session/event'][0](session, { type: 'turn/start', seq: 1 })
+  t.advance(600_000)
+  assert.equal(pushes.length, 1, 'stall 直推（不进宽限窗）')
+  assert.match(pushes[0].title, /疑似卡住/)
+  assert.equal(pushes[0].level, 'timeSensitive')
+  assert.match(pushes[0].content, /ws \/ sess-sta/)
+  assert.match(pushes[0].content, /\/stop 取消/)
+  t.advance(300_000)
+  assert.equal(pushes.length, 2, '心跳在 15min 首跳（卡住已报不抑制心跳）')
+  assert.match(pushes[1].title, /任务进行中/)
+  assert.equal(pushes[1].level, 'passive')
+  assert.match(pushes[1].content, /正在跑长测试/, '心跳附最近输出摘录')
+  assert.match(pushes[1].content, /已运行 15m/, '心跳首跳在 firstAfter=15min')
+  dispose()
+})
+
+test('v0.5 stall：events.stall 关闭时不装定时器（零推送）', () => {
+  const { ctx, listeners } = fakeCtx()
+  const pushes = []
+  const notifier = { notifyAll: async (msg) => { pushes.push(msg); return { ok: true } }, flush: async () => {} }
+  const t = fakeTimers()
+  const dispose = createEventListener(ctx, notifier, {
+    enabled: true, debounceMs: 10, summaryMaxChars: 100, titlePrefix: '',
+    events: {
+      turnStart: { enabled: false },
+      turnEnd: { enabled: true, kinds: {} }, approval: true, agentError: true,
+      longRunning: { enabled: false, firstAfterMs: 900_000, everyMs: 900_000 },
+      stall: { enabled: false, afterMs: 600_000 },
+    },
+  }, {
+    trackerOverrides: { now: t.now, setTimeoutFn: t.setTimeoutFn, clearTimeoutFn: t.clearTimeoutFn, minMs: 1 },
+  })
+  listeners['session/event'][0](makeSession('s1'), { type: 'turn/start', seq: 1 })
+  t.advance(3_600_000)
+  assert.equal(pushes.length, 0)
+  dispose()
+})
+
+test('v0.5 动作卡片：stall 触发时对交互通道 mint + sendActionCard（ac: 负载）', () => {
+  const { ctx, listeners } = fakeCtx()
+  const pushes = []
+  const notifier = { notifyAll: async (msg) => { pushes.push(msg); return { ok: true } }, flush: async () => {} }
+  const t = fakeTimers()
+  const minted = []
+  const dispatcher = {
+    mintAction: (kind, payload) => {
+      minted.push({ kind, payload })
+      return { key: `act:${kind}:dead`, token: 'tok.sig' }
+    },
+  }
+  const cards = []
+  const rawChannel = {
+    channel: 'mock',
+    notifyTargets: () => [{ chatId: 'c1', userId: 'u1' }],
+    sendActionCard: async (payload) => { cards.push(payload); return { messageId: 'm1' } },
+  }
+  const dispose = createEventListener(ctx, notifier, {
+    enabled: true, debounceMs: 10, summaryMaxChars: 100, titlePrefix: '',
+    events: {
+      turnStart: { enabled: false },
+      turnEnd: { enabled: true, kinds: {} }, approval: true, agentError: true,
+      longRunning: { enabled: false, firstAfterMs: 900_000, everyMs: 900_000 },
+      stall: { enabled: true, afterMs: 600_000 },
+    },
+  }, {
+    actions: () => dispatcher,
+    interactive: () => [rawChannel],
+    trackerOverrides: { now: t.now, setTimeoutFn: t.setTimeoutFn, clearTimeoutFn: t.clearTimeoutFn, minMs: 1 },
+  })
+  const session = makeSession('sess-card-1')
+  listeners['session/event'][0](session, { type: 'turn/start', seq: 1 })
+  t.advance(600_000)
+  assert.equal(minted.length, 1)
+  assert.equal(minted[0].kind, 'turn/cancel')
+  assert.deepEqual(minted[0].payload, { sessionId: 'sess-card-1' })
+  assert.equal(cards.length, 1)
+  assert.match(cards[0].title, /疑似卡住/)
+  assert.equal(cards[0].actions[0].label, '⏹ 停止任务')
+  assert.match(cards[0].actions[0].data, /^ac:act:turn\/cancel:dead:tok\.sig$/)
+  dispose()
+})
+
+test('v0.5 动作卡片：wiring.actions 缺省时 stall 通知仍出（文本 hint 兜底，无卡片）', () => {
+  const { ctx, listeners } = fakeCtx()
+  const pushes = []
+  const notifier = { notifyAll: async (msg) => { pushes.push(msg); return { ok: true } }, flush: async () => {} }
+  const t = fakeTimers()
+  const dispose = createEventListener(ctx, notifier, {
+    enabled: true, debounceMs: 10, summaryMaxChars: 100, titlePrefix: '',
+    events: {
+      turnStart: { enabled: false },
+      turnEnd: { enabled: true, kinds: {} }, approval: true, agentError: true,
+      longRunning: { enabled: false, firstAfterMs: 900_000, everyMs: 900_000 },
+      stall: { enabled: true, afterMs: 600_000 },
+    },
+  }, {
+    trackerOverrides: { now: t.now, setTimeoutFn: t.setTimeoutFn, clearTimeoutFn: t.clearTimeoutFn, minMs: 1 },
+  })
+  listeners['session/event'][0](makeSession('s1'), { type: 'turn/start', seq: 1 })
+  t.advance(600_000)
+  assert.equal(pushes.length, 1, '无 actions 注入：通知照发（hint 兜底），仅无卡片')
+  dispose()
+})
+
+test('v0.5 dispose：tracker 定时器被清（退出后不再触发 stall）', () => {
+  const { ctx, listeners } = fakeCtx()
+  const pushes = []
+  const notifier = { notifyAll: async (msg) => { pushes.push(msg); return { ok: true } }, flush: async () => {} }
+  const t = fakeTimers()
+  const dispose = createEventListener(ctx, notifier, {
+    enabled: true, debounceMs: 10, summaryMaxChars: 100, titlePrefix: '',
+    events: {
+      turnStart: { enabled: false },
+      turnEnd: { enabled: true, kinds: {} }, approval: true, agentError: true,
+      longRunning: { enabled: false, firstAfterMs: 900_000, everyMs: 900_000 },
+      stall: { enabled: true, afterMs: 600_000 },
+    },
+  }, {
+    trackerOverrides: { now: t.now, setTimeoutFn: t.setTimeoutFn, clearTimeoutFn: t.clearTimeoutFn, minMs: 1 },
+  })
+  listeners['session/event'][0](makeSession('s1'), { type: 'turn/start', seq: 1 })
+  dispose()
+  t.advance(3_600_000)
+  assert.equal(pushes.length, 0, 'dispose 后不再触发')
+})

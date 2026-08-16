@@ -42,6 +42,30 @@ export function parseApprovalAction(data) {
   }
 }
 
+// ---- v0.5 动作闭环（通知按钮 → 处置动作）----
+// 与审批按钮完全同构的负载协议：ac:<actionKey>:<token>。actionKey 自身含冒号
+// （act:<kind>:<rand>），解析时首段判 ac、末段取 token、中间全部归 key。
+
+export const ACTION_PAYLOAD_PREFIX = 'ac'
+
+/** 组装动作按钮负载：ac:<actionKey>:<token>。 */
+export function buildActionPayload(actionKey, token) {
+  return `${ACTION_PAYLOAD_PREFIX}:${actionKey}:${token}`
+}
+
+/**
+ * 解析动作按钮负载（与 parseApprovalAction 同构）。格式不符返回 null。
+ * @returns {{ actionKey: string, token: string } | null}
+ */
+export function parseActionPayload(data) {
+  const parts = String(data ?? '').split(':')
+  if (parts[0] !== ACTION_PAYLOAD_PREFIX || parts.length < 3) return null
+  return {
+    actionKey: parts.slice(1, -1).join(':'),
+    token: parts[parts.length - 1],
+  }
+}
+
 /**
  * 把任意 inbound 实例归一为统一契约。
  * 判定规则（确定性，不做 arity 探测）：有 notifyTargets = 新契约；只有 notifyChatIds =
@@ -55,6 +79,7 @@ export function parseApprovalAction(data) {
  *   channel: string, raw: object, capabilities: { buttons: boolean },
  *   notifyTargets(): {chatId: string, userId: string}[],
  *   sendApprovalCard(payload): Promise<{messageId}|null>,
+ *   sendActionCard(payload): Promise<{messageId}|null>,
  *   editTarget(target, text): Promise<void>,
  *   sendText(chatId, text): Promise<boolean>,
  * }}
@@ -84,6 +109,16 @@ export function normalizeInbound(raw, fallbackChannel = '') {
       if (typeof raw.sendApprovalCard !== 'function') return null
       try {
         return await raw.sendApprovalCard(payload)
+      } catch {
+        return null // caller 降级为纯通知
+      }
+    },
+    // v0.5 动作卡片（可选方法）：未实现的通道实例（含全部旧形状）恒 null，
+    // caller 降级为通知文本里的命令 hint（「回复 /stop 取消」）——全通道兜底。
+    async sendActionCard(payload) {
+      if (typeof raw.sendActionCard !== 'function') return null
+      try {
+        return await raw.sendActionCard(payload)
       } catch {
         return null // caller 降级为纯通知
       }

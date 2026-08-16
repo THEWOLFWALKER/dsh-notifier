@@ -168,6 +168,20 @@ test('ADMIN_UI_HTML：通知页关键字（v0.4.0 SSE → 浏览器系统通知�
   }
 })
 
+test('ADMIN_UI_HTML：移动端适配关键字（v0.5 特性 D，≤768px 纯 CSS 增量）', () => {
+  for (const keyword of [
+    '@media (max-width: 768px)', // 断点块整体存在
+    'nav { flex-wrap: nowrap; overflow-x: auto', // 导航标签横滚
+    'table { display: block; overflow-x: auto', // 宽表横向滚动
+    'label.fld { flex-direction: column', // 表单字段单列（标签上移）
+    'button { min-height: 44px', // 触控目标 ≥44px
+    'font-size: 16px', // iOS 聚焦不自动缩放
+    'viewport', // 视口 meta（移动端渲染前提）
+  ]) {
+    assert.ok(ADMIN_UI_HTML.includes(keyword), `ADMIN_UI_HTML 应包含关键字 ${keyword}`)
+  }
+})
+
 // ---------------------------------------------------------------- 鉴权（401）
 
 test('401：缺 Authorization 头 → 401 + 中文 error（不区分缺/错，防探测）', async () => {

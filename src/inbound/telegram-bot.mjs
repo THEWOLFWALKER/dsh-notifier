@@ -1,6 +1,8 @@
 // dsh-notifier inbound/telegram-bot.mjs
 // Telegram 入站：getUpdates 长轮询（无公网要求，首选回传通道）。
 //  - callback_query 按钮：callback_data 携带一次性 token，点击即裁决（首达采纳）
+//    · ap:<decision>:<approvalKey>:<token> —— 审批按钮（bus.decide）
+//    · ac:<actionKey>:<token> —— v0.5 动作按钮（actions.dispatch，如「停止任务」）
 //  - message 文本：走 bus 白名单 + 去重后交给 conversation router
 //  - offset cursor 持久化（store），重启不重复消费
 // 军规：轮询循环里的任何异常只退避重试，绝不弄崩宿主；stop() 干净退出。
@@ -18,10 +20,12 @@ const DEFAULT_ERROR_BACKOFF_MS = 5000
  * @param {ReturnType<typeof import('./tokens.mjs').createTokenVault>} options.vault
  * @param {import('./store.mjs').store} [options.store] - offset cursor 持久化
  * @param {object} [options.logger]
+ * @param {ReturnType<typeof import('../actions.mjs').createActionDispatcher>} [options.actions]
+ *   - v0.5 动作分发器（可空：缺省时 ac: 回调分支不存在，行为与 v0.4.0 一致）
  * @param {typeof fetch} [options.fetchImpl] - 测试注入
  * @param {number} [options.errorBackoffMs=5000] - 轮询异常退避（测试可缩短）
  */
-export function createTelegramInbound({ config, bus, vault, store = null, logger = null, fetchImpl, errorBackoffMs } = {}) {
+export function createTelegramInbound({ config, bus, vault, store = null, logger = null, fetchImpl, errorBackoffMs, actions = null } = {}) {
   const apiBase = (config.apiBase || DEFAULT_API_BASE).replace(/\/+$/, '')
   const botToken = String(config.botToken ?? '')
   const backoffMs = Math.max(0, Number(errorBackoffMs) || DEFAULT_ERROR_BACKOFF_MS)
@@ -58,10 +62,28 @@ export function createTelegramInbound({ config, bus, vault, store = null, logger
     if (update.callback_query !== undefined) {
       const query = update.callback_query
       const data = String(query.data ?? '')
-      // callback_data 格式：ap:<decision>:<approvalKey>:<token>
+      const parts = data.split(':')
+      // v0.5 动作按钮：ac:<actionKey>:<token>（actions 注入时才存在此分支）
+      if (parts[0] === 'ac' && actions !== null && parts.length >= 3) {
+        const actionKey = parts.slice(1, -1).join(':')
+        const token = parts[parts.length - 1]
+        const result = actions.dispatch({ actionKey, token, via: 'telegram:action', userId: query.from?.id })
+        const actionText = result?.ok === true
+          ? result.message
+          : (result?.message ?? '该操作已处理或已过期')
+        await api('answerCallbackQuery', { callback_query_id: query.id, text: actionText }).catch(() => {})
+        if (query.message?.chat?.id !== undefined) {
+          await api('editMessageText', {
+            chat_id: query.message.chat.id,
+            message_id: query.message.message_id,
+            text: `${actionText}\n（来源：telegram user ${query.from?.id ?? '?'}）`,
+          }).catch(() => {})
+        }
+        return
+      }
+      // 审批按钮：ap:<decision>:<approvalKey>:<token>
       // 注意 approvalKey 自身含冒号（ap:<callId>:<n>），decision 取第二段、token 取末段、
       // 中间全部归 key（slice+join 重组），不能按固定长度切。
-      const parts = data.split(':')
       if (parts[0] === 'ap' && parts.length >= 4) {
         const decision = parts[1]
         const approvalKey = parts.slice(2, -1).join(':')
@@ -161,6 +183,31 @@ export function createTelegramInbound({ config, bus, vault, store = null, logger
         return { messageId: result?.message_id }
       } catch (error) {
         warn(`审批卡片发送失败: ${error instanceof Error ? error.message : String(error)}`)
+        return null
+      }
+    },
+
+    /**
+     * v0.5 推送动作卡片（通知文本 + 自定义按钮行；event-listener 的 stall/心跳通知调用）。
+     * @param {{ chatId: string, title: string, content: string, actions: { label: string, data: string }[] }} payload
+     * @returns {Promise<{ messageId: number } | null>} 无有效按钮/失败返回 null（caller 降级）
+     */
+    async sendActionCard({ chatId, title, content, actions: buttons = [] }) {
+      try {
+        const rows = (Array.isArray(buttons) ? buttons : [])
+          .filter((button) => button !== null && typeof button === 'object'
+            && typeof button.label === 'string' && button.label.trim() !== ''
+            && typeof button.data === 'string' && button.data !== '')
+          .map((button) => ({ text: button.label, callback_data: button.data }))
+        if (rows.length === 0) return null
+        const result = await api('sendMessage', {
+          chat_id: chatId,
+          text: `${title}\n\n${content}`,
+          reply_markup: { inline_keyboard: [rows] },
+        })
+        return { messageId: result?.message_id }
+      } catch (error) {
+        warn(`动作卡片发送失败: ${error instanceof Error ? error.message : String(error)}`)
         return null
       }
     },

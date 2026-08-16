@@ -20,6 +20,8 @@ import { createWechatIlinkInbound, resolveWechatInboundConfig, ACCOUNT_KEY } fro
 import { createDingtalkInbound, resolveDingtalkInboundConfig } from './inbound/dingtalk-stream.mjs'
 import { registerApprovalHandler } from './approval/router.mjs'
 import { registerConversationRouter } from './inbound/conversation.mjs'
+// v0.5：动作闭环（通知按钮 → 内置处置动作）
+import { createActionDispatcher } from './actions.mjs'
 // v0.3.2：路由引擎（双向解析链 + 会话台账，src/routing/*.mjs）
 import { createAgentRouter } from './routing/agent-router.mjs'
 import { createSessionRegistry } from './routing/session-registry.mjs'
@@ -174,7 +176,19 @@ export function apply(ctx, config = {}) {
   } catch { /* 迁移失败静默：绝不弄崩启动 */ }
   disposers.push(() => registry.dispose())
 
-  disposers.push(createEventListener(ctx, notifier, resolved, { router, registry }))
+  // v0.5 动作闭环的装配时序（架构审查修正，设计稿 §6）：eventListener 装配早于
+  // inbound 白名单块（vault/store/通道在其后才创建），直传实例不可行——用惰性
+  // getter（先例 = 下方 registerNotifyTool 的 channelTypes: () => ...）。
+  // 未配置任何 inbound（白名单空）→ actions 永不创建 → getter 恒 null → 通知文本
+  // hint「回复 /stop 取消」仍全通道可达，动作卡片自然缺席——兼容红线自洽。
+  let actionsRef = null
+  let interactiveRaw = []
+  disposers.push(createEventListener(ctx, notifier, resolved, {
+    router,
+    registry,
+    actions: () => actionsRef, // 惰性：stall/心跳触发时（装配早已完成）才解引用
+    interactive: () => interactiveRaw,
+  }))
   const disposeTool = registerNotifyTool(ctx, notifier, {
     rateLimitPerMinute: resolved.toolRateLimitPerMinute,
     router,
@@ -289,6 +303,27 @@ export function apply(ctx, config = {}) {
     })
     const bus = createInboundBus({ allowUsers, store, vault, logger })
 
+    // v0.5 动作分发器：vault/store 之后创建（无环），telegram/feishu 按钮回调消费。
+    // 内置白名单仅 turn/cancel——权限面与 /stop 命令完全等价（永无任意代码执行）。
+    const actions = createActionDispatcher({ vault, store, logger })
+    actions.register('turn/cancel', ({ payload }) => {
+      const sessionId = typeof payload?.sessionId === 'string' ? payload.sessionId : ''
+      if (sessionId === '') return { ok: false, message: '无效会话' }
+      let agent = null
+      try { agent = ctx.agents.get(sessionId) } catch { return { ok: false, message: '会话查询失败' } }
+      if (agent === undefined || agent === null) {
+        return { ok: false, message: '会话不存在（任务可能已结束）' }
+      }
+      try {
+        agent.cancel('remote-action')
+        return { ok: true, message: '✅ 已停止任务' }
+      } catch {
+        return { ok: false, message: '取消失败（agent 可能已空闲）' }
+      }
+    })
+    actionsRef = actions
+    disposers.push(() => actions.dispose())
+
     // v0.3.0 多通道装配：交互渠道实例（统一契约，approval 卡片推送用）与回执通道表。
     // telegram 为 v0.2.0 旧形状（notifyChatIds），经 _contract.normalizeInbound 归一；
     // 后续通道（feishu/qq/wxpusher/wechat）按统一契约逐个挂进这两个容器。
@@ -303,6 +338,7 @@ export function apply(ctx, config = {}) {
         vault,
         store,
         logger,
+        actions, // v0.5 动作按钮（ac: 回调 → turn/cancel）
       })
       telegramInbound.start()
       interactiveInstances.push(telegramInbound)
@@ -319,6 +355,7 @@ export function apply(ctx, config = {}) {
         bus,
         fallbackTargets: allowUsers,
         logger,
+        actions, // v0.5 动作按钮（ac: 回调 → turn/cancel）
       })
       feishuInbound.start()
       interactiveInstances.push(feishuInbound)
@@ -409,6 +446,10 @@ export function apply(ctx, config = {}) {
       logger,
     })
     disposers.push(disposeApproval)
+
+    // v0.5：通道全部挂载后才暴露交互实例列表（eventListener 的 pushActionCard 每次
+    // 经 normalizeInbound 防御归一，这里的赋值只发生在装配期一次）
+    interactiveRaw = interactiveInstances
 
     // 阶段 5：会话路由——白名单用户的文本按 idle/busy 语义投进 agent（followup/inject/steer）
     const replyViaChannel = async (channel, chatId, text) => {

@@ -233,6 +233,29 @@ export function resolveConfig(config = {}) {
     },
     approval: rawEvents.approval !== false,
     agentError: rawEvents.agentError !== false,
+    // ---- v0.5 状态上报三键（移动指挥中心）----
+    // turnStart 默认关：桌面场景每 turn 一条「任务开始」是噪音；移动场景（发完任务
+    // 即离开）建议显式开启。longRunning/stall 默认开：低噪高值（15min+ 长任务心跳 /
+    // 10min 无事件疑似卡住），存量「零配置」用户的长任务从此有信号——版本主题，非回归。
+    // 数值军规（v0.3.2 mergeWindowMs 教训）：Math.max(60_000, Number(x) || 默认)——
+    // 下限钳制 60s 杜绝误配刷屏；0 不是合法值（关闭一律 enabled: false），无 0 歧义。
+    turnStart: {
+      enabled: rawEvents.turnStart === true
+        || (rawEvents.turnStart !== null && typeof rawEvents.turnStart === 'object' && rawEvents.turnStart.enabled === true),
+    },
+    longRunning: (() => {
+      const raw = (rawEvents.longRunning !== null && typeof rawEvents.longRunning === 'object') ? rawEvents.longRunning : {}
+      const enabled = rawEvents.longRunning !== false && raw.enabled !== false
+      const firstAfterMs = Math.max(60_000, Number(raw.firstAfterMs) || 900_000)
+      return { enabled, firstAfterMs, everyMs: Math.max(60_000, Number(raw.everyMs) || firstAfterMs) }
+    })(),
+    stall: (() => {
+      const raw = (rawEvents.stall !== null && typeof rawEvents.stall === 'object') ? rawEvents.stall : {}
+      return {
+        enabled: rawEvents.stall !== false && raw.enabled !== false,
+        afterMs: Math.max(60_000, Number(raw.afterMs) || 600_000),
+      }
+    })(),
   }
 
   // agent 工具滑动窗口调用上限（阶段 6）：防 prompt injection 把用户渠道刷成垃圾出口；0 = 不限。

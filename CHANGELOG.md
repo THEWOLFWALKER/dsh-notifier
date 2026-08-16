@@ -3,17 +3,50 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 SemVer。
 DSH 处于 developer preview，0.x 阶段的次版本号提升允许小幅破坏性变更（会在条目中标注）。
 
-## [Unreleased]
+## [0.5.0] - 2026-08-16
+
+Mobile command center + notification action loop（设计稿 docs/v0.5-design.md 四特性全量落地）：长任务自动心跳与疑似卡住提醒，通知卡片自带「停止任务」按钮（Telegram inline keyboard / 飞书卡片），手机从「收据面」升级为「指挥面」；`/quiet`·`/unquiet` 命令补全与管理台移动端适配收尾。测试 625 → 673（+48）。
+
+### Added（特性 A：状态上报线——长任务不再黑盒）
+
+- `src/status/turn-tracker.mjs`：纯逻辑 turn 跟踪器。`turn/start` 建档并起表、`turn/end`·`agent/disposed` 清档清表；会话事件 touch 续表；每 turn 只发一次 firstAfterMs 心跳、此后 everyMs 周期心跳、afterMs 无事件输出卡住信号；数值下限钳制 60s（v0.3.2 mergeWindowMs 教训的统一军规），0 非法值一律回落默认；`dispose()` 清全部定时器；所有回调 try-catch 绝不外抛（listener never throws）。
+- `src/event-listener.mjs` 接线：tracker 挂进既有事件流（observe/session 创建与销毁），心跳 → `passive` 级「⏱ 任务进行中」、卡住 → `timeSensitive` 级「⚠️ 疑似卡住」，复用既有 push 链（防抖、分级路由、账本照常）；卡住信号带动作卡片（特性 B）。
+- `src/config.mjs` events 三键：`turnStart`（默认关——桌面每 turn 一条是噪音，移动场景显式开）、`longRunning`（默认开：`firstAfterMs` 900s、`everyMs` 默认=firstAfterMs）、`stall`（默认开：`afterMs` 600s）。零配置用户的长任务从此有信号——版本主题，非行为回归。
+
+### Added（特性 B：通知动作闭环——按钮即处置）
+
+- `src/actions.mjs`：动作分发器。信任链与审批线完全同构（bot 私聊回调保真 + HMAC 一次性 token TTL 10min + 账本单次核销首达采纳）；内置白名单仅 `turn/cancel`——权限面与 `/stop` 命令完全等价，永无任意代码执行；`dispatch` 全 catch 绝不外抛；账本/铸造失败只降级为「不发卡片」，绝不影响通知文本主链路（文本 hint「回复 /stop 取消」全通道兜底）；账本持久化跨重启（与审批共用 store，键命名空间 `act:` 隔离）。
+- `src/inbound/_contract.mjs`：`buildActionPayload` / `parseActionPayload`（`ac:<actionKey>:<token>`，与审批 `ap:` 负载同构）。
+- `src/inbound/telegram-bot.mjs`：`sendActionCard`（inline keyboard callback_data 装载动作负载）+ 回调 `ac:` 分流进分发器、answerCallbackQuery 即时回执。
+- `src/inbound/feishu-bot.mjs`：`sendActionCard`（交互卡片 action 元素）+ 卡片回调 `ac:` 分流。
+- 推送路径（event-listener wiring）：心跳/卡住通知在 telegram/feishu 通道附「⏹ 停止任务」按钮；qq/wxpusher/wechat/dingtalk 纯文本通道零改动（hint 兜底）。装配时序采用惰性求值（`actions: () => actionsRef`）解决 event-listener 先于 inbound 创建的依赖环。
+- `src/index.mjs`：注册 `turn/cancel` 处置动作（`agent.cancel('remote-action')`；会话不存在/已空闲给出结构性中文终态文案）。
+
+### Added（特性 C：命令中心补全，P2）
+
+- `/quiet <workspace|sid>` / `/unquiet <workspace|sid>`：调 `router.setSessionOutbound(sid, { quiet })` 静默/恢复会话出站推送（远程审批与对话不受影响）；`/unquiet` 写显式 `false` 压过上游 agent 级静默（不回落）；目标解析复用 `/agent use` 智能匹配并抽取为共用函数 `matchSessionByNeedle`（workspace 精确 > sid 精确 > ≥4 位前缀，多命中列候选）；router 缺省降级提示（同 `/route` 惯例）。
+- `/help` 文案补三行（/quiet、/unquiet、状态上报说明）。
+
+### Added（特性 D：管理台移动端适配，P2）
+
+- `src/admin/ui.mjs`：`@media (max-width: 768px)` 纯 CSS 增量——表单字段单列（标签上移）、导航标签横滚（隐藏滚动条 + 惯性滚动）、宽表横向滚动、触控目标 ≥44px、input 16px 防 iOS 聚焦自动缩放。零逻辑变更零构建，桌面端逐字节不变。
 
 ### Fixed（管理台 UI 三处，真浏览器首次实跑暴露）
 
-- `src/admin/ui.mjs` 头部版本号 v0.3.3 → v0.4.0（发布时漏更）。
+- `src/admin/ui.mjs` 头部版本号 v0.3.3 → v0.4.0（发布时漏更）；v0.5.0 发布同步更新为 v0.5.0（同类错误不二犯）。
 - SSE 事件流解析器：内联脚本里的 `'\n\n'` 被外层模板字面量吃掉转义，服务出去的 HTML 字符串字面量跨行——**真浏览器整个内联脚本 SyntaxError，管理台全功能瘫痪**（测试只断言 HTML 字符串未执行 JS，故 625 测试全绿仍漏网）。修复为 `\\n` 转义。
 - Dashboard「agent 路由键」统计：API 契约返回 `keys: number`，UI 按 `Array.isArray` 当数组渲染，恒显「–」（v0.3.3 起从未显示过）。UI 侧对齐契约。
 
-### Added
+### Added（文档与元数据）
 
 - `docs/screenshots/`：管理台五页真实截图（Dashboard / 通知 / 绑定矩阵 / 会话 / 通道），README 双语「界面预览」章节引用。生成方式：真插件 admin server + 预置运行时数据（state.json 路由三表 + 审计流 + 本地回环 webhook/bell 触发真实广播），仓库代码零 mock。
+- `docs/v0.5-design.md`：v0.5 设计稿（目标/现状盘点/四特性/装配时序/兼容性/测试计划/风险清单/三轮架构审查记录）。
+- README 双语重写为新版精简结构（tagline · badges · ASCII 架构图 · 特性表格 · 配置块速查 · 渠道矩阵自动生成标记），`README.zh.md` 更名 `README.zh-CN.md`（同步 GitHub）。
+- `package.json`：合并 GitHub 版 `dshWorkshop` 元数据块（omdsh-workshop-package/v1：permissions / capability / compatibility 清单）；`.gitignore` 新增（同步 GitHub）。
+
+### Added（测试）
+
+- `test/turn-tracker.test.mjs`（14）/ `test/actions.test.mjs`（12）；`test/event-listener.test.mjs` +7（turnStart 门控、心跳/卡住 intent、动作卡片铸造失败降级）；`test/inbound.telegram.test.mjs` +4 / `test/inbound.feishu.test.mjs` +5（动作卡片发送与 `ac:` 回调核销链）；`test/conversation.route.test.mjs` +5（特性 C：quiet 写入/显式 false 覆盖/目标解析三分支/降级/help 文案）；`test/admin-server.test.mjs` +1（特性 D 移动端 CSS 关键字）。
 
 ## [0.4.0] - 2026-08-16
 

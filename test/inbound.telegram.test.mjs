@@ -230,3 +230,90 @@ test('editResolved：编辑远端卡片为最终状态（按钮失效提示）',
   assert.equal(edited[0].body.message_id, 9)
   assert.match(edited[0].body.text, /已远程批准/)
 })
+
+// ---------------------------------------------------------------- v0.5 动作闭环
+
+test('sendActionCard：sendMessage 携带自定义按钮行（callback_data = ac 负载）', async () => {
+  const { fetchImpl, calls } = makeFetch({ sendMessage: { ok: true, result: { message_id: 31 } } })
+  const tg = createTelegramInbound({ config: CONFIG, bus: makeBus(), vault: createTokenVault(), fetchImpl })
+  const card = await tg.sendActionCard({
+    chatId: 100,
+    title: '⚠️ 疑似卡住',
+    content: 'ws / abcdef12\n已运行 12m',
+    actions: [{ label: '⏹ 停止任务', data: 'ac:act:turn/cancel:dead:token.sig' }],
+  })
+  assert.deepEqual(card, { messageId: 31 })
+  assert.equal(calls[0].body.chat_id, 100)
+  assert.match(calls[0].body.text, /疑似卡住/)
+  const buttons = calls[0].body.reply_markup.inline_keyboard[0]
+  assert.equal(buttons.length, 1)
+  assert.equal(buttons[0].text, '⏹ 停止任务')
+  assert.equal(buttons[0].callback_data, 'ac:act:turn/cancel:dead:token.sig')
+})
+
+test('sendActionCard：空按钮/非法按钮行 → null（不发消息）', async () => {
+  const { fetchImpl, calls } = makeFetch({ sendMessage: { ok: true, result: { message_id: 1 } } })
+  const tg = createTelegramInbound({ config: CONFIG, bus: makeBus(), vault: createTokenVault(), fetchImpl })
+  assert.equal(await tg.sendActionCard({ chatId: 100, title: 't', content: 'c', actions: [] }), null)
+  assert.equal(await tg.sendActionCard({ chatId: 100, title: 't', content: 'c', actions: [{ label: 'x' }] }), null)
+  assert.equal(calls.filter((call) => call.method === 'sendMessage').length, 0)
+})
+
+test('ac: 回调：actions.dispatch 被调 + answerCallbackQuery + 卡片编辑终态', async () => {
+  const dispatched = []
+  const actions = {
+    dispatch: (p) => { dispatched.push(p); return { ok: true, message: '✅ 已停止任务' } },
+  }
+  const vault = createTokenVault({ secret: 'k' })
+  const updates = [
+    { update_id: 1, callback_query: { id: 'cbq9', from: { id: 42 }, message: { chat: { id: 42 }, message_id: 15 }, data: 'ac:act:turn/cancel:abcd:tok.sig' } },
+  ]
+  let i = 0
+  const { fetchImpl, calls } = makeFetch({
+    getUpdates: () => {
+      if (i >= updates.length) return { ok: true, result: [] }
+      const out = { ok: true, result: [updates[i]] }
+      i += 1
+      return out
+    },
+    answerCallbackQuery: { ok: true, result: true },
+    editMessageText: { ok: true, result: true },
+  })
+  const tg = createTelegramInbound({ config: CONFIG, bus: makeBus(), vault, fetchImpl, errorBackoffMs: 10, actions })
+  tg.start()
+  await new Promise((resolve) => setTimeout(resolve, 60))
+  await tg.stop()
+  assert.equal(dispatched.length, 1)
+  assert.equal(dispatched[0].actionKey, 'act:turn/cancel:abcd')
+  assert.equal(dispatched[0].token, 'tok.sig')
+  assert.equal(dispatched[0].via, 'telegram:action')
+  const answered = calls.filter((call) => call.method === 'answerCallbackQuery')
+  assert.equal(answered.length, 1)
+  assert.match(answered[0].body.text, /已停止任务/)
+  const edited = calls.filter((call) => call.method === 'editMessageText')
+  assert.equal(edited.length, 1)
+  assert.match(edited[0].body.text, /已停止任务/)
+  assert.match(edited[0].body.text, /来源：telegram user 42/)
+})
+
+test('ac: 回调：actions 缺省时分支不存在（与 v0.4.0 行为一致，不 answer）', async () => {
+  const vault = createTokenVault({ secret: 'k' })
+  const updates = [
+    { update_id: 1, callback_query: { id: 'cbq9', from: { id: 42 }, message: { chat: { id: 42 }, message_id: 15 }, data: 'ac:act:turn/cancel:abcd:tok.sig' } },
+  ]
+  let i = 0
+  const { fetchImpl, calls } = makeFetch({
+    getUpdates: () => {
+      if (i >= updates.length) return { ok: true, result: [] }
+      const out = { ok: true, result: [updates[i]] }
+      i += 1
+      return out
+    },
+  })
+  const tg = createTelegramInbound({ config: CONFIG, bus: makeBus(), vault, fetchImpl, errorBackoffMs: 10 })
+  tg.start()
+  await new Promise((resolve) => setTimeout(resolve, 60))
+  await tg.stop()
+  assert.equal(calls.filter((call) => call.method === 'answerCallbackQuery').length, 0, 'actions 未注入：不 answer 不编辑')
+  assert.equal(calls.filter((call) => call.method === 'editMessageText').length, 0)
+})

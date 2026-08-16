@@ -3,6 +3,7 @@
 //  - 事件订阅：im.message.receive_v1（私聊/群聊文本）→ bus.accept
 //  - 审批卡片：interactive 卡片两按钮（value.act 与 telegram callback_data 同构，
 //    复用 buildApprovalAction/parseApprovalAction + bus.decide 的 token 核销）
+//  - v0.5 动作卡片：sendActionCard（自定义按钮行）+ ac: 回调分支（actions.dispatch）
 //  - 卡片回调：card.action.trigger（新式卡片回调，支持长连接；旧式回调不支持）
 //  - SDK 懒加载：@larksuiteoapi/node-sdk 为 optionalDependencies——未安装时中文指引并
 //    优雅降级（返回不可用实例，不弄崩宿主）。飞书 WS 是私有 protobuf 帧（pbbp2），
@@ -10,7 +11,7 @@
 // 军规：handler 3s 内必须返回（超时服务端会重推，重推由 bus 的 messageId 去重吸收）；
 // 任何异常只 warn，绝不弄崩宿主；stop() 干净退出。
 
-import { buildApprovalAction, parseApprovalAction } from './_contract.mjs'
+import { buildApprovalAction, parseApprovalAction, parseActionPayload } from './_contract.mjs'
 
 const DEFAULT_DOMAIN = 'https://open.feishu.cn'
 const SDK_PACKAGE = '@larksuiteoapi/node-sdk'
@@ -108,16 +109,55 @@ function buildResolvedCard(text) {
   }
 }
 
+/** 已处置态动作卡片（v0.5，防过期按钮二次点击）。 */
+function buildActionResolvedCard(text) {
+  return {
+    config: { wide_screen_mode: true },
+    header: {
+      template: 'grey',
+      title: { tag: 'plain_text', content: '操作已完成' },
+    },
+    elements: [{ tag: 'div', text: { tag: 'lark_md', content: text } }],
+  }
+}
+
+/** v0.5 动作卡片（通知文本 + 自定义按钮行；按钮 value.act = ac:<actionKey>:<token>）。 */
+function buildActionCard({ title, content, actions: buttons = [] }) {
+  const actions = (Array.isArray(buttons) ? buttons : [])
+    .filter((button) => button !== null && typeof button === 'object'
+      && typeof button.label === 'string' && button.label.trim() !== ''
+      && typeof button.data === 'string' && button.data !== '')
+    .map((button) => ({
+      tag: 'button',
+      text: { tag: 'plain_text', content: button.label },
+      type: 'danger',
+      value: { act: button.data },
+    }))
+  return {
+    config: { wide_screen_mode: true },
+    header: {
+      template: 'orange',
+      title: { tag: 'plain_text', content: String(title ?? '') },
+    },
+    elements: [
+      { tag: 'div', text: { tag: 'lark_md', content: String(content ?? '') } },
+      ...(actions.length > 0 ? [{ tag: 'hr' }, { tag: 'action', actions }] : []),
+    ],
+  }
+}
+
 /**
- * 创建飞书入站通道（统一契约：channel/notifyTargets/sendApprovalCard/editResolved/sendText）。
+ * 创建飞书入站通道（统一契约：channel/notifyTargets/sendApprovalCard/sendActionCard/editResolved/sendText）。
  * @param {object} options
  * @param {{ appId: string, appSecret: string, domain?: string, allowUsers?: string[] }} options.config
  * @param {ReturnType<typeof import('./bus.mjs').createInboundBus>} options.bus
  * @param {string[]} [options.fallbackTargets] - 未配置 allowUsers 时的卡片推送目标（全局白名单回落）
  * @param {object} [options.logger]
  * @param {() => Promise<object>} [options.sdkLoader] - SDK 懒加载器（测试注入；默认动态 import）
+ * @param {ReturnType<typeof import('../actions.mjs').createActionDispatcher>} [options.actions]
+ *   - v0.5 动作分发器（可空：缺省时 ac: 回调分支不存在，行为与 v0.4.0 一致）
  */
-export function createFeishuInbound({ config, bus, fallbackTargets = [], logger = null, sdkLoader } = {}) {
+export function createFeishuInbound({ config, bus, fallbackTargets = [], logger = null, sdkLoader, actions = null } = {}) {
   const domain = (config.domain || DEFAULT_DOMAIN).replace(/\/+$/, '')
   const allowUsers = Array.isArray(config.allowUsers) ? config.allowUsers.map(String) : []
   const warn = (message) => {
@@ -168,29 +208,48 @@ export function createFeishuInbound({ config, bus, fallbackTargets = [], logger 
     }
   }
 
+  /** 把卡片 patch 成终态（不 await，3s 内先回 toast；失败静默）。 */
+  function patchResolvedCard(data, card) {
+    const messageId = String(data?.message_id ?? data?.open_message_id ?? '')
+    if (messageId === '' || client === null) return
+    client.im.v1.message.patch({
+      path: { message_id: messageId },
+      data: { content: JSON.stringify(card) },
+    }).catch(() => {})
+  }
+
   function handleCardAction(data) {
     try {
       const value = data?.action?.value ?? {}
-      const action = parseApprovalAction(typeof value.act === 'string' ? value.act : '')
-      if (action === null) return { toast: { type: 'info', content: '未知操作' } }
+      const raw = typeof value.act === 'string' ? value.act : ''
+      const action = parseActionPayload(raw)
+      // v0.5 动作按钮：ac:<actionKey>:<token>（actions 注入时才处理）
+      if (action !== null) {
+        if (actions === null) return { toast: { type: 'info', content: '未知操作' } }
+        const result = actions.dispatch({
+          actionKey: action.actionKey,
+          token: action.token,
+          via: 'feishu:action',
+          userId: String(data?.operator?.open_id ?? '(unknown)'),
+        })
+        const text = result?.message ?? '该操作已处理或已过期'
+        patchResolvedCard(data, buildActionResolvedCard(`${text}（来源：飞书用户 ${data?.operator?.open_id ?? '?'}）`))
+        return { toast: { type: result?.ok === true ? 'success' : 'info', content: text } }
+      }
+      const approvalAction = parseApprovalAction(raw)
+      if (approvalAction === null) return { toast: { type: 'info', content: '未知操作' } }
       const verdict = bus.decide({
-        approvalKey: action.approvalKey,
-        decision: action.decision,
-        token: action.token,
+        approvalKey: approvalAction.approvalKey,
+        decision: approvalAction.decision,
+        token: approvalAction.token,
         via: 'feishu:button',
         userId: String(data?.operator?.open_id ?? '(unknown)'),
       })
       const text = verdict.ok
-        ? (action.decision === 'allowed-once' ? '✅ 已批准（单次有效）' : '❌ 已拒绝')
+        ? (approvalAction.decision === 'allowed-once' ? '✅ 已批准（单次有效）' : '❌ 已拒绝')
         : '该审批已处理或已过期（token 单次核销）'
       // 卡片改成终态（patch 覆盖按钮，防过期按钮二次点击）；不 await，3s 内先回 toast
-      const messageId = String(data?.message_id ?? data?.open_message_id ?? '')
-      if (messageId !== '' && client !== null) {
-        client.im.v1.message.patch({
-          path: { message_id: messageId },
-          data: { content: JSON.stringify(buildResolvedCard(`${text}（来源：飞书用户 ${data?.operator?.open_id ?? '?'}）`)) },
-        }).catch(() => {})
-      }
+      patchResolvedCard(data, buildResolvedCard(`${text}（来源：飞书用户 ${data?.operator?.open_id ?? '?'}）`))
       return { toast: { type: verdict.ok ? 'success' : 'info', content: text } }
     } catch (error) {
       warn(`卡片回调异常: ${error instanceof Error ? error.message : String(error)}`)
@@ -257,6 +316,23 @@ export function createFeishuInbound({ config, bus, fallbackTargets = [], logger 
         return messageId !== '' ? { messageId } : null
       } catch (error) {
         warn(`审批卡片发送失败: ${error instanceof Error ? error.message : String(error)}`)
+        return null
+      }
+    },
+
+    /**
+     * v0.5 推送动作卡片（通知文本 + 自定义按钮行；event-listener 的 stall/心跳通知调用）。
+     * @returns {Promise<{ messageId: string } | null>} 无有效按钮/失败返回 null（caller 降级）
+     */
+    async sendActionCard({ chatId, title, content, actions: buttons = [] }) {
+      if (client === null) return null
+      const card = buildActionCard({ title, content, actions: buttons })
+      if (!Array.isArray(card.elements) || !card.elements.some((element) => element?.tag === 'action')) return null
+      try {
+        const messageId = await sendInteractive(chatId, card)
+        return messageId !== '' ? { messageId } : null
+      } catch (error) {
+        warn(`动作卡片发送失败: ${error instanceof Error ? error.message : String(error)}`)
         return null
       }
     },

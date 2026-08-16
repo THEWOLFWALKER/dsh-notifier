@@ -418,3 +418,111 @@ test('normalizeInbound：feishu 实例直接走新契约（无需旧形状适配
   assert.equal(rig.fake.state.patched.length, 1)
   await rig.inbound.stop()
 })
+
+// ---------------------------------------------------------------- v0.5 动作闭环
+
+test('sendActionCard：interactive 卡片携带按钮行（value.act = ac 负载）', async () => {
+  const rig = makeRig()
+  rig.inbound.start()
+  await tick()
+  const card = await rig.inbound.sendActionCard({
+    chatId: 'ou_1',
+    title: '⚠️ 疑似卡住',
+    content: 'ws / abcdef12\n已运行 12m',
+    actions: [{ label: '⏹ 停止任务', data: 'ac:act:turn/cancel:abcd:tok.sig' }],
+  })
+  assert.deepEqual(card, { messageId: 'om_1' })
+  const sent = rig.fake.state.sent[0]
+  assert.equal(sent.msgType, 'interactive')
+  const parsed = JSON.parse(sent.content)
+  assert.match(parsed.header.title.content, /疑似卡住/)
+  const actionElement = parsed.elements.find((element) => element.tag === 'action')
+  assert.ok(actionElement !== undefined, '应含 action 按钮块')
+  assert.equal(actionElement.actions[0].text.content, '⏹ 停止任务')
+  assert.equal(actionElement.actions[0].value.act, 'ac:act:turn/cancel:abcd:tok.sig')
+  await rig.inbound.stop()
+})
+
+test('sendActionCard：空按钮行 → null 不发消息；API 失败 → null', async () => {
+  const rig = makeRig({ sdkOptions: { failCreate: 1 } })
+  rig.inbound.start()
+  await tick()
+  assert.equal(await rig.inbound.sendActionCard({ chatId: 'ou_1', title: 't', content: 'c', actions: [] }), null)
+  assert.equal(rig.fake.state.sent.length, 0)
+  assert.equal(await rig.inbound.sendActionCard({
+    chatId: 'ou_1', title: 't', content: 'c',
+    actions: [{ label: '⏹ 停止任务', data: 'ac:act:x:y' }],
+  }), null, 'mock 网络失败降级 null')
+  await rig.inbound.stop()
+})
+
+test('ac: 卡片回调：actions.dispatch 被调 + toast + 卡片 patch 终态', async () => {
+  const logger = makeLogger()
+  const bus = createInboundBus({ allowUsers: ['ou_1'], logger })
+  const fake = makeFakeSdk()
+  const dispatched = []
+  const actions = { dispatch: (p) => { dispatched.push(p); return { ok: true, message: '✅ 已停止任务' } } }
+  const inbound = createFeishuInbound({
+    config: { appId: 'cli_a', appSecret: 's', allowUsers: ['ou_1'] },
+    bus,
+    logger,
+    sdkLoader: fake.loader,
+    actions,
+  })
+  inbound.start()
+  await tick()
+  const toast = fake.state.dispatcher.handlers['card.action.trigger']({
+    action: { value: { act: 'ac:act:turn/cancel:abcd:tok.sig' } },
+    operator: { open_id: 'ou_9' },
+    message_id: 'om_5',
+  })
+  assert.equal(dispatched.length, 1)
+  assert.equal(dispatched[0].actionKey, 'act:turn/cancel:abcd')
+  assert.equal(dispatched[0].token, 'tok.sig')
+  assert.equal(dispatched[0].via, 'feishu:action')
+  assert.equal(toast.toast.type, 'success')
+  assert.match(toast.toast.content, /已停止任务/)
+  await tick()
+  assert.equal(fake.state.patched.length, 1, '卡片应 patch 为终态')
+  const patched = JSON.parse(fake.state.patched[0].content)
+  assert.match(patched.elements[0].text.content, /已停止任务/)
+  assert.match(patched.elements[0].text.content, /ou_9/)
+  await inbound.stop()
+})
+
+test('ac: 卡片回调：actions 缺省时不分发（toast 未知操作）', async () => {
+  const rig = makeRig()
+  rig.inbound.start()
+  await tick()
+  const toast = rig.fake.state.dispatcher.handlers['card.action.trigger']({
+    action: { value: { act: 'ac:act:turn/cancel:abcd:tok.sig' } },
+    operator: { open_id: 'ou_9' },
+    message_id: 'om_5',
+  })
+  assert.equal(toast.toast.content, '未知操作')
+  await tick()
+  assert.equal(rig.fake.state.patched.length, 0)
+  await rig.inbound.stop()
+})
+
+test('ap: 审批回调不受 v0.5 改动影响（回归）', async () => {
+  const logger = makeLogger()
+  const vault = createTokenVault({ secret: 'k' })
+  const bus = createInboundBus({ allowUsers: ['ou_1'], vault, logger })
+  const fake = makeFakeSdk()
+  const inbound = createFeishuInbound({ config: { appId: 'a', appSecret: 's' }, bus, logger, sdkLoader: fake.loader })
+  inbound.start()
+  await tick()
+  const key = 'ap:rm:1'
+  const token = vault.mint(key)
+  const outcome = bus.wait(key, 2000)
+  const toast = fake.state.dispatcher.handlers['card.action.trigger']({
+    operator: { open_id: 'ou_1' },
+    open_message_id: 'om_7',
+    action: { value: { act: buildApprovalAction('allowed-once', key, token) } },
+  })
+  assert.equal(toast.toast.type, 'success')
+  assert.match(toast.toast.content, /已批准/)
+  assert.equal((await outcome).decision, 'allowed-once')
+  await inbound.stop()
+})

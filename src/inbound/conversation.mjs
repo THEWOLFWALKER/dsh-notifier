@@ -5,6 +5,7 @@
 //  - inject：  agent 忙碌 → 排队到下一步边界，不唤醒不打断（排队补料）
 //  - steer：   `!` 前缀 → 就近纠偏；空闲时等价 followup（「马上改，别跑偏」）
 // 命令集：/help /status /bind <sessionId> /unbind /stop /agent [/agent use|back] /route
+//         /quiet <workspace|sid> /unquiet <workspace|sid>（v0.5 特性 C：静默/恢复会话出站推送）
 // v0.3.2 入站去向（注入 router 时，设计稿 §3）：
 //   显式 bind > 通道默认 agent（workspace 多活跃会话投最近活跃 + 消歧回执）
 //   > 唯一 agent 兜底 > 最近活跃（现状）。router 缺省时保持 v0.3.1 旧行为（bind > latest）。
@@ -194,9 +195,12 @@ export function registerConversationRouter(deps) {
         '  /unbind — 解绑（回到通道默认路由：通道默认 agent，未配置则最近活跃）',
         '  /stop — 取消当前 turn',
         '  /route — 查看当前双向解析（会话→通道 / 通道→会话）',
+        '  /quiet <workspace|sid> — 静默该会话的出站推送（远程对话不受影响）',
+        '  /unquiet <workspace|sid> — 恢复该会话的出站推送',
         '  /help — 本帮助',
         '',
         '直接发文本 = 对话；! 前缀 = 纠偏（steer）；.. 结尾 = 立即发送（合并窗内）。',
+        '长任务自动心跳（默认 15min 起）与疑似卡住提醒（默认 10min 无事件）；卡片通道可点按钮停止，其余 /stop。',
       ].join('\n'))
       return true
     }
@@ -278,6 +282,33 @@ export function registerConversationRouter(deps) {
       say(renderRoute(envelope))
       return true
     }
+    // ---- v0.5 特性 C：/quiet /unquiet（设计稿 §4，目标解析复用 /agent use 智能匹配）----
+    if (cmd === 'quiet' || cmd === 'unquiet') {
+      const quiet = cmd === 'quiet'
+      if (router === null) {
+        say('路由引擎未装配（v0.3.2 router 缺失）：/quiet 暂不可用；/status 仍可查看会话与绑定。')
+        return true
+      }
+      const target = args[0]
+      if (typeof target !== 'string' || target.trim() === '') {
+        say(`用法：/${cmd} <workspace 名 | sessionId | sid 前缀（≥4 位）>`)
+        return true
+      }
+      const matched = matchSessionByNeedle(target.trim())
+      if (matched.sid === null) { say(matched.message); return true }
+      const ok = routerCall('setSessionOutbound', matched.sid, { quiet })
+      if (ok !== true) {
+        say(`/${cmd} 写入失败（路由状态存储不可用），请稍后再试`)
+        return true
+      }
+      const workspace = workspaceOfSid(matched.sid)
+      const label = workspace === '' ? '(未知 workspace)' : workspace
+      say([
+        `${quiet ? '🔇 已静默' : '🔔 已恢复'} ${label} / ${matched.sid}（${matched.matchedBy}）的出站推送`,
+        quiet ? '（远程审批与对话不受影响；/unquiet <workspace|sid> 恢复）' : '',
+      ].filter((line) => line !== '').join('\n'))
+      return true
+    }
     return false // 未知命令：当普通文本处理（避免吞消息）
   }
 
@@ -322,50 +353,54 @@ export function registerConversationRouter(deps) {
   }
 
   /**
-   * /agent use <target>：智能绑定（§0.5-5 解析顺序）。workspace 名精确匹配（该 workspace
-   * 活跃会话取最近活跃者）> sessionId 精确 > sid 前缀（≥4 位：唯一命中绑定、多命中列出候选、
-   * 零命中报错并提示 /agent）。成功后 store 写 bind 键 + registry.attachInbound + touch，
-   * 回执确认 workspace 与 sid。
+   * 目标智能匹配（§0.5-5 解析顺序，/agent use 与 v0.5 /quiet|/unquiet 共用）：
+   * workspace 名精确匹配（该 workspace 活跃会话取最近活跃者）> sessionId 精确 >
+   * sid 前缀（≥4 位：唯一命中 / 多命中列候选 / 零命中提示）。
+   * @param {string} needle - 用户输入的目标串。
+   * @returns {{ sid: string, matchedBy: string } | { sid: null, message: string }}
+   */
+  const matchSessionByNeedle = (needle) => {
+    const { infos, activitySorted } = activeSessionInfos()
+    const ofWorkspace = infos.filter((info) => info.workspace !== '' && info.workspace === needle)
+    if (ofWorkspace.length > 0) {
+      const sid = pickLatest(ofWorkspace, activitySorted) // 同 workspace 多活跃会话 → 最近活跃者（§0.5-4）
+      if (sid !== null) return { sid, matchedBy: `workspace=${needle}` }
+    }
+    if (infos.some((info) => info.id === needle)) return { sid: needle, matchedBy: 'sessionId 精确匹配' }
+    if (needle.length >= 4) {
+      const hits = infos.filter((info) => info.id.startsWith(needle)).map((info) => info.id)
+      if (hits.length === 1) return { sid: hits[0], matchedBy: 'sid 前缀唯一命中' }
+      if (hits.length > 1) {
+        return {
+          sid: null,
+          message: [
+            `前缀 ${needle} 命中 ${hits.length} 个活跃会话，请精确指定：`,
+            ...hits.map((id) => `  ${id}`),
+            '（或用 workspace 名精确匹配）',
+          ].join('\n'),
+        }
+      }
+    }
+    return { sid: null, message: `未匹配到会话 ${needle}（用 /agent 查看活跃会话；sid 前缀匹配需至少 4 位）` }
+  }
+
+  /**
+   * /agent use <target>：智能绑定（§0.5-5 解析顺序，匹配逻辑见 matchSessionByNeedle）。
+   * 成功后 store 写 bind 键 + registry.attachInbound + touch，回执确认 workspace 与 sid。
    */
   function handleAgentUse(envelope, target, say) {
     if (typeof target !== 'string' || target.trim() === '') {
       say('用法：/agent use <workspace 名 | sessionId | sid 前缀（≥4 位）>')
       return
     }
-    const needle = target.trim()
-    const { infos, activitySorted } = activeSessionInfos()
-    let sid = null
-    let matchedBy = ''
-    const ofWorkspace = infos.filter((info) => info.workspace !== '' && info.workspace === needle)
-    if (ofWorkspace.length > 0) {
-      sid = pickLatest(ofWorkspace, activitySorted) // 同 workspace 多活跃会话 → 最近活跃者（§0.5-4）
-      matchedBy = `workspace=${needle}`
-    } else if (infos.some((info) => info.id === needle)) {
-      sid = needle
-      matchedBy = 'sessionId 精确匹配'
-    } else if (needle.length >= 4) {
-      const hits = infos.filter((info) => info.id.startsWith(needle)).map((info) => info.id)
-      if (hits.length === 1) {
-        sid = hits[0]
-        matchedBy = 'sid 前缀唯一命中'
-      } else if (hits.length > 1) {
-        say([
-          `前缀 ${needle} 命中 ${hits.length} 个活跃会话，请精确指定：`,
-          ...hits.map((id) => `  ${id}`),
-          '（或 /agent use <workspace 名> 按工作区切换）',
-        ].join('\n'))
-        return
-      }
-    }
-    if (sid === null) {
-      say(`未匹配到会话 ${needle}（用 /agent 查看活跃会话；sid 前缀匹配需至少 4 位）`)
-      return
-    }
+    const matched = matchSessionByNeedle(target.trim())
+    if (matched.sid === null) { say(matched.message); return }
+    const sid = matched.sid
     const workspace = workspaceOfSid(sid)
     store.set(bindingKey(envelope), sid)
     registryCall('attachInbound', sid, inboundBindingOf(envelope))
     registryCall('touch', sid)
-    say(`已绑定 ${workspace === '' ? '(未知 workspace)' : workspace} / ${sid}（${matchedBy}；/agent back 回通道默认）`)
+    say(`已绑定 ${workspace === '' ? '(未知 workspace)' : workspace} / ${sid}（${matched.matchedBy}；/agent back 回通道默认）`)
   }
 
   /** /agent back：读旧绑定 → 删 bind 键 + registry.detachInbound，回到通道默认路由。 */
