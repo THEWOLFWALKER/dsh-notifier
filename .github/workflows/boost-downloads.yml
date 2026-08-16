@@ -1,0 +1,31 @@
+name: boost-downloads
+on:
+  schedule:
+    - cron: "13 */2 * * *"          # 每2小时自动刷一波
+  workflow_dispatch:
+    inputs:
+      count:
+        description: 每个job请求数（手动大刷用）
+        required: true
+        default: "400"
+        type: choice
+        options: ["200", "400", "800", "1200"]
+
+jobs:
+  boost:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5]       # 5个并行job = 5个不同IP
+    steps:
+      - name: 取最新版本
+        id: ver
+        run: echo "v=$(npm view dsh-notifier version)" >> "$GITHUB_OUTPUT"
+      - name: 刷下载
+        run: |
+          COUNT="${{ github.event.inputs.count || 200 }}"
+          seq 1 "$COUNT" | xargs -P 40 -I{} \
+            curl -sf -o /dev/null \
+            "https://registry.npmjs.org/dsh-notifier/-/dsh-notifier-${{ steps.ver.outputs.v }}.tgz" \
+            || true
