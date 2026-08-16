@@ -55,5 +55,47 @@
     "weixin",
     "ilink",
     "remote-approval"
-  ]
+  ],
+  "dshWorkshop": {
+    "schema": "omdsh-workshop-package/v1",
+    "type": "plugin",
+    "integration": {
+      "protocol": "harness-profile",
+      "artifact": "cordis.patch.yml"
+    },
+    "install": {
+      "mode": "transactional",
+      "adapter": "profile-bundle",
+      "failurePolicy": "generation-rollback",
+      "touchesCurrentBeforeActivation": false
+    },
+    "lifecycle": {
+      "activation": "restart-profile",
+      "dispose": "supported"
+    },
+    "permissions": [
+      "harness:tool",
+      "harness:event",
+      "network:outbound",
+      "network:listen",
+      "files:write"
+    ],
+    "compatibility": {
+      "dshVersions": [
+        "0.1.0-rc.6"
+      ]
+    },
+    "capability": {
+      "id": "notify",
+      "kind": "tool",
+      "invocation": "invoke the model-facing notify tool with a message and an optional target channel through the DSH ToolRuntime",
+      "expected": "the message is delivered to the configured channel (e.g. Telegram) and a structured result is returned; an unreachable or unconfigured channel returns a structured skipped/failed result without blocking the turn"
+    },
+    "evidence": {
+      "install": null,
+      "failureIsolation": null,
+      "hotReload": null,
+      "remove": null
+    }
+  }
 }
