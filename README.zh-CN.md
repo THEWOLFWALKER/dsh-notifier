@@ -1,5 +1,7 @@
 # dsh-notifier
 
+> **你的 agent，装进口袋。** —— 通知、审批、遥控，全在你的手机里。
+
 [**English**](README.md) · **简体中文**
 
 ![DSH](https://img.shields.io/badge/DSH-DeepSeek%20Harness-1F6FEB?style=flat-square)
@@ -34,6 +36,24 @@ DSH 会话事件 ─自动推送──────────┘   分级路由
 ```
 
 每条消息都走同一条链路解析 —— 分级（`timeSensitive` / `active` / `passive`）→ 路由（多 agent 矩阵）→ 渠道适配器（`resolve(cfg)` + `send(msg)`）。两条触发线喂入核心：宿主自动推送会话事件（防抖、去重），模型直接调用 `notify` 工具。六条入站通道反向复用同一核心，承接审批与对话。
+
+## 界面预览
+
+Web 管理台（`admin.enabled: true`，仅绑 127.0.0.1）五页实拍（演示数据）：
+
+| 页面 | 内容 |
+|---|---|
+| **Dashboard 总览** | 会话统计、出/入站通道健康分组、最近审计 |
+| **通知页**（v0.4.0） | SSE 事件流实时推送、系统通知偏好、事件日志 |
+| **绑定矩阵** | agent × 通道勾选网格、入站通道默认 agent |
+| **会话台账** | 每会话出站解析与覆盖编辑 |
+| **通道管理** | 全部渠道凭证建单（处处脱敏 `***`）、测试发送、扫码授权 |
+
+![Dashboard](docs/screenshots/admin-dashboard.png)
+![Notify](docs/screenshots/admin-notify.png)
+![Bindings](docs/screenshots/admin-bindings.png)
+![Sessions](docs/screenshots/admin-sessions.png)
+![Channels](docs/screenshots/admin-channels.png)
 
 ## 快速开始
 
@@ -150,24 +170,6 @@ insert:
 <!-- CHANNEL-MATRIX-END -->
 
 另有六个渠道开启入站（远程审批 + 远程会话）：`telegram`、`feishu`、`qq-bot`、`wxpusher`、`wechat`、`dingtalk` —— 长连接或长轮询，无需公网 IP（仅 WxPusher 回调需要公网可达）。
-
-## 界面预览
-
-Web 管理台（`admin.enabled: true`，仅绑 127.0.0.1）五页实拍（演示数据）：
-
-| 页面 | 内容 |
-|---|---|
-| **Dashboard 总览** | 会话统计、出/入站通道健康分组、最近审计 |
-| **通知页**（v0.4.0） | SSE 事件流实时推送、系统通知偏好、事件日志 |
-| **绑定矩阵** | agent × 通道勾选网格、入站通道默认 agent |
-| **会话台账** | 每会话出站解析与覆盖编辑 |
-| **通道管理** | 全部渠道凭证建单（处处脱敏 `***`）、测试发送、扫码授权 |
-
-![Dashboard](docs/screenshots/admin-dashboard.png)
-![Notify](docs/screenshots/admin-notify.png)
-![Bindings](docs/screenshots/admin-bindings.png)
-![Sessions](docs/screenshots/admin-sessions.png)
-![Channels](docs/screenshots/admin-channels.png)
 
 ## 架构
 

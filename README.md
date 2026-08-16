@@ -1,5 +1,7 @@
 # dsh-notifier
 
+> **Your agent, in your pocket.** — 通知、审批、遥控，全在你的手机里。
+
 **English** · [**简体中文**](README.zh-CN.md)
 
 ![DSH](https://img.shields.io/badge/DSH-DeepSeek%20Harness-1F6FEB?style=flat-square)
@@ -34,6 +36,24 @@ your phone ──6 inbound channels───▶   remote approval (buttons · re
 ```
 
 Every message resolves through one chain — level (`timeSensitive` / `active` / `passive`) → routing (multi-agent matrix) → channel adapter (`resolve(cfg)` + `send(msg)`). Two trigger lines feed it: the harness auto-pushes session events (debounced, deduped), and the model calls the `notify` tool. Six inbound channels ride the same core in reverse for approvals and conversation.
+
+## Screenshots
+
+The web admin console (`admin.enabled: true`, loopback only) — all five pages (demo data):
+
+| Page | What it shows |
+|---|---|
+| **Dashboard** | session stats, outbound/inbound channel health groups, recent audit |
+| **Notifications** (v0.4.0) | live SSE event stream, system-notification preferences, event log |
+| **Bindings** | agent × channel checkbox grid, per-channel default agent |
+| **Sessions** | per-session outbound resolution with override editing |
+| **Channels** | credential forms for every channel (masked `***`), test send, QR scan |
+
+![Dashboard](docs/screenshots/admin-dashboard.png)
+![Notify](docs/screenshots/admin-notify.png)
+![Bindings](docs/screenshots/admin-bindings.png)
+![Sessions](docs/screenshots/admin-sessions.png)
+![Channels](docs/screenshots/admin-channels.png)
 
 ## Quick start
 
@@ -150,24 +170,6 @@ Optional blocks each opt in under their own key:
 <!-- CHANNEL-MATRIX-END -->
 
 Six channels also open inbound (remote approval + conversation): `telegram`, `feishu`, `qq-bot`, `wxpusher`, `wechat`, `dingtalk` — long-lived connections or long polling, so no public IP is required (only the WxPusher callback needs one).
-
-## Screenshots
-
-The web admin console (`admin.enabled: true`, loopback only) — all five pages (demo data):
-
-| Page | What it shows |
-|---|---|
-| **Dashboard** | session stats, outbound/inbound channel health groups, recent audit |
-| **Notifications** (v0.4.0) | live SSE event stream, system-notification preferences, event log |
-| **Bindings** | agent × channel checkbox grid, per-channel default agent |
-| **Sessions** | per-session outbound resolution with override editing |
-| **Channels** | credential forms for every channel (masked `***`), test send, QR scan |
-
-![Dashboard](docs/screenshots/admin-dashboard.png)
-![Notify](docs/screenshots/admin-notify.png)
-![Bindings](docs/screenshots/admin-bindings.png)
-![Sessions](docs/screenshots/admin-sessions.png)
-![Channels](docs/screenshots/admin-channels.png)
 
 ## Architecture
 
