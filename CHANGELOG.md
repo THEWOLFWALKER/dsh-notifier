@@ -3,6 +3,30 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 SemVer。
 DSH 处于 developer preview，0.x 阶段的次版本号提升允许小幅破坏性变更（会在条目中标注）。
 
+## [0.4.0] - 2026-08-16
+
+System desktop notifications via two complementary paths: a new `desktop` channel calling native OS commands directly (zero npm deps), and an admin-console "Notifications" page (SSE event stream → browser system notifications + sound). Users without the console open get native popups through the channel; console users get them through the browser. Tests 588 → 625 (+37).
+
+### Added（desktop 渠道）
+
+- `src/adapters/desktop.mjs`：系统桌面通知渠道，直调平台原生命令——macOS `osascript`（`display notification`）、Linux `notify-send`（`-a` 应用名 / `-u` 紧迫度映射 level / `--` 防标题注入选项解析）、Windows `powershell.exe`（BurntToast 模块，探测结果缓存）。**零 npm 依赖**（仅 `node:child_process` spawn，argv 数组直传不经 shell，注入面收敛到各 shell 字面量转义：AppleScript/PowerShell 单引号法）。标题 64 / 正文 200 字符钳制；`silent: true` 走渠道静默语义；Windows 未装 BurntToast 返回结构性 unsupported + 安装指引（不误报成功）。
+
+### Added（管理台通知页）
+
+- `src/admin/events.mjs`：通知事件 hub——环形缓冲（容量 50，钳制 1-500）+ 订阅广播；publish/交付双层深拷贝（订阅者 mutate 不污染缓冲）；任何异常吞掉绝不影响推送主链路。
+- `src/admin/server.mjs`：`GET /api/events` SSE 端点（鉴权同既有 API）：连接即重放缓冲（标记 `replay: true`）+ 订阅实时流；15s 心跳注释行保活 + `x-accel-buffering: no` 禁本机反代缓冲；断连（close/error 任一）即退订清定时器 end，绝不外泄资源。
+- `src/admin/ui.mjs`：管理台新增「通知」标签页——开着的浏览器收系统桌面通知（Web Notification API，macOS 通知中心 / Windows Toast / Linux 通知服务）：权限授权与检测、测试发送、偏好四开关（总开关 / 普通级也弹 / 紧急级提示音 / 仅页面不可见时弹，localStorage 持久化）、Web Audio 提示音（首次交互解锁）、事件日志表（缓冲重放 + 实时，50 条）。页面可见时只进日志不打扰，不可见/最小化才弹系统通知。
+
+### Changed
+
+- `src/index.mjs`：admin 开启时 notifier `onSend` 旁路进事件 hub（账本照旧 append）；admin 关闭零开销——hub 不创建、onSend 维持 v0.3.3 账本单挂语义，存量行为逐字节不变。
+- `package.json`：版本 0.4.0。
+- README 双语：desktop 渠道 + 管理台通知页章节；TODO 记入 DSH web 客户端 bundle 路线（调研确认 `client.platform: web` 技术可行，暂缓——需 TS+esbuild 构建链，与零构建哲学冲突）。
+
+### Added（测试）
+
+- `test/desktop.test.mjs`（18）/ `test/admin-events.test.mjs`（9）/ `test/admin-server-sse.test.mjs`（7）+ 既有 wiring/server/config 增量（+3）。
+
 ## [0.3.3] - 2026-08-15
 
 Web 管理台：本机 HTTP 服务 + REST API + 单文件 UI + 网页扫码授权，凭证与路由全程网页可管。YAML 只做首次 bootstrap，运行时态落 `state.json`（0600）；admin 关闭（缺省）时存量行为逐字节不变。测试 493 → 588（+95：admin 四测试文件 30/26/20/19，基线含其中 51）。

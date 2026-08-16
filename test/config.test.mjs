@@ -2,9 +2,9 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { resolveConfig, normalizeMessage, maskChannelConfig, CHANNEL_TYPES } from '../src/config.mjs'
 
-test('CHANNEL_TYPES 覆盖全部渠道（8 个既有 + 15 个 spec + 2 个 token 型 + bell 本地）', () => {
+test('CHANNEL_TYPES 覆盖全部渠道（8 个既有 + 15 个 spec + 2 个 token 型 + bell/desktop 本地）', () => {
   assert.deepEqual([...CHANNEL_TYPES].sort(), [
-    'bark', 'bell', 'chanify', 'dingtalk', 'discord', 'feishu', 'gchat', 'gotify', 'igot', 'mattermost',
+    'bark', 'bell', 'chanify', 'desktop', 'dingtalk', 'discord', 'feishu', 'gchat', 'gotify', 'igot', 'mattermost',
     'ntfy', 'onebot', 'pushdeer', 'pushover', 'pushplus', 'qmsg', 'qq-bot', 'serverchan', 'slack',
     'teams', 'telegram', 'webhook', 'wecom', 'wecom-app', 'wxpusher', 'xizhi',
   ])

@@ -18,6 +18,7 @@ DeepSeek Harness（DSH）的统一通知推送插件。前端一个极简 `notif
 - **远程会话（可选）** —— 在手机上和你的 agent 对话：纯文本按 agent 状态以 `followup`（空闲）或 `inject`（忙碌）投递，`!` 前缀中途纠偏（steer），合并窗把手机上的碎片输入拼回整句。见[远程会话](#远程会话可选)。
 - **多 agent 路由（v0.3.2）** —— agent × 通道构成双向多对多矩阵：出站 `route:agents`（默认以 workspace 名为键，精确 agentId 为高级键）、入站 `route:channels` 通道默认 agent；会话创建即自动建档，`quiet` 仅静音出站推送，审批按 agent 分流 —— 另有 `/agent` 命令族与 `scripts/route.mjs` CLI。零配置用户行为完全不变。见[多 agent 路由](#多-agent-路由v032)。
 - **Web 管理台（v0.3.3，可选）** —— 本机网页控制台（仅绑 127.0.0.1 + Bearer token）：通道健康总览、绑定矩阵、会话出站覆盖、凭证建单/测试/网页扫码授权；YAML 只做首次 bootstrap，运行时态全落 `state.json`。见[Web 管理台](#web-管理台v033)。
+- **系统桌面通知（v0.4.0）** —— 两条路：`desktop` 渠道直调系统原生命令（macOS/Linux 开箱即弹，Windows 装 BurntToast 后可用）；管理台新增「通知」页（SSE 事件流 → 浏览器系统通知 + 提示音，偏好本地持久化），页面开着即可收 macOS 通知中心 / Windows Toast / Linux 通知服务的真系统弹窗。
 - **长消息分段** —— 超出渠道预算的出站消息自动切成带 `（i/n）` 前缀的多段按序送达；任一段失败即整体失败。
 - **防打扰规则** —— 事件按结果分控、关键词 include/exclude（字面量或正则）、空闲宽限窗：turn 结束后 `graceSeconds` 秒内你在键盘上输入，通知即取消。见[防打扰规则](#防打扰规则与本地响铃可选)。
 - **通知账本 + 每日摘要（可选）** —— 每次广播追加落账到本地 JSONL；启动时对昨日流量推送一条 `passive` 摘要。账本任何失败绝不影响送达。见[通知账本](#通知账本与每日摘要可选)。
@@ -431,7 +432,12 @@ insert:
           count: 2               # 响 1-5 声
 ```
 
-`bell` 是 host 半的本地渠道，服务 headless/TUI 场景（Codex BEL 等价物）——每条通知响一次、尊重 `silent`、零凭证。**client 半**（`desktop` 系统通知 / `sound` 提示音 / out-of-view 抑制）以实验性骨架形式交付（`src/client/desktop-sound.mjs`）：纯决策逻辑 + 面向 DSH 客户端运行时的挂载契约说明，宿主仓库绝不 ship 假的客户端代码。
+`bell` 是 host 半的本地渠道，服务 headless/TUI 场景（Codex BEL 等价物）——每条通知响一次、尊重 `silent`、零凭证。**v0.4.0 起桌面通知两条路全通**：
+
+1. **`desktop` 渠道**（出站，零 npm 依赖）：macOS 走 `osascript`、Linux 走 `notify-send`（libnotify）、Windows 探测 BurntToast 模块后走 PowerShell toast（缺失则给一条安装指引并降级）。level 映射紧迫度（Linux `-u critical/normal/low`，紧急级带提示音）；标题/正文一律参数数组传入（`spawn(file, args)`，永不走 shell——注入在结构上不可能）；子进程 10s 超时兜底。
+2. **管理台「通知」页**（浏览器系统通知）：见[上文](#通知页v040浏览器系统通知)——浏览器 `Notification` API 出的是通知中心里的真系统弹窗，且由浏览器厂商维护三平台适配。
+
+至于 `src/client/desktop-sound.mjs` 的挂载契约：调研确认 DSH 插件可自带 web 客户端 bundle（`dsh.plugin.json` 的 `client.platform: web`，参考成品 dsh-notification），但需要 TypeScript + esbuild 构建链与 dsh 源码 checkout，与本仓库零依赖零构建哲学冲突——保留决策逻辑与契约文档，bundle 化列入 TODO 观望。
 
 ## 渠道
 
@@ -442,6 +448,7 @@ insert:
 | `bark` | Bark (iOS) | device key（或自架 URL） | ✅ |
 | `bell` | 终端响铃（本地） | — | 本地 |
 | `chanify` | Chanify (iOS) | token（或自架） | ✅ |
+| `desktop` | 系统桌面通知（本地） | —（Windows 需 BurntToast 模块） | 本地 |
 | `dingtalk` | 钉钉自定义机器人 | webhook + secret（HMAC 加签） | ✅ |
 | `discord` | Discord webhook | webhook URL | ✅ |
 | `feishu` | 飞书自定义机器人 | webhook（+ 加签 secret） | ✅ |
@@ -480,7 +487,7 @@ npm test          # node --test，329 个用例
 
 ## TODO
 
-- desktop/sound 渠道的完整 client 半（Web Notification / Web Audio）
+- desktop/sound 的 DSH web 客户端 bundle（已确认技术可行：`dsh.plugin.json` 支持 `client.platform: web`；暂缓——需 TS+esbuild 构建链与 dsh 源码 checkout，与零构建哲学冲突，待插件客户端生态成熟）
 
 ## License
 

@@ -17,6 +17,7 @@ const END = '<!-- CHANNEL-MATRIX-END -->'
 const META = {
   bark: { channel: 'Bark (iOS)', auth: 'device key (or self-host URL)', free: '✅' },
   bell: { channel: 'Terminal bell (local)', auth: '—', free: 'local' },
+  desktop: { channel: 'Desktop notification (local)', auth: '— (Windows needs BurntToast module)', free: 'local' },
   chanify: { channel: 'Chanify (iOS)', auth: 'token (or self-host)', free: '✅' },
   dingtalk: { channel: 'DingTalk custom robot', auth: 'webhook + secret (HMAC sign)', free: '✅' },
   discord: { channel: 'Discord webhook', auth: 'webhook URL', free: '✅' },

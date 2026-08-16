@@ -15,7 +15,10 @@ import { createServer } from 'node:http'
 const MAX_BODY_BYTES = 1024 * 1024
 const JSON_TYPE = 'application/json; charset=utf-8'
 const HTML_TYPE = 'text/html; charset=utf-8'
+const SSE_TYPE = 'text/event-stream; charset=utf-8'
 const FALLBACK_UI = '<!DOCTYPE html><p>admin ui 未装配</p>'
+/** SSE 心跳间隔（ms）：注释行保活，防本机反代/浏览器空闲掐连接；测试可注入更小值。 */
+const DEFAULT_HEARTBEAT_MS = 15_000
 
 /**
  * URL 段级 decode（%2F 不应劈出新段，故逐段而非整段 decode；畸编码回落原文不抛）。
@@ -48,12 +51,15 @@ function apiStatusOf(error) {
  * @param {string} [options.host='127.0.0.1'] - 只绑本机回环（红线：永不绑公网）
  * @param {number} [options.port=8104] - 监听端口；0 = 随机可用端口（测试用）
  * @param {string} [options.ui=''] - 单文件内嵌 HTML 串（空串时 GET / 返回最小占位页）
+ * @param {object} [options.events] - 通知事件 hub（admin/events.mjs；提供 subscribe/publish）；
+ *                                    未注入时 GET /api/events 回 501（能力不可用语义同 ApiError）
+ * @param {number} [options.heartbeatMs=15000] - SSE 心跳间隔（测试注入小值）
  * @param {object} [options.logger] - { warn(message) } 注入；日志失败绝不致命
  * @returns {{ start: () => Promise<{ port: number, address: string }>,
  *             stop: () => Promise<void>,
  *             get port(): number | null }}
  */
-export function createAdminServer({ api, verifyToken, host = '127.0.0.1', port = 8104, ui = '', logger } = {}) {
+export function createAdminServer({ api, verifyToken, host = '127.0.0.1', port = 8104, ui = '', events = null, heartbeatMs = DEFAULT_HEARTBEAT_MS, logger } = {}) {
   const warn = (message) => {
     try { logger?.warn?.('[dsh-notifier/admin:server]', message) } catch { /* 日志失败绝不致命 */ }
   }
@@ -72,6 +78,7 @@ export function createAdminServer({ api, verifyToken, host = '127.0.0.1', port =
     { method: 'POST', segments: ['api', 'channels', ':type', 'test'], handler: ({ params }) => api.testChannel(params.type) },
     { method: 'POST', segments: ['api', 'scan', ':channel'], handler: ({ params }) => api.scanChannel(params.channel) },
     { method: 'GET', segments: ['api', 'audit'], handler: () => api.getAudit() },
+    { method: 'GET', segments: ['api', 'events'], sse: true }, // v0.4.0 通知事件流（handle 内特判）
   ]
 
   /**
@@ -176,12 +183,52 @@ export function createAdminServer({ api, verifyToken, host = '127.0.0.1', port =
   }
 
   /**
+   * 打开 SSE 通知事件流（GET /api/events，鉴权已过）：写流式响应头 → 重放缓冲 + 订阅实时 →
+   * 心跳注释行保活；客户端断连（close/error 任一）即退订 + 清定时器 + end，绝不外泄资源。
+   * 军规：所有写操作 try/catch（客户端半途断开是常态不是异常）；本函数绝不抛。
+   * @param {import('node:http').IncomingMessage} request
+   * @param {import('node:http').ServerResponse} response
+   */
+  function openEventStream(request, response) {
+    try {
+      response.writeHead(200, {
+        'content-type': SSE_TYPE,
+        'cache-control': 'no-cache',
+        connection: 'keep-alive',
+        'x-accel-buffering': 'no', // 本机反代（nginx 等）禁缓冲，事件即发即达
+      })
+      response.write(': connected\n\n')
+    } catch {
+      return // 写头即失败（客户端已断）：直接放弃，无资源可清
+    }
+    let closed = false
+    const send = (line) => {
+      if (closed) return
+      try { response.write(line) } catch { cleanup() /* 写失败视同断连 */ }
+    }
+    const unsubscribe = events.subscribe((event) => send(`data: ${JSON.stringify(event)}\n\n`), { replay: true })
+    const heartbeat = setInterval(() => send(': hb\n\n'), heartbeatMs)
+    function cleanup() {
+      if (closed) return
+      closed = true
+      clearInterval(heartbeat)
+      unsubscribe()
+      try { response.end() } catch { /* 已断 */ }
+    }
+    request.on('close', cleanup)
+    response.on('close', cleanup)
+    response.on('error', cleanup)
+  }
+
+  /**
    * 单请求主流程：/api/* 先鉴权（401 优先于 404/405，不泄露路由存在性）→ 路由匹配 → 收 body → 委托 api。
    * @param {import('node:http').IncomingMessage} request
    * @param {{ json: (status: number, payload: unknown) => void,
-   *           html: (status: number, text: string) => void }} respond
+   *           html: (status: number, text: string) => void,
+   *           taken: () => void }} respond
+   * @param {import('node:http').ServerResponse} response
    */
-  async function handle(request, respond) {
+  async function handle(request, respond, response) {
     const rawPath = String(request.url ?? '').split('?')[0]
     const pathname = rawPath.startsWith('/') ? rawPath : `/${rawPath}`
     const method = String(request.method ?? 'GET').toUpperCase()
@@ -194,6 +241,16 @@ export function createAdminServer({ api, verifyToken, host = '127.0.0.1', port =
     if (matched === null) {
       if (allowed.size > 0) return respond.json(405, { error: `方法不允许：${method}` })
       return respond.json(404, { error: `接口不存在：${method} ${pathname}` })
+    }
+
+    // v0.4.0 SSE 特判：流式响应接管连接（不走 readBody/一次性 write）。
+    // events 未装配 → 501（能力不可用，语义对齐 ApiError；比 404 更能指引「升级/装配」）。
+    if (matched.route.sse === true) {
+      if (typeof events?.subscribe !== 'function') {
+        return respond.json(501, { error: '通知事件流未装配（events hub 缺失）' })
+      }
+      respond.taken() // 响应权移交流实现：后续任何 json/html 兜底写入直接失效
+      return openEventStream(request, response)
     }
 
     const body = await readBody(request, respond)
@@ -226,8 +283,9 @@ export function createAdminServer({ api, verifyToken, host = '127.0.0.1', port =
     const respond = {
       json: (status, payload) => write(status, payload, JSON_TYPE),
       html: (status, text) => write(status, text, HTML_TYPE),
+      taken: () => { responded = true }, // SSE 流接管响应：一次性写通道让位（幂等闸防双写）
     }
-    handle(request, respond).catch((error) => {
+    handle(request, respond, response).catch((error) => {
       warn(`请求处理异常: ${error instanceof Error ? error.message : String(error)}`)
       respond.json(500, { error: '内部错误' })
     })

@@ -101,6 +101,7 @@ label.fld input { flex: 1; }
   <button class="tabbtn" data-tab="bindings">绑定矩阵</button>
   <button class="tabbtn" data-tab="sessions">会话</button>
   <button class="tabbtn" data-tab="channels">通道</button>
+  <button class="tabbtn" data-tab="notify">通知</button>
 </nav>
 <main>
   <div id="globalMsg" class="msg"></div>
@@ -147,6 +148,28 @@ label.fld input { flex: 1; }
   <section id="tab-channels" class="tabsec">
     <p class="muted small">凭证写入 state.json（YAML 只做首次 bootstrap）。值为 *** 的字段视为未修改，提交时自动剔除；「测试发送」做连通性自检；qq / dingtalk / feishu 入站卡片支持扫码授权（v0.3.1 扫码流，UI 展示二维码内容并轮询状态）。</p>
     <div id="channelCards"></div>
+  </section>
+
+  <section id="tab-notify" class="tabsec">
+    <p class="muted small">本页开着的浏览器收<b>系统桌面通知</b>（macOS 通知中心 / Windows Toast / Linux 通知服务）：事件流实时推送全部广播结果；页面不可见或最小化时弹系统通知，可见时只进下方日志。偏好保存在浏览器 localStorage；权限被拒后需在浏览器站点设置里重新允许。</p>
+    <div class="stats">
+      <div class="stat"><b id="nStream">未连接</b><span>事件流</span></div>
+      <div class="stat"><b id="nPerm">未知</b><span>通知权限</span></div>
+      <div class="stat"><b id="nCount">0</b><span>累计事件</span></div>
+    </div>
+    <div class="row">
+      <button id="nPermBtn">授权系统通知</button>
+      <button id="nTestBtn">发送测试通知</button>
+      <label class="ck"><input type="checkbox" id="npEnable" checked> 总开关</label>
+      <label class="ck"><input type="checkbox" id="npActive" checked> 普通级也弹（关=仅紧急级）</label>
+      <label class="ck"><input type="checkbox" id="npSound" checked> 紧急级提示音</label>
+      <label class="ck"><input type="checkbox" id="npHidden" checked> 仅页面不可见时弹</label>
+    </div>
+    <h3>事件日志（缓冲重放 + 实时，最多 50 条）</h3>
+    <table>
+      <thead><tr><th style="width:150px">时间</th><th style="width:70px">级别</th><th style="width:220px">标题</th><th>正文 / 送达</th><th style="width:64px">来源</th></tr></thead>
+      <tbody id="notifyLog"><tr><td colspan="5" class="empty">暂无事件</td></tr></tbody>
+    </table>
   </section>
 </main>
 
@@ -637,6 +660,152 @@ function onChannelsClick(ev) {
   }
 }
 
+// ---------- 通知页：SSE 事件流 → 系统桌面通知 + Web Audio 提示音 + 页面日志 ----------
+// 偏好四项存 localStorage（默认全开）：总开关 / 普通级也弹 / 紧急级提示音 / 仅页面不可见时弹。
+// 语义（对齐参考成品 dsh-notification 的取舍）：replay 事件只进日志不弹（断线期间的不补弹）；
+// 同级别 tag 复用让新通知顶掉旧的（通知中心不堆山）；声音走 Web Audio（用户手势解锁 AudioContext）。
+var NOTIFY_PREFS_KEY = 'dsh-notify-prefs'
+var notifyLog = []
+var notifyCount = 0
+var audioCtx = null
+var notifyStreamTimer = null
+
+function readNotifyPrefs() {
+  var p = {}
+  try { p = plain(JSON.parse(window.localStorage.getItem(NOTIFY_PREFS_KEY) || '{}')) } catch (e) {}
+  return {
+    enable: p.enable !== false,
+    active: p.active !== false,
+    sound: p.sound !== false,
+    hiddenOnly: p.hiddenOnly !== false,
+  }
+}
+function writeNotifyPrefs() {
+  var p = readNotifyPrefs()
+  try { window.localStorage.setItem(NOTIFY_PREFS_KEY, JSON.stringify(p)) } catch (e) {}
+  $('#npEnable').checked = p.enable
+  $('#npActive').checked = p.active
+  $('#npSound').checked = p.sound
+  $('#npHidden').checked = p.hiddenOnly
+}
+function setStreamState(text) { var el = $('#nStream'); if (el) el.textContent = text }
+function renderPermState() {
+  var el = $('#nPerm')
+  if (!el) return
+  var perm = typeof Notification !== 'undefined' ? Notification.permission : 'unsupported'
+  el.textContent = perm === 'granted' ? '已授权' : perm === 'denied' ? '已拒绝' : perm === 'unsupported' ? '不支持' : '未授权'
+}
+function beep() {
+  try {
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)()
+    if (audioCtx.state === 'suspended') audioCtx.resume()
+    var osc = audioCtx.createOscillator()
+    var gain = audioCtx.createGain()
+    osc.frequency.value = 880
+    gain.gain.setValueAtTime(0.08, audioCtx.currentTime)
+    osc.connect(gain)
+    gain.connect(audioCtx.destination)
+    osc.start()
+    gain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.4)
+    osc.stop(audioCtx.currentTime + 0.45)
+  } catch (e) { /* 声音是锦上添花：AudioContext 被策略挡住时静默 */ }
+}
+/** 弹系统通知：同级别 tag 复用（新事件顶掉旧横幅）；构造失败静默（API 缺失/权限收回）。 */
+function fireNotification(title, body, level) {
+  if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return
+  try { new Notification(title, { body: body, tag: 'dsh-notify-' + level }) } catch (e) {}
+}
+function levelClass(level) {
+  return level === 'timeSensitive' ? 'err' : level === 'active' ? 'ok' : 'none'
+}
+function onNotifyEvent(evt) {
+  var e = plain(evt)
+  var payload = plain(e.payload)
+  var msg = plain(payload.message)
+  notifyCount += 1
+  $('#nCount').textContent = String(notifyCount)
+  notifyLog.unshift({ time: e.time || '', level: msg.level || '', title: msg.title || '(无标题)', body: msg.content || '', delivered: Array.isArray(payload.delivered) ? payload.delivered : [], failed: Array.isArray(payload.failed) ? payload.failed.length : 0, replay: e.replay === true })
+  if (notifyLog.length > 50) notifyLog.length = 50
+  renderNotifyLog()
+  if (e.replay === true) return // 断线期间的事件只补日志不补弹（不轰炸通知中心）
+  var prefs = readNotifyPrefs()
+  if (!prefs.enable) return
+  if (msg.level === 'passive') return // 摘要类永不弹
+  if (msg.level !== 'timeSensitive' && !prefs.active) return
+  if (prefs.hiddenOnly && document.hidden === false) return // 页面正看着：日志已可见，不再弹系统横幅
+  fireNotification(msg.title || 'dsh-notifier', msg.content || '', msg.level || 'active')
+  if (prefs.sound && msg.level === 'timeSensitive') beep()
+}
+function renderNotifyLog() {
+  var body = $('#notifyLog')
+  if (!body) return
+  if (notifyLog.length === 0) { body.innerHTML = '<tr><td colspan="5" class="empty">暂无事件</td></tr>'; return }
+  body.innerHTML = notifyLog.map(function (row) {
+    var delivery = row.delivered.length > 0 ? '送达 ' + row.delivered.join('、') : '未送达'
+    if (row.failed > 0) delivery += '（' + row.failed + ' 渠道失败）'
+    return '<tr><td class="small">' + esc(fmtTime(row.time)) + '</td>'
+      + '<td><span class="chip ' + levelClass(row.level) + '">' + esc(row.level || '?') + '</span></td>'
+      + '<td>' + esc(row.title) + '</td>'
+      + '<td class="small">' + esc(row.body) + '<div class="muted small">' + esc(delivery) + '</div></td>'
+      + '<td class="small">' + (row.replay ? '重放' : '实时') + '</td></tr>'
+  }).join('')
+}
+/** SSE 客户端（fetch 流式读：EventSource 不支持 Authorization 头）；断线 5s 退避重连。 */
+function startNotifyStream() {
+  if (notifyStreamTimer) { clearTimeout(notifyStreamTimer); notifyStreamTimer = null }
+  var token = getToken()
+  if (!token) { setStreamState('未设置 token'); return }
+  fetch('/api/events', { headers: { Authorization: 'Bearer ' + token } }).then(function (res) {
+    if (res.status === 401) { setToken(''); renderTokenState(); setStreamState('token 失效'); return }
+    if (!res.ok || !res.body) throw new Error('HTTP ' + res.status)
+    setStreamState('已连接')
+    var reader = res.body.getReader()
+    var decoder = new TextDecoder()
+    var buf = ''
+    function pump() {
+      return reader.read().then(function (chunk) {
+        if (chunk.done) throw new Error('stream end')
+        buf += decoder.decode(chunk.value, { stream: true })
+        var blocks = buf.split('\n\n')
+        buf = blocks.pop()
+        blocks.forEach(function (block) {
+          block.split('\n').forEach(function (line) {
+            if (line.indexOf('data: ') !== 0) return // ': connected'/': hb' 注释行
+            try { onNotifyEvent(JSON.parse(line.slice(6))) } catch (e) { /* 残包/坏包丢弃 */ }
+          })
+        })
+        return pump()
+      })
+    }
+    return pump()
+  }).catch(function () {
+    setStreamState('已断开，5 秒后重连')
+    notifyStreamTimer = setTimeout(startNotifyStream, 5000)
+  })
+}
+var NOTIFY_PREF_IDS = { npEnable: 'enable', npActive: 'active', npSound: 'sound', npHidden: 'hiddenOnly' }
+function initNotifyTab() {
+  writeNotifyPrefs() // 同步 checkbox 与存储（首访写入默认值）
+  renderPermState()
+  $('#nPermBtn').addEventListener('click', function () {
+    if (typeof Notification === 'undefined') { flash('此浏览器不支持系统通知', 'err'); return }
+    Notification.requestPermission().then(function () { renderPermState(); beep() }) // 手势顺带解锁 AudioContext
+  })
+  $('#nTestBtn').addEventListener('click', function () {
+    beep()
+    fireNotification('dsh-notifier 测试', '如果你看到这条系统通知，桌面通知已就绪（' + new Date().toLocaleTimeString() + '）', 'active')
+    flash('已发起测试通知（权限未授权时只在浏览器内可见此提示）', 'ok')
+  })
+  Object.keys(NOTIFY_PREF_IDS).forEach(function (id) {
+    $('#' + id).addEventListener('change', function () {
+      var p = readNotifyPrefs()
+      p[NOTIFY_PREF_IDS[id]] = $('#' + id).checked
+      try { window.localStorage.setItem(NOTIFY_PREFS_KEY, JSON.stringify(p)) } catch (e) {}
+    })
+  })
+  startNotifyStream()
+}
+
 // ---------- 初始化 ----------
 function init() {
   $all('.tabbtn').forEach(function (b) {
@@ -651,6 +820,7 @@ function init() {
   $('#tab-bindings').addEventListener('click', onBindingsClick)
   $('#tab-sessions').addEventListener('click', onSessionsClick)
   $('#tab-channels').addEventListener('click', onChannelsClick)
+  initNotifyTab()
   renderTokenState()
   loadAll()
 }

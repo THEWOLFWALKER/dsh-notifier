@@ -441,6 +441,7 @@ insert:
 | `bark` | Bark (iOS) | device key (or self-host URL) | ✅ |
 | `bell` | Terminal bell (local) | — | local |
 | `chanify` | Chanify (iOS) | token (or self-host) | ✅ |
+| `desktop` | Desktop notification (local) | — (Windows needs BurntToast module) | local |
 | `dingtalk` | DingTalk custom robot | webhook + secret (HMAC sign) | ✅ |
 | `discord` | Discord webhook | webhook URL | ✅ |
 | `feishu` | Feishu custom bot | webhook (+ sign secret) | ✅ |
@@ -479,7 +480,7 @@ Other plugins can reuse the notifier via `createNotifier(ctx, channels, { routin
 
 ## TODO
 
-- Full client half for desktop/sound channels (Web Notification / Web Audio)
+- DSH web client bundle for desktop/sound (confirmed technically feasible: `dsh.plugin.json` supports `client.platform: web`, per the reference project [dsh-notification](https://github.com/omdsh-dev/dsh-notification); on hold — requires a TS + esbuild build chain and a dsh source checkout, conflicting with this repo's zero-build philosophy; revisit when the plugin client ecosystem matures)
 
 ## License
 

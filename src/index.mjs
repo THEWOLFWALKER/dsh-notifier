@@ -25,6 +25,8 @@ import { createAgentRouter } from './routing/agent-router.mjs'
 import { createSessionRegistry } from './routing/session-registry.mjs'
 // v0.3.3：Web 管理台（HTTP 壳 + API 函数层 + 单文件 UI + 扫码流机 + 连通性自检）
 import { createAdminApi, INBOUND_CHANNELS } from './admin/api.mjs'
+// v0.4.0：通知事件 hub（SSE 数据源）
+import { createEventHub } from './admin/events.mjs'
 import { createAdminServer } from './admin/server.mjs'
 import { ADMIN_UI_HTML } from './admin/ui.mjs'
 import { createScanHandlers } from './admin/scan.mjs'
@@ -66,14 +68,12 @@ export function apply(ctx, config = {}) {
   const digestRaw = (resolved.digest !== null && typeof resolved.digest === 'object') ? resolved.digest : {}
   const ledgerEnabled = digestRaw.enabled === true
   let ledger = null
-  let onSend = undefined
   if (ledgerEnabled) {
     const inboundRawForDir = (resolved.inbound !== null && typeof resolved.inbound === 'object') ? resolved.inbound : {}
     const ledgerDir = typeof inboundRawForDir.stateDir === 'string' && inboundRawForDir.stateDir.trim() !== ''
       ? inboundRawForDir.stateDir.trim()
       : defaultStateDir()
     ledger = createLedger({ dir: ledgerDir, maxEntries: digestRaw.maxEntries })
-    onSend = (record) => ledger.append(record)
   }
 
   // 阶段 4/5：inbound 回传栈。白名单（inbound.allowUsers）为空 = 整栈不启动（默认全拒）。
@@ -141,6 +141,18 @@ export function apply(ctx, config = {}) {
     const { type: _drop, ...rest } = row
     return rest
   }
+
+  // v0.4.0 通知事件 hub（A 路线「管理台通知页」）：admin 开启时 notifier.onSend 旁路进
+  // hub，GET /api/events 以 SSE 实时推给浏览器（系统通知数据源）。admin 关闭零开销——
+  // hub 不创建、onSend 维持 v0.3.3 的账本单挂语义（存量行为逐字节不变）。
+  // notify.mjs 已把 onSend 调用包在 try/catch：账本/hub 任一异常绝不影响推送主链路。
+  const eventHub = adminEnabled ? createEventHub() : null
+  const onSend = eventHub === null
+    ? (ledger === null ? undefined : (record) => ledger.append(record))
+    : (record) => {
+        if (ledger !== null) ledger.append(record)
+        eventHub.publish(record)
+      }
 
   const notifier = createNotifier(ctx, resolved.channels, { segment: resolved.segment, routing: resolved.routing, onSend })
 
@@ -491,6 +503,7 @@ export function apply(ctx, config = {}) {
         host: '127.0.0.1', // 红线：永不绑公网（§0.5-6，config.mjs 已写死不可配）
         port: resolved.admin.port,
         ui: ADMIN_UI_HTML,
+        events: eventHub, // v0.4.0 通知事件流（GET /api/events，SSE）
         logger,
       })
       adminServer.start()

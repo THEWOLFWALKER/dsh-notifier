@@ -12,6 +12,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createServer } from 'node:net'
+import { get } from 'node:http'
 
 import { apply, createStore } from '../src/index.mjs'
 
@@ -506,6 +507,69 @@ test('§5.5 wxpusher 凭证链尾：admin 开 + store appToken（无 YAML）→ 
     assert.ok(!rig.warnings.some((w) => w.includes('inbound.wxpusher 跳过')),
       'store appToken 链尾兜底生效（resolve ok 而非因缺 appToken 跳过）')
     assert.ok(!rig.warnings.some((w) => /inbound 已启动/.test(w)), 'allowUsers 空 → 不真启动（无副作用）')
+  } finally {
+    await rig.cleanup()
+  }
+})
+
+// ———————— v0.4.0 SSE 事件流接线 ————————
+
+test('v0.4.0 SSE 接线：notify 工具广播 → onSend → hub → GET /api/events 实时收到', async () => {
+  const dir = tempDir()
+  const rig = bootCtx()
+  const port = await freePort()
+  try {
+    apply(rig.ctx, {
+      channels: [{ type: 'webhook', url: 'http://127.0.0.1:1/hook' }], // 送达必失败——onSend 照发（failed 结果也落事件）
+      inbound: { stateDir: dir },
+      admin: { enabled: true, port, token: 'sse-tok' },
+    })
+    assert.ok(await waitHttp(port))
+    // 真 HTTP 客户端打开事件流，累积文本（fetch 一次性读不适合流式断言）
+    let text = ''
+    let resolveTarget = null
+    let resolveFn = null
+    const req = get({
+      host: '127.0.0.1', port, path: '/api/events',
+      headers: { authorization: 'Bearer sse-tok' },
+    }, (res) => {
+      res.setEncoding('utf8')
+      res.on('data', (chunk) => {
+        text += chunk
+        if (resolveTarget !== null && text.includes(resolveTarget)) {
+          const fn = resolveFn
+          resolveTarget = null
+          resolveFn = null
+          fn()
+        }
+      })
+    })
+    req.on('error', () => { /* abort 属预期 */ })
+    const until = (target) => new Promise((resolve, reject) => {
+      if (text.includes(target)) return resolve()
+      resolveTarget = target
+      resolveFn = resolve
+      setTimeout(() => {
+        if (resolveTarget === target) {
+          resolveTarget = null
+          resolveFn = null
+          reject(new Error(`SSE 等待超时: ${target}（已收到: ${JSON.stringify(text)}）`))
+        }
+      }, 4000)
+    })
+    try {
+      await until(': connected')
+      // 触发一次真实广播：notify 工具无 channel = notifyAll → onSend → hub.publish
+      const notifyTool = rig.defs.find((def) => def.name === 'notify')
+      assert.ok(notifyTool !== undefined, 'notify 工具已注册')
+      await notifyTool.execute({ message: 'SSE 接线验证' })
+      await until('SSE 接线验证')
+      assert.ok(text.includes('"replay":false'), '实时事件（非缓冲重放）')
+      assert.ok(text.includes('"seq":1'), '事件带序号')
+      assert.ok(text.includes('webhook'), '送达结果随事件透出')
+    } finally {
+      req.destroy()
+    }
   } finally {
     await rig.cleanup()
   }

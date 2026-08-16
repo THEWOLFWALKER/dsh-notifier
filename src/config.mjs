@@ -20,6 +20,7 @@ import { SPEC_CHANNELS } from './adapters/spec-channels.mjs'
 import { makeSpecAdapters, secretFieldsOfTable } from './adapters/_engine.mjs'
 import * as qqBot from './adapters/qq-bot.mjs'
 import * as wecomApp from './adapters/wecom-app.mjs'
+import * as desktop from './adapters/desktop.mjs'
 
 const SPEC_ADAPTERS = makeSpecAdapters(SPEC_CHANNELS)
 
@@ -34,6 +35,7 @@ export const ADAPTERS = Object.freeze({
   bark,
   webhook,
   bell,
+  desktop,
   ...SPEC_ADAPTERS,
   'qq-bot': qqBot,
   'wecom-app': wecomApp,
@@ -101,6 +103,9 @@ const FIELD_HINTS = {
   },
   bell: {
     count: { required: false, secret: false, desc: '响铃次数 1-5（默认 1）' },
+  },
+  desktop: {
+    sound: { required: false, secret: false, desc: '提示音：auto（默认，仅紧急级）/ always / never' },
   },
   'qq-bot': {
     appId: { required: true, secret: true, desc: 'QQ 开放平台开发者 ID（q.qq.com → 机器人开发设置）' },

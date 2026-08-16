@@ -149,6 +149,25 @@ test('ADMIN_UI_HTML：含 fields 建单与 editable 只读的关键字（§5.3 �
   }
 })
 
+test('ADMIN_UI_HTML：通知页关键字（v0.4.0 SSE → 浏览器系统通知）', () => {
+  for (const keyword of [
+    'id="tab-notify"',        // 第五标签页
+    '/api/events',            // SSE 事件流端点
+    "Notification.permission", // 权限状态渲染
+    'requestPermission',      // 授权按钮
+    'new Notification',       // 系统通知构造（含 tag 复用）
+    "tag: 'dsh-notify-'",     // 同级别 tag 顶掉旧横幅
+    'AudioContext',           // Web Audio 提示音
+    'getReader',              // fetch 流式读（EventSource 不支持 Authorization 头）
+    'startNotifyStream',      // 连接生命周期（断线 5s 重连）
+    'e.replay === true',      // 重放事件只进日志不弹窗
+    'dsh-notify-prefs',       // 偏好 localStorage 持久化
+    'hiddenOnly',             // 「仅页面不可见时弹」偏好键
+  ]) {
+    assert.ok(ADMIN_UI_HTML.includes(keyword), `ADMIN_UI_HTML 应包含关键字 ${keyword}`)
+  }
+})
+
 // ---------------------------------------------------------------- 鉴权（401）
 
 test('401：缺 Authorization 头 → 401 + 中文 error（不区分缺/错，防探测）', async () => {
