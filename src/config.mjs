@@ -319,6 +319,18 @@ export function resolveConfig(config = {}) {
     token: typeof rawAdmin.token === 'string' && rawAdmin.token.trim() !== '' ? rawAdmin.token : '',
   }
 
+  // 公共面（v0.6，设计稿 §2）：其他插件经 ctx.notifier 服务注入推送 + 订阅 sent 事件。
+  // enabled 默认开——服务注入是消费插件的硬依赖（spike 验证：缺服务宿主直接拒绝启动），
+  // 关闭时 index 仍注入 no-op stub（push 返回 skipped），消费方永不崩。
+  // emit:false = 不发射 dsh-notifier/sent（保留「关闭零开销」家训）；限流 0 = 不限。
+  const rawPublic = (raw.public !== null && typeof raw.public === 'object' && !Array.isArray(raw.public)) ? raw.public : {}
+  const publicLimit = Number(rawPublic.limitPerMinutePerSource)
+  const publicBlock = {
+    enabled: rawPublic.enabled !== false,
+    limitPerMinutePerSource: Number.isFinite(publicLimit) && publicLimit >= 0 ? Math.trunc(publicLimit) : 10,
+    emit: rawPublic.emit !== false,
+  }
+
   return {
     enabled,
     debounceMs,
@@ -328,12 +340,16 @@ export function resolveConfig(config = {}) {
     toolRateLimitPerMinute,
     graceSeconds,
     routing: (raw.routing !== null && typeof raw.routing === 'object') ? raw.routing : {},
-    inbound: (raw.inbound !== null && typeof raw.inbound === 'object') ? raw.inbound : {},
+    // v0.6.1：inbound 块对齐 channels 的 ${ENV:NAME} 密钥引用语义（真机事故 §7：
+    // 出站解析、入站不解析的双路径不一致——botToken 写 ${ENV:...} 在 inbound 是字面量，
+    // 401 退避且不可见）。resolveEnvRefs 递归替换字符串值，非字符串原样保留。
+    inbound: resolveEnvRefs((raw.inbound !== null && typeof raw.inbound === 'object') ? raw.inbound : {}),
     approval: (raw.approval !== null && typeof raw.approval === 'object') ? raw.approval : {},
     segment,
     digest: (raw.digest !== null && typeof raw.digest === 'object') ? raw.digest : {},
     keywords: (raw.keywords !== null && typeof raw.keywords === 'object') ? raw.keywords : {},
     admin,
+    public: publicBlock,
     channels,
     skipped,
   }

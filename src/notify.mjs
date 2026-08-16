@@ -90,11 +90,15 @@ export function createNotifier(ctx, channels, options = {}) {
     const normalized = normalizeMessage(msg)
     const quiet = sendOptions?.quiet === true
     const filterTypes = Array.isArray(sendOptions?.channelTypes) ? sendOptions.channelTypes : null
+    // v0.6 来源标注（设计稿 §2.3）：source 只并入 onSend record（账本/事件可见），
+    // 不进返回值（notify.test 全形状 deepEqual 守着）、不进渠道 msg（normalizeMessage 剥离契约不变）。
+    const source = sendOptions?.source
+    const sourceExtra = (source !== null && typeof source === 'object') ? { source } : {}
     if (quiet) {
       // 静音不等于没发生：账本照记（delivered 空、skipped 标记），方便晨报反映被静音的流量
       const quietOutcome = { ok: true, delivered: [], skipped: ['(quiet)'], failed: [] }
       if (typeof options.onSend === 'function') {
-        try { options.onSend({ time: new Date().toISOString(), message: normalized, ...quietOutcome }) } catch { /* 账本失败绝不影响 */ }
+        try { options.onSend({ time: new Date().toISOString(), message: normalized, ...quietOutcome, ...sourceExtra }) } catch { /* 账本失败绝不影响 */ }
       }
       return quietOutcome
     }
@@ -131,7 +135,7 @@ export function createNotifier(ctx, channels, options = {}) {
       failed,
     }
     if (typeof options.onSend === 'function') {
-      try { options.onSend({ time: new Date().toISOString(), message: normalized, ...outcome }) } catch { /* 账本失败绝不影响推送 */ }
+      try { options.onSend({ time: new Date().toISOString(), message: normalized, ...outcome, ...sourceExtra }) } catch { /* 账本失败绝不影响推送 */ }
     }
     return outcome
   }

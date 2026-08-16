@@ -120,3 +120,39 @@ test('apply: 扫码凭证回退——state 预置 feishu:account 后 inbound.fei
   })
   assert.ok(warnings.some((w) => /inbound 已启动：feishu/.test(w)), `应启动 feishu（实际：${warnings.join(' | ')}）`)
 })
+
+// v0.6.1 真机事故修复（TG inbound 装配问题报告）：告警双写 stderr，
+// web profile 宿主 cordis logger 不落 stdout 时部署问题仍可诊断。
+test('v0.6.1 warn 双写 console.error：宿主 logger 不可见路径仍有 stderr 输出', () => {
+  const original = console.error
+  const lines = []
+  console.error = (...args) => lines.push(args.join(' '))
+  try {
+    const { ctx } = bootCtx()
+    apply(ctx, {}) // 空配置 → 必然 warn「未配置任何可用渠道」
+  } finally {
+    console.error = original
+  }
+  assert.ok(lines.some((line) => /\[dsh-notifier\]/.test(line) && /未配置任何可用渠道/.test(line)),
+    `stderr 应出现未配置渠道告警（实际：${lines.join(' | ')}）`)
+})
+
+// v0.6.1 逐通道装配隔离：某条 inbound 通道装配抛错只点名跳过，
+// 不冒出 apply、不拖垮其余装配（此前同步抛错被 cordis 吃掉 → 出站正常 + inbound 全死 + 零可见）。
+test('v0.6.1 inbound 逐通道隔离：telegram 装配炸了不崩 apply，其余装配照常', () => {
+  const { ctx, warnings, defs } = bootCtx()
+  const evilApiBase = { toString() { throw new Error('evil apiBase') } } // createTelegramInbound 内 .replace 即抛
+  apply(ctx, {
+    channels: [{ type: 'webhook', url: 'http://127.0.0.1:1/hook' }],
+    approval: { mode: 'answer' },
+    inbound: {
+      allowUsers: ['42'],
+      stateDir: mkdtempSync(join(tmpdir(), 'dsh-notifier-iso-')),
+      telegram: { botToken: 'T0KEN', apiBase: evilApiBase },
+    },
+  })
+  assert.ok(warnings.some((w) => /inbound:telegram 装配失败，已跳过/.test(w)),
+    `应点名 telegram 装配失败（实际：${warnings.join(' | ')}）`)
+  assert.ok(!warnings.some((w) => /inbound 已启动：telegram/.test(w)), 'telegram 不应有启动成功告警')
+  assert.deepEqual(defs.map((def) => def.name).sort(), ['notify', 'notify_test'], '出站工具照常注册（apply 未被拖垮）')
+})

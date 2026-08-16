@@ -44,7 +44,7 @@ function makeBus(spy = {}) {
 
 // ---------------------------------------------------------------- 卡片
 
-test('sendApprovalCard：sendMessage 携带按钮，callback_data 含 ap:<decision>:<key>:<token>', async () => {
+test('sendApprovalCard：按钮只带短引用 r:<ref>（v0.6.2 真机 400 BUTTON_DATA_INVALID 修复）', async () => {
   const { fetchImpl, calls } = makeFetch({ sendMessage: { ok: true, result: { message_id: 7 } } })
   const vault = createTokenVault({ secret: 'k' })
   const tg = createTelegramInbound({ config: CONFIG, bus: makeBus(), vault, fetchImpl })
@@ -56,8 +56,12 @@ test('sendApprovalCard：sendMessage 携带按钮，callback_data 含 ap:<decisi
   assert.equal(calls[0].body.chat_id, 100)
   assert.match(calls[0].body.text, /需要批准：rm/)
   const buttons = calls[0].body.reply_markup.inline_keyboard[0]
-  assert.equal(buttons[0].callback_data, `ap:allowed-once:ap:rm:1:${token}`)
-  assert.equal(buttons[1].callback_data, `ap:rejected:ap:rm:1:${token}`)
+  for (const button of buttons) {
+    assert.match(button.callback_data, /^r:[23456789A-HJKMNPQRSTVWXYZ]{8}$/, '短引用形态（Crockford base32 去歧义）')
+    assert.ok(button.callback_data.length <= 64, 'TG callback_data 64 字节硬限')
+    assert.ok(!button.callback_data.includes(token), '按钮不外泄完整 token（~109 字符的 payload.sig）')
+  }
+  assert.notEqual(buttons[0].callback_data, buttons[1].callback_data, '批准/拒绝各铸独立 ref')
 })
 
 test('sendApprovalCard：API 失败返回 null（调用方降级为纯通知）', async () => {
@@ -72,6 +76,102 @@ test('notifyChatIds：配置归一化为字符串数组', () => {
   const tg = createTelegramInbound({ config: { botToken: 'T', notifyChatIds: [100, '200'] }, bus: makeBus(), vault: createTokenVault() })
   assert.deepEqual(tg.notifyChatIds(), ['100', '200'])
   assert.deepEqual(createTelegramInbound({ config: { botToken: 'T' }, bus: makeBus(), vault: createTokenVault() }).notifyChatIds(), [])
+})
+
+// v0.6.2 短引用点击链（真机 400 BUTTON_DATA_INVALID 修复的端到端验证）：
+// 发卡 → 按钮只带 r:<ref> → 点击展开 → 既有 ap:/ac: 解析收到完整三元组。
+test('v0.6.2 短引用点击链：审批卡 ref 展开 → bus.decide 收到完整 decision/key/token；ref 单次核销', async () => {
+  const decisions = []
+  const bus = { accept: () => {}, decide: (p) => { decisions.push(p); return { ok: decisions.length === 1 } } }
+  const vault = createTokenVault({ secret: 'k' })
+  const token = vault.mint('ap:rm:1')
+
+  const queue = []
+  const { fetchImpl, calls } = makeFetch({
+    sendMessage: { ok: true, result: { message_id: 9 } },
+    answerCallbackQuery: { ok: true, result: {} },
+    editMessageText: { ok: true, result: {} },
+    getUpdates: () => ({ ok: true, result: queue.splice(0, 2) }),
+  })
+  const tg = createTelegramInbound({ config: CONFIG, bus, vault, fetchImpl, errorBackoffMs: 10 })
+
+  // 同一实例先发卡（ref 存进它的注册表），再起轮询投喂点击
+  await tg.sendApprovalCard({ chatId: 100, title: '需要批准：rm', content: 'c', approvalKey: 'ap:rm:1', token })
+  const row = calls.find((call) => call.method === 'sendMessage').body.reply_markup.inline_keyboard[0]
+  const [approveRef, rejectRef] = [row[0].callback_data, row[1].callback_data]
+
+  const cbq = (id, data, updateId) => ({
+    update_id: updateId,
+    callback_query: { id, from: { id: 42 }, message: { chat: { id: 42 }, message_id: 9 }, data },
+  })
+  queue.push(cbq('c1', approveRef, 1), cbq('c2', approveRef, 2), cbq('c3', rejectRef, 3))
+
+  tg.start()
+  await new Promise((resolve) => setTimeout(resolve, 80))
+  await tg.stop()
+
+  assert.equal(decisions.length, 2, '批准 + 拒绝各决策一次；重复点击同 ref 不再决策')
+  assert.deepEqual(decisions[0], { approvalKey: 'ap:rm:1', decision: 'allowed-once', token, via: 'telegram', userId: 42 })
+  assert.equal(decisions[1].decision, 'rejected')
+  const answers = calls.filter((call) => call.method === 'answerCallbackQuery')
+  assert.equal(answers.length, 3)
+  assert.match(answers[1].body.text, /已处理或已过期/, '核销后的二次点击收到过期回执')
+})
+
+test('v0.6.2 短引用点击链：动作卡 ac: 负载经 ref 展开 → actions.dispatch 收到原始 key/token', async () => {
+  const dispatched = []
+  const actions = { dispatch: (p) => { dispatched.push(p); return { ok: true, message: '✅ 已停止任务' } } }
+  const vault = createTokenVault({ secret: 'k' })
+  const token = vault.mint('act:turn/cancel:ws-abcdef12') // 真实长度 token（~109 字符）——证明压缩的必要性
+
+  const queue = []
+  const { fetchImpl, calls } = makeFetch({
+    sendMessage: { ok: true, result: { message_id: 12 } },
+    answerCallbackQuery: { ok: true, result: {} },
+    editMessageText: { ok: true, result: {} },
+    getUpdates: () => ({ ok: true, result: queue.splice(0, 1) }),
+  })
+  const tg = createTelegramInbound({ config: CONFIG, bus: makeBus(), vault, fetchImpl, errorBackoffMs: 10, actions })
+
+  await tg.sendActionCard({
+    chatId: 100, title: '⚠️ 疑似卡住', content: 'ws / abcdef12',
+    actions: [{ label: '⏹ 停止任务', data: `ac:act:turn/cancel:ws-abcdef12:${token}` }],
+  })
+  const button = calls.find((call) => call.method === 'sendMessage').body.reply_markup.inline_keyboard[0][0]
+  assert.ok(`ac:act:turn/cancel:ws-abcdef12:${token}`.length > 64, '原始负载确实超限（修复的必要性前提）')
+
+  queue.push({ update_id: 1, callback_query: { id: 'c1', from: { id: 42 }, message: { chat: { id: 42 }, message_id: 12 }, data: button.callback_data } })
+  tg.start()
+  await new Promise((resolve) => setTimeout(resolve, 60))
+  await tg.stop()
+
+  assert.equal(dispatched.length, 1)
+  assert.deepEqual(dispatched[0], { actionKey: 'act:turn/cancel:ws-abcdef12', token, via: 'telegram:action', userId: 42 })
+})
+
+// v0.6.2 注册表单元：单次核销 / TTL / 容量 FIFO（时钟注入，零真实等待）
+test('v0.6.2 callback-refs：mint/take 单次核销、TTL 过期、容量 FIFO 淘汰', async () => {
+  const { createCallbackRefs } = await import('../src/inbound/callback-refs.mjs')
+  let clock = 1000
+  const refs = createCallbackRefs({ ttlMs: 60_000, max: 3, now: () => clock })
+  const a = refs.mint('data-a')
+  assert.match(a, /^[23456789A-HJKMNPQRSTVWXYZ]{8}$/)
+  assert.equal(refs.take(a), 'data-a')
+  assert.equal(refs.take(a), null, '单次核销：第二次取回为 null')
+
+  clock += 61_000
+  const b = refs.mint('data-b')
+  clock += 61_000
+  assert.equal(refs.take(b), null, 'TTL 过期后取回 null')
+
+  const r1 = refs.mint('x1')
+  const r2 = refs.mint('x2')
+  const r3 = refs.mint('x3')
+  assert.equal(refs.size, 3)
+  const r4 = refs.mint('x4') // 容量 3 → 淘汰最旧
+  assert.equal(refs.take(r1), null, '容量满 FIFO 淘汰最旧')
+  assert.equal(refs.take(r2), 'x2')
+  assert.equal(refs.take(r4), 'x4')
 })
 
 // ---------------------------------------------------------------- 长轮询
@@ -174,6 +274,28 @@ test('长轮询：offset cursor 持久化，重启后从上次位置继续（不
   assert.equal(polls[0].body.offset, 42)
 })
 
+// v0.6.1 真机事故修复：轮询异常告警双写 stderr——宿主 cordis logger 不落 stdout
+// （dsh web profile）时，401/409/webhook 冲突类部署故障不再零可见。
+test('v0.6.1 轮询异常双写 console.error：logger 之外 stderr 仍可见', async () => {
+  const { fetchImpl } = makeFetch({ getUpdates: new Error('telegram getUpdates 失败: HTTP 401 Unauthorized') })
+  const original = console.error
+  const lines = []
+  console.error = (...args) => lines.push(args.join(' '))
+  try {
+    const tg = createTelegramInbound({
+      config: CONFIG, bus: makeBus(), vault: createTokenVault(), fetchImpl, errorBackoffMs: 10,
+      logger: { warn() {} }, // 宿主 logger 存在但（真机场景）不落 stdout
+    })
+    tg.start()
+    await new Promise((resolve) => setTimeout(resolve, 40))
+    await tg.stop()
+  } finally {
+    console.error = original
+  }
+  assert.ok(lines.some((line) => /inbound:telegram/.test(line) && /轮询异常/.test(line) && /401/.test(line)),
+    `stderr 应出现轮询异常详情（实际：${lines.join(' | ')}）`)
+})
+
 test('长轮询：API 异常只退避重试不崩溃，恢复后继续消费', async () => {
   const accepted = []
   const bus = makeBus({ accept: (env) => accepted.push(env) })
@@ -233,7 +355,7 @@ test('editResolved：编辑远端卡片为最终状态（按钮失效提示）',
 
 // ---------------------------------------------------------------- v0.5 动作闭环
 
-test('sendActionCard：sendMessage 携带自定义按钮行（callback_data = ac 负载）', async () => {
+test('sendActionCard：按钮经短引用压缩（v0.6.2：ac 负载同超 64 字节硬限）', async () => {
   const { fetchImpl, calls } = makeFetch({ sendMessage: { ok: true, result: { message_id: 31 } } })
   const tg = createTelegramInbound({ config: CONFIG, bus: makeBus(), vault: createTokenVault(), fetchImpl })
   const card = await tg.sendActionCard({
@@ -248,7 +370,8 @@ test('sendActionCard：sendMessage 携带自定义按钮行（callback_data = ac
   const buttons = calls[0].body.reply_markup.inline_keyboard[0]
   assert.equal(buttons.length, 1)
   assert.equal(buttons[0].text, '⏹ 停止任务')
-  assert.equal(buttons[0].callback_data, 'ac:act:turn/cancel:dead:token.sig')
+  assert.match(buttons[0].callback_data, /^r:[23456789A-HJKMNPQRSTVWXYZ]{8}$/, 'ac 负载一律经 ref 压缩')
+  assert.ok(buttons[0].callback_data.length <= 64)
 })
 
 test('sendActionCard：空按钮/非法按钮行 → null（不发消息）', async () => {

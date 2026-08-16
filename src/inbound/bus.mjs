@@ -25,6 +25,8 @@ export function createInboundBus(options = {}) {
   const dedupWindowMs = options.dedupWindowMs ?? DEFAULT_DEDUP_WINDOW_MS
   const warn = (message) => {
     try { options.logger?.warn?.('[dsh-notifier/inbound]', message) } catch { /* 日志失败绝不致命 */ }
+    // v0.6.1 双写 stderr：宿主 logger 不落 stdout 时告警仍可见（真机事故复盘）
+    try { console.error('[dsh-notifier/inbound]', message) } catch { /* 控制台不可用不致命 */ }
   }
 
   // 双层去重：内存 FIFO（快速路径）+ store（重启恢复）

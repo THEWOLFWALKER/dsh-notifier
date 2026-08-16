@@ -77,6 +77,9 @@ export function createLedger(options = {}) {
         title: typeof record?.message?.title === 'string' ? record?.message.title.slice(0, 200) : '',
         delivered: Array.isArray(record?.delivered) ? record.delivered : [],
         failed: Array.isArray(record?.failed) ? record.failed.map((item) => item?.channel ?? String(item)) : [],
+        // v0.6 来源标注（设计稿 §5）：外部插件推送可审计；JSON.stringify 会省略 undefined，
+        // 无 source 的旧行/本插件自身推送落盘形状逐字节不变。
+        source: typeof record?.source?.name === 'string' && record.source.name !== '' ? record.source.name.slice(0, 64) : undefined,
       }
       appendFileSync(file, `${JSON.stringify(entry)}\n`)
       maybePrune()

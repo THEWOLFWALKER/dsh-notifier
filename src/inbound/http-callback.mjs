@@ -27,6 +27,8 @@ export function startHttpCallback({ path, onPayload, host = '127.0.0.1', port = 
   }
   const warn = (message) => {
     try { logger?.warn?.('[dsh-notifier/http-callback]', message) } catch { /* 日志失败绝不致命 */ }
+    // v0.6.1 双写 stderr：宿主 logger 不落 stdout 时告警仍可见（真机事故复盘）
+    try { console.error('[dsh-notifier/http-callback]', message) } catch { /* 控制台不可用不致命 */ }
   }
 
   return new Promise((resolve, reject) => {

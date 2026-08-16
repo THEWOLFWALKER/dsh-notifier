@@ -3,6 +3,86 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 SemVer。
 DSH 处于 developer preview，0.x 阶段的次版本号提升允许小幅破坏性变更（会在条目中标注）。
 
+## [0.6.2] - 2026-08-16
+
+> 真机事故修复（v0.6.1 复验发现）：inbound 修复生效后，审批卡片发送报
+> **HTTP 400 BUTTON_DATA_INVALID**——TG `callback_data` 硬限 64 字节，而
+> `ap:<decision>:<approvalKey>:<token>` 实测 ≈ 131~165 字节（token 自身 ~109：
+> b64url(payload) ~44 + `.` + HMAC hex 64）。mock fetch 不校验长度，单测测不出，
+> 真机才暴露。v0.5 的 `ac:` 动作按钮（「停止任务」）同超限，只是尚未触发到场景。
+
+### 修复
+
+- **新增 `src/inbound/callback-refs.mjs`（短引用注册表）+ TG 适配层接入**：按钮 `callback_data` 只带 `r:<8 字符随机引用>`（恒定 10 字节），完整 `ap:/ac:` 负载存进程内注册表，点击时单次核销展开走既有解析。**token 密码学（vault）与审批账本（首达采纳状态机）零改动**；旧格式完整 data 双轨兼容（升级前在途卡片仍可点）。
+- 注册表三重防泄：take 即删（单次核销）+ TTL 15min（略长于 token 10min，让「过期」语义由 token 判定）+ 容量 256 FIFO；重启即清与「token secret 默认进程随机」的既有语义一致，不新增窗口。
+- `sendApprovalCard` / `sendActionCard` 全部按钮统一经 ref 压缩；`handleCallbackData` 独立分发函数（`r:` 展开 → `ap:/ac:` 既有分支原样保留）。
+
+### 测试
+
+- +3（714 → 717）：卡片形状（`r:` 短引用 ≤64 字节、不外泄完整 token、批准/拒绝独立 ref）；审批卡点击链端到端（ref 展开 → bus.decide 收到完整 decision/key/token；同 ref 二次点击核销拒绝 + 过期回执）；动作卡 `ac:` 点击链（超限长负载经 ref 展开 → actions.dispatch 收到原始 key/token）；注册表单元（单次核销/TTL/FIFO，时钟注入）。既有「raw ap: data 直落解析」测试保留 = 双轨兼容的回归证据。
+
+## [0.6.1] - 2026-08-16
+
+> 真机事故修复轮（TG Inbound 装配问题报告）：v0.6 真机部署中远程审批按钮未生效——
+> 出站正常、inbound 全死、错误零可见，排查数轮才定位。根因不是单点 bug，而是
+> 「可诊断性缺失」：告警只走宿主 logger（web profile 不落 stdout）+ 装配段无隔离 +
+> inbound 块不做 `${ENV:}` 解析三件事叠加。
+
+### 修复
+
+- **告警双写 stderr**：`index.mjs` 与全部 inbound 模块（telegram/feishu/qq/wxpusher/wechat/dingtalk/bus/conversation/http-callback 共 9 处）的 `warn` 在宿主 logger 之外补写 `console.error`——对齐探针「console 与 logger 双写」做法。此前 `info` 有回落而 `warn` 没有（不对称），dsh web profile 下 cordis logger 不落 stdout，装配/轮询告警（401/409/webhook 冲突）全部成为黑盒。
+- **inbound 逐通道装配隔离**：六条 inbound 通道 + approval 路由 + 会话路由各自 try-catch 守护——某条通道装配同步抛错只点名 warn（`inbound:<通道> 装配失败，已跳过`）并跳过，其余通道与出站照常。此前同步抛错直接冒出 `apply` 被 cordis 吃掉，导致「出站正常（notifier 先建好）+ inbound 全死 + 无任何线索」。
+- **inbound 块 `${ENV:NAME}` 密钥引用**：`resolveConfig` 对 `inbound` 递归应用 `resolveEnvRefs`，与出站 channels 对齐。此前 `inbound.telegram.botToken: '${ENV:...}'` 是字面量（出站解析、入站不解析的双路径不一致），TG API 401 退避且不可见。
+
+### 测试
+
+- +4（710 → 714）：inbound env 引用替换/缺失/原样保留；warn 双写 stderr（宿主 logger 不可见路径）；逐通道装配隔离（通道炸了不崩 apply、其余照常）；telegram 轮询异常双写 stderr。
+
+### 真机部署诊断指引（v0.6.1 起）
+
+- 起来了：stderr 出现 `inbound 已启动：telegram 长轮询（白名单 N 人…）`。
+- 没起来：stderr 出现 `inbound:<通道> 装配失败，已跳过（…）: <原因>`——原因直接可读。
+- 起来但不工作：stderr 出现 `轮询异常，Ns 后重试: …`（401 = token/env 解析问题；409 = webhook 未删或他人在轮询）。
+
+## [0.6.0] - 2026-08-16
+
+Open event source: plugin notification bus（设计稿 `docs/v0.6-design.md` 两特性全量落地，经两轮独立审查修订）——**dsh-notifier 从「DSH 的通知插件」升级为「DSH 生态的通知基础设施」**：其他插件一行注入即可推送（共享配置、路由、分段、限流、账本、flush 全部基础设施），一行监听即可订阅每次广播结果。核心管线零改动，673 存量断言一条不改。测试 673 → 710（+37）。宿主语义依据 2026-08-16 真机 spike（DSH 0.1.0-rc.6 / cordis）：服务注册必须 `ctx.provide()`（直接赋值被宿主拦截）；消费方 `inject: ['notifier']` 声明在服务缺失时会阻塞宿主启动 → 任何形态下都提供服务（禁用时为 no-op stub）。
+
+### Added（特性 A：出向服务注入 `ctx.notifier`）
+
+- `src/public.mjs`（新模块，~200 行）：公共面 facade。四方法收敛——`version`（`'0.6'`，仅公共面 breaking 时 bump，不与包版本联动）/ `enabled()` / `push(msg, options)` / `flush()`。军规：**never-reject**（push 内部任何异常吞掉返回 `failed:[{reason:'internal'}]`，消费方不写 try-catch 也不崩）；**no-op stub**（禁用/未配置渠道时仍注入服务，push 返回 `skipped:['(disabled)']`——消费插件永不因我们不可用而崩）；title/content 各 20000 码点钳制（码点安全截断，防消费方 bug 引发分段风暴）；双空消息返回 `(malformed)` 不推不 emit 不占限流名额；sourceName 归一（非字符串/空 → `anonymous`，64 字符上限）。
+- 按源限流：复用既有 `createRateLimiter` 滑动窗，每源独立（默认 `limitPerMinutePerSource: 10`，0 = 不限）；表容量 32 超限 LRU 淘汰最旧源并 warn（淘汰即限流窗归零——轮换 sourceName 绕限流的成本显性化）；`anonymous` 表外常驻单窗不参与淘汰。**限流拦截照落账照 emit**（静音不等于没发生，消费方能感知自己被限）。
+- 定向推送 `push(msg, { channel: 'telegram' })`：走单渠道路径，返回值适配为 outcome 形状；诚实声明——该路径不进账本不发 sent 事件（既有行为，v0.6 不改）。
+- `src/index.mjs` 装配：`ctx.provide('notifier', facade)`（cordis 强制契约，返回注销器进 disposers）；无 `provide` 的宿主/测试桩回退直接赋值 + 引用比对清除（不误伤他人后注册的同名服务）。插件顶层禁用时注入 no-op stub 服务。
+- 广播返回值与 onSend record 同构外加 `source: { kind:'plugin', name }` 字段（facade 拼合，`notifyAll` 返回值形状不变——存量全形状 deepEqual 断言守着）。
+
+### Added（特性 B：入向事件 `dsh-notifier/sent`）
+
+- 每次广播完成即 `ctx.emit('dsh-notifier/sent', record)`：payload 与账本记录同构（`{ time, message, ok, delivered, skipped, failed, source? }`），**深冻结**（`deepFreeze`——防消费方篡改共享 payload 污染其他订阅者；环引用/非普通对象防御，冻结失败原值返回）。限流拦截的记录也发射。
+- `composeOnSend` 组合器：账本 / admin hub / emit 三个挂载点逐个 try-catch——任一失败不拖累其余；全空返回 `undefined`，保持 v0.5「digest 关 + admin 关 → onSend=undefined」边界语义。宿主不支持 `ctx.emit` 时 warn 一次后续静默。
+- `public.emit: false` 可关闭事件发射（保留「关闭零开销」家训）。
+
+### Added（来源标注落账）
+
+- `src/notify.mjs`：`notifyAll(msg, { source })` 并入 onSend record（返回值不动）。
+- `src/ledger.mjs`：落盘白名单补 `source`（截 64 字符）；无 source 的旧行与本插件自身推送落盘形状逐字节不变——`v0.6` 起账本可审计「这条通知是谁推的」，为将来的按源静默铺路。
+
+### Added（配置与文档）
+
+- `src/config.mjs` 新增 `public` 三键：`enabled`（默认开——服务注入是消费插件硬依赖，关闭时仍注入 stub）/ `limitPerMinutePerSource`（默认 10，0 = 不限）/ `emit`（默认开）。
+- `PLUGINS.md`（新文件）：消费方契约全量文档——防御式配方（回调式注入 `ctx.inject?.(['notifier'], …)` 为主、能力探测为辅，明确 version 相等比较是陷阱）、返回值契约、限流/钳制/事件 payload 形状、flush 与 dispose 配方、循环推送军规（监听器内禁止 push）。
+- README 双语：特性表补「开放事件源（v0.6.0）」行，指向 PLUGINS.md。
+
+### Added（测试）
+
+- `test/public.test.mjs`（37）：facade 广播/定向/限流（含 LRU 淘汰与 anonymous 常驻）/双空 malformed/never-reject 注入异常/长度钳制/no-op stub/emit 开关与深冻结/`composeOnSend` 边界/装配级（provide 注入与注销、禁用 stub、宿主无 emit 降级）/ledger source 落盘/PLUGINS.md 文档同步（代码块语法与 API 签名防漂移）。fetch 全 mock，零真实网络请求。
+
+### 真机验证（2026-08-16 · DSH 0.1.0-rc.6 / Node 24）
+
+- 特性 A/B 双确认：静态 `inject: ['notifier']` 消费方解析到 `version=0.6` 真服务（非 stub）；`dsh-notifier/sent` 事件跨插件可见（15/15，payload 形状完整）；零渠道语义符合设计（`ok:false` 三空数组，不崩不阻塞）。
+- **配方裁定**：rc.6 宿主只认静态 inject 声明——回调式 `ctx.inject(['notifier'], cb)` 不触发、未声明访问服务属性（`ctx.notifier`/`ctx.tools`）直接抛 `cannot get property … without inject`。PLUGINS.md 全部配方据此定稿为静态声明（v0.6 任何形态 `ctx.provide` + stub 兜底使静态声明安全）。
+- 安装注意：pnpm 管理的宿主手动覆盖 `node_modules/dsh-notifier` 会被回滚，升级须 `dsh plugin add file:<路径>`。真渠道送达复验随验证包二轮进行（验收插件 v2 同步改静态声明）。
+
 ## [0.5.0] - 2026-08-16
 
 Mobile command center + notification action loop（设计稿 docs/v0.5-design.md 四特性全量落地）：长任务自动心跳与疑似卡住提醒，通知卡片自带「停止任务」按钮（Telegram inline keyboard / 飞书卡片），手机从「收据面」升级为「指挥面」；`/quiet`·`/unquiet` 命令补全与管理台移动端适配收尾。测试 625 → 673（+48）。

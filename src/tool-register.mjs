@@ -161,7 +161,8 @@ export function registerNotifyTool(ctx, notifier, options = {}) {
           sendOptions = { channelTypes: resolved.channelTypes }
         } catch { /* 解析异常回落全局广播 */ }
       }
-      // 无分流时保持旧调用形状（notifyAll 只收一个参数），旧宿主/旧测试零感知
+      // v0.7 候选：广播补 tool 来源（record 带 kind:'tool'）。v0.6 缓发——工具分流的
+      // 存量测试对第二参做全形状断言，与「673 断言一条不改」军规冲突（同 event 线裁定）。
       const broadcast = sendOptions === undefined
         ? await notifier.notifyAll(message)
         : await notifier.notifyAll(message, sendOptions)

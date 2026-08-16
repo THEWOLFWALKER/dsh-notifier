@@ -72,6 +72,22 @@ test('debounceMs/summaryMaxChars 默认值与非数值回退', () => {
   assert.equal(resolveConfig({ debounceMs: 250, summaryMaxChars: 99 }).debounceMs, 250)
 })
 
+test('public 块：全缺省合法且默认开启（enabled/emit 默认 true，限流默认 10）', () => {
+  const resolved = resolveConfig({})
+  assert.deepEqual(resolved.public, { enabled: true, limitPerMinutePerSource: 10, emit: true })
+})
+
+test('public 块：显式关闭/限流/emit 归一（非法值回退默认）', () => {
+  const resolved = resolveConfig({ public: { enabled: false, limitPerMinutePerSource: 0, emit: false } })
+  assert.equal(resolved.public.enabled, false)
+  assert.equal(resolved.public.limitPerMinutePerSource, 0)
+  assert.equal(resolved.public.emit, false)
+  const bad = resolveConfig({ public: { limitPerMinutePerSource: 'NaN!' } })
+  assert.equal(bad.public.limitPerMinutePerSource, 10, '非数值回退默认')
+  const negative = resolveConfig({ public: { limitPerMinutePerSource: -3 } })
+  assert.equal(negative.public.limitPerMinutePerSource, 10, '负数拒绝')
+})
+
 test('normalizeMessage 归一化字段', () => {
   assert.deepEqual(normalizeMessage({ title: ' T ', content: ' c ', level: 'active', group: 'g' }), { title: 'T', content: 'c', level: 'active', group: 'g' })
   assert.deepEqual(normalizeMessage({ title: 1, content: 2 }), { title: '', content: '', level: undefined, group: undefined })
@@ -106,4 +122,25 @@ test('webhook.headers 对象整体脱敏，不泄露 Authorization 头', () => {
   assert.ok(!JSON.stringify(masked.headers).includes('sk-abc12345'))
   assert.equal(masked.headers.Authorization, '••••••••2345')
   assert.equal(masked.headers['x-token'], '••••••••xyz')
+})
+
+test('v0.6.1 inbound ${ENV:NAME} 密钥引用与 channels 对齐：在则替换、缺则空串、非字符串原样', () => {
+  process.env.DSH_TEST_INBOUND_TG = 'tok-secret-1'
+  try {
+    const resolved = resolveConfig({
+      channels: [{ type: 'webhook', url: 'http://127.0.0.1:1/hook' }],
+      inbound: {
+        allowUsers: ['42'],
+        telegram: { botToken: '${ENV:DSH_TEST_INBOUND_TG}', notifyChatIds: [100] },
+        feishu: { appToken: '${ENV:DSH_TEST_INBOUND_MISSING}' },
+        stateDir: '/tmp/dsh-notifier-env-test-state',
+      },
+    })
+    assert.equal(resolved.inbound.telegram.botToken, 'tok-secret-1', '环境变量存在 → 替换为真实值')
+    assert.equal(resolved.inbound.feishu.appToken, '', '环境变量缺失 → 空串（对齐 channels「密钥可不落 profile 明文」语义）')
+    assert.deepEqual(resolved.inbound.allowUsers, ['42'], '数组与数字等非字符串值原样保留')
+    assert.equal(resolved.inbound.stateDir, '/tmp/dsh-notifier-env-test-state')
+  } finally {
+    delete process.env.DSH_TEST_INBOUND_TG
+  }
 })

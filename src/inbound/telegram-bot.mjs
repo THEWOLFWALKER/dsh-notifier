@@ -7,6 +7,8 @@
 //  - offset cursor 持久化（store），重启不重复消费
 // 军规：轮询循环里的任何异常只退避重试，绝不弄崩宿主；stop() 干净退出。
 
+import { createCallbackRefs } from './callback-refs.mjs'
+
 const DEFAULT_API_BASE = 'https://api.telegram.org'
 const POLL_TIMEOUT_S = 25
 const POLL_ABORT_MS = (POLL_TIMEOUT_S + 10) * 1000
@@ -24,14 +26,19 @@ const DEFAULT_ERROR_BACKOFF_MS = 5000
  *   - v0.5 动作分发器（可空：缺省时 ac: 回调分支不存在，行为与 v0.4.0 一致）
  * @param {typeof fetch} [options.fetchImpl] - 测试注入
  * @param {number} [options.errorBackoffMs=5000] - 轮询异常退避（测试可缩短）
+ * @param {number} [options.callbackTtlMs] - 按钮短引用有效期（缺省 15min，略长于 token TTL）
  */
-export function createTelegramInbound({ config, bus, vault, store = null, logger = null, fetchImpl, errorBackoffMs, actions = null } = {}) {
+export function createTelegramInbound({ config, bus, vault, store = null, logger = null, fetchImpl, errorBackoffMs, actions = null, callbackTtlMs } = {}) {
   const apiBase = (config.apiBase || DEFAULT_API_BASE).replace(/\/+$/, '')
   const botToken = String(config.botToken ?? '')
   const backoffMs = Math.max(0, Number(errorBackoffMs) || DEFAULT_ERROR_BACKOFF_MS)
   const doFetch = fetchImpl ?? globalThis.fetch.bind(globalThis)
+  // v0.6.2 按钮短引用注册表：callback_data 64 字节硬限的修复载体（见 callback-refs.mjs 头注）
+  const refs = createCallbackRefs({ ttlMs: callbackTtlMs })
   const warn = (message) => {
     try { logger?.warn?.('[dsh-notifier/inbound:telegram]', message) } catch { /* 日志失败绝不致命 */ }
+    // v0.6.1 双写 stderr：宿主 logger 不落 stdout 时轮询/装配告警仍可见（真机事故复盘）
+    try { console.error('[dsh-notifier/inbound:telegram]', message) } catch { /* 控制台不可用不致命 */ }
   }
 
   const api = async (method, body = {}) => {
@@ -58,11 +65,22 @@ export function createTelegramInbound({ config, bus, vault, store = null, logger
   let running = false
   let loopPromise = null
 
-  async function handleUpdate(update) {
-    if (update.callback_query !== undefined) {
-      const query = update.callback_query
-      const data = String(query.data ?? '')
-      const parts = data.split(':')
+  /**
+   * callback_query 分发：v0.6.2 先展开短引用（r:<ref>，take 单次核销）再走既有
+   * ap:/ac: 解析；旧格式完整 data（升级前在途卡片）不经注册表直落解析，双轨兼容。
+   */
+  async function handleCallbackData(query, rawData) {
+    const data = String(rawData ?? '')
+    const parts = data.split(':')
+    if (parts[0] === 'r' && parts.length === 2) {
+      const expanded = refs.take(parts[1])
+      if (expanded === null) {
+        await api('answerCallbackQuery', { callback_query_id: query.id, text: '该操作已处理或已过期（按钮单次有效）' }).catch(() => {})
+        return
+      }
+      await handleCallbackData(query, expanded)
+      return
+    }
       // v0.5 动作按钮：ac:<actionKey>:<token>（actions 注入时才存在此分支）
       if (parts[0] === 'ac' && actions !== null && parts.length >= 3) {
         const actionKey = parts.slice(1, -1).join(':')
@@ -107,6 +125,12 @@ export function createTelegramInbound({ config, bus, vault, store = null, logger
           }).catch(() => {})
         }
       }
+      return
+  }
+
+  async function handleUpdate(update) {
+    if (update.callback_query !== undefined) {
+      await handleCallbackData(update.callback_query, String(update.callback_query.data ?? ''))
       return
     }
     const message = update.message
@@ -169,14 +193,18 @@ export function createTelegramInbound({ config, bus, vault, store = null, logger
      */
     async sendApprovalCard({ chatId, title, content, approvalKey, token }) {
       try {
+        // v0.6.2：callback_data 只放短引用 r:<ref>（恒定 10 字节）——完整
+        // ap:<decision>:<key>:<token> ≈ 131~165 字节，超 TG 64 字节硬限（真机 400
+        // BUTTON_DATA_INVALID；mock fetch 不校验长度，单测测不出）。完整 data 存
+        // 进程内注册表，点击时单次核销展开走既有解析，token 密码学与账本零改动。
         const result = await api('sendMessage', {
           chat_id: chatId,
           text: `🔐 ${title}\n\n${content}\n\n_decision: ${approvalKey}_`,
           parse_mode: 'markdown',
           reply_markup: {
             inline_keyboard: [[
-              { text: '✅ 批准（本次）', callback_data: `ap:allowed-once:${approvalKey}:${token}` },
-              { text: '❌ 拒绝', callback_data: `ap:rejected:${approvalKey}:${token}` },
+              { text: '✅ 批准（本次）', callback_data: `r:${refs.mint(`ap:allowed-once:${approvalKey}:${token}`)}` },
+              { text: '❌ 拒绝', callback_data: `r:${refs.mint(`ap:rejected:${approvalKey}:${token}`)}` },
             ]],
           },
         })
@@ -198,7 +226,8 @@ export function createTelegramInbound({ config, bus, vault, store = null, logger
           .filter((button) => button !== null && typeof button === 'object'
             && typeof button.label === 'string' && button.label.trim() !== ''
             && typeof button.data === 'string' && button.data !== '')
-          .map((button) => ({ text: button.label, callback_data: button.data }))
+          // v0.6.2：同审批卡——ac:<key>:<token> 同样超限，一律经短引用压缩
+          .map((button) => ({ text: button.label, callback_data: `r:${refs.mint(button.data)}` }))
         if (rows.length === 0) return null
         const result = await api('sendMessage', {
           chat_id: chatId,

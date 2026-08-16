@@ -57,6 +57,20 @@ test('ledger: append 落账 JSONL，read 按时间窗过滤', () => {
   }
 })
 
+test('ledger: source 落 JSONL（plugin 带 name；无 source 的行不出现该键）', () => {
+  const dir = tempDir()
+  try {
+    const ledger = createLedger({ dir })
+    ledger.append(record({ source: { kind: 'plugin', name: 'dsh-email' } }))
+    ledger.append(record())
+    const lines = readFileSync(join(dir, 'ledger.jsonl'), 'utf8').trim().split('\n')
+    assert.equal(JSON.parse(lines[0]).source, 'dsh-email')
+    assert.equal('source' in JSON.parse(lines[1]), false, '无 source 的行逐字节保持旧形状')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('ledger: digest 类不计入摘要（避免摘要的摘要）', () => {
   const dir = tempDir()
   try {

@@ -22,6 +22,8 @@ import { registerApprovalHandler } from './approval/router.mjs'
 import { registerConversationRouter } from './inbound/conversation.mjs'
 // v0.5：动作闭环（通知按钮 → 内置处置动作）
 import { createActionDispatcher } from './actions.mjs'
+// v0.6：开放事件源（ctx.notifier 服务注入 + dsh-notifier/sent 事件）
+import { createPublicFacade, composeOnSend, deepFreeze } from './public.mjs'
 // v0.3.2：路由引擎（双向解析链 + 会话台账，src/routing/*.mjs）
 import { createAgentRouter } from './routing/agent-router.mjs'
 import { createSessionRegistry } from './routing/session-registry.mjs'
@@ -43,6 +45,11 @@ export function apply(ctx, config = {}) {
   const logger = ctx?.logger
   const warn = (message) => {
     try { logger?.warn?.('[dsh-notifier]', message) } catch { /* 日志失败绝不致命 */ }
+    // v0.6.1 真机可诊断性：部分宿主形态（dsh web profile）cordis logger 不落 stdout，
+    // 装配/轮询类告警只走 logger = 部署问题零可见（2026-08-16 TG inbound 装配事故：
+    // 出站正常 + inbound 全死 + 错误不可见，排查数轮才定位）。对齐探针「console 与
+    // logger 双写」做法，warn 必须双写 stderr——宁可测试输出多几行，不可部署黑盒。
+    try { console.error('[dsh-notifier]', message) } catch { /* 控制台不可用（极少数宿主）不致命 */ }
   }
   // v0.3.3：info 级输出（admin token/管理台地址）。宿主 logger 缺 .info 时回落
   // console——token 明文只在首启打印一次，绝不能因日志通道缺失而静默丢失。
@@ -55,8 +62,63 @@ export function apply(ctx, config = {}) {
     }
   }
 
+  // v0.6 服务注入（spike 验证 2026-08-16，DSH 0.1.0-rc.6）：宿主为 cordis 强制契约，
+  // 直接 ctx.notifier = facade 会被拦截（cannot set property "notifier" without provide），
+  // 必须 ctx.provide('notifier', facade)（返回注销器）。无 provide（测试桩 / 非 cordis 宿主）
+  // 回退直接赋值 + 引用比对清除（不误伤他人后注册的同名服务，审查 S4）。
+  const registerNotifierService = (facade, disposers) => {
+    if (typeof ctx?.provide === 'function') {
+      try {
+        const unprovide = ctx.provide('notifier', facade)
+        if (typeof unprovide === 'function') disposers.push(unprovide)
+      } catch (error) {
+        warn(`notifier 服务注册失败: ${error instanceof Error ? error.message : String(error)}`)
+      }
+      return
+    }
+    try { ctx.notifier = facade } catch { warn('notifier 服务注册失败（宿主拦截属性赋值）') }
+    disposers.push(() => {
+      try { if (ctx.notifier === facade) ctx.notifier = undefined } catch { /* 清除失败不致命 */ }
+    })
+  }
+
+  // v0.6 sent 事件发射（设计稿 §3）：emit 失败绝不影响账本/hub/推送主链路；宿主无 ctx.emit
+  // 时 warn 一次后静默（可观测，审查 R6）。public.emit:false = 整链不挂（零开销家训）。
+  const publicEmit = resolved.public?.emit !== false
+  let emitWarned = false
+  const emitSend = publicEmit
+    ? (record) => {
+        if (typeof ctx?.emit !== 'function') {
+          // 可选链会静默吞掉缺失——违背 R6 可观测性：缺 emit 必须让用户看得见（warn 一次）
+          if (!emitWarned) {
+            emitWarned = true
+            warn('宿主不支持 ctx.emit，dsh-notifier/sent 事件不可用（后续静默）')
+          }
+          return
+        }
+        try {
+          ctx.emit('dsh-notifier/sent', deepFreeze(record))
+        } catch {
+          if (!emitWarned) {
+            emitWarned = true
+            warn('dsh-notifier/sent 发射失败（宿主可能不支持 ctx.emit），后续失败静默')
+          }
+        }
+      }
+    : null
+
   if (!resolved.enabled) {
-    warn('已禁用（enabled: false），不注册事件监听与工具')
+    // v0.6（spike 裁定）：禁用时仍必须提供 no-op stub 服务——消费插件以 inject:['notifier']
+    // 声明依赖，服务缺失会阻塞宿主启动（真机验证：pending → 启动 abort）。stub 让消费方
+    // 拿到「push 返回 skipped:(disabled)」而非整个宿主起不来。
+    warn('已禁用（enabled: false），不注册事件监听与工具；notifier 服务以 no-op 形态照常提供')
+    const stubDisposers = []
+    registerNotifierService(createPublicFacade({ notifier: null, config: resolved.public, logger }), stubDisposers)
+    ctx.effect(() => () => {
+      for (const dispose of stubDisposers) {
+        try { dispose()?.catch?.(() => {}) } catch { /* 卸载失败不致命 */ }
+      }
+    })
     return
   }
 
@@ -149,16 +211,35 @@ export function apply(ctx, config = {}) {
   // hub 不创建、onSend 维持 v0.3.3 的账本单挂语义（存量行为逐字节不变）。
   // notify.mjs 已把 onSend 调用包在 try/catch：账本/hub 任一异常绝不影响推送主链路。
   const eventHub = adminEnabled ? createEventHub() : null
-  const onSend = eventHub === null
-    ? (ledger === null ? undefined : (record) => ledger.append(record))
-    : (record) => {
-        if (ledger !== null) ledger.append(record)
-        eventHub.publish(record)
-      }
+  // v0.6 组合器化（设计稿 §3.4）：账本/hub/emit 三挂逐项隔离——甲抛错乙照跑（结构保证，
+  // 取代旧 if/else 依赖「append 与 publish 各自永不抛」的碰巧等价）。全空 → undefined，
+  // 保持 v0.5「digest 关 + admin 关 + emit 关 → onSend=undefined」边界语义不变。
+  const onSend = composeOnSend([
+    ledger === null ? null : (record) => ledger.append(record),
+    eventHub === null ? null : (record) => eventHub.publish(record),
+    emitSend,
+  ])
 
   const notifier = createNotifier(ctx, resolved.channels, { segment: resolved.segment, routing: resolved.routing, onSend })
 
   const disposers = []
+
+  // v0.6 公共面装配（设计稿 §2.5）：notifier 之后创建 facade 并注册服务。public.enabled:false
+  // → stub 形态（push 返回 skipped:(disabled)），服务照常提供（消费插件的启动依赖不能断）。
+  // sink = 限流拦截的直落点：限流记录照进账本 + 照发 sent 事件（静音不等于没发生，§3.3）。
+  const publicFacade = createPublicFacade({
+    notifier: resolved.public?.enabled !== false ? notifier : null,
+    config: resolved.public,
+    logger,
+    sink: (record) => {
+      try { ledger?.append?.(record) } catch { /* 限流落账失败不致命 */ }
+      if (typeof emitSend === 'function') {
+        try { emitSend(record) } catch { /* emit 失败不拖累 */ }
+      }
+    },
+  })
+  registerNotifierService(publicFacade, disposers)
+  disposers.push(() => publicFacade.dispose())
 
   // v0.3.2 路由引擎装配（设计稿 §7）：store 之后、inbound 白名单块之前创建，
   // 注入四条触发线（事件推送 / notify 工具 / 审批 / 会话路由）。
@@ -330,70 +411,95 @@ export function apply(ctx, config = {}) {
     const interactiveInstances = []
     const replyTargets = new Map()
 
+    // v0.6.1 逐通道装配隔离（真机事故复盘）：装配段此前的同步抛错会直接冒出 apply，
+    // 被 cordis 吃掉（web profile 下零可见）→ 出站正常（notifier 先建好）+ inbound
+    // 全死 + 无任何线索。现在每条通道独立守护：炸了点名 warn（warn 已双写 stderr）
+    // 并跳过该通道，其余通道与审批/会话路由照常装配——真正兑现「绝不弄崩宿主」。
+    const startInboundChannel = (name, boot) => {
+      try {
+        return boot()
+      } catch (error) {
+        warn(`inbound:${name} 装配失败，已跳过（其余通道不受影响）: ${error instanceof Error ? error.message : String(error)}`)
+        return null
+      }
+    }
+
     let telegramInbound = null
     if (inboundBotToken !== '') {
-      telegramInbound = createTelegramInbound({
-        config: { botToken: inboundBotToken, apiBase: tgRaw.apiBase, notifyChatIds },
-        bus,
-        vault,
-        store,
-        logger,
-        actions, // v0.5 动作按钮（ac: 回调 → turn/cancel）
+      telegramInbound = startInboundChannel('telegram', () => {
+        const instance = createTelegramInbound({
+          config: { botToken: inboundBotToken, apiBase: tgRaw.apiBase, notifyChatIds },
+          bus,
+          vault,
+          store,
+          logger,
+          actions, // v0.5 动作按钮（ac: 回调 → turn/cancel）
+        })
+        instance.start()
+        interactiveInstances.push(instance)
+        replyTargets.set('telegram', instance)
+        disposers.push(() => instance.stop())
+        warn(`inbound 已启动：telegram 长轮询（白名单 ${allowUsers.length} 人；审批模式 ${approvalRaw.mode === 'answer' ? 'answer（远程可决）' : approvalWanted ? 'observe（只旁观）' : '未配置'}）`)
+        return instance
       })
-      telegramInbound.start()
-      interactiveInstances.push(telegramInbound)
-      replyTargets.set('telegram', telegramInbound)
-      disposers.push(() => telegramInbound.stop())
-      warn(`inbound 已启动：telegram 长轮询（白名单 ${allowUsers.length} 人；审批模式 ${approvalRaw.mode === 'answer' ? 'answer（远程可决）' : approvalWanted ? 'observe（只旁观）' : '未配置'}）`)
     }
 
     // 飞书 inbound：WS 长连接（免公网）。SDK 懒加载——未安装 optionalDependencies
     // 时 start() 内部中文指引后静默不可用，不影响其他通道。
     if (feishuOk) {
-      const feishuInbound = createFeishuInbound({
-        config: feishuResolved.config,
-        bus,
-        fallbackTargets: allowUsers,
-        logger,
-        actions, // v0.5 动作按钮（ac: 回调 → turn/cancel）
+      startInboundChannel('feishu', () => {
+        const instance = createFeishuInbound({
+          config: feishuResolved.config,
+          bus,
+          fallbackTargets: allowUsers,
+          logger,
+          actions, // v0.5 动作按钮（ac: 回调 → turn/cancel）
+        })
+        instance.start()
+        interactiveInstances.push(instance)
+        replyTargets.set('feishu', instance)
+        disposers.push(() => instance.stop())
+        warn(`inbound 已启动：feishu WebSocket 长连接（卡片审批 + 命令回执）`)
+        return instance
       })
-      feishuInbound.start()
-      interactiveInstances.push(feishuInbound)
-      replyTargets.set('feishu', feishuInbound)
-      disposers.push(() => feishuInbound.stop())
-      warn(`inbound 已启动：feishu WebSocket 长连接（卡片审批 + 命令回执）`)
     }
 
     // QQ 官方机器人 inbound：WS 网关 + REST 裸协议。审批无按钮卡片，
     // 靠「回复 1 批准 / 2 拒绝」降级（router 已按 capabilities 分流文案）。
     if (qqOk) {
-      const qqInbound = createQqInbound({
-        config: qqResolved.config,
-        bus,
-        fallbackTargets: allowUsers,
-        logger,
+      startInboundChannel('qq', () => {
+        const instance = createQqInbound({
+          config: qqResolved.config,
+          bus,
+          fallbackTargets: allowUsers,
+          logger,
+        })
+        instance.start()
+        interactiveInstances.push(instance)
+        replyTargets.set('qq', instance)
+        disposers.push(() => instance.stop())
+        warn(`inbound 已启动：qq WebSocket 网关（文本审批通知 + 编号回复裁决）`)
+        return instance
       })
-      qqInbound.start()
-      interactiveInstances.push(qqInbound)
-      replyTargets.set('qq', qqInbound)
-      disposers.push(() => qqInbound.stop())
-      warn(`inbound 已启动：qq WebSocket 网关（文本审批通知 + 编号回复裁决）`)
     }
 
     // WxPusher inbound：HTTP 回调（send_up_cmd 上行）+ appToken 定向推送回执。
     if (wxOk) {
-      const wxInbound = createWxpusherInbound({
-        config: wxResolved.config,
-        bus,
-        store,
-        fallbackTargets: allowUsers,
-        logger,
+      startInboundChannel('wxpusher', () => {
+        const instance = createWxpusherInbound({
+          config: wxResolved.config,
+          bus,
+          store,
+          fallbackTargets: allowUsers,
+          logger,
+        })
+        instance.start()
+        interactiveInstances.push(instance)
+        replyTargets.set('wxpusher', instance)
+        disposers.push(() => instance.stop())
+        warn(`inbound 已启动：wxpusher HTTP 回调（密径鉴权 + 编号回复裁决）`)
+        return instance
       })
-      wxInbound.start()
-      interactiveInstances.push(wxInbound)
-      replyTargets.set('wxpusher', wxInbound)
-      disposers.push(() => wxInbound.stop())
-      warn(`inbound 已启动：wxpusher HTTP 回调（密径鉴权 + 编号回复裁决）`)
     }
     // 微信 iLink inbound：getupdates 长轮询 + sendmessage 回执（裸协议，零依赖）。
     // 凭证缺省回落登录 CLI 落盘的 wechat:account；审批无按钮，靠编号回复裁决。
@@ -402,50 +508,63 @@ export function apply(ctx, config = {}) {
       if (!wechatResolved.ok) {
         warn(`inbound.wechat 跳过: ${wechatResolved.reason}`)
       } else {
-        const wechatInbound = createWechatIlinkInbound({
-          config: wechatResolved.config,
-          bus,
-          store,
-          fallbackTargets: allowUsers,
-          logger,
+        startInboundChannel('wechat', () => {
+          const instance = createWechatIlinkInbound({
+            config: wechatResolved.config,
+            bus,
+            store,
+            fallbackTargets: allowUsers,
+            logger,
+          })
+          instance.start()
+          interactiveInstances.push(instance)
+          replyTargets.set('wechat', instance)
+          disposers.push(() => instance.stop())
+          warn(`inbound 已启动：wechat iLink 长轮询（文本审批通知 + 编号回复裁决）`)
+          return instance
         })
-        wechatInbound.start()
-        interactiveInstances.push(wechatInbound)
-        replyTargets.set('wechat', wechatInbound)
-        disposers.push(() => wechatInbound.stop())
-        warn(`inbound 已启动：wechat iLink 长轮询（文本审批通知 + 编号回复裁决）`)
       }
     }
 
     // 钉钉 Stream inbound（v0.3.1）：官方 Stream 长连接裸协议（免公网）。
     // 审批无按钮卡片，靠「回复 1 批准 / 2 拒绝」降级（router 按 capabilities 分流文案）。
     if (dingtalkOk) {
-      const dingtalkInbound = createDingtalkInbound({
-        config: dingtalkResolved.config,
-        bus,
-        store,
-        fallbackTargets: allowUsers,
-        logger,
+      startInboundChannel('dingtalk', () => {
+        const instance = createDingtalkInbound({
+          config: dingtalkResolved.config,
+          bus,
+          store,
+          fallbackTargets: allowUsers,
+          logger,
+        })
+        instance.start()
+        interactiveInstances.push(instance)
+        replyTargets.set('dingtalk', instance)
+        disposers.push(() => instance.stop())
+        warn(`inbound 已启动：dingtalk Stream 长连接（文本审批通知 + 编号回复裁决）`)
+        return instance
       })
-      dingtalkInbound.start()
-      interactiveInstances.push(dingtalkInbound)
-      replyTargets.set('dingtalk', dingtalkInbound)
-      disposers.push(() => dingtalkInbound.stop())
-      warn(`inbound 已启动：dingtalk Stream 长连接（文本审批通知 + 编号回复裁决）`)
     }
 
-    const disposeApproval = registerApprovalHandler({
-      ctx,
-      notifier,
-      bus,
-      vault,
-      store,
-      interactive: interactiveInstances,
-      approvalConfig: approvalRaw,
-      router, // v0.3.2 审批分流：request.agent 可解析时只发绑定通道（quiet 对审批不生效）
-      logger,
-    })
-    disposers.push(disposeApproval)
+    // v0.6.1：路由注册同样逐个守护——审批/会话路由炸了只丢对应能力，
+    // 不能拖垮整块 inbound 栈（interactiveRaw 赋值移进 try 之前保持语义）。
+    let disposeApproval = () => {}
+    try {
+      disposeApproval = registerApprovalHandler({
+        ctx,
+        notifier,
+        bus,
+        vault,
+        store,
+        interactive: interactiveInstances,
+        approvalConfig: approvalRaw,
+        router, // v0.3.2 审批分流：request.agent 可解析时只发绑定通道（quiet 对审批不生效）
+        logger,
+      })
+      disposers.push(disposeApproval)
+    } catch (error) {
+      warn(`approval 路由装配失败，已跳过（inbound 通道不受影响）: ${error instanceof Error ? error.message : String(error)}`)
+    }
 
     // v0.5：通道全部挂载后才暴露交互实例列表（eventListener 的 pushActionCard 每次
     // 经 normalizeInbound 防御归一，这里的赋值只发生在装配期一次）
@@ -461,18 +580,22 @@ export function apply(ctx, config = {}) {
       const known = [...replyTargets.keys()].join('、')
       warn(`回执无可用通道：${channel}（已启用回执通道：${known !== '' ? known : '无'}）`)
     }
-    const disposeConversation = registerConversationRouter({
-      ctx,
-      bus,
-      store,
-      reply: replyViaChannel,
-      config: inboundRaw.conversation,
-      router, // v0.3.2 入站解析链（bind > 通道默认 > 单 agent > 最近活跃）
-      registry, // 会话台账（/agent 命令族数据源、活跃信号、入站对话挂钩）
-      channelTypes: () => resolved.channels.map((entry) => entry.type), // 全局渠道池快照（分流过滤白名单）
-      logger,
-    })
-    disposers.push(disposeConversation)
+    try {
+      const disposeConversation = registerConversationRouter({
+        ctx,
+        bus,
+        store,
+        reply: replyViaChannel,
+        config: inboundRaw.conversation,
+        router, // v0.3.2 入站解析链（bind > 通道默认 > 单 agent > 最近活跃）
+        registry, // 会话台账（/agent 命令族数据源、活跃信号、入站对话挂钩）
+        channelTypes: () => resolved.channels.map((entry) => entry.type), // 全局渠道池快照（分流过滤白名单）
+        logger,
+      })
+      disposers.push(disposeConversation)
+    } catch (error) {
+      warn(`会话路由装配失败，已跳过（inbound 通道与审批不受影响）: ${error instanceof Error ? error.message : String(error)}`)
+    }
   } else if (approvalWanted && allowUsers.length === 0) {
     warn('approval 已配置但 inbound.allowUsers 为空：远程审批未启动（白名单默认全拒）。请在 inbound.allowUsers 填入你的 telegram user id 或飞书 open_id')
   }
@@ -601,6 +724,8 @@ export { registerApprovalHandler } from './approval/router.mjs'
 export { createEscalationChain } from './approval/escalation.mjs'
 export { registerConversationRouter } from './inbound/conversation.mjs'
 export { segmentText, countCodepoints, sendSegmented } from './inbound/segment.mjs'
+// v0.6：开放事件源（供测试与其它插件复用）
+export { PUBLIC_API_VERSION, createPublicFacade, composeOnSend, deepFreeze } from './public.mjs'
 // 阶段 6：账本 / 健康自检 / 限流（供测试与其它插件复用）
 export { createLedger, yesterdayWindow, classifyTitle, composeDigest } from './ledger.mjs'
 export { runChannelTest, TEST_MESSAGE } from './health.mjs'

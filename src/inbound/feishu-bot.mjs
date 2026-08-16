@@ -162,6 +162,8 @@ export function createFeishuInbound({ config, bus, fallbackTargets = [], logger 
   const allowUsers = Array.isArray(config.allowUsers) ? config.allowUsers.map(String) : []
   const warn = (message) => {
     try { logger?.warn?.('[dsh-notifier/inbound:feishu]', message) } catch { /* 日志失败绝不致命 */ }
+    // v0.6.1 双写 stderr：宿主 logger 不落 stdout 时轮询/装配告警仍可见（真机事故复盘）
+    try { console.error('[dsh-notifier/inbound:feishu]', message) } catch { /* 控制台不可用不致命 */ }
   }
 
   const loadSdk = sdkLoader ?? (async () => import(SDK_PACKAGE))

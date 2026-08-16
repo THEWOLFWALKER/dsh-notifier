@@ -71,6 +71,8 @@ export function registerConversationRouter(deps) {
   const steerPrefix = typeof cfg.steerPrefix === 'string' && cfg.steerPrefix.length > 0 ? cfg.steerPrefix : '!'
   const warn = (message) => {
     try { deps.logger?.warn?.('[dsh-notifier/conversation]', message) } catch { /* 日志失败绝不致命 */ }
+    // v0.6.1 双写 stderr：宿主 logger 不落 stdout 时告警仍可见（真机事故复盘）
+    try { console.error('[dsh-notifier/conversation]', message) } catch { /* 控制台不可用不致命 */ }
   }
 
   // 全局渠道池（v0.3.2 出站解析的兜底池 + 过滤白名单）。缺省回落 config 的全量渠道类型
