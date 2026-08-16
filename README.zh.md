@@ -17,6 +17,7 @@ DeepSeek Harness（DSH）的统一通知推送插件。前端一个极简 `notif
 - **远程审批（可选）** —— 在手机上通过 Telegram 按钮回答 agent 的审批请求；沉默永远不会批准，超时自动回落到桌面。见[远程审批](#远程审批可选)。
 - **远程会话（可选）** —— 在手机上和你的 agent 对话：纯文本按 agent 状态以 `followup`（空闲）或 `inject`（忙碌）投递，`!` 前缀中途纠偏（steer），合并窗把手机上的碎片输入拼回整句。见[远程会话](#远程会话可选)。
 - **多 agent 路由（v0.3.2）** —— agent × 通道构成双向多对多矩阵：出站 `route:agents`（默认以 workspace 名为键，精确 agentId 为高级键）、入站 `route:channels` 通道默认 agent；会话创建即自动建档，`quiet` 仅静音出站推送，审批按 agent 分流 —— 另有 `/agent` 命令族与 `scripts/route.mjs` CLI。零配置用户行为完全不变。见[多 agent 路由](#多-agent-路由v032)。
+- **Web 管理台（v0.3.3，可选）** —— 本机网页控制台（仅绑 127.0.0.1 + Bearer token）：通道健康总览、绑定矩阵、会话出站覆盖、凭证建单/测试/网页扫码授权；YAML 只做首次 bootstrap，运行时态全落 `state.json`。见[Web 管理台](#web-管理台v033)。
 - **长消息分段** —— 超出渠道预算的出站消息自动切成带 `（i/n）` 前缀的多段按序送达；任一段失败即整体失败。
 - **防打扰规则** —— 事件按结果分控、关键词 include/exclude（字面量或正则）、空闲宽限窗：turn 结束后 `graceSeconds` 秒内你在键盘上输入，通知即取消。见[防打扰规则](#防打扰规则与本地响铃可选)。
 - **通知账本 + 每日摘要（可选）** —— 每次广播追加落账到本地 JSONL；启动时对昨日流量推送一条 `passive` 摘要。账本任何失败绝不影响送达。见[通知账本](#通知账本与每日摘要可选)。
@@ -368,6 +369,41 @@ route:
 - 编号回复通道（qq / wxpusher / wechat / dingtalk）自动附带「回复 `1` 批准 / `2` 拒绝」。
 - `quiet` 对审批不生效；回执走消息到达的原通道。
 
+## Web 管理台（v0.3.3）
+
+凭证与路由不再必须手改 YAML：本机网页控制台一站式搞定——通道健康总览、绑定矩阵、会话出站覆盖、凭证建单/测试/扫码授权。
+
+### 开启与 token
+
+```yaml
+insert:
+  - id: dsh-notifier
+    name: dsh-notifier
+    config:
+      admin:
+        enabled: true
+        port: 8104        # 缺省 8104；只绑 127.0.0.1，不可配 host
+        # token: "..."    # 可选；缺省首启自动生成并打印一次
+```
+
+首次启动（未显式配 token 且 state 无哈希）会在日志打印一次访问 token——**仅此一次，请立即保存**。token 的 SHA-256 哈希落在 `state.json` 的 `admin:token-hash`，明文绝不落盘；忘记 token 就删掉该键重启重新生成。浏览器首次访问时输入 token（localStorage 持久化，401 自动清除重询）。
+
+### 安全模型
+
+- **只绑 127.0.0.1**（红线，host 不开放配置）：公网暴露管理台 = 暴露全部凭证写权限；需要远程访问请自行加反向代理与额外鉴权。
+- Bearer token 鉴权（恒时比对，401 不区分缺/错 token，防探测）；未鉴权请求绝不触达业务逻辑。
+- 所有凭证读接口全脱敏（字符串值一律 `***`）；写操作 append-only 审计（只记动作与通道名，凭证内容绝不进日志）。
+
+### 网页扫码与 CLI 的关系
+
+通道页的「扫码授权」（qq / dingtalk / feishu）与 `node scripts/channel-login.mjs <channel>` 走同一批扫码模块与同一个 `<channel>:account` 落盘键——网页扫码成功后凭证即写 state，效果等同 CLI 登录；区别只是二维码内容展示在网页上轮询（复制后贴到任意扫码工具，或直接打开链接），无需终端。
+
+### 凭证模型：YAML bootstrap ⊕ store 运行时态
+
+YAML（`cordis.patch.yml`）只做首次 bootstrap 与出站 webhook 声明；网页保存的凭证落 `state.json`（0600），admin 开启时启动装配做**字段级合并**（store 覆盖 YAML 同名字段）后过渠道校验。保存成功后**下次插件启动**并入运行时——可先点「测试发送」即时验通。入站五通道（feishu/qq/dingtalk/wxpusher/wechat）在 admin 开启时，store 存在账号本身即启用信号（扫码授权完无需再改 YAML）。
+
+例外：feishu / dingtalk 是双域通道——`<type>:account` 键域归入站机器人凭证，其**出站 webhook 仍只走 YAML**（网页出站行只读，防一键抹掉扫码凭证）。
+
 ## 防打扰规则与本地响铃（可选）
 
 不是每个事件都值得一条推送。自动推送线上依次跑三道闸：
@@ -445,7 +481,6 @@ npm test          # node --test，329 个用例
 ## TODO
 
 - desktop/sound 渠道的完整 client 半（Web Notification / Web Audio）
-- Web 设置界面
 
 ## License
 

@@ -1,0 +1,660 @@
+// dsh-notifier src/admin/ui.mjs
+// v0.3.3 Web 管理台单文件内嵌 HTML（设计稿 §5）：vanilla JS + fetch，零构建、无 CDN、离线可用。
+// 由 src/admin/server.mjs 以 200 text/html 返回本串；无任何外部资源引用（无外链脚本 /
+// link / CSS url()），系统字体栈。四标签页：Dashboard（通道健康矩阵/会话数/审计）、
+// 绑定矩阵（route:agents + route:channels）、会话（route:sessions 出站覆盖 diff）、通道（凭证+测试+扫码授权）。
+// 鉴权：Bearer token（用户首次输入，localStorage 持久化，401 清除重询）；错误形状 { error }。
+// 注意：内嵌脚本刻意不用模板字符串与反斜杠，避免与外层模板字面量转义纠缠。
+export const ADMIN_UI_HTML = `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>dsh-notifier 管理台</title>
+<style>
+:root {
+  --bg: #0e1116; --panel: #151a22; --panel2: #1b212c; --border: #262e3b;
+  --text: #d6dce6; --muted: #8a93a6; --accent: #4f8cff; --ok: #3fb950; --warn: #d29922; --err: #f85149;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text);
+  font: 14px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif; }
+header { display: flex; align-items: center; gap: 12px; padding: 10px 18px; background: var(--panel); border-bottom: 1px solid var(--border); }
+header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+header h1 small { color: var(--muted); font-weight: 400; margin-left: 6px; }
+#loadState { color: var(--accent); }
+#tokenState { margin-left: auto; color: var(--muted); border-style: dashed; }
+nav { display: flex; gap: 6px; padding: 10px 18px 0; flex-wrap: wrap; }
+main { padding: 14px 18px 48px; max-width: 1240px; }
+h3 { font-size: 14px; margin: 18px 0 8px; }
+p { margin: 8px 0; }
+a { color: var(--accent); }
+.tabbtn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.tabsec { display: none; }
+.tabsec.active { display: block; }
+button { background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 5px 12px; cursor: pointer; }
+button:hover { border-color: var(--accent); }
+button:disabled { opacity: .5; cursor: default; }
+button.danger { color: var(--err); }
+input, select { background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 5px 8px; }
+input:focus, select:focus, button:focus { outline: 1px solid var(--accent); }
+input.wide { width: 100%; }
+table { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--border); }
+th, td { padding: 7px 10px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
+th { color: var(--muted); font-weight: 500; font-size: 12px; }
+tr.editor td { background: var(--panel2); }
+.edbox { padding: 6px 2px; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; }
+.muted { color: var(--muted); }
+.small { font-size: 12px; }
+.center { text-align: center; }
+.wrap { max-width: 520px; }
+.empty { color: var(--muted); text-align: center; padding: 14px; }
+.row { display: flex; gap: 8px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
+label.ck { display: inline-flex; align-items: center; gap: 4px; margin: 0 10px 4px 0; white-space: nowrap; font-size: 13px; }
+label.fld { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
+label.fld span { width: 200px; color: var(--muted); }
+label.fld input { flex: 1; }
+.msg, .inline { display: none; }
+.msg.show, .inline.show { display: block; }
+.msg { border: 1px solid var(--border); border-left-width: 3px; border-radius: 6px; padding: 8px 12px; margin-bottom: 12px; background: var(--panel); }
+.inline { margin-top: 8px; font-size: 13px; }
+.msg.ok, .inline.ok { color: var(--ok); border-left-color: var(--ok); }
+.msg.err, .inline.err { color: var(--err); border-left-color: var(--err); }
+.msg.warn, .inline.warn { color: var(--warn); border-left-color: var(--warn); }
+.stats { display: flex; gap: 12px; margin-bottom: 6px; flex-wrap: wrap; }
+.stat { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px 20px; min-width: 130px; }
+.stat b { display: block; font-size: 22px; }
+.stat span { color: var(--muted); font-size: 12px; }
+.group { margin: 6px 0 12px; }
+.gtitle { font-size: 13px; margin-bottom: 4px; }
+.gtitle.ok { color: var(--ok); } .gtitle.warn { color: var(--warn); } .gtitle.none { color: var(--muted); }
+.chip { display: inline-block; padding: 2px 9px; margin: 2px; border-radius: 10px; font-size: 12px; border: 1px solid var(--border); }
+.chip.ok { color: var(--ok); border-color: var(--ok); }
+.chip.warn { color: var(--warn); border-color: var(--warn); }
+.chip.none { color: var(--muted); }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+.dot.ok { background: var(--ok); } .dot.off { background: var(--muted); }
+.auditlist { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 6px 12px; max-height: 300px; overflow: auto; }
+.auditrow { display: flex; gap: 10px; padding: 4px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
+.auditrow .at { color: var(--muted); white-space: nowrap; }
+.auditrow b { white-space: nowrap; }
+.card { border: 1px solid var(--border); border-radius: 8px; margin-bottom: 8px; background: var(--panel); }
+.card-head { display: flex; gap: 10px; align-items: center; padding: 9px 12px; cursor: pointer; }
+.card-head .badge { margin-left: auto; }
+.card-body { padding: 4px 12px 12px; border-top: 1px solid var(--border); }
+.badge { font-size: 12px; padding: 1px 8px; border-radius: 10px; border: 1px solid var(--border); }
+.badge.ok { color: var(--ok); border-color: var(--ok); }
+.badge.none { color: var(--muted); }
+.qr .mono { background: var(--panel2); padding: 3px 8px; border-radius: 6px; word-break: break-all; }
+</style>
+</head>
+<body>
+<header>
+  <h1>dsh-notifier 管理台<small>v0.3.3</small></h1>
+  <span id="loadState"></span>
+  <button id="tokenState" title="点击输入或更换访问 token"></button>
+  <button id="btnRefresh">刷新</button>
+</header>
+<nav>
+  <button class="tabbtn active" data-tab="dashboard">Dashboard</button>
+  <button class="tabbtn" data-tab="bindings">绑定矩阵</button>
+  <button class="tabbtn" data-tab="sessions">会话</button>
+  <button class="tabbtn" data-tab="channels">通道</button>
+</nav>
+<main>
+  <div id="globalMsg" class="msg"></div>
+
+  <section id="tab-dashboard" class="tabsec active">
+    <div class="stats">
+      <div class="stat"><b id="statActive">–</b><span>活跃会话</span></div>
+      <div class="stat"><b id="statTotal">–</b><span>会话总数</span></div>
+      <div class="stat"><b id="statKeys">–</b><span>agent 路由键</span></div>
+    </div>
+    <h3>出站通道健康（configured / enabled 着色分组）</h3>
+    <div id="outGroups"></div>
+    <h3>入站通道</h3>
+    <div id="inGroups"></div>
+    <h3>最近审计（写操作 append-only）</h3>
+    <div id="auditList" class="auditlist"></div>
+  </section>
+
+  <section id="tab-bindings" class="tabsec">
+    <p class="muted small">出站 <b>route:agents</b>：键 = workspace 名（默认，同项目多会话聚合）或精确 agentId（高级键，优先解析）。勾选该键的出站渠道；<b>全不勾 = 显式空集（该键出站全静默，仍写账本）</b>；删除行 = 删除整条绑定（出站回落全局渠道池）。「保存矩阵」按整表替换语义 PUT /api/bindings。</p>
+    <table>
+      <thead><tr><th style="width:190px">键（workspace / agentId）</th><th>出站渠道勾选</th><th>quiet</th><th>操作</th></tr></thead>
+      <tbody id="agentsBody"></tbody>
+    </table>
+    <div class="row"><input id="newKey" placeholder="新增键：workspace 名或精确 agentId"><button id="btnAddKey">新增键</button></div>
+    <h3>入站通道默认 agent（route:channels）</h3>
+    <p class="muted small">对话无显式 /bind 时，该通道消息默认投给此键（workspace 名下多活跃会话时投最近活跃者并提示 /bind 精确指定）。留空 = 不设置（回落 唯一 agent &gt; 最近活跃）。</p>
+    <table>
+      <thead><tr><th style="width:190px">入站通道</th><th>默认 agent（可下拉选现有键，也可自由输入）</th></tr></thead>
+      <tbody id="defaultsBody"></tbody>
+    </table>
+    <datalist id="agentKeyOptions"></datalist>
+    <p class="row"><button id="btnSaveBindings">保存矩阵</button><span id="bindingsMsg" class="inline"></span></p>
+  </section>
+
+  <section id="tab-sessions" class="tabsec">
+    <p class="muted small">route:sessions 会话台账：出站按「会话 diff → 精确 agentId → workspace → 全局渠道池」实时解析，覆盖层只存 diff，未覆盖字段跟随上游（改默认立即生效）。quiet 只静音出站推送（仍写账本），入站与审批永不被静音。</p>
+    <table>
+      <thead><tr><th>workspace</th><th>会话</th><th>状态</th><th>出站渠道（resolved）</th><th>quiet</th><th>来源</th><th>入站挂钩</th><th>操作</th></tr></thead>
+      <tbody id="sessionsBody"></tbody>
+    </table>
+  </section>
+
+  <section id="tab-channels" class="tabsec">
+    <p class="muted small">凭证写入 state.json（YAML 只做首次 bootstrap）。值为 *** 的字段视为未修改，提交时自动剔除；「测试发送」做连通性自检；qq / dingtalk / feishu 入站卡片支持扫码授权（v0.3.1 扫码流，UI 展示二维码内容并轮询状态）。</p>
+    <div id="channelCards"></div>
+  </section>
+</main>
+
+<script>
+'use strict'
+var TOKEN_KEY = 'dsh-admin-token'
+var SCAN_TYPES = ['qq', 'dingtalk', 'feishu']
+var state = { overview: null, bindings: null, sessions: null, channels: null }
+var draft = null
+var scanTimers = {}
+var flashTimer = null
+
+function $(sel, root) { return (root || document).querySelector(sel) }
+function $all(sel, root) { return Array.prototype.slice.call((root || document).querySelectorAll(sel)) }
+function plain(v) { return v && typeof v === 'object' && !Array.isArray(v) ? v : {} }
+function esc(v) {
+  return String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;')
+}
+function errText(e) { return e && e.message ? e.message : String(e) }
+function byAttr(sel, attr, val) {
+  var found = null
+  $all(sel).forEach(function (el) { if (el.getAttribute(attr) === val) found = el })
+  return found
+}
+function setStatus(el, text, kind) {
+  if (!el) return
+  el.textContent = text
+  el.className = el.className.split(' ')[0] + ' show ' + (kind || 'ok')
+}
+function flash(text, kind) {
+  setStatus($('#globalMsg'), text, kind)
+  if (flashTimer) clearTimeout(flashTimer)
+  flashTimer = setTimeout(function () { $('#globalMsg').className = 'msg' }, 6000)
+}
+function setLoading(on) {
+  $('#loadState').textContent = on ? '加载中…' : ''
+  $('#btnRefresh').disabled = on
+}
+function sidPrefix(id) { id = String(id || ''); return id.length > 8 ? id.slice(0, 8) + '…' : id }
+function fmtTime(v) {
+  if (v === undefined || v === null || v === '') return '(未知)'
+  var n = Number(v)
+  var d = Number.isFinite(n) && n > 0 ? new Date(n) : new Date(v)
+  return isNaN(d.getTime()) ? String(v) : d.toLocaleString()
+}
+function sourceLabel(s) {
+  var map = { session: '会话 diff', 'agent-exact': '精确 agentId', 'agent-workspace': 'workspace', global: '全局渠道池' }
+  return map[s] || s || '(未知)'
+}
+
+// ---------- 鉴权：Bearer token，localStorage 持久化，401 清除并重新询问（重试一次） ----------
+function getToken() { try { return window.localStorage.getItem(TOKEN_KEY) || '' } catch (e) { return '' } }
+function setToken(v) {
+  try { if (v) window.localStorage.setItem(TOKEN_KEY, v); else window.localStorage.removeItem(TOKEN_KEY) } catch (e) {}
+}
+function askToken() {
+  var t = window.prompt('请输入管理台访问 token（服务启动时打印）：', '')
+  return t && t.trim() ? t.trim() : ''
+}
+function renderTokenState() {
+  var t = getToken()
+  $('#tokenState').textContent = t ? 'token：' + t.slice(0, 4) + '****（点击更换）' : '未设置 token（点击输入）'
+}
+function api(path, options, retried) {
+  options = options || {}
+  var token = getToken() || askToken()
+  if (!token) return Promise.reject(new Error('未提供 token，点击右上角 token 状态重新输入'))
+  var init = { method: options.method || 'GET', headers: { Authorization: 'Bearer ' + token } }
+  if (options.body !== undefined) { init.headers['Content-Type'] = 'application/json'; init.body = JSON.stringify(options.body) }
+  return fetch(path, init).then(function (res) {
+    if (res.status === 401 && !retried) { setToken(''); renderTokenState(); return api(path, options, true) }
+    return res.json().catch(function () { throw new Error('HTTP ' + res.status + '：响应不是 JSON') }).then(function (data) {
+      if (!res.ok) throw new Error(data && data.error ? data.error : 'HTTP ' + res.status)
+      return data
+    })
+  })
+}
+
+// ---------- 数据加载与总渲染 ----------
+function overviewChannels() {
+  var o = plain(state.overview)
+  return Array.isArray(o.channels) ? o.channels : []
+}
+function outboundTypes() {
+  return overviewChannels().filter(function (c) { return c.direction === 'outbound' }).map(function (c) { return c.type })
+}
+function inboundTypes() {
+  return overviewChannels().filter(function (c) { return c.direction === 'inbound' }).map(function (c) { return c.type })
+}
+function loadAll() {
+  setLoading(true)
+  return Promise.all([api('/api/overview'), api('/api/bindings'), api('/api/sessions'), api('/api/channels')])
+    .then(function (rs) {
+      state.overview = rs[0]; state.bindings = rs[1]; state.sessions = rs[2]; state.channels = rs[3]
+      draft = null
+      renderDashboard(); renderBindings(); renderSessions(); renderChannels()
+      flash('已刷新 ' + new Date().toLocaleTimeString(), 'ok')
+    })
+    .catch(function (e) { flash('加载失败：' + errText(e), 'err') })
+    .then(function () { setLoading(false); renderTokenState() })
+}
+function switchTab(name) {
+  $all('.tabbtn').forEach(function (b) { b.classList.toggle('active', b.getAttribute('data-tab') === name) })
+  $all('.tabsec').forEach(function (s) { s.classList.toggle('active', s.id === 'tab-' + name) })
+}
+
+// ---------- Dashboard：通道健康矩阵 + 统计 + 审计流 ----------
+/** 审计 detail 归一为可展示文本：对象/数组 JSON.stringify，空值空串（避免 [object Object]）。 */
+function fmtDetail(v) {
+  if (v === undefined || v === null) return ''
+  if (typeof v === 'object') { try { return JSON.stringify(v) } catch (e) { return String(v) } }
+  return String(v)
+}
+function chipGroups(groups, emptyText) {
+  var total = 0
+  groups.forEach(function (g) { total += g[2].length })
+  if (total === 0) return '<div class="muted small">' + esc(emptyText) + '</div>'
+  return groups.map(function (g) {
+    var chips = g[2].map(function (c) { return '<span class="chip ' + g[1] + '">' + esc(c.type) + '</span>' }).join('')
+    return '<div class="group"><div class="gtitle ' + g[1] + '">' + esc(g[0]) + ' · ' + g[2].length + '</div>' + chips + '</div>'
+  }).join('')
+}
+function renderDashboard() {
+  var o = plain(state.overview)
+  var sess = plain(o.sessions)
+  var keys = plain(o.agents).keys
+  $('#statActive').textContent = sess.active !== undefined ? String(sess.active) : '–'
+  $('#statTotal').textContent = sess.total !== undefined ? String(sess.total) : '–'
+  $('#statKeys').textContent = Array.isArray(keys) ? String(keys.length) : '–'
+  var out = overviewChannels().filter(function (c) { return c.direction === 'outbound' })
+  var inn = overviewChannels().filter(function (c) { return c.direction === 'inbound' })
+  $('#outGroups').innerHTML = chipGroups([
+    ['已启用（configured 且 enabled）', 'ok', out.filter(function (c) { return c.configured && c.enabled })],
+    ['已配置未启用', 'warn', out.filter(function (c) { return c.configured && !c.enabled })],
+    ['未配置', 'none', out.filter(function (c) { return !c.configured })]
+  ], '出站通道 ' + out.length + ' 个，均未配置（先用 YAML bootstrap 凭证）')
+  $('#inGroups').innerHTML = chipGroups([
+    ['已配置', 'ok', inn.filter(function (c) { return c.configured })],
+    ['未配置', 'none', inn.filter(function (c) { return !c.configured })]
+  ], '（无入站通道）')
+  var audit = Array.isArray(o.audit) ? o.audit.slice(0, 30) : []
+  $('#auditList').innerHTML = audit.map(function (row) {
+    var r = plain(row)
+    return '<div class="auditrow"><span class="at">' + esc(fmtTime(r.time)) + '</span><b>' + esc(r.action || '') + '</b><span class="mono">' + esc(fmtDetail(r.detail)) + '</span></div>'
+  }).join('') || '<div class="muted small" style="padding:8px 0">暂无审计记录</div>'
+}
+
+// ---------- 绑定矩阵：agent 键勾选网格 + 通道默认 agent，整表 PUT ----------
+function draftFromBindings() {
+  var agents = {}
+  var src = plain(plain(state.bindings).agents)
+  Object.keys(src).forEach(function (k) {
+    var e = plain(src[k])
+    agents[k] = { channels: Array.isArray(e.channels) ? e.channels.slice() : [], quiet: e.quiet === true }
+  })
+  var defaults = {}
+  var ch = plain(plain(state.bindings).channels)
+  Object.keys(ch).forEach(function (c) {
+    var d = plain(ch[c]).defaultAgent
+    if (typeof d === 'string' && d !== '') defaults[c] = d
+  })
+  return { agents: agents, defaults: defaults }
+}
+function renderBindings() {
+  if (!draft) draft = draftFromBindings()
+  var outbound = outboundTypes()
+  var keys = Object.keys(draft.agents)
+  var rows = keys.map(function (key) {
+    var e = draft.agents[key]
+    var checks = outbound.map(function (t) {
+      return '<label class="ck"><input type="checkbox" data-agent="' + esc(key) + '" value="' + esc(t) + '"'
+        + (e.channels.indexOf(t) >= 0 ? ' checked' : '') + '>' + esc(t) + '</label>'
+    }).join('')
+    return '<tr><td class="mono">' + esc(key) + '</td><td class="wrap">'
+      + (checks || '<span class="muted small">（当前无出站通道可选）</span>')
+      + '</td><td class="center"><input type="checkbox" data-quiet="' + esc(key) + '"' + (e.quiet ? ' checked' : '')
+      + ' title="只静音出站推送（仍写账本）；入站与审批不受影响"></td>'
+      + '<td class="center"><button class="danger" data-del="' + esc(key) + '">删除</button></td></tr>'
+  }).join('')
+  if (keys.length === 0) rows = '<tr><td colspan="4" class="empty">尚无 agent 绑定（route:agents 为空）—— 所有会话出站回落全局渠道池</td></tr>'
+  $('#agentsBody').innerHTML = rows
+  var drows = inboundTypes().map(function (c) {
+    return '<tr><td class="mono">' + esc(c) + '</td><td><input class="wide" list="agentKeyOptions" data-default="'
+      + esc(c) + '" value="' + esc(draft.defaults[c] || '') + '" placeholder="未设置：显式 bind &gt; 唯一 agent &gt; 最近活跃"></td></tr>'
+  }).join('')
+  $('#defaultsBody').innerHTML = drows || '<tr><td colspan="2" class="empty">（无入站通道）</td></tr>'
+  $('#agentKeyOptions').innerHTML = keys.map(function (k) { return '<option value="' + esc(k) + '"></option>' }).join('')
+}
+function onBindingsChange(ev) {
+  if (!draft) draft = draftFromBindings()
+  var el = ev.target
+  var key = el.getAttribute('data-agent')
+  var quietKey = el.getAttribute('data-quiet')
+  var defChan = el.getAttribute('data-default')
+  if (key !== null && draft.agents[key]) {
+    var list = draft.agents[key].channels
+    var i = list.indexOf(el.value)
+    if (el.checked && i < 0) list.push(el.value)
+    if (!el.checked && i >= 0) list.splice(i, 1)
+  } else if (quietKey !== null && draft.agents[quietKey]) {
+    draft.agents[quietKey].quiet = el.checked
+  } else if (defChan !== null) {
+    draft.defaults[defChan] = el.value
+  }
+}
+function onBindingsClick(ev) {
+  var btn = ev.target.closest ? ev.target.closest('button') : null
+  if (!btn) return
+  if (!draft) draft = draftFromBindings()
+  if (btn.id === 'btnAddKey') {
+    var v = $('#newKey').value.trim()
+    if (v === '') { setStatus($('#bindingsMsg'), '请输入键名（workspace 名或精确 agentId）', 'err'); return }
+    if (draft.agents[v]) { setStatus($('#bindingsMsg'), '键已存在：' + v, 'err'); return }
+    draft.agents[v] = { channels: [], quiet: false }
+    $('#newKey').value = ''
+    renderBindings()
+    setStatus($('#bindingsMsg'), '已加入编辑表（注意：全不勾渠道 = 显式空集 = 该键出站全静默）', 'warn')
+  } else if (btn.id === 'btnSaveBindings') {
+    saveBindings(btn)
+  } else if (btn.getAttribute('data-del')) {
+    var k = btn.getAttribute('data-del')
+    delete draft.agents[k]
+    renderBindings()
+    setStatus($('#bindingsMsg'), '已从编辑表移除：' + k + '（点「保存矩阵」后整表生效）', 'warn')
+  }
+}
+function saveBindings(btn) {
+  var agents = {}
+  Object.keys(draft.agents).forEach(function (k) {
+    agents[k] = { channels: draft.agents[k].channels.slice(), quiet: draft.agents[k].quiet === true }
+  })
+  var channels = {}
+  $all('#tab-bindings input[data-default]').forEach(function (inp) {
+    var v = inp.value.trim()
+    if (v !== '') channels[inp.getAttribute('data-default')] = { defaultAgent: v }
+  })
+  btn.disabled = true; var old = btn.textContent; btn.textContent = '保存中…'
+  api('/api/bindings', { method: 'PUT', body: { agents: agents, channels: channels } })
+    .then(function (nb) { state.bindings = nb; draft = null; renderBindings(); setStatus($('#bindingsMsg'), '矩阵已保存（整表替换生效，未配置的会话即刻跟随新默认）', 'ok') })
+    .catch(function (e) { setStatus($('#bindingsMsg'), '保存失败：' + errText(e), 'err') })
+    .then(function () { btn.disabled = false; btn.textContent = old })
+}
+
+// ---------- 会话：台账列表 + 出站覆盖（diff）编辑，PATCH ----------
+function sessionRow(s, outbound) {
+  var id = String(s.id || '')
+  var res = plain(s.resolved)
+  var diff = plain(s.outbound)
+  var resolvedCh = Array.isArray(res.channelTypes) ? res.channelTypes : []
+  var hasDiffCh = Array.isArray(diff.channels)
+  var initCh = hasDiffCh ? diff.channels : resolvedCh
+  var checks = outbound.map(function (t) {
+    return '<label class="ck"><input type="checkbox" data-sch="' + esc(id) + '" value="' + esc(t) + '"'
+      + (initCh.indexOf(t) >= 0 ? ' checked' : '') + '>' + esc(t) + '</label>'
+  }).join('')
+  var qv = diff.quiet === undefined || diff.quiet === null ? '' : (diff.quiet ? 'on' : 'off')
+  var qsel = '<select data-squiet="' + esc(id) + '">'
+    + '<option value=""' + (qv === '' ? ' selected' : '') + '>quiet 跟随上游</option>'
+    + '<option value="on"' + (qv === 'on' ? ' selected' : '') + '>quiet 开（静音）</option>'
+    + '<option value="off"' + (qv === 'off' ? ' selected' : '') + '>quiet 关</option></select>'
+  var main = '<tr><td>' + esc(s.workspace || '(未知)') + '</td>'
+    + '<td class="mono" title="' + esc(id) + '">' + esc(sidPrefix(id)) + '</td>'
+    + '<td><span class="dot ' + (s.active ? 'ok' : 'off') + '"></span>' + (s.active ? '活跃' : '已离场') + '</td>'
+    + '<td class="wrap">' + esc(resolvedCh.join('、') || '(空)') + '</td>'
+    + '<td>' + (res.quiet ? '静音' : '正常') + '</td>'
+    + '<td>' + esc(sourceLabel(res.source)) + '</td>'
+    + '<td class="center">' + (Array.isArray(s.inbound) ? String(s.inbound.length) : '0') + '</td>'
+    + '<td><button data-edit="' + esc(id) + '">编辑出站</button></td></tr>'
+  var editor = '<tr class="editor" data-edfor="' + esc(id) + '" hidden><td colspan="8"><div class="edbox">'
+    + '<label class="ck"><input type="checkbox" data-sover="' + esc(id) + '"' + (hasDiffCh ? ' checked' : '') + '>覆盖出站渠道</label>'
+    + checks + '<span class="muted">·</span>' + qsel + '<button data-save="' + esc(id) + '">PATCH 保存</button>'
+    + '<div class="inline" data-sstat="' + esc(id) + '"></div>'
+    + '<div class="muted small">不勾「覆盖出站渠道」→ channels 发 null（删覆盖键，回落上游实时解析）；quiet 选「跟随上游」→ 发 null。</div>'
+    + '</div></td></tr>'
+  return main + editor
+}
+function renderSessions() {
+  var list = Array.isArray(state.sessions) ? state.sessions : []
+  var outbound = outboundTypes()
+  $('#sessionsBody').innerHTML = list.map(function (s) { return sessionRow(plain(s), outbound) }).join('')
+    || '<tr><td colspan="8" class="empty">尚无会话记录（route:sessions 为空；会话在 agent/created 时自动建档，出站回落全局渠道池）</td></tr>'
+}
+function onSessionsClick(ev) {
+  var btn = ev.target.closest ? ev.target.closest('button') : null
+  if (!btn) return
+  var id = btn.getAttribute('data-edit')
+  if (id) {
+    $all('tr[data-edfor]').forEach(function (tr) { if (tr.getAttribute('data-edfor') === id) tr.hidden = !tr.hidden })
+    return
+  }
+  var saveId = btn.getAttribute('data-save')
+  if (saveId) saveSession(saveId, btn)
+}
+function saveSession(id, btn) {
+  var msg = byAttr('.inline[data-sstat]', 'data-sstat', id)
+  var over = byAttr('input[data-sover]', 'data-sover', id)
+  var qsel = byAttr('select[data-squiet]', 'data-squiet', id)
+  var chans = $all('input[data-sch]').filter(function (c) { return c.getAttribute('data-sch') === id && c.checked })
+    .map(function (c) { return c.value })
+  var body = { channels: over && over.checked ? chans : null, quiet: !qsel || qsel.value === '' ? null : qsel.value === 'on' }
+  btn.disabled = true; var old = btn.textContent; btn.textContent = '保存中…'
+  api('/api/sessions/' + encodeURIComponent(id), { method: 'PATCH', body: body })
+    .then(function () { return api('/api/sessions') })
+    .then(function (list) {
+      state.sessions = list
+      renderSessions()
+      flash('会话出站覆盖已保存：' + sidPrefix(id), 'ok')
+    })
+    .catch(function (e) { setStatus(msg, '保存失败：' + errText(e), 'err') })
+    .then(function () { if (btn.parentNode) { btn.disabled = false; btn.textContent = old } })
+}
+
+// ---------- 通道：凭证表单（fields 驱动建单 + *** 未修改剔除）+ 测试发送 + 扫码授权轮询 ----------
+function splitKey(key) { var i = key.indexOf('|'); return [key.slice(0, i), key.slice(i + 1)] }
+/**
+ * 单个凭证字段行：fields 声明表驱动（required 标 * / desc 作 placeholder 与悬停提示），
+ * config 已有键带脱敏当前值（字符串 → ***），fields 有而 config 无的键留空 = 从零新建。
+ */
+function fieldRow(key, spec, current, disabled) {
+  var specObj = plain(spec)
+  var req = specObj.required === true
+  var desc = typeof specObj.desc === 'string' && specObj.desc !== '' ? specObj.desc : ''
+  var shown = current === undefined ? '' : current
+  return '<label class="fld"><span class="mono">' + esc(key) + (req ? ' <b style="color:var(--warn)">*</b>' : '')
+    + '</span><input data-ck="' + esc(key) + '"' + (req ? ' data-req="1"' : '')
+    + ' value="' + esc(shown) + '"'
+    + (disabled ? ' disabled title="只读字段"' : '')
+    + (desc ? ' title="' + esc(desc) + '" placeholder="' + esc(desc) + '"' : '')
+    + '></label>'
+}
+function cardHtml(c) {
+  var cfg = plain(c.config)
+  var specs = plain(c.fields)
+  var ro = c.editable === false // 双域出站：键域归入站，UI 只读
+  // 字段键 = fields 声明键 ∪ config 现有键（YAML bootstrap 的 endpoint/timeoutMs 等也要展示）
+  var seen = {}
+  var keys = Object.keys(specs).filter(function (k) { seen[k] = 1; return true })
+    .concat(Object.keys(cfg).filter(function (k) { return !seen[k] }))
+  var fields = keys.map(function (k) {
+    var current = Object.prototype.hasOwnProperty.call(cfg, k)
+      ? (cfg[k] === undefined || cfg[k] === null ? '***' : cfg[k])
+      : undefined
+    return fieldRow(k, specs[k], current, ro)
+  }).join('')
+  var dir = c.direction === 'inbound' ? '入站' : '出站'
+  var badge = c.configured ? '<span class="badge ok">已配置</span>' : '<span class="badge none">未配置</span>'
+  var scan = c.direction === 'inbound' && SCAN_TYPES.indexOf(c.type) >= 0
+    ? '<button data-scan="' + esc(c.type) + '">扫码授权</button>' : ''
+  var key = c.type + '|' + c.direction
+  var controls = ro
+    ? '<span class="muted small">只读：出站 webhook 走 YAML bootstrap（cordis.patch.yml channels）——'
+      + esc(c.type) + ':account 键域归入站机器人凭证，网页写入会破坏扫码凭证</span>'
+    : '<button data-save="' + esc(key) + '">保存</button>'
+  return '<div class="card" data-key="' + esc(key) + '">'
+    + '<div class="card-head"><b class="mono">' + esc(c.type) + '</b><span class="muted small">' + dir + '</span>' + badge + '</div>'
+    + '<div class="card-body" hidden>'
+    + (fields || '<p class="muted small">（该通道暂无可编辑凭证键）</p>')
+    + (keys.length > 0 && !ro
+      ? '<p class="muted small">值为 *** 的字段视为未修改，提交时自动剔除；带 * 为必填（空值不提交）。</p>' : '')
+    + '<div class="row">' + controls
+    + '<button data-test="' + esc(key) + '">测试发送</button>' + scan + '</div>'
+    + '<div class="inline" data-cmsg="' + esc(key) + '"></div>'
+    + '<div class="inline" data-smsg="' + esc(c.type) + '"></div>'
+    + '</div></div>'
+}
+function renderChannels() {
+  var list = Array.isArray(state.channels) ? state.channels : []
+  $('#channelCards').innerHTML = list.map(function (c) { return cardHtml(plain(c)) }).join('')
+    || '<p class="muted">（通道列表为空）</p>'
+}
+function saveChannel(key, btn) {
+  var type = splitKey(key)[0]
+  var direction = splitKey(key)[1]
+  var card = byAttr('.card[data-key]', 'data-key', key)
+  var msg = byAttr('.inline[data-cmsg]', 'data-cmsg', key)
+  var payload = {}
+  var missing = []
+  $all('input[data-ck]', card).forEach(function (inp) {
+    var k = inp.getAttribute('data-ck')
+    // 必填字段被清空（值非 *** 即代表用户动过）→ 记入缺失清单提示，不静默剔除
+    if (inp.getAttribute('data-req') === '1' && inp.value !== '***' && inp.value.trim() === '') {
+      missing.push(k)
+      return
+    }
+    if (inp.value === '***' || inp.value === '') return // *** 未修改 / 空值，均不提交
+    payload[k] = inp.value
+  })
+  if (missing.length > 0) {
+    setStatus(msg, '必填字段未填写：' + missing.join('、'), 'err')
+    return
+  }
+  if (Object.keys(payload).length === 0) {
+    setStatus(msg, '没有修改的字段（值为 *** 视为未修改，空值不提交），已跳过保存', 'warn')
+    return
+  }
+  btn.disabled = true; var old = btn.textContent; btn.textContent = '保存中…'
+  api('/api/channels/' + encodeURIComponent(type), { method: 'PUT', body: { config: payload } })
+    .then(function (r) {
+      if (plain(r).saved === false) {
+        setStatus(msg, '写入失败：state 存储不可用（查看插件日志）', 'err')
+        return
+      }
+      // 热更新边界：store 凭证在下次插件启动时并入运行时（YAML ⊕ store 合并）；
+      // 入站扫码凭证同理，通道启动/重连在下次启动时发生——可先点「测试发送」即时验通。
+      setStatus(msg, direction === 'inbound'
+        ? '凭证已保存（state.json，0600）；通道在插件下次启动时启用/重连，可先点「测试发送」验证'
+        : '凭证已保存（state.json，0600）；出站在插件下次启动时并入运行时（YAML ⊕ store 合并），可先点「测试发送」验证', 'ok')
+    })
+    .catch(function (e) { setStatus(msg, '保存失败：' + errText(e), 'err') })
+    .then(function () { btn.disabled = false; btn.textContent = old })
+}
+function testChannel(key, btn) {
+  var type = splitKey(key)[0]
+  var msg = byAttr('.inline[data-cmsg]', 'data-cmsg', key)
+  btn.disabled = true; var old = btn.textContent; btn.textContent = '测试中…'
+  api('/api/channels/' + encodeURIComponent(type) + '/test', { method: 'POST' })
+    .then(function (r) {
+      var ok = plain(r).ok === true
+      setStatus(msg, (ok ? '测试通过' : '测试失败') + (r.detail ? '：' + r.detail : ''), ok ? 'ok' : 'err')
+    })
+    .catch(function (e) { setStatus(msg, '测试失败：' + errText(e), 'err') })
+    .then(function () { btn.disabled = false; btn.textContent = old })
+}
+function scanMsgEl(type) { return byAttr('.inline[data-smsg]', 'data-smsg', type) }
+function toggleScan(type, btn) {
+  if (scanTimers[type]) {
+    clearTimeout(scanTimers[type]); scanTimers[type] = null
+    btn.textContent = '扫码授权'
+    setStatus(scanMsgEl(type), '已停止轮询扫码状态', 'warn')
+    return
+  }
+  btn.textContent = '停止轮询'
+  scanStep(type, btn)
+}
+function scanStep(type, btn) {
+  api('/api/scan/' + encodeURIComponent(type), { method: 'POST' })
+    .then(function (r) {
+      var qr = plain(r).qrContent
+      var failed = typeof r.error === 'string' && r.error !== ''
+      var html = ''
+      if (qr) {
+        html += '<div class="row qr"><span class="mono">' + esc(qr) + '</span><button data-copy="' + esc(qr) + '">复制</button></div>'
+        html += /^https?:/i.test(qr)
+          ? '<div class="small"><a href="' + esc(qr) + '" target="_blank" rel="noopener">打开授权链接</a> · 或复制内容贴到扫码工具</div>'
+          : '<div class="small muted">复制上面的内容，贴到任意扫码工具完成授权</div>'
+      }
+      if (failed) html += '<div class="small" style="color:var(--err)">扫码失败：' + esc(r.error) + '（可重新发起）</div>'
+      else if (r.saved) html += '<div class="small" style="color:var(--ok)">授权完成，凭证已保存（通道在插件下次启动时启用/重连）</div>'
+      else if (r.done) html += '<div class="small" style="color:var(--ok)">扫码流程已完成</div>'
+      else html += '<div class="small muted">等待扫码确认…（每 2 秒轮询一次）</div>'
+      var el = scanMsgEl(type)
+      if (el) { el.className = 'inline show ' + (failed ? 'err' : 'ok'); el.innerHTML = html }
+      if (!r.done && !r.saved && !failed) scanTimers[type] = setTimeout(function () { scanStep(type, btn) }, 2000)
+      else { scanTimers[type] = null; btn.textContent = '扫码授权' }
+    })
+    .catch(function (e) {
+      scanTimers[type] = null
+      btn.textContent = '扫码授权'
+      setStatus(scanMsgEl(type), '扫码授权失败：' + errText(e), 'err')
+    })
+}
+function copyText(text) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(
+      function () { flash('已复制到剪贴板', 'ok') },
+      function () { flash('复制失败，请手动选择文本复制', 'err') })
+  } else {
+    window.prompt('请手动复制：', text)
+  }
+}
+function onChannelsClick(ev) {
+  var btn = ev.target.closest ? ev.target.closest('button') : null
+  if (btn) {
+    var saveKey = btn.getAttribute('data-save')
+    var testKey = btn.getAttribute('data-test')
+    var scanType = btn.getAttribute('data-scan')
+    var copyVal = btn.getAttribute('data-copy')
+    if (saveKey) { saveChannel(saveKey, btn); return }
+    if (testKey) { testChannel(testKey, btn); return }
+    if (scanType) { toggleScan(scanType, btn); return }
+    if (copyVal) { copyText(copyVal); return }
+  }
+  var head = ev.target.closest ? ev.target.closest('.card-head') : null
+  if (head) {
+    var body = head.parentNode.querySelector('.card-body')
+    if (body) body.hidden = !body.hidden
+  }
+}
+
+// ---------- 初始化 ----------
+function init() {
+  $all('.tabbtn').forEach(function (b) {
+    b.addEventListener('click', function () { switchTab(b.getAttribute('data-tab')) })
+  })
+  $('#btnRefresh').addEventListener('click', function () { loadAll() })
+  $('#tokenState').addEventListener('click', function () {
+    var t = askToken()
+    if (t) { setToken(t); renderTokenState(); loadAll() }
+  })
+  $('#tab-bindings').addEventListener('change', onBindingsChange)
+  $('#tab-bindings').addEventListener('click', onBindingsClick)
+  $('#tab-sessions').addEventListener('click', onSessionsClick)
+  $('#tab-channels').addEventListener('click', onChannelsClick)
+  renderTokenState()
+  loadAll()
+}
+init()
+</script>
+</body>
+</html>`

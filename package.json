@@ -1,7 +1,7 @@
 {
   "name": "dsh-notifier",
-  "version": "0.3.2",
-  "description": "DSH 统一通知推送插件：一个 notify() API 打天下 + 多渠道 adapter；远程审批/远程会话支持 telegram/feishu/qq/wxpusher/wechat/dingtalk 六通道双向回传；QQ/钉钉/飞书官方扫码授权。零运行时依赖（只用 fetch + node:crypto + 原生 WebSocket）。",
+  "version": "0.3.3",
+  "description": "DSH 统一通知推送插件：一个 notify() API 打天下 + 多渠道 adapter；远程审批/远程会话支持 telegram/feishu/qq/wxpusher/wechat/dingtalk 六通道双向回传；QQ/钉钉/飞书官方扫码授权；本机 Web 管理台（凭证/路由/扫码授权网页可管）。零运行时依赖（只用 fetch + node:crypto + 原生 WebSocket）。",
   "type": "module",
   "main": "src/index.mjs",
   "exports": {

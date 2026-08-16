@@ -15,6 +15,7 @@ Unified notification push plugin for DeepSeek Harness (DSH). One minimal `notify
 - **Remote approval (optional)** — answer agent approval requests from your phone via Telegram buttons; silence never approves, falls back to the desktop. See [Remote Approval](#remote-approval-双向回传可选).
 - **Remote conversation (optional)** — chat with your agent from your phone: plain text is delivered as `followup` (idle) or `inject` (busy), `!` prefix steers mid-turn, and a merge window reassembles rapid-fire mobile typing. See [Conversation](#conversation-远程会话可选).
 - **Multi-agent routing (v0.3.2)** — a bidirectional many-to-many matrix between agents and channels: outbound `route:agents` (keyed by workspace name by default, exact agentId as the advanced key) and inbound `route:channels` defaults; sessions auto-register on creation, `quiet` mutes the outbound push only, and approvals split-route to the bound channels — plus an `/agent` command family and a `scripts/route.mjs` CLI. Zero-config setups behave exactly as before. See [Multi-agent routing](#multi-agent-routing-v032).
+- **Web admin console (v0.3.3, optional)** — a local web console (127.0.0.1-only + Bearer token): channel health overview, binding matrix, per-session outbound overrides, and credential create/test/QR-scan; YAML is bootstrap-only, runtime state lives in `state.json`. See [Web admin console](#web-admin-console-v033).
 - **Long-message segmentation** — outbound messages over the per-channel budget are split into `（i/n）`-prefixed segments, delivered in order; any segment failing fails the whole send.
 - **Anti-disturb rules** — per-result event gating, keyword include/exclude (literal or regex), and an idle grace window: if you type within `graceSeconds` after a turn ends, the notification is cancelled. See [Rules](#rules--local-bell-防打扰规则可选).
 - **Notification ledger & daily digest (optional)** — every broadcast is appended to a local JSONL ledger; on startup you get one `passive` summary of yesterday's traffic. Ledger failures never affect delivery. See [Ledger](#ledger--daily-digest-通知账本可选).
@@ -367,6 +368,41 @@ route:
 - Numbered-reply channels (qq / wxpusher / wechat / dingtalk) automatically append "reply `1` (approve) / `2` (reject)" to the routed notification.
 - `quiet` never applies to approvals; replies travel back on the channel they arrived on.
 
+## Web admin console (v0.3.3)
+
+Credentials and routing no longer require hand-editing YAML: a local web console covers channel health overview, the binding matrix, per-session outbound overrides, and credential create/test/QR-scan — all in one page.
+
+### Enable & token
+
+```yaml
+insert:
+  - id: dsh-notifier
+    name: dsh-notifier
+    config:
+      admin:
+        enabled: true
+        port: 8104        # default 8104; binds 127.0.0.1 only, host is not configurable
+        # token: "..."    # optional; auto-generated and printed once on first start
+```
+
+On first start (no explicit token, no stored hash) the access token is printed to the log **once** — save it immediately. Only its SHA-256 hash is persisted (`admin:token-hash` in `state.json`); the plaintext never touches disk. Lose the token? Delete that key and restart to mint a new one. The browser asks for it on first visit (kept in localStorage, cleared automatically on 401).
+
+### Security model
+
+- **127.0.0.1 only** (red line; host is not configurable): exposing the console publicly equals exposing write access to every credential. For remote access, run your own reverse proxy with additional auth.
+- Bearer-token auth (constant-time compare; 401 never distinguishes missing vs wrong token); unauthenticated requests never reach business logic.
+- Every credential read is masked (string values become `***`); writes are append-only audited (action + channel name only — credential values never hit logs).
+
+### Web QR scan vs CLI
+
+The "扫码授权" button (qq / dingtalk / feishu) on the Channels tab drives the same scan modules and the same `<channel>:account` state key as `node scripts/channel-login.mjs <channel>` — a successful web scan is equivalent to a CLI login. The only difference: the QR content is shown in the page and polled there (copy it into any scanner, or open the link directly); no terminal needed.
+
+### Credential model: YAML bootstrap ⊕ store runtime state
+
+YAML (`cordis.patch.yml`) is bootstrap-only (plus outbound webhook declarations). Credentials saved from the web land in `state.json` (0600); at startup the two are **field-level merged** (store overrides same-named YAML fields) before channel validation. Saved credentials join the runtime on the **next plugin start** — use "测试发送" to verify connectivity right away. With admin enabled, the presence of a stored account is itself the enable signal for the five inbound channels (feishu / qq / dingtalk / wxpusher / wechat) — scan once, no YAML edit needed.
+
+Exception: feishu / dingtalk are dual-domain channels — `<type>:account` belongs to the inbound bot credentials, and their **outbound webhook stays YAML-only** (the web outbound row is read-only, so one click can't wipe scan credentials).
+
 ## Rules & local bell (防打扰规则，可选)
 
 Not every event deserves a push. Three gates run on the auto-push line, in order:
@@ -444,7 +480,6 @@ Other plugins can reuse the notifier via `createNotifier(ctx, channels, { routin
 ## TODO
 
 - Full client half for desktop/sound channels (Web Notification / Web Audio)
-- Web settings UI
 
 ## License
 

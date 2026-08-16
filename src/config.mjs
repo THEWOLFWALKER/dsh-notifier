@@ -62,6 +62,76 @@ export function secretFieldsOf(type) {
 }
 
 /**
+ * 手写 adapter 的字段表（管理台凭证表单渲染用，v0.3.3）：
+ * 形状对齐 spec 引擎的 fields 声明（{ [key]: { required?, secret?, desc } }）。
+ * spec 渠道不在此表——由 ADAPTERS[type].spec.fields 机器读取（单一事实源）。
+ */
+const FIELD_HINTS = {
+  telegram: {
+    botToken: { required: true, secret: true, desc: 'Telegram Bot Token（@BotFather 获取）' },
+    chatId: { required: true, secret: true, desc: '接收者的 chat id（可向 @userinfobot 查询）' },
+  },
+  dingtalk: {
+    webhook: { required: true, secret: true, desc: '钉钉群自定义机器人完整地址' },
+    secret: { required: false, secret: true, desc: '加签密钥（机器人安全设置选「加签」时填）' },
+  },
+  feishu: {
+    webhook: { required: true, secret: true, desc: '飞书群自定义机器人完整地址' },
+    secret: { required: false, secret: true, desc: '加签密钥（机器人安全设置选「签名校验」时填）' },
+  },
+  wxpusher: {
+    appToken: { required: true, secret: true, desc: 'WxPusher 应用 APP_TOKEN（wxpusher.zjiecode.com）' },
+    uids: { required: false, secret: true, desc: '接收者 UID 数组，如 ["UID_xxx"]（与 topicIds 至少一项）' },
+    topicIds: { required: false, secret: false, desc: '主题 ID 数组（群发用）' },
+  },
+  pushplus: {
+    token: { required: true, secret: true, desc: 'pushplus token（www.pushplus.plus）' },
+  },
+  serverchan: {
+    sct: { required: true, secret: true, desc: 'Server酱 SENDKEY（sct.ftqq.com）' },
+  },
+  bark: {
+    key: { required: true, secret: true, desc: 'Bark 设备 key（App 内复制）' },
+    barkUrl: { required: false, secret: true, desc: '自建 Bark 服务地址（默认官方）' },
+    device: { required: false, secret: false, desc: '设备名（多设备时指定）' },
+  },
+  webhook: {
+    url: { required: true, secret: true, desc: '接收 POST JSON 的 webhook 地址' },
+    headers: { required: false, secret: true, desc: '附加请求头对象，如 {"Authorization": "..."}' },
+  },
+  bell: {
+    count: { required: false, secret: false, desc: '响铃次数 1-5（默认 1）' },
+  },
+  'qq-bot': {
+    appId: { required: true, secret: true, desc: 'QQ 开放平台开发者 ID（q.qq.com → 机器人开发设置）' },
+    appSecret: { required: true, secret: true, desc: '同页面 AppSecret' },
+    targetType: { required: false, secret: false, desc: '"user"（单聊，默认）或 "group"（群聊）' },
+    userId: { required: false, secret: false, desc: '单聊目标用户 openid（targetType=user 时）' },
+    groupId: { required: false, secret: false, desc: '群 open id（targetType=group 时）' },
+  },
+  'wecom-app': {
+    corpid: { required: true, secret: true, desc: '企业 ID（企业微信管理后台「我的企业」）' },
+    secret: { required: true, secret: true, desc: '应用 Secret（管理后台「应用管理」）' },
+    agentId: { required: true, secret: false, desc: '应用 AgentId（数字）' },
+    toUser: { required: false, secret: false, desc: '接收成员账号，默认 "@all"' },
+  },
+}
+
+/**
+ * 取某渠道的凭证字段表（管理台表单渲染用，v0.3.3）：spec 渠道读声明表（含 desc/required/
+ * secret，单一事实源），手写渠道读 FIELD_HINTS。返回 { [key]: { required?, secret?, desc } }
+ * 的浅拷贝；未知渠道返回 {}（防御，绝不抛）。
+ */
+export function channelFieldsOf(type) {
+  const spec = ADAPTERS[type]?.spec
+  const fields = (spec !== null && typeof spec === 'object' && spec.fields !== null && typeof spec.fields === 'object')
+    ? spec.fields
+    : FIELD_HINTS[type]
+  if (fields === null || typeof fields !== 'object') return {}
+  return { ...fields }
+}
+
+/**
  * 解析 ${ENV:NAME} 式环境变量引用（全值替换）。
  * 「通知器是密钥集中器」：让密钥可以不落 profile 明文；缺失环境变量返回空串
  * （渠道会因校验失败被跳过，reason 里带字段名与来源指引）。
@@ -208,6 +278,19 @@ export function resolveConfig(config = {}) {
     }
   }
 
+  // Web 管理台（v0.3.3）：默认关闭（opt-in）。host 不可配——红线：永远只绑 127.0.0.1，
+  // 公网暴露管理台 = 暴露全部凭证写权限，需要公网由用户自行反代（设计稿 §0.5-6）。
+  // token 缺省由 index.mjs 自动生成并打印（state 只存哈希）；显式提供则以其为准。
+  const rawAdmin = (raw.admin !== null && typeof raw.admin === 'object' && !Array.isArray(raw.admin)) ? raw.admin : {}
+  const adminPort = typeof rawAdmin.port === 'number' && Number.isFinite(rawAdmin.port)
+    ? Math.min(65535, Math.max(1, Math.trunc(rawAdmin.port)))
+    : 8104
+  const admin = {
+    enabled: rawAdmin.enabled === true,
+    port: adminPort,
+    token: typeof rawAdmin.token === 'string' && rawAdmin.token.trim() !== '' ? rawAdmin.token : '',
+  }
+
   return {
     enabled,
     debounceMs,
@@ -222,6 +305,7 @@ export function resolveConfig(config = {}) {
     segment,
     digest: (raw.digest !== null && typeof raw.digest === 'object') ? raw.digest : {},
     keywords: (raw.keywords !== null && typeof raw.keywords === 'object') ? raw.keywords : {},
+    admin,
     channels,
     skipped,
   }

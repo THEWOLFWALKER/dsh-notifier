@@ -3,6 +3,42 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 SemVer。
 DSH 处于 developer preview，0.x 阶段的次版本号提升允许小幅破坏性变更（会在条目中标注）。
 
+## [0.3.3] - 2026-08-15
+
+Web 管理台：本机 HTTP 服务 + REST API + 单文件 UI + 网页扫码授权，凭证与路由全程网页可管。YAML 只做首次 bootstrap，运行时态落 `state.json`（0600）；admin 关闭（缺省）时存量行为逐字节不变。测试 493 → 588（+95：admin 四测试文件 30/26/20/19，基线含其中 51）。
+
+### Added（HTTP 服务与鉴权）
+
+- `src/admin/server.mjs`：Web 管理台 HTTP 服务，**只绑 127.0.0.1**（host 不可配置——公网暴露 = 暴露全部凭证写权限，需要公网由用户自行反代）。Bearer token 鉴权（timingSafeEqual 恒时比对 SHA-256 哈希；401 不区分缺/错 token，防探测）；JSON body 1MB 上限；未鉴权请求绝不触达 api；ApiError 按 status 透传中文 error，未知异常一律 500「内部错误」（堆栈不外泄）。
+- token 三条路：YAML 显式 `admin.token`（哈希同步 state）> 既有 `admin:token-hash` 沿用 > 首启 `randomBytes(24)` 生成并**打印一次**；明文绝不落盘，state 只存 64 位 hex 哈希。
+
+### Added（API 面）
+
+- `src/admin/api.mjs`：`GET /api/overview`（会话统计 + 出/入站渠道三态矩阵 + 最近审计）；`GET|PUT /api/bindings`（route:agents + route:channels 整表替换）；`GET /api/sessions` 与 `PATCH /api/sessions/:id`（出站覆盖 diff，显式 null 删键回落上游）；`GET /api/channels`（config 全脱敏 `***` + `fields` 凭证字段声明表）；`PUT /api/channels/:type`（凭证写 `<type>:account`）；`POST /api/channels/:type/test`（单渠道连通性自检）；`POST /api/scan/:channel`（扫码轮询步进）；`GET /api/audit`。写操作 append-only 审计——只记动作与通道名，凭证内容绝不进日志与返回值。
+- 双域裁定（feishu/dingtalk）：`<type>:account` 键域归入站机器人凭证（v0.3.1 扫码落盘语义），两类**出站 webhook 只走 YAML bootstrap**——出站行 `editable: false`、UI 只读，`putChannel` 携带 `webhook` 键一律 422（防网页一键抹掉扫码凭证）。telegram/wxpusher 虽双向但凭证形状同域，不算双域、正常回退。
+
+### Added（单文件 UI 与网页扫码）
+
+- `src/admin/ui.mjs`：零构建单文件内嵌 HTML（vanilla JS + fetch，无 CDN 无外链资源，离线可用）。四标签页：Dashboard（健康矩阵/会话统计/审计流，detail 对象 JSON 展示）、绑定矩阵（勾选网格 + 通道默认 agent）、会话（出站覆盖 diff 编辑）、通道（凭证表单/测试发送/扫码授权轮询）。
+- 建单表单：`fields` 声明表驱动（required 标 \*、desc 作 placeholder 与悬停提示），`configured=false` 的通道也能从零新建凭证——不再必须手改 YAML；值为 `***` 的字段视为未修改自动剔除，必填空值不提交；保存后提示运行时生效时机（出站 store 凭证下次启动并入，可先点测试发送验证）。
+- `src/admin/scan.mjs`：网页扫码流状态机。qq/feishu 阻塞式（背景 Promise + 首调二维码宽限 ≤1.5s + 终态取走即复位可重开）与钉钉步进式（EXPIRED 自动刷新 ≤3 次、missing-field/incomplete-registration/api-error 结构性错误 fail-fast、瞬态错误下轮重试、SUCCESS 写 `dingtalk:account`）统一适配成轮询契约 `{ qrContent, done, saved?, error? }`——**绝不 throw**：begin 同步异常归一终态中文 error，迟到 onQr 回调按流代次（generation）丢弃不污染新流。
+
+### Added（凭证模型与入站启用信号）
+
+- `src/index.mjs`：admin 开启时出站凭证 store 回退——YAML 行 ⊕ `<type>:account` 字段级合并（store 覆盖同名键，数组整体替换）后重过 `adapter.resolve` 替换/追加 `resolved.channels`；resolve 失败沿用 YAML 条目只 warn，store-only 类型即「暂不启用」。显式 `enabled: false` 是用户意图，不回退。
+- 入站五通道（feishu/qq/dingtalk/wxpusher/wechat）admin 启用信号：admin 开启时 store 存在 `<channel>:account` 本身即启用（`inbound.<channel>: {}` 零配置语义的自然延伸——含空对象），凭证链尾兜底 store（wxpusher 的 resolve 不收 credentials，在装配层做字段级合并，YAML 显式键优先）；admin 关闭时信号无效，YAML 显式对象仍是唯一阈值。
+- telegram 入站回退链尾补 `telegram:account` 兜底（`inbound.telegram` > 出站 telegram 渠道 > store 账号）。
+
+### Added（测试）
+
+- `test/admin-api.test.mjs`（30）/ `test/admin-server.test.mjs`（26）/ `test/admin-scan.test.mjs`（20，注入点 mock 零网络）/ `test/admin-wiring.test.mjs`（19，含 §5.5 信号生效 + admin 关闭对照）。
+
+### Changed
+
+- `package.json`：版本 0.3.3。
+- `src/config.mjs`：新增 `admin` schema——`enabled`（默认 false，opt-in）/ `port`（默认 8104，1-65535 截断）/ `token`（可选，缺省自动生成）；host 不开放配置。
+- README 双语：新增「Web 管理台（v0.3.3）」章节（配置示例 / token 首启打印 / 安全模型 / 网页扫码与 CLI 关系 / YAML ⊕ store 凭证模型）。
+
 ## [0.3.2] - 2026-08-15
 
 多 agent × 多通道路由引擎：workspace/agentId 双键路由矩阵（双向）、会话台账生命周期、`/agent` 命令族与 `/route` 排障、审批/工具/事件三线分流、`scripts/route.mjs` CLI。未配置任何 `route:*` 的存量用户行为逐字节不变。测试 391 → 493（+102）。
