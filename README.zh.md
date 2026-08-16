@@ -27,6 +27,30 @@ DeepSeek Harness（DSH）的统一通知推送插件。前端一个极简 `notif
 - **密钥安全** —— 渠道密钥标记 `role('secret')`，处处脱敏（含自定义 webhook 头）；`${ENV:NAME}` 引用让密钥不落 profile。
 - **绝不搞崩启动** —— 配错 / 缺配置的渠道静默跳过并留一行日志。
 
+## 界面预览
+
+Web 管理台（`admin.enabled: true` 开启，仅绑 127.0.0.1）五页实拍（演示数据）：
+
+**Dashboard 总览** —— 会话统计、出/入站通道健康分组、最近审计：
+
+![Dashboard](docs/screenshots/admin-dashboard.png)
+
+**通知页（v0.4.0）** —— SSE 事件流实时推送、系统通知偏好、事件日志（级别分流 + 送达结果）：
+
+![Notify](docs/screenshots/admin-notify.png)
+
+**绑定矩阵** —— agent × 通道勾选网格、入站通道默认 agent：
+
+![Bindings](docs/screenshots/admin-bindings.png)
+
+**会话台账** —— 每会话的出站解析结果与覆盖编辑：
+
+![Sessions](docs/screenshots/admin-sessions.png)
+
+**通道管理** —— 全部 33 个通道的凭证建单（处处脱敏 `***`）、测试发送、扫码授权：
+
+![Channels](docs/screenshots/admin-channels.png)
+
 ## 安装
 
 ```bash

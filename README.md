@@ -24,6 +24,30 @@ Unified notification push plugin for DeepSeek Harness (DSH). One minimal `notify
 - **Secrets safe** — channel keys marked `role('secret')`, redacted everywhere including custom webhook headers; `${ENV:NAME}` references keep secrets out of your profile.
 - **Never breaks startup** — misconfigured or missing channels are skipped silently with a log line.
 
+## Screenshots
+
+The web admin console (enable with `admin.enabled: true`, loopback only), all five pages (demo data):
+
+**Dashboard** — session stats, outbound/inbound channel health groups, recent audit:
+
+![Dashboard](docs/screenshots/admin-dashboard.png)
+
+**Notifications (v0.4.0)** — live SSE event stream, system-notification preferences, event log with level routing and delivery results:
+
+![Notify](docs/screenshots/admin-notify.png)
+
+**Binding matrix** — agent × channel checkbox grid, per-channel default agent:
+
+![Bindings](docs/screenshots/admin-bindings.png)
+
+**Sessions** — per-session outbound resolution with override editing:
+
+![Sessions](docs/screenshots/admin-sessions.png)
+
+**Channels** — credential forms for all 33 channels (masked `***` everywhere), test send, QR authorization:
+
+![Channels](docs/screenshots/admin-channels.png)
+
 ## Install
 
 ```bash

@@ -91,7 +91,7 @@ label.fld input { flex: 1; }
 </head>
 <body>
 <header>
-  <h1>dsh-notifier 管理台<small>v0.3.3</small></h1>
+  <h1>dsh-notifier 管理台<small>v0.4.0</small></h1>
   <span id="loadState"></span>
   <button id="tokenState" title="点击输入或更换访问 token"></button>
   <button id="btnRefresh">刷新</button>
@@ -299,7 +299,7 @@ function renderDashboard() {
   var keys = plain(o.agents).keys
   $('#statActive').textContent = sess.active !== undefined ? String(sess.active) : '–'
   $('#statTotal').textContent = sess.total !== undefined ? String(sess.total) : '–'
-  $('#statKeys').textContent = Array.isArray(keys) ? String(keys.length) : '–'
+  $('#statKeys').textContent = keys !== undefined ? String(keys) : '–'
   var out = overviewChannels().filter(function (c) { return c.direction === 'outbound' })
   var inn = overviewChannels().filter(function (c) { return c.direction === 'inbound' })
   $('#outGroups').innerHTML = chipGroups([
@@ -766,10 +766,10 @@ function startNotifyStream() {
       return reader.read().then(function (chunk) {
         if (chunk.done) throw new Error('stream end')
         buf += decoder.decode(chunk.value, { stream: true })
-        var blocks = buf.split('\n\n')
+        var blocks = buf.split('\\n\\n')
         buf = blocks.pop()
         blocks.forEach(function (block) {
-          block.split('\n').forEach(function (line) {
+          block.split('\\n').forEach(function (line) {
             if (line.indexOf('data: ') !== 0) return // ': connected'/': hb' 注释行
             try { onNotifyEvent(JSON.parse(line.slice(6))) } catch (e) { /* 残包/坏包丢弃 */ }
           })

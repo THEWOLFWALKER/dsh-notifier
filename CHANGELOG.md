@@ -3,6 +3,18 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 SemVer。
 DSH 处于 developer preview，0.x 阶段的次版本号提升允许小幅破坏性变更（会在条目中标注）。
 
+## [Unreleased]
+
+### Fixed（管理台 UI 三处，真浏览器首次实跑暴露）
+
+- `src/admin/ui.mjs` 头部版本号 v0.3.3 → v0.4.0（发布时漏更）。
+- SSE 事件流解析器：内联脚本里的 `'\n\n'` 被外层模板字面量吃掉转义，服务出去的 HTML 字符串字面量跨行——**真浏览器整个内联脚本 SyntaxError，管理台全功能瘫痪**（测试只断言 HTML 字符串未执行 JS，故 625 测试全绿仍漏网）。修复为 `\\n` 转义。
+- Dashboard「agent 路由键」统计：API 契约返回 `keys: number`，UI 按 `Array.isArray` 当数组渲染，恒显「–」（v0.3.3 起从未显示过）。UI 侧对齐契约。
+
+### Added
+
+- `docs/screenshots/`：管理台五页真实截图（Dashboard / 通知 / 绑定矩阵 / 会话 / 通道），README 双语「界面预览」章节引用。生成方式：真插件 admin server + 预置运行时数据（state.json 路由三表 + 审计流 + 本地回环 webhook/bell 触发真实广播），仓库代码零 mock。
+
 ## [0.4.0] - 2026-08-16
 
 System desktop notifications via two complementary paths: a new `desktop` channel calling native OS commands directly (zero npm deps), and an admin-console "Notifications" page (SSE event stream → browser system notifications + sound). Users without the console open get native popups through the channel; console users get them through the browser. Tests 588 → 625 (+37).
