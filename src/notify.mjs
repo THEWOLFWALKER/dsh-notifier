@@ -35,8 +35,12 @@ export function createNotifier(ctx, channels, options = {}) {
       .then(({ sent, total, error }) => {
         if (error === null) return undefined
         if (sent > 0) {
+          // v0.6.3：部分送达标记 noRetry——重试单元若仍是「整条消息」，已送达的
+          // 前 N 段会被重发（timeSensitive 3 次尝试 = 同通知收到多份前半段轰炸）。
+          // 重试层见 routing.sendWithRetry 对 noRetry 的短路。
           const partial = new Error(`分段送达中断：${sent}/${total} 段成功`)
           partial.cause = error
+          partial.noRetry = true
           throw partial
         }
         throw error
@@ -108,6 +112,21 @@ export function createNotifier(ctx, channels, options = {}) {
     }
     const targets = routeTargets(routing, channels, normalized)
       .filter((target) => filterTypes === null || filterTypes.includes(target.type))
+    // v0.6.3 空目标可见化（审查 R1 P1-2）：路由矩阵/分流过滤后目标为空时，原实现
+    // delivered/failed/skipped 三空 + ok:true + 零日志——agent 绑定的渠道后来被禁用/
+    // routing 渠道名拼错时，通知（含 timeSensitive 审批提醒）静默消失且账本记成功，
+    // 排障完全误导。现在 warn + skipped 标记（ok 语义不变：无失败即 true）。
+    if (targets.length === 0) {
+      const hint = filterTypes !== null
+        ? `分流过滤（channelTypes: [${filterTypes.join(', ')}]）后无目标`
+        : '路由矩阵（routing 配置）未命中任何已启用渠道'
+      warn(`notifyAll 目标为空：${hint}（可用渠道：${channels.map((entry) => entry.type).join('/') || '无'}）`)
+      const emptyOutcome = { ok: true, delivered: [], skipped: ['(no-targets)'], failed: [] }
+      if (typeof options.onSend === 'function') {
+        try { options.onSend({ time: new Date().toISOString(), message: normalized, ...emptyOutcome, ...sourceExtra }) } catch { /* 账本失败绝不影响推送 */ }
+      }
+      return emptyOutcome
+    }
     const delivered = []
     const failed = []
     const skipped = []

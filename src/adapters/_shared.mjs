@@ -33,7 +33,46 @@ export function num(value, fallback, min, max) {
   return Math.min(max, Math.max(min, n))
 }
 
-/** 统一 JSON POST：AbortController 超时、非 2xx 抛 HTTP_ERROR。 */
+/**
+ * v0.6.5（审查 R4-3-P3-3）：带上限读响应体。自托管端点（gotify/ntfy/onebot/mattermost
+ * 的 baseUrl 任意可配）故障或恶意回包时可返回超大 body——原 response.text() 全量读入
+ * 后才截断，内存与日志被放大。流式读前 cap 字符后主动 cancel。
+ */
+export async function readTextCapped(response, cap = 65536) {
+  const body = response?.body
+  if (body !== null && body !== undefined && typeof body.getReader === 'function') {
+    const reader = body.getReader()
+    const decoder = new TextDecoder()
+    let out = ''
+    try {
+      while (out.length < cap) {
+        const { done, value } = await reader.read()
+        if (done) break
+        out += decoder.decode(value, { stream: true })
+      }
+    } catch { /* 读取中断：已读部分尽力返回 */ } finally {
+      try { reader.cancel().catch(() => {}) } catch { /* 已完结的 reader：无害 */ }
+    }
+    return out.slice(0, cap)
+  }
+  try { return (await response.text()).slice(0, cap) } catch { return '' }
+}
+
+/**
+ * v0.6.5（审查 R4-3-P2-2）：构造非 2xx 的 HTTP_ERROR，并把 status/json/text 附在错误上。
+ * 原实现 post* 直接抛「渠道返回 HTTP xxx: 响应体片段」，spec.fail 里精心写的中文排障
+ * 指引（slack 403 去哪换 webhook、discord 404 重建、ntfy error 字段）在真实失败路径上
+ * 永不可达。engine 现在会捕获 HTTP_ERROR 并拿现场调 spec.fail 合成指引。
+ */
+function httpError(channel, response, text) {
+  const error = new NotifyError(`${channel}返回 HTTP ${response.status}${text.length > 0 ? `: ${text.slice(0, 200)}` : ''}`, ERROR_CODES.HTTP_ERROR)
+  error.status = response.status
+  error.text = text.slice(0, 2048)
+  try { error.json = JSON.parse(text) } catch { error.json = undefined }
+  return error
+}
+
+/** 统一 JSON POST：AbortController 超时、非 2xx 抛 HTTP_ERROR（附响应现场）。 */
 export async function postJson(url, payload, { headers = {}, timeoutMs = 10000, channel = '渠道' } = {}) {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
@@ -45,8 +84,7 @@ export async function postJson(url, payload, { headers = {}, timeoutMs = 10000, 
       signal: controller.signal,
     })
     if (!response.ok) {
-      const text = (await response.text().catch(() => '')).slice(0, 200)
-      throw new NotifyError(`${channel}返回 HTTP ${response.status}${text.length > 0 ? `: ${text}` : ''}`, ERROR_CODES.HTTP_ERROR)
+      throw httpError(channel, response, await readTextCapped(response, 2048))
     }
     return response
   } catch (error) {
@@ -76,8 +114,7 @@ export async function postForm(url, payload, { timeoutMs = 10000, channel = '渠
       signal: controller.signal,
     })
     if (!response.ok) {
-      const text = (await response.text().catch(() => '')).slice(0, 200)
-      throw new NotifyError(`${channel}返回 HTTP ${response.status}${text.length > 0 ? `: ${text}` : ''}`, ERROR_CODES.HTTP_ERROR)
+      throw httpError(channel, response, await readTextCapped(response, 2048))
     }
     return response
   } catch (error) {
@@ -98,8 +135,7 @@ export async function getJson(url, { headers = {}, timeoutMs = 10000, channel = 
   try {
     const response = await fetch(url, { method: 'GET', headers, signal: controller.signal })
     if (!response.ok) {
-      const text = (await response.text().catch(() => '')).slice(0, 200)
-      throw new NotifyError(`${channel}返回 HTTP ${response.status}${text.length > 0 ? `: ${text}` : ''}`, ERROR_CODES.HTTP_ERROR)
+      throw httpError(channel, response, await readTextCapped(response, 2048))
     }
     return response
   } catch (error) {
@@ -113,7 +149,7 @@ export async function getJson(url, { headers = {}, timeoutMs = 10000, channel = 
   }
 }
 
-/** 统一纯文本 body POST（ntfy 用，参数走 HTTP 头），带超时与错误分类。 */
+/** 统一纯文本 body POST（ntfy 旧协议用；v0.6.5 起 ntfy 走 JSON 发布，保留给未来渠道）。 */
 export async function postText(url, text, { headers = {}, timeoutMs = 10000, channel = '渠道' } = {}) {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
@@ -125,8 +161,7 @@ export async function postText(url, text, { headers = {}, timeoutMs = 10000, cha
       signal: controller.signal,
     })
     if (!response.ok) {
-      const bodyText = (await response.text().catch(() => '')).slice(0, 200)
-      throw new NotifyError(`${channel}返回 HTTP ${response.status}${bodyText.length > 0 ? `: ${bodyText}` : ''}`, ERROR_CODES.HTTP_ERROR)
+      throw httpError(channel, response, await readTextCapped(response, 2048))
     }
     return response
   } catch (error) {

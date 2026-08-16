@@ -113,6 +113,7 @@ function makeRig({ approvalConfig = {}, chatIds = ['100'], mode = 'answer' } = {
   }
   const dispose = registerApprovalHandler({
     ctx, notifier, bus, vault, store, telegram,
+    counterStart: 0, // v0.6.4 生产随机化 counter 起点；测试固定 0 保住 ap:<callId>:<n> 确定性断言
     approvalConfig: { mode, ...approvalConfig },
   })
   const handle = (request) => handlers['approval/request'](request, () => 'desktop')
@@ -207,13 +208,14 @@ test('router：伪造/篡改 token 被拒（bad-signature / key-mismatch），�
   rig.dispose()
 })
 
-test('router：编号回复降级——白名单用户回复 1 批准最近待决（无按钮渠道）', async () => {
+test('router：编号回复降级——卡片送达渠道的白名单用户回复 1 批准最近待决', async () => {
   const rig = makeRig()
   const pending = rig.handle({ toolName: 'rm', callId: 'c1', reason: 'x' })
   await sleep(20)
-  // 模拟从微信类单向渠道回传的文本（不在 pushedTo 里，走全局最近待决回退）
+  // v0.6.3 收紧：编号回复只认卡片实际送达过的渠道（真实装配里能回话到 bus 的
+  // 通道必然在 interactive、推送时已进 pushedTo）——telegram 用户 100 精确命中
   assert.deepEqual(
-    rig.bus.accept({ channel: 'wechat', userId: '42', chatId: 'w1', messageId: 'msg:w:1', text: '1' }),
+    rig.bus.accept({ channel: 'telegram', userId: '100', chatId: '100', messageId: 'msg:t:1', text: '1' }),
     { ok: true },
   )
   assert.equal(await pending, 'allowed-once')
@@ -221,7 +223,21 @@ test('router：编号回复降级——白名单用户回复 1 批准最近待�
   rig.dispose()
 })
 
-test('router：编号回复优先精确匹配（pushedTo 的 channel+user），再全局回退', async () => {
+test('router：编号回复收紧——卡片未送达的渠道（如微信类通道恰逢推送失败）裸 1/2 不再全局兜底', async () => {
+  const rig = makeRig({ approvalConfig: { timeoutMs: 800, escalation: { enabled: false } } })
+  const pending = rig.handle({ toolName: 'rm', callId: 'c1', reason: 'x' })
+  await sleep(20)
+  // 审批是全局广播的：用户在没收到卡片的渠道日常对话里发裸 1，不得误裁决别处的审批
+  assert.deepEqual(
+    rig.bus.accept({ channel: 'wechat', userId: '42', chatId: 'w1', messageId: 'msg:w:1', text: '1' }),
+    { ok: true },
+  )
+  assert.equal(await pending, 'desktop') // 未被消费 → 超时静默回落桌面
+  assert.equal(rig.store.get('ap:c1:1').decision, 'timeout')
+  rig.dispose()
+})
+
+test('router：编号回复优先精确匹配（pushedTo 的 channel+user），再同渠道回退', async () => {
   const rig = makeRig()
   const first = rig.handle({ toolName: 'a', callId: 'c1', reason: 'x' })
   await sleep(20)
@@ -231,8 +247,8 @@ test('router：编号回复优先精确匹配（pushedTo 的 channel+user），�
   // telegram 用户 100（= chatId）回复 2 → 精确命中最新一条 ap:c2:2
   rig.bus.accept({ channel: 'telegram', userId: '100', chatId: '100', messageId: 'msg:t:1', text: '2' })
   assert.equal(await second, 'rejected')
-  // 另一渠道回复 1 → 全局回退命中最新的 pending（此时只剩 ap:c1:1）
-  rig.bus.accept({ channel: 'sms', userId: '42', chatId: 's1', messageId: 'msg:s:1', text: '1' })
+  // 同渠道其他白名单用户（卡片送达过 telegram，但非本人目标）回复 1 → 同渠道回退命中最新 pending
+  rig.bus.accept({ channel: 'telegram', userId: '42', chatId: '100', messageId: 'msg:t:2', text: '1' })
   assert.equal(await first, 'allowed-once')
   rig.dispose()
 })
@@ -241,7 +257,9 @@ test('router：numberedReply: false 关闭编号回复降级', async () => {
   const rig = makeRig({ approvalConfig: { timeoutMs: 800, numberedReply: false, escalation: { enabled: false } } })
   const pending = rig.handle({ toolName: 'rm', callId: 'c1', reason: 'x' })
   await sleep(20)
-  rig.bus.accept({ channel: 'wechat', userId: '42', chatId: 'w1', messageId: 'msg:w:1', text: '1' })
+  // 用「卡片送达过的渠道 + 本人」回复——确保拦下裁决的是 numberedReply 开关本身，
+  // 而不是 v0.6.3 收紧的未送达兜底移除
+  rig.bus.accept({ channel: 'telegram', userId: '100', chatId: '100', messageId: 'msg:t:1', text: '1' })
   assert.equal(await pending, 'desktop') // 未被编号回复裁决 → 超时
   rig.dispose()
 })
@@ -274,6 +292,7 @@ test('router：notifier.notifyAll 抛异常 → 照常等待远程裁决，超�
   const telegram = { notifyChatIds: () => [], sendApprovalCard: async () => null, editResolved: async () => {} }
   registerApprovalHandler({
     ctx, notifier, bus, vault, store, telegram,
+    counterStart: 0,
     approvalConfig: { mode: 'answer', timeoutMs: 50, escalation: { enabled: false } },
   })
   const result = await handlers['approval/request']({ toolName: 'rm', callId: 'c1' }, () => 'desktop')
@@ -294,7 +313,7 @@ test('router：多 chat 推送全部入账 pushedTo；卡片失败降级纯通�
     sendApprovalCard: async () => results.shift(),
     editResolved: async () => {},
   }
-  registerApprovalHandler({ ctx, notifier, bus, vault, store, telegram, approvalConfig: { mode: 'answer', timeoutMs: 800, escalation: { enabled: false } } })
+  registerApprovalHandler({ ctx, notifier, bus, vault, store, telegram, counterStart: 0, approvalConfig: { mode: 'answer', timeoutMs: 800, escalation: { enabled: false } } })
   const pending = handlers['approval/request']({ toolName: 'rm', callId: 'c1' }, () => 'desktop')
   await sleep(20)
   const row = store.get('ap:c1:1')

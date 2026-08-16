@@ -3,6 +3,100 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 SemVer。
 DSH 处于 developer preview，0.x 阶段的次版本号提升允许小幅破坏性变更（会在条目中标注）。
 
+## [0.6.5] - 2026-08-16
+
+> 第三轮三路并行代码审查（R4-1 store/bus/审批 / R4-2 admin / R4-3 出站渠道）修复轮：
+> 20+ 项，含 2 个「真机 100% 必炸」P1（ntfy 中文标题、chanify 路径）——均为 mock
+> fetch 构造盲区（mock 不构造真实 Headers/不做真实路由），契约测试假绿掩盖运行时
+> 必然故障。核心安全红线零松动，一条未松。
+
+### 修复（出站渠道，审查 R4-3）
+
+- **ntfy 中文标题 100% 失败（P1）**：原「POST /<topic> + X-Title/X-Priority 头」协议里，x-title 经 undici fetch 的 ByteString 校验——非 ASCII 标题（中文！）直接抛 TypeError，而本项目主场景全是中文标题。改为 ntfy 官方 JSON 发布协议（POST 服务根，topic/title/message/priority 全进 body），中文标题/正文随通知体自由编码。
+- **chanify 端点多拼 /send（P1）**：官方端点是 `POST /v1/sender/<token>`（dev.chanify.net 与移植来源一致均无 /send），原拼法真机必 404。
+- **mattermost 删除官网缺省域（P2）**：Mattermost 无公共推送云，缺省 `https://mattermost.com` 会把 hookId（凭证）误发到官网域名（进第三方日志）且必 404。用 hookId 时必须显式填自托管 server，未配置时给出可行动的中文指引。
+- **onebot CQ 码注入（P2）**：message 从字符串直传改为 OneBot 11 标准消息数组格式（`[{type:'text',data:{text}}]`）——正文里的 `[CQ:at,qq=all]`/`[CQ:image,...]` 是协议元语法，notify 的 message 参数 agent/LLM 可控，prompt injection 可借通知渠道向 QQ 群注入 @全体成员或诱导受害者客户端向任意 URL 发 GET。数组格式的 text 段无解析歧义，纯文本永远纯文本。
+- **spec.fail 死代码复活（P2）**：原实现 post* 对非 2xx 直接抛 HTTP_ERROR，slack 403「去哪换 webhook」/discord 404「重建 webhook」等精心编写的中文排障指引在真实失败路径上永不可达。HTTP_ERROR 现在携带 status/json/text 现场，engine 捕获后交 spec.fail 合成指引再抛。
+- **URL 路径段编码 + 枚举白名单（P3）**：企业微信 key/chanify token/xizhi key/qmsg key/hellyw key/mattermost hookId 全部 encodeURIComponent（含特殊字符的凭证不再拼出歧义 URL）；qmsg type 只允许 send/group、onebot messageType 只允许 private/group（拼错路径/语义漂移的请求在 validate 阶段给出中文指引而非静默 404）。
+- **失败原因统一截断（P3）**：describeFailure 单字符串路径补 200 字符截断；spec.fail 返回值与 HTTP 指引同样截断——服务端超长 errmsg 不再整段进日志/notifyAll failed/工具渲染（agent 上下文膨胀）。
+- **带上限读响应体（P3）**：新增 `readTextCapped`（流式读、64KB 上限、越限主动 cancel）——自托管端点（gotify/ntfy/onebot/mattermost 的 baseUrl 任意可配）故障或恶意回包时可返回超大 body，原 `response.text()` 全量读入后才截断，内存与日志被放大。
+- **QQ 官方 bot msg_seq 重试不自增（P3）**：msg_seq 是服务端去重键，原实现每次尝试自增——重试时服务端视为新消息，同一条通知可能双份投递。改为整条消息固定一个 seq。
+
+### 修复（store/bus/审批，审查 R4-1）
+
+- **锁 owner 校验（P2）**：v0.6.4 的陈锁回收只看 mtime>10s——慢写者（大 state + 慢盘）超过 10s 后锁会被误抢，旧写者 rename 仍会覆盖新写者的结果（丢写保护失效）。锁文件现在写入 `pid:随机段` owner 章，释放时核对 owner 再 unlink（非本人锁不删）；被回收方写盘前复查锁 owner（已易主则放弃本次 rename，防陈锁窗口内的交错覆写）。
+- **state 损坏自愈（P2，替代 v0.6.4 的「损坏中止」）**：中止会让 dirty 无限积压、CLI↔宿主共享永久断裂（外部不修复就永远写不进）。自愈 = 现场转存为 `.corrupt.<ts>`（取证保留，保护不降级），再以内存全量快照重建写路径——半截 JSON 本就解析不出任何键，重建丢失的只有「损坏文件里已不可读的内容」且已留副本；绝不能从 `{}` 起步（那会抹掉 boot 载入的凭证/路由）。转存失败（备份目录不可写等）退回中止语义保留现场。
+- **tmp 文件创建即 0600（P3）**：原 chmod 后置——umask 窗口里含凭证的完整 state 对其他账号可读。`writeFileSync(..., {mode:0o600})` 原子收紧。
+- **读收敛基线（P3）**：mtime 基线直接取启动时刻 stat——原 -1 哨兵会让启动后第一次 get 误判「文件变化过」而触发一次多余重载。
+- **bus disposed 终态（P3）**：dispose 后 `wait()` 一律立即按无人应答（null）收场——不再新增长命定时器挂住已卸载的插件；消息处理器全摘，防止迟到 inbound 触发已死逻辑。
+- **空分流回落全局广播（P3）**：agent 显式绑定空集或绑定渠道全被禁用时，原实现拿到空 channelTypes 后既不推任何渠道也不广播文案——审批静默消失且广播里教的回复方式全部落空。空集回落全局广播（与出站「空目标可见化」对齐：宁可广播也不静默）。
+
+### 修复（admin API/Server，审查 R4-2）
+
+- **putChannel 键白名单（P2）**：原实现只校验「非空普通对象」，持 token 客户端可写任意键 + 近 1MB 垃圾值污染 `<type>:account` schema 并使 state.json 膨胀；`__proto__`/`constructor`/`prototype` 等保留键虽是数据属性（spread/JSON.parse 不触发原型污染）但会永久残留。改为按渠道 spec 生成键白名单 + 键数上限 64 + 值 8KB 上限 + 保留键显式拒绝。
+- **putBindings 单次落盘（P2）**：原「clear + set 逐键」对 N 键表做 N 次全量落盘——20 键表 = 20 次锁竞争 + 20 次整文件重写。新增 `replaceAgentBindings`/`replaceChannelDefaults` 整表替换（语义与逐键重建链等价：未出现字段删除、空条目整键回收），一次锁周期 + 一次整文件写。
+- **scanHandlers 原型链防护（P2）**：按 type 查 scan 处理器时走 `Object.prototype.hasOwnProperty` 核验——`__proto__` 等键名不再可能沿原型链摸到 Object 内建属性。
+- **SSE 并发上限（P3）**：持 token 客户端可开任意多条长连接耗尽宿主句柄/内存。超限（32 条）新连接 503，检查在连接权移交之前（移交后 503 写不进）。
+- **审计有界轮转（P3）**：append-only 无上限会让长期运行把 state 目录撑爆。超 1MB 转存 `.1`（只保一代，总占用 ~2MB 封顶），getAudit 并读两代保持时间线连续。
+- **HTTP 显式超时（P3）**：server 显式固化 headersTimeout/requestTimeout，不再吃 Node 版本默认值（默认值随版本漂移且 requestTimeout 新版默认 300s，慢速攻击连接可长期占位）。
+
+### 测试
+
+- 全量回归绿（node --test，见提交记录）。新增覆盖：store 锁 owner 校验/被回收方放弃/损坏自愈转存与回退、bus disposed 后 wait 立即 null、空分流回落广播、putChannel 白名单与保留键拒绝、putBindings 单次落盘（writeMap 调用计数）、SSE 上限 503、审计轮转后 getAudit 时间线连续、ntfy JSON 协议契约（中文标题进 body 而非头）、chanify 无 /send 路径、onebot 消息数组格式（CQ 码按字面文本处理）、HTTP_ERROR 现场 → spec.fail 指引链、readTextCapped 上限。
+- 契约测试盲区自省：mock fetch 不构造真实 Headers（ByteString 校验盲区）、不做真实路由（路径拼错盲区）——本轮 2 个 P1 均属此类。测试 rig 已在可构造处对齐真实实现行为（如 readTextCapped 流式语义）。
+
+## [0.6.4] - 2026-08-16
+
+> 第二轮审查（修复质量复核 + 并发/边界专项）修复轮：6 项，集中在多进程并发与
+> 「推送失败后用户被教错」死路。核心安全红线继续零松动。
+
+### 修复
+
+- **state 跨进程写锁（审查 R2-P1-2）**：v0.6.3 的键级合并解决了「互相抹键」，但没解决两进程 load→rename 区间交错的 last-writer-wins 整文件丢写。`save()` 全程持同目录锁文件（`openSync 'wx'` 抢占 + mtime>10s 陈锁回收 + 有界自旋 ≈240ms + 超时强写降级并 warn），锁内完成 load→merge→write→rename。
+- **state 损坏不再放大（审查 R2-P2-2）**：save 时刻重读撞上解析失败（半截 JSON/坏块）时中止本次写、保留 dirty 下次再试——原 fail-open 到空会把全量凭证抹成只剩脏键的残本。只有启动 load 保留 fail-open（无记忆好过误清空）。
+- **state 读收敛（审查 R2-P2-3）**：运行中宿主的内存快照感知不到 CLI 写入（`route:*` 改完要重启宿主才生效）。`get()/keys()` 节流 stat（≥500ms 一次），mtime 变化即重载合并（dirty 键内存优先）。
+- **编号回复 intended 兜底（审查 R1-P2-1）**：卡片发送失败（或全部目标投递失败）时广播文案仍在教「回复 1 批准」，但 `pushedTo` 为空 → 收紧后的编号回复拒绝兜底 → 死路。审批入账新增 `intendedChannels`（null=全局广播=全部交互渠道；数组=分流结果），匹配优先级：送达精确 > 送达同渠道 > 意图渠道；非意图渠道的日常裸 1/2 仍拒绝（收紧价值保留）。
+- **pushedTo 增量落账（审查 R1-P1-1）**：原实现等整轮推送完成才写 `pushedTo`（多通道限速门下数秒窗口），窗口内早到的编号回复读不到送达渠道而落空。现在每张卡送达立刻落账。
+- **审批 key 随机起点 + 总线停机（R2-P2-4/R2-P2-5）**：counter 随机起点（重启后同 callId 不再撞 key 复现旧 token 核销路径，配合持久化 tokenSecret 时尤为必要）；`bus.dispose()` 整体收场（在途 waiter 以 null 结束=超时回退桌面语义、消息处理器全摘、定时器清理），插件卸载不再拖住进程；waiter 定时器 unref；dedup 清扫线联动窗口配置。
+
+### 测试
+
+- 718 全绿。开发中途的装配断线已修（`pushApproval` 增加 `channelTypes` 参数但调用点未传——`undefined.includes` 抛错被 handler 吞掉，整轮推卡夭折）；`intendedChannels` 随入账落盘，intended 兜底链真实生效。
+- 行为变更同步固化：损坏文件测试从「fail-open 覆写」改为「写入中止保护现场 + 外部修复后 dirty 键补落」；approval 测试 rig 固定 `counterStart: 0` 保住确定性 key 断言（生产随机化）。
+- 回退 waiter 定时器 unref：unref 会让「仅剩超时定时器存活」的事件循环直接退出（await 超时的测试全炸；生产中在途审批也不该因恰好空闲而蒸发）。停机清理由 `dispose()` 承担，职责单一。
+
+## [0.6.3] - 2026-08-16
+
+> 首轮三路并行代码审查（R1 出站核心 / R2 inbound+审批 / R3 装配+admin+v0.6）修复轮：
+> 11 项 P1/P2 级问题，全部是「真机才暴露」或「长跑才显现」类缺陷——竞态窗口、
+> 多进程并发写、状态单调膨胀、静默失败路径。核心安全红线（静默永不批准、token
+> 单次核销、never-reject、A listener never throws）零松动，一条未松。
+
+### 修复（出站核心，审查 R1）
+
+- **分段部分送达不再整条重试**：`notify.mjs` 分段发送中断（前 N 段已出、后段失败）时错误标记 `noRetry:true`，`routing.sendWithRetry` 见标短路——原实现按「整条消息」重试，timeSensitive 3 次尝试 = 已送达的前半段被重发，同一通知收到多份半截轰炸。
+- **空目标可见化**：路由矩阵/分流过滤后目标为空时，原实现 delivered/failed/skipped 三空 + ok:true + 零日志——agent 绑定的渠道后来被禁用 / routing 渠道名拼错时，通知（含 timeSensitive 审批提醒）静默消失且账本记成功，排障完全误导。现在 warn + `skipped:['(no-targets)']` + onSend 照发（ok 语义不变：无失败即 true）。
+- **账本文件权限 0600**：账本行含通知标题/错误摘要（可能带任务路径与审批上下文），共享主机上不应其他账号可读；prune 重写路径同样收紧（对齐 store 的既有军规）。
+
+### 修复（inbound + 审批，审查 R2）
+
+- **审批 waiter 预注册（竞态）**：原实现先 `await pushApproval`（逐通道逐目标发卡 + 广播，限速门下数秒级）再 `bus.wait`——窗口内用户点按钮/回复 1/2 命中 already-resolved 被静默丢弃，此后永远无人能裁决 → 超时回落桌面。现在先注册 waiter 再推卡，早到裁决由 waiter 承接。
+- **TG 审批卡片去 parse_mode**：approvalKey（`ap:<callId>:<n>`，callId 常含 `_`）与 reason（路径/反引号）未转义，legacy markdown 未配对 `_*` 必 400 "can't parse entities"，卡片静默降级纯文本。与 v0.6.2 BUTTON_DATA_INVALID 同类 mock 盲区（mock fetch 不解析 markdown，单测测不出）。
+- **编号回复收紧（行为变更）**：`latestPendingFor` 只认卡片实际送达过的渠道（channel+user 精确匹配优先，同渠道兜底次之），移除跨渠道全局回退——审批是全局广播的，用户在没收到卡片的渠道日常对话里发裸 1/2 不得误裁决别处的审批。真实装配里能回话到 bus 的通道必然在 interactive 列表、推送时已进 pushedTo，收紧不误伤正常路径。
+- **消息消费语义**：bus 处理器返回 true = 消息已被消费，停止扇出——审批编号回复吃掉「1」后不再同时被当作用户消息 inject 进 agent 会话（同一消息双重消费）。
+- **wait 同 key 复用**：原实现同 key 二次 wait 无条件覆盖注册位，旧 entry 的超时回调会误删新注册（跨重启 counter 归零 + 同 callId 可复现 key）。未决时复用既有 waiter 的 promise。
+- **state 定期瘦身**：`dedup:*`/`ap:*`/`act:*` 历史上只增不删（bus 每条入站消息落一个 dedup 键、审批/动作核销后账本行永留），长跑进程 state.json 单调膨胀且全量重写随之变慢。dedup 留 25h（窗口 24h + 1h 时钟回拨余量），已决审批/动作保留 24h 供审计，首启 + 每 6h 清扫（走脏键合并写，与 CLI 并发写互不覆盖）。
+
+### 修复（装配/状态/admin，审查 R3）
+
+- **state 并发写互抹（CLI vs 宿主）**：route/channel-login/wechat-login 等 CLI 与运行中宿主各持一份内存快照同写 state.json，原「整快照覆写」互相抹掉对方的键（admin:token-hash 被抹 = 已知 admin token 失效）。改为写时重读文件、只落本实例动过的键（键级合并），写回后内存收敛到合并结果；tmp 文件带 pid+随机段（多进程共用固定 `.tmp` 路径时 write/rename 交错会 ENOENT 丢写）。
+- **心跳会话快照过期**：回调闭包冻结 turn/start 时刻的 session 引用，宿主逐事件传新快照时「最近输出」摘录恒为上一轮。改为 `entry.session` 随事件刷新，心跳/卡住回调统一取最新引用。
+- **审计文件权限 0600**：审计行含 session id 与绑定键，对齐 store 军规。
+
+### 测试
+
+- 717 → 718：编号回复语义重写——送达渠道白名单用户精确命中、同渠道其他用户兜底、未送达渠道裸 1/2 拒绝兜底的负控（超时静默回落桌面 + 账本落 timeout）；`numberedReply: false` 改用「送达渠道+本人」回复，确保被测的是开关本身而非收紧副作用；无交互渠道时裸数字不裁决的回归固化。审批/多通道 32 项全绿。
+
 ## [0.6.2] - 2026-08-16
 
 > 真机事故修复（v0.6.1 复验发现）：inbound 修复生效后，审批卡片发送报

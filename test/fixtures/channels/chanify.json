@@ -5,7 +5,7 @@
   "message": { "title": "构建完成", "content": "全部用例通过", "level": "active" },
   "expectedRequests": [
     {
-      "url": "https://api.chanify.net/v1/sender/chan-token-001/send",
+      "url": "https://api.chanify.net/v1/sender/chan-token-001",
       "method": "POST",
       "bodyForm": { "title": "构建完成", "text": "全部用例通过" }
     }

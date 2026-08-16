@@ -241,6 +241,33 @@ export function apply(ctx, config = {}) {
   registerNotifierService(publicFacade, disposers)
   disposers.push(() => publicFacade.dispose())
 
+  // v0.6.3 state 瘦身（审查 R2 P1-4）：dedup:*/ap:*/act:* 历史上只增不删（bus 每条
+  // 入站消息落一个 dedup 键、审批/动作核销后账本行永留），长跑进程 state.json 单调
+  // 膨胀且全量重写随之变慢。定期清扫：dedup 窗口 24h（留 1h 余量防时钟回拨），已决
+  // 审批/动作保留 24h 供审计，超期即删（首启 + 每 6h；sweepPrefix 走脏键合并写，
+  // 与 CLI/他进程并发写互不覆盖）。pending 行不清（在等裁决，宁可多留一行）。
+  // v0.6.4：dedup 清扫线联动 bus 窗口（窗口可配时硬编码 25h 会误清未过期键或漏清）；
+  // bus 在白名单块才创建（可能不创建），sweep 注册在前——用外层惰性引用兜住。
+  let sweepBusRef = null
+  {
+    const sweepOnce = () => {
+      try {
+        const windowMs = sweepBusRef?.dedupWindowMs ?? 24 * 60 * 60 * 1000
+        const horizon = Date.now() - windowMs - 60 * 60 * 1000 // 窗口 + 1h 时钟回拨余量
+        store.sweepPrefix('dedup:', (_key, seenAt) => typeof seenAt !== 'number' || seenAt < horizon)
+        const resolvedHorizon = Date.now() - 24 * 60 * 60 * 1000
+        const expiredRow = (_key, row) => row?.status === 'resolved'
+          && typeof row.resolvedAt === 'number' && row.resolvedAt < resolvedHorizon
+        store.sweepPrefix('ap:', expiredRow)
+        store.sweepPrefix('act:', expiredRow)
+      } catch { /* 清扫失败不致命，下轮再试 */ }
+    }
+    sweepOnce()
+    const sweepTimer = setInterval(sweepOnce, 6 * 60 * 60 * 1000)
+    sweepTimer.unref?.()
+    disposers.push(() => clearInterval(sweepTimer))
+  }
+
   // v0.3.2 路由引擎装配（设计稿 §7）：store 之后、inbound 白名单块之前创建，
   // 注入四条触发线（事件推送 / notify 工具 / 审批 / 会话路由）。
   // route 原值直取（config.route 为对象时；sessionTtlHours 由 registry 自行归一，缺省 24h）。
@@ -383,6 +410,10 @@ export function apply(ctx, config = {}) {
         : undefined,
     })
     const bus = createInboundBus({ allowUsers, store, vault, logger })
+    // v0.6.4（审查 R2-P2-5）：停机时总线整体收场——在途 waiter 以 null 结束（= 超时
+    // 回退桌面语义）、消息处理器全摘；dedup 清扫线联动其窗口。
+    sweepBusRef = bus
+    disposers.push(() => bus.dispose())
 
     // v0.5 动作分发器：vault/store 之后创建（无环），telegram/feishu 按钮回调消费。
     // 内置白名单仅 turn/cancel——权限面与 /stop 命令完全等价（永无任意代码执行）。

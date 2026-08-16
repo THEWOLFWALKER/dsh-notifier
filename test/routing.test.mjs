@@ -127,6 +127,8 @@ test('notifyAll 集成：路由 silent 覆盖落到 telegram disable_notificatio
     assert.equal(body.disable_notification, true)
 
     // timeSensitive 广播：ntfy 优先级 5 + telegram 响铃
+    // v0.6.5：ntfy 改 JSON 发布协议（topic/title/message/priority 全进 body，
+    // 中文标题不再走 x-title 头触发 undici ByteString 校验必炸）
     calls.length = 0
     const notifier2 = createNotifier(null, channels, {
       routing: { timeSensitive: [{ channel: 'ntfy' }, { channel: 'telegram' }] },
@@ -136,7 +138,11 @@ test('notifyAll 集成：路由 silent 覆盖落到 telegram disable_notificatio
     assert.equal(calls.length, 2)
     const ntfyCall = calls.find((call) => call.url.includes('ntfy'))
     const tgCall = calls.find((call) => call.url.includes('/bot'))
-    assert.equal(ntfyCall.url, 'https://ntfy.example.com/t')
+    assert.equal(ntfyCall.url, 'https://ntfy.example.com')
+    const ntfyBody = JSON.parse(ntfyCall.body)
+    assert.equal(ntfyBody.topic, 't')
+    assert.equal(ntfyBody.title, '批准')
+    assert.equal(ntfyBody.priority, 5)
     assert.equal(tgCall.body.disable_notification, undefined)
   } finally {
     delete globalThis.fetch

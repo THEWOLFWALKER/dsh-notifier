@@ -19,6 +19,12 @@ const SSE_TYPE = 'text/event-stream; charset=utf-8'
 const FALLBACK_UI = '<!DOCTYPE html><p>admin ui 未装配</p>'
 /** SSE 心跳间隔（ms）：注释行保活，防本机反代/浏览器空闲掐连接；测试可注入更小值。 */
 const DEFAULT_HEARTBEAT_MS = 15_000
+/**
+ * v0.6.5（审查 R4-2-P3-4）：SSE 并发连接上限。持 token 客户端可开任意多条长连接
+ * （每条同步重放 50 条缓冲 + 心跳定时器），无上限时耗尽 fd/内存——管理台是单用户
+ * 场景，64 已远超「多标签页 + 多设备」的合理用量。
+ */
+const MAX_SSE_CONNECTIONS = 64
 
 /**
  * URL 段级 decode（%2F 不应劈出新段，故逐段而非整段 decode；畸编码回落原文不抛）。
@@ -186,10 +192,14 @@ export function createAdminServer({ api, verifyToken, host = '127.0.0.1', port =
    * 打开 SSE 通知事件流（GET /api/events，鉴权已过）：写流式响应头 → 重放缓冲 + 订阅实时 →
    * 心跳注释行保活；客户端断连（close/error 任一）即退订 + 清定时器 + end，绝不外泄资源。
    * 军规：所有写操作 try/catch（客户端半途断开是常态不是异常）；本函数绝不抛。
+   * v0.6.5（审查 R4-2-P3-4）：并发连接计数上限 MAX_SSE_CONNECTIONS，超限 503。
    * @param {import('node:http').IncomingMessage} request
    * @param {import('node:http').ServerResponse} response
+   * @param {{ json: (status: number, payload: unknown) => void }} respond
    */
+  let sseConnections = 0
   function openEventStream(request, response) {
+    sseConnections += 1
     try {
       response.writeHead(200, {
         'content-type': SSE_TYPE,
@@ -199,7 +209,8 @@ export function createAdminServer({ api, verifyToken, host = '127.0.0.1', port =
       })
       response.write(': connected\n\n')
     } catch {
-      return // 写头即失败（客户端已断）：直接放弃，无资源可清
+      sseConnections -= 1 // 写头即失败（客户端已断）：释放配额，无资源可清
+      return
     }
     let closed = false
     const send = (line) => {
@@ -211,6 +222,7 @@ export function createAdminServer({ api, verifyToken, host = '127.0.0.1', port =
     function cleanup() {
       if (closed) return
       closed = true
+      sseConnections -= 1
       clearInterval(heartbeat)
       unsubscribe()
       try { response.end() } catch { /* 已断 */ }
@@ -248,6 +260,10 @@ export function createAdminServer({ api, verifyToken, host = '127.0.0.1', port =
     if (matched.route.sse === true) {
       if (typeof events?.subscribe !== 'function') {
         return respond.json(501, { error: '通知事件流未装配（events hub 缺失）' })
+      }
+      // v0.6.5（审查 R4-2-P3-4）：连接数上限（检查须在 taken() 之前——响应权移交后 503 写不进）
+      if (sseConnections >= MAX_SSE_CONNECTIONS) {
+        return respond.json(503, { error: `事件流连接数已达上限（${MAX_SSE_CONNECTIONS}），请关闭闲置标签页后重试` })
       }
       respond.taken() // 响应权移交流实现：后续任何 json/html 兜底写入直接失效
       return openEventStream(request, response)
@@ -293,6 +309,12 @@ export function createAdminServer({ api, verifyToken, host = '127.0.0.1', port =
   server.on('error', (error) => {
     warn(`server 异常: ${error instanceof Error ? error.message : String(error)}`)
   })
+  // v0.6.5（审查 R4-2-P3-6）：显式固化连接超时，不再吃 Node 版本默认值（默认值随版本
+  // 变化会悄悄改变慢速攻击面；慢速 body 连接原依赖 300s requestTimeout 兜底占资源）。
+  // requestTimeout 覆盖「收完整请求」（头+body），不影响 SSE 已接管的长响应。
+  server.headersTimeout = 60_000
+  server.requestTimeout = 120_000
+  server.keepAliveTimeout = 20_000
   server.on('clientError', (error, socket) => {
     warn(`client 异常: ${error instanceof Error ? error.message : String(error)}`)
     if (socket.writable) socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n')

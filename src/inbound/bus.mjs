@@ -35,6 +35,10 @@ export function createInboundBus(options = {}) {
 
   const waiters = new Map() // approvalKey -> { resolve, timer, settled }
   const messageHandlers = new Set()
+  // v0.6.5（审查 R4-1-P3-4）：停机终态——dispose 后 wait() 一律按无人应答（null）收场，
+  // 不再注册新 waiter（其 120s 定时器会拖住进程退出，R2-P2-5 有意不 unref 的副作用
+  // 在停机窗口失去对冲）。语义与 dispose 收场一致：回落桌面。
+  let disposed = false
 
   function isDuplicate(envelope, now = Date.now()) {
     const key = dedupKeyOf(envelope)
@@ -76,11 +80,13 @@ export function createInboundBus(options = {}) {
         return { ok: false, reason: 'duplicate' }
       }
       remember(envelope)
+      // v0.6.3 消费语义：handler 返回 true = 消息已被该处理器消费，停止扇出
+      // （审批编号回复吃掉「1」后不再进对话路由，防同一消息双重消费）。
       for (const handler of messageHandlers) {
         try {
-          handler(envelope)
+          if (handler(envelope) === true) break
         } catch (error) {
-          // A listener never throws：入站处理异常不致命
+          // A listener never throws：入站消息处理异常不致命
           warn(`入站消息处理异常: ${error instanceof Error ? error.message : String(error)}`)
         }
       }
@@ -95,22 +101,33 @@ export function createInboundBus(options = {}) {
 
     /**
      * 等待某审批 key 的裁决；timeoutMs 内无人应答 resolve(null)（静默永不批准）。
-     * @returns {Promise<null | { decision: 'allowed-once' | 'rejected', via: string, userId: string }>}
+     * v0.6.3：同 key 未决时复用既有 waiter 的 promise——原实现无条件覆盖注册位，
+     * 旧 entry 的超时回调会误删新注册（跨重启 counter 归零 + 同 callId 可复现 key）。
+     * v0.6.4（R2-P2-5 修正）：不再对 waiter 定时器 unref——unref 会让「仅剩超时定时器
+     * 存活」的事件循环直接退出（测试 await 超时路径全炸；生产中在途审批也不该因
+     * 恰好空闲而蒸发）。停机清理由 dispose() 承担（clearTimeout 全量收场），职责单一。
      */
     wait(approvalKey, timeoutMs = 120000) {
-      return new Promise((resolve) => {
-        const entry = { resolve, settled: false, timer: null }
+      if (disposed) return Promise.resolve(null) // 停机期新审批：无人应答，回落桌面
+      const existing = waiters.get(approvalKey)
+      if (existing !== undefined && !existing.settled) return existing.promise
+      const entry = { resolve: null, settled: false, timer: null, promise: null }
+      entry.promise = new Promise((resolve) => {
+        entry.resolve = resolve
         entry.timer = setTimeout(() => {
           if (entry.settled) return
           entry.settled = true
           waiters.delete(approvalKey)
           resolve(null)
         }, timeoutMs)
-        waiters.set(approvalKey, entry)
       })
+      waiters.set(approvalKey, entry)
+      return entry.promise
     },
 
-    /** 主动放弃等待（桌面先处理时调用）；等待者以 null 收场（等同无人应答）。 */
+    /**
+     * 主动放弃等待（桌面先处理时调用）；等待者以 null 收场（等同无人应答）。
+     */
     abandon(approvalKey) {
       const entry = waiters.get(approvalKey)
       if (entry === undefined) return false
@@ -167,5 +184,23 @@ export function createInboundBus(options = {}) {
     pendingCount() {
       return waiters.size
     },
+
+    /**
+     * v0.6.4（审查 R2-P2-5）：总线整体停机——全部 waiter 以 null 收场（等同无人应答，
+     * 在途审批超时回退桌面语义）、清定时器、摘全部消息处理器。幂等，可重复调用。
+     */
+    dispose() {
+      disposed = true
+      for (const entry of waiters.values()) {
+        entry.settled = true
+        clearTimeout(entry.timer)
+        try { entry.resolve(null) } catch { /* resolve 异常不致命 */ }
+      }
+      waiters.clear()
+      messageHandlers.clear()
+    },
+
+    /** v0.6.4：去重窗口毫秒数（index 清扫阈值联动用——窗口可配时清扫线必须跟随）。 */
+    dedupWindowMs,
   }
 }

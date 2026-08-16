@@ -97,6 +97,8 @@ function sleep(ms) {
 
 /**
  * 带重试的发送：attempts 次尝试，退避 backoffMs * 2^(n-1)。最后一次失败把错误抛出。
+ * v0.6.3：error.noRetry === true 时立即抛出（分段已部分送达时重试会重发全部段，
+ * 造成重复通知轰炸——见 notify.mjs sendOne 的 PARTIAL 标记）。
  * @param {(message) => Promise<void>} sendFn
  */
 export async function sendWithRetry(sendFn, { attempts = 1, backoffMs = 0, onRetry } = {}) {
@@ -107,6 +109,7 @@ export async function sendWithRetry(sendFn, { attempts = 1, backoffMs = 0, onRet
       return
     } catch (error) {
       lastError = error
+      if (error?.noRetry === true) throw error
       if (attempt < attempts) {
         if (typeof onRetry === 'function') onRetry(attempt, error)
         await sleep(backoffMs * 2 ** (attempt - 1))

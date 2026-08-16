@@ -4,7 +4,7 @@
 // 无竞品覆盖的 headless 核心场景：夜里挂机跑任务，第二天启动时收到
 // 「昨晚 3 条通知：✅ x2、❌ x1」——不用翻手机通知流。
 
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 
 /** 标题 → 事件种类（intentToMessage 的标题前缀约定；含 titlePrefix 也能子串命中）。 */
 const KIND_PATTERNS = [
@@ -82,6 +82,9 @@ export function createLedger(options = {}) {
         source: typeof record?.source?.name === 'string' && record.source.name !== '' ? record.source.name.slice(0, 64) : undefined,
       }
       appendFileSync(file, `${JSON.stringify(entry)}\n`)
+      // v0.6.3：对齐 store 的 0600 军规（审查 R1 P1-3）——账本行含通知标题/错误摘要
+      // （可能带任务路径与审批上下文），共享主机上不应其他账号可读。失败尽力而为。
+      try { chmodSync(file, 0o600) } catch { /* Windows/受限环境无 chmod */ }
       maybePrune()
     } catch { /* 磁盘满/权限问题：静默，推送不受影响 */ }
   }
@@ -94,6 +97,7 @@ export function createLedger(options = {}) {
       const kept = lines.slice(-maxEntries)
       const tmp = `${file}.tmp`
       writeFileSync(tmp, `${kept.map((line) => `${line}\n`).join('')}`)
+      try { chmodSync(tmp, 0o600) } catch { /* Windows/受限环境无 chmod */ }
       renameSync(tmp, file)
     } catch { /* 重写失败：下次再试，绝不致命 */ }
   }

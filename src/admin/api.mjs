@@ -19,7 +19,7 @@
 //   - 审计（<stateDir>/admin-audit.jsonl，append-only，§5「谁改了什么」）失败只 warn，
 //     绝不影响主流程。
 
-import { appendFileSync, mkdirSync, readFileSync } from 'node:fs'
+import { appendFileSync, chmodSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { CHANNEL_TYPES, channelFieldsOf } from '../config.mjs'
 
@@ -135,6 +135,86 @@ const INBOUND_FIELDS = {
 }
 
 /**
+ * v0.6.5（审查 R4-2-P2-1）putChannel 防线常量：
+ * 原实现只校验「非空普通对象」，持 token 客户端可写任意键 + 近 1MB 垃圾值污染
+ * <type>:account schema 并使 state.json 膨胀；__proto__ 等保留键虽是数据属性
+ * （spread/JSON.parse 不触发原型污染）但会永久残留。改为键白名单 + 值形态上限。
+ */
+/** 单次写入字段数上限。 */
+const MAX_CHANNEL_KEYS = 64
+/** 单个字符串值字节上限（凭证/URL 远够用，垃圾值止步）。 */
+const MAX_VALUE_BYTES = 8 * 1024
+/** resolve 层真实消费的全渠道公共端点键（非凭证字段，显式放行）。 */
+const COMMON_ENDPOINT_KEYS = ['timeoutMs', 'apiBase']
+/** 保留键：自有键经 next[key]=v 赋值语义会触达原型链，且无任何字段表收录。 */
+const DANGEROUS_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
+
+/**
+ * 某通道 putChannel 可写的键白名单：
+ * 双域通道（feishu/dingtalk）= 入站字段表（键域归入站，webhook/secret 等出站字段不放行）；
+ * 双向同域通道（telegram/wxpusher）= 出站字段表 ∪ 入站字段表 ∪ 公共端点键；
+ * 其余出站 = 出站字段表 ∪ 公共端点键。wechat 返回空集（iLink 登录态只能扫码写入）。
+ * @param {string} type
+ * @returns {Set<string>}
+ */
+function channelKeyWhitelist(type) {
+  const keys = new Set()
+  if (DUAL_INBOUND_DOMAIN.has(type)) {
+    for (const key of Object.keys(INBOUND_FIELDS[type] ?? {})) keys.add(key)
+    return keys
+  }
+  if (OUTBOUND_SET.has(type)) {
+    for (const key of Object.keys(channelFieldsOf(type))) keys.add(key)
+    for (const key of COMMON_ENDPOINT_KEYS) keys.add(key)
+  }
+  if (INBOUND_SET.has(type)) {
+    for (const key of Object.keys(INBOUND_FIELDS[type] ?? {})) keys.add(key)
+  }
+  return keys
+}
+
+/** 单值字节数（字符串按 UTF-8 计）。 */
+const valueBytes = (value) => {
+  try { return Buffer.byteLength(value, 'utf8') } catch { return Infinity }
+}
+
+/**
+ * 递归校验凭证值形态（putChannel 用）：string（≤8KB）/ number / boolean /
+ * 原始值数组（≤64 项）/ 原始值普通对象（≤64 键，如 webhook.headers）。
+ * @param {string} key - 字段名（错误消息用）。
+ * @param {unknown} value
+ * @returns {string | null} 首个违规的中文错误消息；合法返回 null。
+ */
+function describeBadChannelValue(key, value) {
+  if (typeof value === 'string') {
+    if (valueBytes(value) > MAX_VALUE_BYTES) return `"${key}" 超过 ${MAX_VALUE_BYTES} 字节上限`
+    return null
+  }
+  if (typeof value === 'number') return Number.isFinite(value) ? null : `"${key}" 必须是有限数字`
+  if (typeof value === 'boolean') return null
+  if (Array.isArray(value)) {
+    if (value.length > MAX_CHANNEL_KEYS) return `"${key}" 数组超过 ${MAX_CHANNEL_KEYS} 项上限`
+    for (const item of value) {
+      const bad = describeBadChannelValue(key, item)
+      if (bad !== null) return bad
+    }
+    return null
+  }
+  const obj = plainObjectOf(value)
+  if (obj !== null) {
+    const entries = Object.entries(obj)
+    if (entries.length > MAX_CHANNEL_KEYS) return `"${key}" 对象超过 ${MAX_CHANNEL_KEYS} 键上限`
+    for (const [subKey, item] of entries) {
+      if (DANGEROUS_KEYS.has(subKey)) return `"${key}" 内含保留键 "${subKey}"`
+      const bad = describeBadChannelValue(`${key}.${subKey}`, item)
+      if (bad !== null) return bad
+    }
+    return null
+  }
+  return `"${key}" 的值必须是字符串/数字/布尔/数组/对象`
+}
+
+/**
  * 创建 Web 管理台 API 实例（server.mjs 按方法名调用；全部依赖可缺省）。
  *
  * @param {object} [options]
@@ -217,13 +297,24 @@ export function createAdminApi(options = {}) {
   /**
    * 内部审计（append-only JSONL，§5「谁改了什么」）：appendFileSync 到
    * <stateDir>/admin-audit.jsonl，每行 { time, action, detail }。失败只 warn 绝不影响主流程。
+   * v0.6.5（审查 R4-2-P3-5）有界轮转：超 1MB 转存 .1（只保一代，总占用 ~2MB 封顶）——
+   * append-only 无上限会让长期运行把 state 目录撑爆；getAudit 并读两代保持时间线连续。
    */
+  const AUDIT_MAX_BYTES = 1024 * 1024
   const auditDir = typeof stateDir === 'string' && stateDir.trim() !== '' ? stateDir : DEFAULT_STATE_DIR
   const auditFile = join(auditDir, AUDIT_FILENAME)
   function appendAudit(action, detail) {
     try {
       mkdirSync(dirname(auditFile), { recursive: true })
+      try {
+        if (statSync(auditFile).size > AUDIT_MAX_BYTES) {
+          try { unlinkSync(`${auditFile}.1`) } catch { /* 上一代不存在：直接转存 */ }
+          renameSync(auditFile, `${auditFile}.1`)
+        }
+      } catch { /* stat 失败（文件尚不存在等）：跳过轮转直接 append */ }
       appendFileSync(auditFile, `${JSON.stringify({ time: new Date().toISOString(), action, detail })}\n`, 'utf8')
+      // v0.6.3：对齐 store 的 0600 军规（审查 R3 P2-2）——审计含 session id 与绑定键。
+      try { chmodSync(auditFile, 0o600) } catch { /* Windows/受限环境无 chmod */ }
     } catch (error) {
       warn(`审计写入失败: ${errorMessage(error)}`)
     }
@@ -338,6 +429,11 @@ export function createAdminApi(options = {}) {
         }
         for (const [key, entry] of Object.entries(table)) {
           if (typeof key !== 'string' || key.trim() === '') throw new ApiError(422, 'agents 的键必须是非空字符串')
+          // v0.6.5（审查 R4-2-P2-4）：保留键经 next[key]=v 赋值语义触达原型链
+          // （setAgentBinding 的整表重建、store.set 的合并写都会中招），入口即拒。
+          if (DANGEROUS_KEYS.has(key)) {
+            throw new ApiError(422, `agents 的键 "${key}" 是保留键，不可用作绑定键（${[...DANGEROUS_KEYS].join('/')}）`)
+          }
           if (plainObjectOf(entry) === null) {
             throw new ApiError(422, `agents["${key}"] 必须是对象（{ channels?, quiet? }）`)
           }
@@ -378,36 +474,54 @@ export function createAdminApi(options = {}) {
       }
 
       // 逐键重建（替换语义）：先清旧表里不在新表的键，再写新表全部键。
+      // v0.6.5（审查 R4-2-P2-2）：router 提供 replaceAgentBindings/replaceChannelDefaults
+      // 时走整表单次落盘（一次锁周期 + 一次整文件写）；旧 router 契约/测试桩回退逐键路径。
       if (nextAgents !== null) {
-        let currentKeys = []
-        try { currentKeys = typeof router?.listAgentKeys === 'function' ? router.listAgentKeys() : [] } catch { currentKeys = [] }
-        const wanted = new Set(Object.keys(nextAgents))
-        for (const key of currentKeys) {
-          if (wanted.has(key)) continue
-          // 不在新表的旧键：两字段显式 null = 从条目删除，条目清空即整键回收
-          // （agent-router 语义：空条目无覆盖语义，不留无意义键；走 setAgentBinding 契约）
-          if (!callSetter(router?.setAgentBinding, key, { channels: null, quiet: null })) {
-            throw new ApiError(500, '绑定写入存储失败')
+        if (typeof router?.replaceAgentBindings === 'function') {
+          let written = false
+          try { written = router.replaceAgentBindings(nextAgents) } catch (error) {
+            throw new ApiError(422, `绑定表校验失败：${errorMessage(error)}`)
           }
-        }
-        for (const [key, entry] of Object.entries(nextAgents)) {
-          // 未出现字段显式 null = 从条目删除（agent-router 字段级语义），保证整表替换不残留旧值
-          const entryPatch = {
-            channels: entry.channels === undefined ? null : entry.channels,
-            quiet: entry.quiet === undefined ? null : entry.quiet,
+          if (!written) throw new ApiError(500, '绑定写入存储失败')
+        } else {
+          let currentKeys = []
+          try { currentKeys = typeof router?.listAgentKeys === 'function' ? router.listAgentKeys() : [] } catch { currentKeys = [] }
+          const wanted = new Set(Object.keys(nextAgents))
+          for (const key of currentKeys) {
+            if (wanted.has(key)) continue
+            // 不在新表的旧键：两字段显式 null = 从条目删除，条目清空即整键回收
+            // （agent-router 语义：空条目无覆盖语义，不留无意义键；走 setAgentBinding 契约）
+            if (!callSetter(router?.setAgentBinding, key, { channels: null, quiet: null })) {
+              throw new ApiError(500, '绑定写入存储失败')
+            }
           }
-          if (!callSetter(router?.setAgentBinding, key, entryPatch)) throw new ApiError(500, '绑定写入存储失败')
+          for (const [key, entry] of Object.entries(nextAgents)) {
+            // 未出现字段显式 null = 从条目删除（agent-router 字段级语义），保证整表替换不残留旧值
+            const entryPatch = {
+              channels: entry.channels === undefined ? null : entry.channels,
+              quiet: entry.quiet === undefined ? null : entry.quiet,
+            }
+            if (!callSetter(router?.setAgentBinding, key, entryPatch)) throw new ApiError(500, '绑定写入存储失败')
+          }
         }
       }
       if (nextChannels !== null) {
-        const currentKeys = Object.keys(readTable(KEY_CHANNELS))
-        const wanted = new Set(Object.keys(nextChannels))
-        for (const channel of currentKeys) {
-          if (wanted.has(channel)) continue
-          if (!callSetter(router?.clearChannelDefault, channel)) throw new ApiError(500, '绑定写入存储失败')
-        }
-        for (const [channel, entry] of Object.entries(nextChannels)) {
-          if (!callSetter(router?.setChannelDefault, channel, entry.defaultAgent)) throw new ApiError(500, '绑定写入存储失败')
+        if (typeof router?.replaceChannelDefaults === 'function') {
+          let written = false
+          try { written = router.replaceChannelDefaults(nextChannels) } catch (error) {
+            throw new ApiError(422, `绑定表校验失败：${errorMessage(error)}`)
+          }
+          if (!written) throw new ApiError(500, '绑定写入存储失败')
+        } else {
+          const currentKeys = Object.keys(readTable(KEY_CHANNELS))
+          const wanted = new Set(Object.keys(nextChannels))
+          for (const channel of currentKeys) {
+            if (wanted.has(channel)) continue
+            if (!callSetter(router?.clearChannelDefault, channel)) throw new ApiError(500, '绑定写入存储失败')
+          }
+          for (const [channel, entry] of Object.entries(nextChannels)) {
+            if (!callSetter(router?.setChannelDefault, channel, entry.defaultAgent)) throw new ApiError(500, '绑定写入存储失败')
+          }
         }
       }
 
@@ -556,10 +670,14 @@ export function createAdminApi(options = {}) {
      * 静默丢失（改 botToken 丢 chatId 之类）。删除字段请直接编辑 state.json。
      * 双域通道（feishu/dingtalk）的键域归入站机器人凭证：写入含 `webhook` 键的配置会
      * 破坏出站/入站的键域边界（更会抹掉扫码凭证）——422 指引走 YAML bootstrap。
+     * v0.6.5（审查 R4-2-P2-1）：键白名单 + 值形态上限——未知键 422（防 schema 污染与
+     * __proto__ 残留）、字段数 ≤64、单字符串值 ≤8KB、值域限字符串/数字/布尔/原始值
+     * 数组/原始值对象（webhook.headers、wxpusher.uids 等真实形态）。
      * @param {string} type - 通道类型，必须 ∈ CHANNEL_TYPES ∪ INBOUND_CHANNELS。
-     * @param {object} config - 非空普通对象（同名键覆盖既有账号，其余保留；adapter resolve 校验把关）。
+     * @param {object} config - 非空普通对象，键必须在该通道字段白名单内。
      * @returns {{ type: string, saved: boolean }} saved=false = 存储不可用/写入失败降级（不抛）。
-     * @throws {ApiError} 422 type 非法、config 非非空普通对象、或双域通道携带 webhook 键。
+     * @throws {ApiError} 422 type 非法、config 非非空普通对象、含 webhook/未知/保留键、
+     *   或字段数/值形态超限。
      */
     putChannel(type, config) {
       if (typeof type !== 'string' || (!OUTBOUND_SET.has(type) && !INBOUND_SET.has(type))) {
@@ -570,6 +688,23 @@ export function createAdminApi(options = {}) {
       }
       if (DUAL_INBOUND_DOMAIN.has(type) && Object.prototype.hasOwnProperty.call(config, 'webhook')) {
         throw new ApiError(422, `${type} 的 <type>:account 键域归入站机器人凭证（appId/appKey），写入 webhook 会抹掉扫码凭证；${type} 出站 webhook 请走 YAML bootstrap（cordis.patch.yml channels）`)
+      }
+      const allowed = channelKeyWhitelist(type)
+      if (allowed.size === 0) {
+        throw new ApiError(422, `${type} 凭证由扫码登录自动写入，不支持手工配置（可用 scripts/channel-login.mjs）`)
+      }
+      if (Object.keys(config).length > MAX_CHANNEL_KEYS) {
+        throw new ApiError(422, `字段数超过上限（最多 ${MAX_CHANNEL_KEYS} 个）`)
+      }
+      for (const [key, value] of Object.entries(config)) {
+        if (DANGEROUS_KEYS.has(key)) {
+          throw new ApiError(422, `保留键 "${key}" 不可写入（${[...DANGEROUS_KEYS].join('/')}）`)
+        }
+        if (!allowed.has(key)) {
+          throw new ApiError(422, `未知字段 "${key}"（${type} 可用字段：${[...allowed].join('/')}）`)
+        }
+        const bad = describeBadChannelValue(key, value)
+        if (bad !== null) throw new ApiError(422, bad)
       }
       try {
         if (typeof store?.set !== 'function') throw new Error('store 不可用')
@@ -610,7 +745,11 @@ export function createAdminApi(options = {}) {
      * @throws {ApiError} 501 该通道无网页扫码处理器（可用 scripts/channel-login.mjs CLI）。
      */
     async scanChannel(channel) {
-      const handler = scanHandlers?.[channel]
+      // v0.6.5（审查 R4-2-P2-3）：自有键判定——channel='constructor' 等原型链成员经
+      // scanHandlers[channel] 取到继承函数（如 Object 构造器）会被当 handler 调用。
+      const handler = Object.prototype.hasOwnProperty.call(scanHandlers ?? {}, channel)
+        ? scanHandlers[channel]
+        : undefined
       if (typeof handler !== 'function') {
         throw new ApiError(501, '该通道暂不支持网页扫码（可用 scripts/channel-login.mjs CLI）')
       }
@@ -624,15 +763,14 @@ export function createAdminApi(options = {}) {
     /**
      * 读审计日志（<stateDir>/admin-audit.jsonl，每行 { time, action, detail }）：
      * 全量、新在前；文件不存在/读取失败/损坏行一律按可读部分返回，绝不抛。
+     * v0.6.5（审查 R4-2-P3-5）：轮转后并读 .1 与当前文件（时间线连续，旧在前）。
      * @returns {Array<{ time: string, action: string, detail: object }>}
      */
     getAudit() {
-      let raw
-      try {
-        raw = readFileSync(auditFile, 'utf8')
-      } catch {
-        return [] // 文件不存在（尚无写操作）或不可读
+      const readRaw = (file) => {
+        try { return readFileSync(file, 'utf8') } catch { return '' }
       }
+      const raw = `${readRaw(`${auditFile}.1`)}\n${readRaw(auditFile)}`
       const records = []
       for (const line of raw.split('\n')) {
         const trimmed = line.trim()

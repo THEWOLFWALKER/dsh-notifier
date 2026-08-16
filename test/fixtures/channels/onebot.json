@@ -8,7 +8,7 @@
       "url": "http://127.0.0.1:3000/send_msg",
       "method": "POST",
       "headers": { "authorization": "Bearer ob-token" },
-      "bodyJson": { "message_type": "private", "message": "构建完成\n全部用例通过", "user_id": 10001 }
+      "bodyJson": { "message_type": "private", "message": [ { "type": "text", "data": { "text": "构建完成\n全部用例通过" } } ], "user_id": 10001 }
     }
   ],
   "successResponses": [{ "status": 200, "body": "{\"status\":\"ok\",\"retcode\":0,\"data\":{\"message_id\":1}}" }],

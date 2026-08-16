@@ -331,6 +331,48 @@ test('setChannelDefault：channel/agentKey 非法 → TypeError', () => {
   assert.throws(() => router.setChannelDefault('telegram', 42), TypeError)
 })
 
+// ———————— v0.6.5 整表替换（管理台 putBindings 批量落盘，审查 R4-2-P2-2） ————————
+
+test('replaceAgentBindings：整表替换语义（旧键消失/空条目回收/归一）且单次落盘', () => {
+  const { store, router } = makeRouter({ state: { 'route:agents': { old: { channels: ['bark'] }, keep: { quiet: true } } } })
+  let setCalls = 0
+  const rawSet = store.set.bind(store)
+  store.set = (key, value) => { setCalls += 1; return rawSet(key, value) }
+  assert.equal(router.replaceAgentBindings({
+    keep: { quiet: 'true', channels: ['telegram', 'telegram', ''] }, // 归一：去重去空 + quiet 字符串归一
+    fresh: { channels: ['ntfy'] },
+    empty: { channels: [] }, // 归一后空 = 未配置语义 → 整键回收
+  }), true)
+  assert.deepEqual(store.state['route:agents'], {
+    keep: { quiet: true, channels: ['telegram'] },
+    fresh: { channels: ['ntfy'] },
+  }) // old 消失（整表替换），empty 不留空条目
+  assert.equal(setCalls, 1, '整表一次 writeMap（原逐键重建 = N 次全量落盘）')
+})
+
+test('replaceAgentBindings：非对象表/空键/条目非对象/非数组 channels → TypeError 且不落盘', () => {
+  const { store, router } = makeRouter()
+  assert.throws(() => router.replaceAgentBindings('nope'), TypeError)
+  assert.throws(() => router.replaceAgentBindings({ '': {} }), TypeError)
+  assert.throws(() => router.replaceAgentBindings({ proj: 'nope' }), TypeError)
+  assert.throws(() => router.replaceAgentBindings({ proj: { channels: 'telegram' } }), TypeError)
+  assert.equal(store.state['route:agents'], undefined) // 整表拒绝，零写入
+})
+
+test('replaceChannelDefaults：整表替换 + 单次落盘；defaultAgent 非法 → TypeError 零写入', () => {
+  const { store, router } = makeRouter({ state: { 'route:channels': { telegram: { defaultAgent: 'old' } } } })
+  let setCalls = 0
+  const rawSet = store.set.bind(store)
+  store.set = (key, value) => { setCalls += 1; return rawSet(key, value) }
+  assert.equal(router.replaceChannelDefaults({ feishu: { defaultAgent: 'proj' }, qq: { defaultAgent: 'a-1' } }), true)
+  assert.deepEqual(store.state['route:channels'], { feishu: { defaultAgent: 'proj' }, qq: { defaultAgent: 'a-1' } })
+  assert.equal(setCalls, 1)
+  assert.throws(() => router.replaceChannelDefaults({ telegram: {} }), TypeError) // 缺 defaultAgent
+  assert.throws(() => router.replaceChannelDefaults({ telegram: { defaultAgent: ' ' } }), TypeError)
+  assert.throws(() => router.replaceChannelDefaults('nope'), TypeError)
+  assert.deepEqual(store.state['route:channels'], { feishu: { defaultAgent: 'proj' }, qq: { defaultAgent: 'a-1' } }) // 失败整表不落
+})
+
 // ———————— 会话出站 diff（字段级回落 + 惰性建档） ————————
 
 test('setSessionOutbound：会话记录不存在时惰性建最小记录（不越权补 registry 字段）', () => {

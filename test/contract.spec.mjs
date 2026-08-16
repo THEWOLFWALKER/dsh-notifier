@@ -25,6 +25,10 @@ function mockFetch(responses) {
   const calls = []
   const queue = [...responses]
   const fetchMock = async (url, init = {}) => {
+    // v0.6.5（审查 R4-3-P1-1 教训）：用真实 Headers 构造一遍——mock 不校验 ByteString 时，
+    // 非 ASCII 头值（如中文 x-title）测试期不炸、真机必炸（undici TypeError），
+    // 契约测试假绿掩盖运行时必然故障。构造失败=请求失败，与真实 fetch 语义一致。
+    new Headers(init.headers ?? {})
     calls.push({ url: String(url), method: init.method ?? 'GET', headers: init.headers ?? {}, body: init.body })
     const next = queue.shift() ?? { status: 200, body: '' }
     const status = next.status ?? 200
@@ -132,7 +136,18 @@ for (const fixture of fixtures) {
           if (fixture.errorMatch !== undefined) {
             assert.match(error.message, new RegExp(fixture.errorMatch), `${fixture.type}: 失败文案应含排障指引`)
           }
-          // 错误信息永不回显完整凭证
+          // v0.6.5（审查 R4-3-P2-4）：错误信息永不回显完整凭证——原实现此处恒
+          // return true（注释宣称校验但零断言），任何渠道未来把含 token 的完整
+          // URL/Authorization 头写进错误文案都不会被测试抓住。改为硬断言。
+          for (const field of fixture.secretFields ?? []) {
+            const raw = fixture.validConfig[field]
+            if (typeof raw === 'string' && raw.length > 4) {
+              assert.ok(
+                !error.message.includes(raw),
+                `${fixture.type}: 错误文案不应回显 secret 明文（${field}）`,
+              )
+            }
+          }
           return true
         },
       )

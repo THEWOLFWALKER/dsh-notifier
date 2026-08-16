@@ -432,3 +432,39 @@ test('并发：10 个并发请求（带 api 延迟）全部 200 且 body 各自�
     assert.equal(rig.calls.length, 10)
   })
 })
+
+// ———————— XSS 回归（v0.6.5 审查 R4 补测） ————————
+
+test('XSS 回归：用户可控内容只进 JSON 体（application/json），绝不进 HTML 上下文', async () => {
+  await withServer({}, async (rig) => {
+    // 404 反射路径带 payload：响应必须是 JSON（浏览器不执行 JSON MIME），payload 只作数据
+    const payload = '<img src=x onerror=alert(1)>'
+    const response = await call(rig, `/api/${encodeURIComponent(payload)}`)
+    assert.equal(response.status, 404)
+    assert.match(response.headers.get('content-type') ?? '', /^application\/json/)
+    const body = await jsonOf(response)
+    assert.ok(body.error.includes(encodeURIComponent(payload))) // 反射路径仅作为 JSON 字符串数据存在
+    // /api/* 之外的 HTML 响应只有静态 ui 串（GET /），不存在任何反射式 HTML 渲染路径
+    const html = await call(rig, '/')
+    assert.match(html.headers.get('content-type') ?? '', /^text\/html/)
+    const page = await html.text()
+    assert.ok(!page.includes(payload), 'HTML 页面不含任何请求可控内容')
+  })
+})
+
+test('XSS 回归：UI 渲染层 esc() 行为与覆盖面（innerHTML 拼接必须全部过转义）', () => {
+  // 1) 行为断言：从 ui 串提取 esc() 求值，注入 payload 必须被五类字符转义
+  const match = ADMIN_UI_HTML.match(/function esc\(v\) \{[\s\S]*?\n\}/)
+  assert.ok(match !== null, 'ui 内必须存在 esc() 转义函数')
+  const esc = new Function(`return (${match[0]})`)()
+  assert.equal(esc('<img src=x onerror=alert(1)>'), '&lt;img src=x onerror=alert(1)&gt;')
+  assert.equal(esc('"\'&'), '&quot;&#39;&amp;')
+  // 2) 覆盖面断言：所有 innerHTML 拼接点（渲染函数族）保持 esc() 使用密度——
+  //    未来重构若新增裸拼接（丢 esc），该下限断言立即红
+  const uses = (ADMIN_UI_HTML.match(/esc\(/g) ?? []).length
+  assert.ok(uses >= 30, `esc() 调用密度不足（实际 ${uses} 次，下限 30）——检查新增渲染路径是否漏转义`)
+  // 3) 关键渲染点抽查：审计行/事件行/卡片/会话行的动态插值均以 esc( 包裹
+  for (const probe of ['esc(fmtTime(r.time))', 'esc(row.title)', "esc(c.type)", 'esc(id)']) {
+    assert.ok(ADMIN_UI_HTML.includes(probe), `渲染层必须包含 ${probe}`)
+  }
+})

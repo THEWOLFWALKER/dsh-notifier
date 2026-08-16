@@ -81,7 +81,9 @@ export function createTurnTracker(options = {}) {
   }
 
   // 心跳定时器链：首跳 firstAfterMs，此后每跳 everyMs；drop 后旧定时器触发时自检退出。
-  const armHeartbeat = (session, entry) => {
+  // v0.6.3：回调统一用 entry.session（observe 每次事件刷新）——原实现闭包冻结 turn/start
+  // 时刻的 session 引用，宿主逐事件传新快照时「最近输出」摘录恒为上一轮（审查 R3 P1-2）。
+  const armHeartbeat = (entry) => {
     if (!heartbeatOn || setTimeoutFn === undefined) return
     cancelTimer(entry, 'heartbeatTimer')
     const delay = entry.heartbeats === 0 ? firstAfterMs : everyMs
@@ -89,14 +91,14 @@ export function createTurnTracker(options = {}) {
       entry.heartbeatTimer = null
       if (!tracked.has(entry.sessionId)) return
       entry.heartbeats += 1
-      try { onHeartbeat(session, infoOf(entry)) } catch { /* 回调异常绝不外抛 */ }
-      armHeartbeat(session, entry) // 下一跳
+      try { onHeartbeat(entry.session, infoOf(entry)) } catch { /* 回调异常绝不外抛 */ }
+      armHeartbeat(entry) // 下一跳
     }, delay)
   }
 
   // 卡住定时器：lastEventAt + afterMs；每个静默期只报一次（触发后不重装，
   // 下次活跃事件经 observe 重置 stallFired 后重装）。
-  const armStall = (session, entry) => {
+  const armStall = (entry) => {
     if (!stallOn || setTimeoutFn === undefined) return
     cancelTimer(entry, 'stallTimer')
     entry.stallTimer = setTimeoutFn(() => {
@@ -104,7 +106,7 @@ export function createTurnTracker(options = {}) {
       if (!tracked.has(entry.sessionId)) return
       if (entry.stallFired) return
       entry.stallFired = true
-      try { onStall(session, infoOf(entry)) } catch { /* 回调异常绝不外抛 */ }
+      try { onStall(entry.session, infoOf(entry)) } catch { /* 回调异常绝不外抛 */ }
     }, Math.max(0, entry.lastEventAt + stallAfterMs - now()))
   }
 
@@ -139,6 +141,7 @@ export function createTurnTracker(options = {}) {
           evictOldest()
           const entry = {
             sessionId,
+            session, // v0.6.3：随事件刷新（见下），心跳/卡住回调统一取此引用
             startedAt: now(),
             lastEventAt: now(),
             heartbeats: 0,
@@ -147,8 +150,8 @@ export function createTurnTracker(options = {}) {
             stallFired: false,
           }
           tracked.set(sessionId, entry)
-          armHeartbeat(session, entry)
-          armStall(session, entry)
+          armHeartbeat(entry)
+          armStall(entry)
           return
         }
         // 其余事件：user/* 不算 agent 进展（不刷新）；未知类型按活跃处理（宁漏报不误报）
@@ -157,7 +160,8 @@ export function createTurnTracker(options = {}) {
         if (entry === undefined) return // 未建档（无 turn/start 的存量会话）：不追既往
         entry.lastEventAt = now()
         entry.stallFired = false
-        armStall(session, entry)
+        entry.session = session // v0.6.3：宿主逐事件传新快照时，摘录/回调看到的永远是最新
+        armStall(entry)
       } catch { /* tracker 任何异常绝不外抛 */ }
     },
 

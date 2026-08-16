@@ -66,7 +66,7 @@ export const SPEC_CHANNELS = {
     },
     encode: 'json',
     request: (cfg, msg) => ({
-      url: cfg.webhook !== '' ? cfg.webhook : `https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=${cfg.key}`,
+      url: cfg.webhook !== '' ? cfg.webhook : `https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=${encodeURIComponent(cfg.key)}`,
       body: { msgtype: 'markdown', markdown: { content: joinPara(msg) } },
     }),
     ok: ({ json }) => json?.errcode === 0,
@@ -87,14 +87,19 @@ export const SPEC_CHANNELS = {
       webhook: { secret: true, desc: 'Incoming Webhook 完整地址（与 server+hookId 二选一）' },
     },
     encode: 'json',
+    // v0.6.5（审查 R4-3-P2-1）：删除 'https://mattermost.com' 缺省——Mattermost 无官方
+    // 公共推送云，该缺省会把 hookId（凭证）误发到官网域名（第三方日志），且必 404。
     request: (cfg, msg) => ({
-      url: cfg.webhook !== '' ? cfg.webhook : `${(cfg.server || 'https://mattermost.com').replace(/\/+$/, '')}/hooks/${cfg.hookId}`,
+      url: cfg.webhook !== '' ? cfg.webhook : `${String(cfg.server).replace(/\/+$/, '')}/hooks/${encodeURIComponent(cfg.hookId)}`,
       body: { text: joinPara(msg) },
     }),
     ok: is2xx, // 成功回 200 纯文本 "ok"
     validate: (resolved) => {
       if (resolved.webhook === '' && resolved.hookId === '') {
-        throw new NotifyError('mattermost 未配置：webhook 与 hookId 必须填一个', ERROR_CODES.NOT_CONFIGURED)
+        throw new NotifyError('mattermost 未配置：webhook 与 server+hookId 必须填一组', ERROR_CODES.NOT_CONFIGURED)
+      }
+      if (resolved.webhook === '' && resolved.server === '') {
+        throw new NotifyError('mattermost 未配置：用 hookId 时必须同时填 server（自托管地址，如 https://mm.example.com）', ERROR_CODES.NOT_CONFIGURED)
       }
     },
   },
@@ -148,19 +153,24 @@ export const SPEC_CHANNELS = {
       topic: { required: true, desc: '订阅 topic 名（手机 App 里订阅同名 topic 即可收到；自建服务器建议配 auth）' },
       auth: { secret: true, desc: '可选鉴权头原值，如 "Basic dXNlcjpwYXNz" 或 "Bearer tk_..."（自托管保护 topic 时用）' },
     },
-    encode: 'text',
-    // ntfy 协议：POST /<topic>，body 即消息，其余参数走 HTTP 头（X-Title/X-Priority 等）。
+    // v0.6.5（审查 R4-3-P1-1）：从「POST /<topic> + X-Title/X-Priority 头」改为 ntfy
+    // 官方 JSON 发布协议（POST 服务根，topic/title/message/priority 全进 body）。
+    // 原头协议的 x-title 经 undici fetch 的 ByteString 校验：非 ASCII 标题（中文！）
+    // 直接抛 TypeError——中文标题通知 100% 失败，而 mock fetch 不构造真实 Headers，
+    // 契约测试假绿掩盖了运行时必然故障（本项目主场景全是中文标题）。
+    encode: 'json',
     request: (cfg, msg) => ({
-      url: `${(cfg.server || 'https://ntfy.sh').replace(/\/+$/, '')}/${cfg.topic}`,
-      headers: {
-        ...(cfg.auth !== '' ? { authorization: cfg.auth } : {}),
-        ...(msg.title.length > 0 ? { 'x-title': msg.title } : {}),
-        'x-priority': String(ntfyPriority(msg)),
+      url: `${(cfg.server || 'https://ntfy.sh').replace(/\/+$/, '')}`,
+      headers: { ...(cfg.auth !== '' ? { authorization: cfg.auth } : {}) },
+      body: {
+        topic: cfg.topic,
+        ...(msg.title.length > 0 ? { title: msg.title } : {}),
+        message: msg.content,
+        priority: ntfyPriority(msg),
       },
-      text: msg.content,
     }),
     ok: is2xx,
-    fail: ({ json }) => json?.error,
+    fail: ({ json }) => json?.error ?? json?.http_error,
   },
 
   gotify: {
@@ -210,8 +220,11 @@ export const SPEC_CHANNELS = {
       token: { required: true, secret: true, desc: '设备 token：Chanify iOS App → 通道 → 复制 Send Token' },
     },
     encode: 'form',
+    // v0.6.5（审查 R4-3-P1-2）：去掉多拼的 /send 段。官方端点是
+    // POST https://api.chanify.net/v1/sender/<token>（dev.chanify.net；移植来源
+    // all-pusher-api 的 Chanify.ts 同样无 /send），原拼法真机必 404。
     request: (cfg, msg) => ({
-      url: `${(cfg.baseUrl || 'https://api.chanify.net/v1/sender').replace(/\/+$/, '')}/${cfg.token}/send`,
+      url: `${(cfg.baseUrl || 'https://api.chanify.net/v1/sender').replace(/\/+$/, '')}/${encodeURIComponent(cfg.token)}`,
       body: { title: msg.title, text: msg.content },
     }),
     ok: is2xx,
@@ -241,7 +254,7 @@ export const SPEC_CHANNELS = {
     },
     encode: 'json',
     request: (cfg, msg) => ({
-      url: `https://xizhi.qqoq.net/${cfg.key}.send`,
+      url: `https://xizhi.qqoq.net/${encodeURIComponent(cfg.key)}.send`,
       body: { title: msg.title, content: msg.content },
     }),
     ok: ({ json }) => json?.code === 200, // 注意：息知成功值是 200 不是 0
@@ -259,12 +272,18 @@ export const SPEC_CHANNELS = {
     },
     encode: 'form',
     request: (cfg, msg) => ({
-      url: `https://qmsg.zendee.cn/${cfg.type || 'send'}/${cfg.key}`,
+      url: `https://qmsg.zendee.cn/${cfg.type || 'send'}/${encodeURIComponent(cfg.key)}`,
       body: { msg: joinText(msg), qq: cfg.qq, ...(cfg.bot !== '' ? { bot: cfg.bot } : {}) },
     }),
     // Qmsg 的 code 字段不可靠，官方建议以 success 字段判定。
     ok: ({ json }) => json?.success === true,
     fail: ({ json }) => json?.reason,
+    // v0.6.5（审查 R4-3-P3-1）：type 是 URL 路径段，白名单防拼错路径静默 404。
+    validate: (resolved) => {
+      if (resolved.type !== 'send' && resolved.type !== 'group') {
+        throw new NotifyError('qmsg 未配置：type 只能是 send（私聊）或 group（群聊）', ERROR_CODES.NOT_CONFIGURED)
+      }
+    },
   },
 
   igot: {
@@ -275,7 +294,7 @@ export const SPEC_CHANNELS = {
     },
     encode: 'json',
     request: (cfg, msg) => ({
-      url: `https://push.hellyw.com/${cfg.key}`,
+      url: `https://push.hellyw.com/${encodeURIComponent(cfg.key)}`,
       body: { title: msg.title, content: msg.content, automaticallyCopy: 0 },
     }),
     ok: ({ json }) => json?.ret === 0,
@@ -295,18 +314,26 @@ export const SPEC_CHANNELS = {
       groupId: { desc: '群号（messageType: group 时必填）' },
     },
     encode: 'json',
+    // v0.6.5（审查 R4-3-P2-3）：message 改用 OneBot 11 标准消息数组格式。原字符串直传
+    // 时正文里的 [CQ:at,qq=all] / [CQ:image,file=http://...] 是协议元语法——notify 的
+    // message 参数 agent/LLM 可控，prompt injection 可借通知渠道向 QQ 群注入 @全体
+    // 或让受害者客户端向任意 URL 发起 GET。数组格式的 text 段无解析歧义，纯文本永远纯文本。
     request: (cfg, msg) => ({
       url: `${cfg.baseUrl.replace(/\/+$/, '')}/send_msg`,
       headers: cfg.accessToken !== '' ? { authorization: `Bearer ${cfg.accessToken}` } : {},
       body: {
         message_type: cfg.messageType || 'private',
-        message: joinText(msg),
+        message: [{ type: 'text', data: { text: joinText(msg) } }],
         ...(cfg.messageType === 'group' ? { group_id: qqId(cfg.groupId) } : { user_id: qqId(cfg.userId) }),
       },
     }),
     ok: ({ json }) => json?.retcode === 0 && json?.status !== 'failed',
     fail: ({ json }) => (json?.retcode === 1404 ? 'OneBot 未实现该接口（1404）：确认 NapCat/LLOneBot 开启了 HTTP 服务与 send_msg' : json?.wording ?? json?.echo),
     validate: (resolved) => {
+      // v0.6.5（审查 R4-3-P3-1）：messageType 白名单，拼错值会打出语义漂移的请求。
+      if (resolved.messageType !== 'private' && resolved.messageType !== 'group') {
+        throw new NotifyError('onebot 未配置：messageType 只能是 private（私聊）或 group（群聊）', ERROR_CODES.NOT_CONFIGURED)
+      }
       if (resolved.messageType === 'group' && resolved.groupId === '') {
         throw new NotifyError('onebot 未配置：messageType 为 group 时 groupId（群号）未填写', ERROR_CODES.NOT_CONFIGURED)
       }

@@ -3,7 +3,7 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createStore, defaultStateDir } from '../src/inbound/store.mjs'
@@ -36,13 +36,74 @@ test('store：set/get/delete 往返，且原子落盘（新实例可读）', () 
   assert.equal(b.size(), 2)
 })
 
-test('store：损坏 JSON 文件回退空状态，绝不抛错（fail-open 到无记忆）', () => {
-  const { path } = tempStorePath()
+test('store：损坏 JSON 启动回退空态；save 自愈转存现场并重建（v0.6.5 替代 v0.6.4 中止）', () => {
+  const { path, dir } = tempStorePath()
   writeFileSync(path, '{oops not json', 'utf8')
   const store = createStore(path)
-  assert.equal(store.size(), 0)
-  store.set('k', 'v') // 损坏后仍可写入（覆盖坏文件）
-  assert.equal(createStore(path).get('k'), 'v')
+  assert.equal(store.size(), 0) // boot 仍 fail-open（无记忆好过误清空）
+  store.set('k', 'v') // 不抛错，内存态继续可用
+  assert.equal(store.get('k'), 'v')
+  // v0.6.5 自愈：现场转存 .corrupt.<ts>（取证保留），写路径以内存全量重建——
+  // 中止语义会让 dirty 无限积压、CLI↔宿主共享永久断裂（v0.6.4 审查遗留问题）
+  assert.equal(readFileSync(path, 'utf8'), '{"k":"v"}') // 重建后立即可读
+  const backups = readdirSync(dir).filter((name) => name.startsWith('state.json.corrupt.'))
+  assert.equal(backups.length, 1) // 原始损坏现场留了副本
+  assert.equal(readFileSync(join(dir, backups[0]), 'utf8'), '{oops not json')
+  // 自愈后新实例（重启模拟）读到重建内容——半截 JSON 本就解析不出任何键，重建零丢失
+  const healed = createStore(path)
+  assert.equal(healed.get('k'), 'v')
+  // 外部修复写回的键不被后续落盘清掉（键级合并不抹他进程写入）
+  writeFileSync(path, '{"repaired":true}', 'utf8')
+  store.set('k2', 'v2')
+  const recovered = createStore(path)
+  assert.equal(recovered.get('k2'), 'v2')
+  assert.equal(recovered.get('repaired'), true)
+})
+
+test('store：跨进程写锁——陈锁（持锁进程已死）当次回收，锁序恢复（v0.6.4 R2-P1-2 / v0.6.5 R4-1-P2-1）', () => {
+  const { path } = tempStorePath()
+  const store = createStore(path)
+  store.set('k', 'v')
+  // 模拟他进程抢锁后崩溃：锁文件残留但 mtime 已超 10s 陈旧线
+  const lockPath = `${path}.lock`
+  writeFileSync(lockPath, '99999:deadbeef', 'utf8')
+  const stale = new Date(Date.now() - 20_000)
+  utimesSync(lockPath, stale, stale)
+  store.set('k2', 'v2') // 陈锁被清 → 正常抢锁写入，不降级裸写
+  assert.equal(store.get('k2'), 'v2')
+  // 本进程写入成功且 release 属主校验通过 → 锁文件被清理（不留死锁残骸）
+  assert.equal(existsSync(lockPath), false)
+})
+
+test('store：跨进程写锁——新鲜锁占位时两轮等待后降级强写，他人锁绝不误删（v0.6.5 R4-1-P2-2 双轮等待）', () => {
+  const { path } = tempStorePath()
+  const store = createStore(path)
+  store.set('k', 'v')
+  // 模拟他进程持锁进行中：锁新鲜（<10s，持锁者大概率活着）
+  const lockPath = `${path}.lock`
+  writeFileSync(lockPath, '1:alive', 'utf8')
+  const start = Date.now()
+  store.set('k2', 'v2') // 等满两轮自旋（≈480ms）后降级无锁写入（保底不丢可用性）
+  assert.ok(Date.now() - start >= 300, `确实等待了锁（实际 ${Date.now() - start}ms）`)
+  assert.equal(store.get('k2'), 'v2') // 降级写成功
+  // 属主校验：降级路径不碰他人锁文件（内容不是自己 → 绝不误删重抢的新锁）
+  assert.equal(existsSync(lockPath), true)
+  assert.equal(readFileSync(lockPath, 'utf8'), '1:alive')
+})
+
+test('store：读收敛——他进程（CLI）写入对运行中实例秒级可见，且本实例键不丢（v0.6.4 R2-P2-3 / v0.6.5 R4-1-P3-2）', async () => {
+  const { path } = tempStorePath()
+  const host = createStore(path)
+  host.set('route:agents', { proj: { quiet: true } }) // 宿主先写（mtime 基线取启动时刻）
+  // 隔开两次写盘的 mtime（收敛信号 = mtime 变化；同毫秒双写只在测试里出现，
+  // 真实 CLI 跨进程调用间隔远大于文件时间戳粒度）
+  await new Promise((resolve) => setTimeout(resolve, 30))
+  const cli = createStore(path) // CLI 后启动：各自内存快照，同写一个文件
+  cli.set('route:channels', { telegram: { defaultAgent: 'proj' } })
+  // 宿主 get() 节流 stat（500ms 窗口）：窗口过后发现 mtime 变化即重载
+  await new Promise((resolve) => setTimeout(resolve, 600))
+  assert.deepEqual(host.get('route:channels'), { telegram: { defaultAgent: 'proj' } }) // 收敛吃到 CLI 写入
+  assert.deepEqual(host.get('route:agents'), { proj: { quiet: true } }) // 收敛不丢既有键
 })
 
 test('store：sweepPrefix 只清理判定超期的键，返回清理数', () => {
@@ -287,4 +348,23 @@ test('bus：decideTrusted 跳过 token 校验但仍受首达采纳约束（编�
     { ok: false, reason: 'already-resolved' },
   )
   assert.deepEqual(await waiting, { decision: 'allowed-once', via: 'wechat:reply', userId: '42' })
+})
+
+test('bus：dispose——在途 waiter 以 null 收场、停机期新 wait 直接收 null、处理器摘除（v0.6.4 R2-P2-5 / v0.6.5 R4-1-P3-4）', async () => {
+  const seen = []
+  const bus = createInboundBus({ allowUsers: ['42'] })
+  bus.onMessage((env) => seen.push(env))
+  const waiting = bus.wait('ap:dp:1', 60_000)
+  assert.equal(bus.pendingCount(), 1)
+  bus.dispose()
+  // 在途审批以 null 收场（等同无人应答 = 静默永不批准），定时器全清
+  assert.equal(await waiting, null)
+  assert.equal(bus.pendingCount(), 0)
+  // 停机终态：新审批不再挂起等待，直接按无人应答收场（不新增长命定时器）
+  assert.equal(await bus.wait('ap:dp:2', 60_000), null)
+  assert.equal(bus.pendingCount(), 0)
+  // 消息处理器已摘除：停机后消息不再扇出（防 dispose 后迟到的 inbound 触发已死逻辑）
+  assert.deepEqual(bus.accept(envelope({ messageId: 'm-after-dispose' })), { ok: true })
+  assert.equal(seen.length, 0)
+  bus.dispose() // 幂等：二次调用不抛
 })

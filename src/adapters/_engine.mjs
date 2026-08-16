@@ -5,13 +5,13 @@
 // 端点/body/成功判定语义参考 push-all-in-one（MIT）与 all-pusher-api（Apache-2.0），
 // 移植方式为「协议知识移植」：axios.post 机械改写为零依赖 fetch。见 THIRD_PARTY_NOTICES.md。
 
-import { postJson, postForm, postText, str, num, NotifyError, ERROR_CODES } from './_shared.mjs'
+import { postJson, postForm, postText, readTextCapped, str, num, NotifyError, ERROR_CODES } from './_shared.mjs'
 
 /** 从任意响应负载里提取人类可读的失败原因（跨渠道常见字段名兜底）。 */
 export function describeFailure(json, text) {
   if (json !== null && typeof json === 'object') {
     const detail = json.errmsg ?? json.message ?? json.error ?? json.reason ?? json.msg ?? json.errors
-    if (typeof detail === 'string' && detail.length > 0) return detail
+    if (typeof detail === 'string' && detail.length > 0) return detail.slice(0, 200)
     if (Array.isArray(detail)) return detail.map(String).join('; ').slice(0, 200)
     const code = json.errcode ?? json.code ?? json.ret ?? json.retcode
     if (typeof code === 'number') return `错误码 ${code}`
@@ -65,22 +65,37 @@ export function makeSpecAdapter(type, spec) {
     const encode = spec.encode ?? 'json'
     const options = { timeoutMs: resolved.timeoutMs, channel: label }
     let response
-    if (encode === 'form') {
-      response = await postForm(url, request.body ?? {}, options)
-    } else if (encode === 'text') {
-      response = await postText(url, request.text ?? msg.content, { ...options, headers: request.headers })
-    } else {
-      response = await postJson(url, request.body ?? {}, { ...options, headers: request.headers })
+    try {
+      if (encode === 'form') {
+        response = await postForm(url, request.body ?? {}, options)
+      } else if (encode === 'text') {
+        response = await postText(url, request.text ?? msg.content, { ...options, headers: request.headers })
+      } else {
+        response = await postJson(url, request.body ?? {}, { ...options, headers: request.headers })
+      }
+    } catch (error) {
+      // v0.6.5（审查 R4-3-P2-2）：非 2xx 给 spec.fail 一次合成中文排障指引的机会。
+      // 原实现 post* 直接抛 HTTP_ERROR，slack 403「去哪换 webhook」/discord 404「重建」
+      // /ntfy 的 error 字段指引在真实失败路径上永不可达（2xx+业务码渠道不受影响）。
+      if (error instanceof NotifyError && error.code === ERROR_CODES.HTTP_ERROR && typeof spec.fail === 'function') {
+        const hint = spec.fail({ status: error.status, json: error.json, text: error.text }) ?? ''
+        if (String(hint).length > 0) {
+          throw new NotifyError(`${type} 推送失败（HTTP ${error.status}）: ${String(hint).slice(0, 200)}`, ERROR_CODES.API_ERROR)
+        }
+      }
+      throw error
     }
-    const text = await response.text().catch(() => '')
+    const text = await readTextCapped(response)
     let json
     if (text.length > 0 && (text[0] === '{' || text[0] === '[')) {
       try { json = JSON.parse(text) } catch { /* 非 JSON 交由 ok() 判定 */ }
     }
     const pass = spec.ok({ status: response.status, json, text, cfg: resolved, msg })
     if (pass !== true) {
+      // v0.6.5（审查 R4-3-P3-2）：reason 统一截断——服务端超长 errmsg 会整段进
+      // 日志/notifyAll failed/工具渲染（agent 上下文膨胀）。
       const reason = typeof spec.fail === 'function'
-        ? (spec.fail({ status: response.status, json, text }) ?? '')
+        ? String(spec.fail({ status: response.status, json, text }) ?? '').slice(0, 200)
         : describeFailure(json, text)
       throw new NotifyError(`${type} 推送失败${reason.length > 0 ? `: ${reason}` : `（HTTP ${response.status}）`}`, ERROR_CODES.API_ERROR)
     }

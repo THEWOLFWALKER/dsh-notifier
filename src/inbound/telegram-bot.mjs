@@ -199,8 +199,11 @@ export function createTelegramInbound({ config, bus, vault, store = null, logger
         // 进程内注册表，点击时单次核销展开走既有解析，token 密码学与账本零改动。
         const result = await api('sendMessage', {
           chat_id: chatId,
+          // v0.6.3：去掉 parse_mode markdown——approvalKey（ap:<callId>:<n>，callId 常含 _）
+          // 与 reason（路径/反引号）未转义，legacy markdown 未配对 _/* 必 400 "can't parse
+          // entities"，卡片静默降级纯文本（审查 R2 P1-2，与 v0.6.2 BUTTON_DATA_INVALID
+          // 同类 mock 盲区：mock fetch 不解析 markdown，单测测不出）。纯文本无此面。
           text: `🔐 ${title}\n\n${content}\n\n_decision: ${approvalKey}_`,
-          parse_mode: 'markdown',
           reply_markup: {
             inline_keyboard: [[
               { text: '✅ 批准（本次）', callback_data: `r:${refs.mint(`ap:allowed-once:${approvalKey}:${token}`)}` },

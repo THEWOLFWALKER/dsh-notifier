@@ -9,7 +9,7 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -451,12 +451,21 @@ test('putChannel：422（未知类型/空对象/非对象）与落盘读回（�
   assert.throws(() => api.putChannel('nope', { a: 1 }), apiErrorOf(422))
   assert.throws(() => api.putChannel('telegram', {}), apiErrorOf(422))
   assert.throws(() => api.putChannel('telegram', 'token'), apiErrorOf(422))
-  assert.deepEqual(api.putChannel('telegram', { botToken: 't', port: 1 }), { type: 'telegram', saved: true })
-  assert.deepEqual(store.get('telegram:account'), { botToken: 't', port: 1 }) // 落盘可原样读回
-  assert.deepEqual(api.putChannel('wechat', { token: 'w' }), { type: 'wechat', saved: true }) // 入站类型同域可写
+  // v0.6.5（审查 R4-2-P2-1）：键白名单——未知键 422，防 schema 污染与垃圾值膨胀
+  assert.throws(() => api.putChannel('telegram', { port: 1 }), apiErrorOf(422))
+  // JSON.parse 形态的 __proto__ 是真实自有键（对象字面量会改原型不建键）——保留键入口即拒
+  assert.throws(() => api.putChannel('bark', JSON.parse('{"__proto__": "x"}')), apiErrorOf(422))
+  assert.throws(() => api.putChannel('bark', { key: 'x'.repeat(9 * 1024) }), apiErrorOf(422)) // 值超 8KB
+  assert.throws(() => api.putChannel('wechat', { token: 'w' }), apiErrorOf(422)) // 扫码专用，禁手工
+  // 白名单字段（含公共端点键 timeoutMs）可写，落盘可原样读回
+  assert.deepEqual(api.putChannel('telegram', { botToken: 't', chatId: 'c', timeoutMs: 5000 }), { type: 'telegram', saved: true })
+  assert.deepEqual(store.get('telegram:account'), { botToken: 't', chatId: 'c', timeoutMs: 5000 })
+  // 双向同域通道：入站字段表同在白名单（telegram.botToken 出入站共用）
+  assert.deepEqual(api.putChannel('wxpusher', { appToken: 'a', uids: ['UID_1', 'UID_2'] }), { type: 'wxpusher', saved: true })
+  assert.deepEqual(store.get('wxpusher:account'), { appToken: 'a', uids: ['UID_1', 'UID_2'] })
   const audit = api.getAudit()
   assert.deepEqual(audit.map((row) => row.action), ['putChannel', 'putChannel'])
-  assert.deepEqual(audit[0].detail, { type: 'wechat' }) // 审计只记通道名，不落凭证
+  assert.deepEqual(audit[0].detail, { type: 'wxpusher' }) // 审计只记通道名，不落凭证
 })
 
 // ———————— testChannel / scanChannel ————————
@@ -487,6 +496,38 @@ test('scanChannel：501 固定文案（无 handler 的通道）与结果透传',
   await assert.rejects(() => api.scanChannel('qq'), apiErrorOf(501)) // 有 handlers 表但无该通道
 })
 
+test('scanChannel：原型链成员（constructor/hasOwnProperty/__proto__）不当作 handler（v0.6.5 R4-2-P2-3）', async () => {
+  const { api } = makeApi({ scanHandlers: { feishu: async () => ({ qrContent: 'qr', done: true }) } })
+  // JSON body 反序列化出的任意字符串（含原型链成员名）只能命中自有键处理器
+  for (const channel of ['constructor', 'hasOwnProperty', '__proto__', 'toString']) {
+    await assert.rejects(() => api.scanChannel(channel), apiErrorOf(501))
+  }
+  assert.deepEqual(await api.scanChannel('feishu'), { qrContent: 'qr', done: true })
+})
+
+test('putBindings：整表批量落盘（每表一次 store.set）+ 保留键 422（v0.6.5 R4-2-P2-2/P2-4）', () => {
+  let setCalls = 0
+  const { api } = makeApi({
+    state: { 'route:agents': { old: { quiet: true } } },
+    storeOverrides: {
+      set(key, value) { setCalls += 1; this.state[key] = JSON.parse(JSON.stringify(value)) },
+    },
+  })
+  // 双表整表替换：2 次落盘（原逐键 = 旧键清除 + 新键逐写 ≈ 4 次）
+  const result = api.putBindings({ agents: { proj: { channels: ['telegram'] } }, channels: { feishu: { defaultAgent: 'proj' } } })
+  assert.deepEqual(result, {
+    agents: { proj: { channels: ['telegram'] } },
+    channels: { feishu: { defaultAgent: 'proj' } },
+  })
+  assert.equal(setCalls, 2, 'agents/channels 各一次整表写')
+  // 保留键：赋值语义会触达原型链（router 整表重建 + store 合并写都会中招），入口即拒
+  for (const key of ['__proto__', 'constructor', 'prototype']) {
+    const table = {}
+    Object.defineProperty(table, key, { value: { quiet: true }, enumerable: true })
+    assert.throws(() => api.putBindings({ agents: table }), apiErrorOf(422))
+  }
+})
+
 // ———————— 审计 ————————
 
 test('审计：写操作追加 JSONL，getAudit 全量新在前，overview 同步可见', () => {
@@ -504,6 +545,29 @@ test('审计：写操作追加 JSONL，getAudit 全量新在前，overview 同�
   assert.equal(raw.length, 3)
   assert.equal(JSON.parse(raw[0]).action, 'putBindings')
   assert.equal(JSON.parse(raw[2]).action, 'putChannel')
+})
+
+test('审计轮转：超 1MB 转存 .1（只保一代），getAudit 并读两代时间线连续（v0.6.5 R4-2-P3-5）', () => {
+  const { api, stateDir } = makeApi()
+  const auditFile = join(stateDir, AUDIT_FILE)
+  // 预置一个超限的旧代文件（1.2MB 合法 JSONL，最末一条可辨识）
+  const filler = JSON.stringify({ time: '2026-08-16T00:00:00.000Z', action: 'filler', detail: { pad: 'x'.repeat(1024) } })
+  const lines = Array.from({ length: 1200 }, () => filler) // ~1.2MB
+  writeFileSync(auditFile, `${lines.join('\n')}\n`, 'utf8')
+  // 下一次写操作触发轮转：旧文件整体转存 .1，主文件从新记录起步
+  api.putChannel('bark', { key: 'k' })
+  assert.equal(existsSync(`${auditFile}.1`), true, '超限文件转存为 .1')
+  assert.ok(statSync(auditFile).size < 1024, '主文件只含新记录')
+  const audit = api.getAudit()
+  assert.equal(audit.length, 1200 + 1) // 两代并读全量可见
+  assert.equal(audit[0].action, 'putChannel') // 新在前
+  assert.equal(audit[audit.length - 1].action, 'filler') // 旧代最老记录在末尾
+  // 再次超限时 .1 被覆盖（只保一代，总占用 ~2MB 封顶）
+  writeFileSync(auditFile, `${lines.join('\n')}\n`, 'utf8')
+  api.putChannel('bark', { key: 'k2' })
+  const after = api.getAudit()
+  assert.equal(after.length, 1200 + 1) // 上一代主文件被覆盖，不无限累积
+  assert.equal(after[0].action, 'putChannel')
 })
 
 // ———————— store 抛错防御 ————————

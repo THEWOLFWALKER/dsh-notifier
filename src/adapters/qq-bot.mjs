@@ -62,14 +62,18 @@ export async function send(resolved, msg) {
 
   const token = await resolved._tokenManager.get()
   await resolved._rateGate.gate()
-  resolved._msgSeq = (resolved._msgSeq + 1) % 1000000
+  // v0.6.5（审查 R4-3-P3-4）：msg_seq 是服务端去重键。原实现每次尝试自增——重试时
+  // seq 变化 = 服务端视为新消息，「第一次超时但实际已投递」的消息会被重复投递。
+  // 改为尝试期间 seq 冻结（计数器不动），成功后才推进；下一条内容不同，
+  // 即使撞 seq 也不会被服务端误去重（QQ 去重需 seq+内容双匹配）。
+  const seq = (resolved._msgSeq + 1) % 1000000
   const url = resolved.targetType === 'user'
     ? `${resolved.apiBase}/v2/users/${resolved.targetId}/messages`
     : `${resolved.apiBase}/v2/groups/${resolved.targetId}/messages`
   const response = await postJson(url, {
     content: msg.title.length > 0 ? `${msg.title}\n${msg.content}` : msg.content,
     msg_type: 0,
-    msg_seq: resolved._msgSeq,
+    msg_seq: seq,
   }, {
     headers: { authorization: `QQBot ${token}` },
     timeoutMs: resolved.timeoutMs,
@@ -81,4 +85,5 @@ export async function send(resolved, msg) {
   if (payload !== null && typeof payload?.code === 'string' && payload.code !== '') {
     throw new NotifyError(`qq-bot 返回错误 ${payload.code}: ${payload.message ?? '未知错误'}（确认机器人已开启${resolved.targetType === 'user' ? '单聊主动消息' : '群主动消息'}权限）`, ERROR_CODES.API_ERROR)
   }
+  resolved._msgSeq = seq // 成功才推进：失败/超时重试沿用同一 seq，幂等语义生效
 }

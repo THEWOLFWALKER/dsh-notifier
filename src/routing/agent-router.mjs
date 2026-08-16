@@ -285,6 +285,40 @@ export function createAgentRouter({ store, agentsList } = {}) {
     },
 
     /**
+     * v0.6.5（审查 R4-2-P2-2）整表替换 agent 绑定（管理台 putBindings 专用）。
+     *
+     * 语义与逐键 setAgentBinding 的重建链等价（未出现字段删除、空条目整键回收），
+     * 但只做**一次** writeMap（= 一次锁周期 + 一次整文件写）——原「clear + set 逐键」
+     * 对 N 键表做 N 次全量落盘，20 键表 = 20 次锁竞争 + 20 次整文件重写。
+     * 归一复用 setAgentBinding 同款（channels: trim 去重去空；quiet: 归一 bool）。
+     *
+     * @param {object} table - { [key]: { channels?: string[], quiet?: boolean } }，
+     *   键 = workspace 名或精确 agentId；值损坏（非普通对象）抛 TypeError（整表拒绝，零写入）。
+     * @returns {boolean} 是否落盘成功（store 故障返回 false，不抛）。
+     * @throws {TypeError} table 非普通对象、键非字符串/空串、条目非普通对象、channels 非数组。
+     */
+    replaceAgentBindings(table) {
+      if (plainObjectOf(table) === null) throw new TypeError('agent-router: replaceAgentBindings: table 必须是对象')
+      const next = {}
+      for (const [key, rawEntry] of Object.entries(table)) {
+        assertNonEmptyString(key, 'replaceAgentBindings: key')
+        const entry = plainObjectOf(rawEntry)
+        if (entry === null) throw new TypeError(`agent-router: replaceAgentBindings: "${key}" 必须是对象`)
+        const normalized = {}
+        if (entry.channels !== undefined && entry.channels !== null) {
+          if (!Array.isArray(entry.channels)) {
+            throw new TypeError('agent-router: replaceAgentBindings: channels 必须是字符串数组')
+          }
+          const channels = normalizeChannelTypes(entry.channels)
+          if (channels.length > 0) normalized.channels = channels // 归一后为空 = 未配置语义
+        }
+        if (entry.quiet !== undefined && entry.quiet !== null) normalized.quiet = normalizeQuiet(entry.quiet)
+        if (Object.keys(normalized).length > 0) next[key] = normalized // 空条目 = 整键回收
+      }
+      return writeMap(KEY_AGENTS, next)
+    },
+
+    /**
      * 读 agent 绑定（返回拷贝，外部修改不污染存储）。
      *
      * @param {string} key - workspace 名或精确 agentId。
@@ -355,6 +389,29 @@ export function createAgentRouter({ store, agentsList } = {}) {
       if (!Object.prototype.hasOwnProperty.call(channels, channel)) return false
       const next = { ...channels }
       delete next[channel]
+      return writeMap(KEY_CHANNELS, next)
+    },
+
+    /**
+     * v0.6.5（审查 R4-2-P2-2）整表替换通道默认去向（管理台 putBindings 专用）。
+     * 一次 writeMap 落整表（原 clear + set 逐键 = N 次全量落盘）。
+     *
+     * @param {object} table - { [channel]: { defaultAgent: string } }；
+     *   defaultAgent 非非空字符串抛 TypeError（整表拒绝，零写入）。
+     * @returns {boolean} 是否落盘成功（store 故障返回 false，不抛）。
+     * @throws {TypeError} table 非普通对象、条目非普通对象、defaultAgent 非非空字符串。
+     */
+    replaceChannelDefaults(table) {
+      if (plainObjectOf(table) === null) throw new TypeError('agent-router: replaceChannelDefaults: table 必须是对象')
+      const next = {}
+      for (const [channel, rawEntry] of Object.entries(table)) {
+        const entry = plainObjectOf(rawEntry)
+        if (entry === null) throw new TypeError(`agent-router: replaceChannelDefaults: "${channel}" 必须是对象`)
+        if (typeof entry.defaultAgent !== 'string' || entry.defaultAgent.trim() === '') {
+          throw new TypeError(`agent-router: replaceChannelDefaults: "${channel}".defaultAgent 必须是非空字符串`)
+        }
+        next[channel] = { defaultAgent: entry.defaultAgent }
+      }
       return writeMap(KEY_CHANNELS, next)
     },
 
