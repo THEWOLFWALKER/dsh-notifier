@@ -29,7 +29,7 @@ function makeAgent(id, status = 'idle') {
 }
 
 /** rig：真实 bus/store + 假 ctx.agents + 回执 spy。 */
-function makeRig({ agents = [], mergeWindowMs = 30, status } = {}) {
+function makeRig({ agents = [], mergeWindowMs = 30, status, roots } = {}) {
   const store = createStore(tempPath())
   const bus = createInboundBus({ allowUsers: ['42'], store })
   const handlers = {}
@@ -38,6 +38,7 @@ function makeRig({ agents = [], mergeWindowMs = 30, status } = {}) {
     agents: {
       get: (id) => agentMap.get(id),
       list: () => [...agentMap.values()],
+      ...(roots !== undefined ? { roots: () => roots } : {}),
     },
     on: (event, handler) => {
       ;(handlers[event] ??= []).push(handler)
@@ -271,4 +272,55 @@ test('dispose 后消息不再投递、无悬挂计时器', async () => {
   await sleep(80)
   assert.equal(agent.calls.followup.length, 0)
   assert.equal(agent.calls.inject.length, 0)
+})
+
+// ———————— v0.7.3 GitHub issue #4 Bug1 回归 ————————
+
+// DSH 的 agent/created | agent/disposed 事件签名是 (payload: { agent })，
+// 旧代码 agent?.id 恒 undefined → latestSessionId 永不赋值，
+// 未 /bind 用户文本全部「没有活跃会话」被拒投（命令能回、文本全丢）。
+test('agent/created 载荷形态 { agent } 必须解包（#4）：文本正常投递到最新根 agent', async () => {
+  const agent = makeAgent('s1', 'idle')
+  const rig = makeRig({ agents: [agent] })
+  rig.fire('agent/created', { agent }) // DSH 真实事件签名
+  rig.userSays('跑一下测试')
+  await sleep(60)
+  assert.equal(agent.calls.followup.length, 1, '载荷形态 { agent } 不得被忽略')
+  rig.dispose()
+})
+
+test('agent/disposed 载荷形态 { agent } 同样解包（#4）：默认目标被清理', async () => {
+  const agent = makeAgent('s1', 'idle')
+  const rig = makeRig({ agents: [agent] })
+  rig.fire('agent/created', { agent })
+  rig.fire('agent/disposed', { agent })
+  rig.userSays('有人吗')
+  await sleep(60)
+  assert.ok(rig.replies.some((r) => /没有活跃会话/.test(r.text)))
+  rig.dispose()
+})
+
+// 后台 subagent 同样触发 agent/created；宿主暴露 ctx.agents.roots() 时只追踪根 agent。
+test('subagent 不劫持默认投递目标（#4）：roots() 存在时被过滤', async () => {
+  const root = makeAgent('root-1', 'idle')
+  const subagent = makeAgent('sub-1', 'running')
+  const rig = makeRig({ agents: [root, subagent], roots: [root] })
+  rig.fire('agent/created', { agent: root })
+  rig.fire('agent/created', { agent: subagent }) // 后台 subagent 晚到：不得覆盖 root-1
+  rig.userSays('继续')
+  await sleep(60)
+  assert.equal(root.calls.followup.length, 1, '根 agent 仍是默认投递目标')
+  assert.equal(subagent.calls.followup.length, 0, 'subagent 不得接收用户文本')
+  rig.dispose()
+})
+
+// 老宿主没有 ctx.agents.roots()：退化为全量追踪（解包修复仍生效，不因缺 API 崩溃）。
+test('老宿主无 roots() API：全量追踪降级（#4），不抛错', async () => {
+  const agent = makeAgent('s1', 'idle')
+  const rig = makeRig({ agents: [agent] }) // ctx.agents 无 roots
+  rig.fire('agent/created', { agent })
+  rig.userSays('继续')
+  await sleep(60)
+  assert.equal(agent.calls.followup.length, 1)
+  rig.dispose()
 })

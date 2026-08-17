@@ -351,8 +351,11 @@ export function apply(ctx, config = {}) {
   const fsExplicit = inboundRaw.feishu !== null && typeof inboundRaw.feishu === 'object'
   const fsWanted = fsExplicit || (adminEnabled && accountOf('feishu:account') !== null)
   const fsRaw = fsExplicit ? inboundRaw.feishu : {}
+  // v0.7.3（#2）：入站配置同样解析 ${ENV:NAME} 引用（与出站 adapter.resolve(resolveEnvRefs(row))
+  // 同构）——旧代码只有 feishu 的 resolve 收 envRefs 参数且装配层没传，README 示例
+  // ${ENV:FEISHU_SECRET} 原样透传 SDK 导致 invalid appId。全部入站通道在装配层统一预处理。
   const feishuResolved = fsWanted
-    ? resolveFeishuInboundConfig(fsRaw, { credentials: store.get('feishu:account') })
+    ? resolveFeishuInboundConfig(resolveEnvRefs(fsRaw), { credentials: store.get('feishu:account') })
     : null
   if (feishuResolved !== null && !feishuResolved.ok) warn(`inbound.feishu 跳过: ${feishuResolved.reason}`)
   const feishuOk = feishuResolved?.ok === true
@@ -365,7 +368,7 @@ export function apply(ctx, config = {}) {
   const qqWanted = qqExplicit || (adminEnabled && accountOf('qq:account') !== null)
   const qqRaw = qqExplicit ? inboundRaw.qq : {}
   const qqResolved = qqWanted
-    ? resolveQqInboundConfig(qqRaw, { credentials: store.get('qq:account') })
+    ? resolveQqInboundConfig(resolveEnvRefs(qqRaw), { credentials: store.get('qq:account') })
     : null
   if (qqResolved !== null && !qqResolved.ok) warn(`inbound.qq 跳过: ${qqResolved.reason}`)
   const qqOk = qqResolved?.ok === true
@@ -377,7 +380,7 @@ export function apply(ctx, config = {}) {
   const dtWanted = dtExplicit || (adminEnabled && accountOf('dingtalk:account') !== null)
   const dtRaw = dtExplicit ? inboundRaw.dingtalk : {}
   const dingtalkResolved = dtWanted
-    ? resolveDingtalkInboundConfig(dtRaw, { credentials: store.get('dingtalk:account') })
+    ? resolveDingtalkInboundConfig(resolveEnvRefs(dtRaw), { credentials: store.get('dingtalk:account') })
     : null
   if (dingtalkResolved !== null && !dingtalkResolved.ok) warn(`inbound.dingtalk 跳过: ${dingtalkResolved.reason}`)
   const dingtalkOk = dingtalkResolved?.ok === true
@@ -404,7 +407,7 @@ export function apply(ctx, config = {}) {
     }
   }
   const wxResolved = (Object.keys(wxExplicit).length > 0 || wxAccount !== null)
-    ? resolveWxpusherInboundConfig(wxMerged)
+    ? resolveWxpusherInboundConfig(resolveEnvRefs(wxMerged))
     : null
   if (wxResolved !== null && !wxResolved.ok) warn(`inbound.wxpusher 跳过: ${wxResolved.reason}`)
   const wxOk = wxResolved?.ok === true
@@ -631,10 +634,26 @@ export function apply(ctx, config = {}) {
     // 微信 iLink inbound：getupdates 长轮询 + sendmessage 回执（裸协议，零依赖）。
     // 凭证缺省回落登录 CLI 落盘的 wechat:account；审批无按钮，靠编号回复裁决。
     if (wechatWanted) {
-      const wechatResolved = resolveWechatInboundConfig(wechatRaw, { credentials: store.get(ACCOUNT_KEY) })
+      const wechatResolved = resolveWechatInboundConfig(resolveEnvRefs(wechatRaw), { credentials: store.get(ACCOUNT_KEY) })
       if (!wechatResolved.ok) {
         warn(`inbound.wechat 跳过: ${wechatResolved.reason}`)
       } else {
+        // 扫码即配对兜底（v0.7）：iLink 机器人是扫码微信的专属好友（1:1），凭证里的
+        // userId 就是扫码者——扫码/网页授权时已写入绑定；这里幂等补一道，覆盖
+        // 「凭证在、绑定被误删」与旧版 CLI 落盘缺 userId 提示重扫两种场景。
+        try {
+          const scanUserId = String(wechatResolved.config.userId ?? '').trim()
+          if (scanUserId !== '') {
+            const ensured = identity.addBinding({ channel: 'wechat', userId: scanUserId, origin: 'paired' })
+            if (ensured.ok) {
+              warn(`wechat 扫码即配对：扫码微信已绑定为${ensured.record.role === 'owner' ? 'owner（首位成员）' : '成员'}，无需 /pair 配对码`)
+            }
+          } else {
+            warn('wechat 凭证缺少 userId（旧版扫码产物）：重新扫码后扫码微信将自动配对，或用 /pair 配对码补齐')
+          }
+        } catch (error) {
+          warn(`wechat 扫码即配对兜底失败（不致命）: ${error instanceof Error ? error.message : String(error)}`)
+        }
         startInboundChannel('wechat', () => {
           const instance = createWechatIlinkInbound({
             config: wechatResolved.config,
@@ -648,7 +667,7 @@ export function apply(ctx, config = {}) {
           interactiveInstances.push(instance)
           replyTargets.set('wechat', instance)
           disposers.push(() => instance.stop())
-          warn(`inbound 已启动：wechat iLink 长轮询（文本审批通知 + 编号回复裁决）`)
+          warn(`inbound 已启动：wechat iLink 长轮询（专属好友 1:1；文本审批通知 + 编号回复裁决）`)
           return instance
         })
       }
@@ -778,7 +797,7 @@ export function apply(ctx, config = {}) {
       // API 函数层（UI/CLI 共用）：注入 v0.3.2 的 router/registry、store、notifier 与
       // 出站渠道快照（outboundConfigs 取 resolved.channels——含 store overlay 后的最终态；
       // putChannel 运行时新写的 store 字段要到下次启动才进快照，即「重启生效」语义）。
-      const scanHandlers = createScanHandlers({ store, logger })
+      const scanHandlers = createScanHandlers({ store, logger, identity })
       const adminApi = createAdminApi({
         router,
         registry,

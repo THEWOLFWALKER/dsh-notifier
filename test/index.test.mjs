@@ -130,6 +130,38 @@ test('apply: 扫码凭证回退——state 预置 feishu:account 后 inbound.fei
   assert.ok(warnings.some((w) => /inbound 已启动：feishu/.test(w)), `应启动 feishu（实际：${warnings.join(' | ')}）`)
 })
 
+// v0.7.3（GitHub issue #2）回归：入站配置的 ${ENV:NAME} 引用必须在装配层展开
+// （与出站同构）。旧代码 resolve 未过 resolveEnvRefs，README 示例
+// ${ENV:FEISHU_SECRET} 原样透传 SDK → invalid appId，且无提示。
+test('apply: inbound.feishu 的 ${ENV:} 引用被展开（#2）——不再原样透传给 SDK', () => {
+  process.env.DSH_TEST_FEISHU_APPID = 'cli_env1234567890'
+  process.env.DSH_TEST_FEISHU_SECRET = 'sec-from-env'
+  try {
+    const { ctx, warnings } = bootCtx()
+    const stateDir = mkdtempSync(join(tmpdir(), 'dsh-notifier-env-'))
+    apply(ctx, {
+      channels: [{ type: 'webhook', url: 'http://127.0.0.1:1/hook' }],
+      inbound: {
+        allowUsers: ['u1'],
+        stateDir,
+        feishu: { appId: '${ENV:DSH_TEST_FEISHU_APPID}', appSecret: '${ENV:DSH_TEST_FEISHU_SECRET}' },
+      },
+    })
+    // 引用已展开 → resolve ok（启动或 SDK 缺失告警，但绝不是「appId 缺失」跳过）
+    assert.ok(
+      warnings.some((w) => /inbound 已启动：feishu|启动失败/.test(w)),
+      `应启动 feishu 或 SDK 级告警（实际：${warnings.join(' | ')}）`,
+    )
+    assert.ok(
+      warnings.every((w) => !/inbound\.feishu 跳过.*appId 缺失/.test(w)),
+      'ENV 引用未展开会导致 appId 缺失跳过',
+    )
+  } finally {
+    delete process.env.DSH_TEST_FEISHU_APPID
+    delete process.env.DSH_TEST_FEISHU_SECRET
+  }
+})
+
 // v0.6.1 真机事故修复（TG inbound 装配问题报告）：告警双写 stderr，
 // web profile 宿主 cordis logger 不落 stdout 时部署问题仍可诊断。
 test('v0.6.1 warn 双写 console.error：宿主 logger 不可见路径仍有 stderr 输出', () => {

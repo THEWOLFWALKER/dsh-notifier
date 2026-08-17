@@ -13,7 +13,7 @@
 ![渠道](https://img.shields.io/badge/channels-27-00B4D8?style=flat-square)
 
 ![npm version](https://img.shields.io/npm/v/dsh-notifier?style=flat-square&logo=npm&logoColor=white)
-![tests](https://img.shields.io/badge/tests-797-brightgreen?style=flat-square)
+![tests](https://img.shields.io/badge/tests-815-brightgreen?style=flat-square)
 ![license](https://img.shields.io/badge/license-MIT-brightgreen?style=flat-square)
 ![awesome-dsh-plugin](https://img.shields.io/badge/awesome--dsh--plugin-%E5%AE%98%E6%96%B9%E6%94%B6%E5%BD%95-00B4D8?style=flat-square)
 ![omdsh workshop](https://img.shields.io/badge/omdsh-workshop-7C3AED?style=flat-square)
@@ -57,10 +57,6 @@ Web 管理台（`admin.enabled: true`，仅绑 127.0.0.1；v0.5 起移动端自�
 ![Sessions](docs/screenshots/admin-sessions.png)
 ![Channels](docs/screenshots/admin-channels.png)
 
-**配对实拍——空白名单下首位 /pair 者成为 owner（v0.7.0）：**
-
-![配对成功——首位成员成为 owner](docs/screenshots/pairing-success.jpg)
-
 ## 快速开始
 
 ```bash
@@ -99,8 +95,8 @@ insert:
 | **远程审批** | 手机上回答审批 —— Telegram 按钮、飞书卡片、QQ / WxPusher / 微信 iLink / 钉钉回复 `1`/`2`。沉默永不批准。 |
 | **远程会话** | 与 agent 对话：纯文本 → `followup`/`inject`，`!` 前缀中途纠偏，合并窗拼回手机碎片输入。 |
 | **移动指挥中心**（v0.5.0） | 长任务心跳（默认 15min 起）与疑似卡住提醒（默认 10min 无事件）；Telegram / 飞书卡片自带 ⏹ 停止按钮（HMAC 一次性 token，与审批同一信任链）；`/quiet`·`/unquiet` 在手机上静默/恢复会话推送。 |
-| **开放事件源**（v0.6.0） | 其他插件经 `notifier` 服务推送（`export const inject = ['notifier']`——共享配置、路由、账本、限流、flush），并可 `ctx.on('dsh-notifier/sent')` 订阅每次广播结果。按源独立限流（默认 10/分钟）、2 万码点钳制、永不 reject 的 API；消费方契约见 [PLUGINS.md](PLUGINS.md)。 |
-| **身份体系**（v0.7.0） | 「谁能驱动入站」成为运行时对象：配对码准入（任意通道私聊 `/pair <码>`，首位核销者成为 owner）、复合键绑定（`channel:userId`——TG 绑定的 id 不再放行飞书消息）、角色管理（末位 owner 不可删不可降）、拒绝回执（未绑定者收到含自身身份与配对指引的回执）。空白名单引导态启动（bootstrap 码在 stderr），不再拒绝启动。 |
+| **开放事件源**（v0.6.0） | 其他插件经 `notifier` 服务推送（`ctx.inject(['notifier'], …)`——共享配置、路由、账本、限流、flush），并可 `ctx.on('dsh-notifier/sent')` 订阅每次广播结果。按源独立限流（默认 10/分钟）、2 万码点钳制、永不 reject 的 API；消费方契约见 [PLUGINS.md](PLUGINS.md)。 |
+| **身份体系**（v0.7.0） | 「谁能驱动入站」成为运行时对象：配对码准入（任意通道私聊 `/pair <码>`，首位核销者成为 owner）、复合键绑定（`channel:userId`——TG 绑定的 id 不再放行飞书消息）、角色管理（末位 owner 不可删不可降）、拒绝回执（未绑定者收到含自身身份与配对指引的回执）。空白名单引导态启动（bootstrap 码在 stderr），不再拒绝启动。**从安装到日常使用的完整指南见 [docs/guide.md](docs/guide.md)**。 |
 | **多 agent 路由**（v0.3.2） | agent × 通道双向矩阵；会话创建即建档；`/agent` 命令族 + `route.mjs` CLI。 |
 | **Web 管理台**（v0.3.3） | 仅绑 127.0.0.1 + Bearer token；六页 —— 总览 / 通知 / 成员（v0.7）/ 绑定 / 会话 / 通道；v0.5 起 ≤768px 移动端自适应。 |
 | **扫码授权**（v0.3.1） | QQ / 钉钉 / 飞书一条命令官方扫码授权（微信保持 iLink）。 |

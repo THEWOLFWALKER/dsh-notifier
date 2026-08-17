@@ -2,9 +2,12 @@
 // 覆盖面：createScanHandlers 装配与注入点、轮询契约统一（绝不 throw 总测例 + 形状归一）、
 // 阻塞式流机（qq/feishu：首调宽限、ok/非 ok 终态、终态取走复位重开、begin 异常吸收、迟到回调）、
 // 钉钉步进式流机（WAITING/EXPIRED 自动刷新上限/SUCCESS 落盘形状/凭证缺失/FAIL/
-// 结构性错误 fail-fast/瞬态重试/start 异常/store 抛错降级）。
+// 结构性错误 fail-fast/瞬态重试/start 异常/store 抛错降级）、
+// 微信 iLink 步进式流机（v0.7 扫码即配对：wait/scaned 步进、scaned_but_redirect 切机房、
+// expired 自动刷新上限与超时终态、confirmed 凭证落盘形状 + addBinding(origin=paired)、
+// 凭证缺失不落盘、瞬态轮询错误重试、identity 缺省/已绑定/抛错降级、getBotQrcode 缺 qrcode）。
 // mock：全部经 createScanHandlers({ store, logger, timeoutMs, qqBegin, feishuBegin,
-// dingtalkAuthFactory }) 注入点打桩，绝不触真实网络；store 用内存对象记录 set 调用；
+// dingtalkAuthFactory, wechatClientFactory, now }) 注入点打桩，绝不触真实网络；store 用内存对象记录 set 调用；
 // 阻塞式首调的 1500ms 二维码宽利用 t.mock.timers（只 mock setTimeout，微任务保持真实时序）
 // 或让 onQr 在 begin 内同步回调，整个文件毫秒级跑完。
 //
@@ -55,6 +58,43 @@ function makeDingtalkAuth({ starts = [], polls = [] } = {}) {
 /** 让事件循环走一拍（背景 Promise 落定传播用；用 setImmediate，不受 mock.timers 影响）。 */
 const settle = () => new Promise((resolve) => setImmediate(resolve))
 
+/**
+ * 微信 iLink 客户端工厂 mock：脚本化 getBotQrcode/getQrcodeStatus 结果序列
+ * （序列项为 Error 时对应调用抛出；qr 序列耗尽回落默认码；status 序列耗尽回落 wait）。
+ * calls 记录工厂收到的 baseUrl、getBotQrcode 收到的 botType、getQrcodeStatus 收到的 qrcode。
+ */
+function makeWechatRig({ qrs = [], statuses = [], bindResult } = {}) {
+  const calls = { bases: [], botTypes: [], statusQrcodes: [], addBinding: [] }
+  let qrIdx = 0
+  let statusIdx = 0
+  const factory = (baseUrl) => {
+    calls.bases.push(baseUrl)
+    return {
+      getBotQrcode: async (botType) => {
+        calls.botTypes.push(botType)
+        const item = qrs[qrIdx] ?? { qrcode: 'QR-1', qrcode_img_content: 'https://qr.example/wx-1' }
+        qrIdx += 1
+        if (item instanceof Error) throw item
+        return item
+      },
+      getQrcodeStatus: async (qrcode) => {
+        calls.statusQrcodes.push(qrcode)
+        const item = statuses[statusIdx] ?? { status: 'wait' }
+        statusIdx += 1
+        if (item instanceof Error) throw item
+        return item
+      },
+    }
+  }
+  const identity = {
+    addBinding: (args) => {
+      calls.addBinding.push(args)
+      return bindResult ?? { ok: true, record: { role: 'owner' } }
+    },
+  }
+  return { factory, calls, identity }
+}
+
 /** 形状校验：轮询契约的合法返回对象（qrContent 恒字符串、done 恒布尔）。 */
 function assertPollShape(result) {
   assert.equal(typeof result.qrContent, 'string', 'qrContent 必须是字符串')
@@ -63,12 +103,13 @@ function assertPollShape(result) {
 
 // ———————— 装配与注入点 ————————
 
-test('装配：返回 qq/dingtalk/feishu 三个 handler，注入点接线正确（begin 收 onQr、工厂无参调用一次）', async () => {
+test('装配：返回 qq/dingtalk/feishu/wechat 四个 handler，注入点接线正确（begin 收 onQr、工厂无参调用一次）', async () => {
   const beginArgs = { qq: null, feishu: null }
   let factoryCalls = 0
   let factoryArgCount = -1
   const { auth } = makeDingtalkAuth()
   const { store } = makeStore()
+  const wechat = makeWechatRig()
   const handlers = createScanHandlers({
     store,
     logger: { warn() {} },
@@ -76,10 +117,11 @@ test('装配：返回 qq/dingtalk/feishu 三个 handler，注入点接线正确�
     qqBegin: (onQr) => { beginArgs.qq = onQr; onQr('https://qr.example/qq'); return new Promise(() => {}) },
     feishuBegin: (onQr) => { beginArgs.feishu = onQr; onQr('https://qr.example/feishu'); return new Promise(() => {}) },
     dingtalkAuthFactory: (...args) => { factoryCalls += 1; factoryArgCount = args.length; return auth },
+    wechatClientFactory: wechat.factory,
   })
-  // handler 表形状：三个渠道各一个函数（admin/api 的 scanHandlers 消费形态）
-  assert.deepEqual(Object.keys(handlers).sort(), ['dingtalk', 'feishu', 'qq'])
-  assert.ok(['qq', 'dingtalk', 'feishu'].every((name) => typeof handlers[name] === 'function'))
+  // handler 表形状：四个渠道各一个函数（admin/api 的 scanHandlers 消费形态）
+  assert.deepEqual(Object.keys(handlers).sort(), ['dingtalk', 'feishu', 'qq', 'wechat'])
+  assert.ok(['qq', 'dingtalk', 'feishu', 'wechat'].every((name) => typeof handlers[name] === 'function'))
   // 注入点：qq/feishu 各自独立成流，begin 收到的第一个参数是 onQr 回调函数
   assert.deepEqual(await handlers.qq(), { qrContent: 'https://qr.example/qq', done: false })
   assert.deepEqual(await handlers.feishu(), { qrContent: 'https://qr.example/feishu', done: false })
@@ -90,6 +132,10 @@ test('装配：返回 qq/dingtalk/feishu 三个 handler，注入点接线正确�
   assert.equal(factoryCalls, 1)
   assert.equal(factoryArgCount, 0)
   assert.deepEqual(await handlers.dingtalk(), { qrContent: 'https://qr.example/default', done: false })
+  // 微信：装配期不触网络，首调才取码（clientFactory 收 ILINK_BASE_URL）
+  assert.equal(wechat.calls.bases.length, 0)
+  assert.deepEqual(await handlers.wechat(), { qrContent: 'https://qr.example/wx-1', done: false })
+  assert.equal(wechat.calls.bases.length, 1)
 })
 
 // ———————— 轮询契约统一：绝不 throw 总测例 ————————
@@ -471,4 +517,202 @@ test('钉钉 store.set 抛错：done:true + error「凭证落盘失败」且 han
   assert.equal(warns.length, 1)
   assert.equal(warns[0][0], '[dsh-notifier/admin:scan]')
   assert.equal(warns[0][1], '钉钉凭证落盘失败: disk full')
+})
+
+// ———————— 微信 iLink 步进式流机（makeWechatHandler，v0.7 扫码即配对） ————————
+
+/** confirmed 终态的标准回包（测试反复用）。 */
+const WX_CONFIRMED = {
+  status: 'confirmed',
+  ilink_bot_id: 'wx-bot-1',
+  bot_token: 'tok-1',
+  baseurl: 'https://ilinkai.weixin.qq.com',
+  ilink_user_id: 'wx-user-1',
+}
+
+test('微信基本流：首调取码 done:false，wait/scaned 步进同码，confirmed 落盘 + 扫码即配对 owner + saved:true', async () => {
+  const wechat = makeWechatRig({ statuses: [{ status: 'wait' }, { status: 'scaned' }, WX_CONFIRMED] })
+  const { store, sets } = makeStore()
+  const { wechat: handler } = createScanHandlers({
+    store, identity: wechat.identity, wechatClientFactory: wechat.factory, logger: { warn() {} },
+  })
+  // 首调：get_bot_qrcode 取码（botType 默认 3），二维码取 liteapp URL，done:false
+  assert.deepEqual(await handler(), { qrContent: 'https://qr.example/wx-1', done: false })
+  assert.deepEqual(wechat.calls.botTypes, ['3'])
+  // wait / scaned：同一张码继续等，绝不重新取码
+  assert.deepEqual(await handler(), { qrContent: 'https://qr.example/wx-1', done: false })
+  assert.deepEqual(await handler(), { qrContent: 'https://qr.example/wx-1', done: false })
+  assert.equal(wechat.calls.statusQrcodes.length, 2)
+  assert.ok(wechat.calls.statusQrcodes.every((code) => code === 'QR-1'))
+  // confirmed：凭证落 wechat:account（与 CLI 同形），扫码微信即刻 addBinding(origin=paired)
+  assert.deepEqual(await handler(), { qrContent: 'https://qr.example/wx-1', done: true, saved: true })
+  assert.equal(sets.length, 1)
+  const [key, value] = sets[0]
+  assert.equal(key, 'wechat:account')
+  assert.equal(value.accountId, 'wx-bot-1')
+  assert.equal(value.token, 'tok-1')
+  assert.equal(value.baseUrl, 'https://ilinkai.weixin.qq.com')
+  assert.equal(value.userId, 'wx-user-1')
+  assert.equal(typeof value.at, 'number')
+  assert.deepEqual(wechat.calls.addBinding, [{ channel: 'wechat', userId: 'wx-user-1', origin: 'paired' }])
+})
+
+test('微信 scaned_but_redirect：换 redirect_host 建新客户端继续问同一张码，最终可 confirmed', async () => {
+  const wechat = makeWechatRig({
+    statuses: [{ status: 'scaned_but_redirect', redirect_host: 'ilink2.example.com' }, WX_CONFIRMED],
+  })
+  const { store } = makeStore()
+  const { wechat: handler } = createScanHandlers({
+    store, identity: wechat.identity, wechatClientFactory: wechat.factory, logger: { warn() {} },
+  })
+  await handler()
+  assert.deepEqual(await handler(), { qrContent: 'https://qr.example/wx-1', done: false })
+  // 重定向后新客户端以 https://<redirect_host> 创建，且不重新取码
+  assert.deepEqual(wechat.calls.bases, ['https://ilinkai.weixin.qq.com', 'https://ilink2.example.com'])
+  assert.equal(wechat.calls.botTypes.length, 1)
+  assert.deepEqual(await handler(), { qrContent: 'https://qr.example/wx-1', done: true, saved: true })
+})
+
+test('微信 expired：自动刷新出新二维码继续（≤3 次），第 4 次过期 → 终态 error 且复位后可重开', async () => {
+  const wechat = makeWechatRig({
+    qrs: [
+      { qrcode: 'QR-1', qrcode_img_content: 'https://qr.example/wx-1' },
+      { qrcode: 'QR-2', qrcode_img_content: 'https://qr.example/wx-2' },
+      { qrcode: 'QR-3', qrcode_img_content: 'https://qr.example/wx-3' },
+      { qrcode: 'QR-4', qrcode_img_content: 'https://qr.example/wx-4' },
+      { qrcode: 'QR-5', qrcode_img_content: 'https://qr.example/wx-5' },
+    ],
+    statuses: [{ status: 'expired' }, { status: 'expired' }, { status: 'expired' }, { status: 'expired' }],
+  })
+  const { wechat: handler } = createScanHandlers({
+    wechatClientFactory: wechat.factory, logger: { warn() {} },
+  })
+  assert.deepEqual(await handler(), { qrContent: 'https://qr.example/wx-1', done: false })
+  assert.deepEqual(await handler(), { qrContent: 'https://qr.example/wx-2', done: false }) // 刷新 1
+  assert.deepEqual(await handler(), { qrContent: 'https://qr.example/wx-3', done: false }) // 刷新 2
+  assert.deepEqual(await handler(), { qrContent: 'https://qr.example/wx-4', done: false }) // 刷新 3（上限）
+  const terminal = await handler() // 第 4 次过期：终态失败
+  assert.equal(terminal.done, true)
+  assert.equal(terminal.error, '二维码已连续过期 3 次，请重新发起扫码')
+  assert.equal(wechat.calls.botTypes.length, 4) // 首次 + 3 次刷新
+  // 终态取走复位：下次调用重开新流（新二维码）
+  assert.deepEqual(await handler(), { qrContent: 'https://qr.example/wx-5', done: false })
+  assert.equal(wechat.calls.botTypes.length, 5)
+})
+
+test('微信总超时：假时钟越过 deadline → 终态「微信扫码超时」；超时毫秒数取下限 30s 的口径', async () => {
+  const wechat = makeWechatRig({ statuses: [{ status: 'wait' }] })
+  let clock = 1_000
+  const now = () => clock
+  const { wechat: handler } = createScanHandlers({
+    wechatClientFactory: wechat.factory, now, timeoutMs: 60_000, logger: { warn() {} },
+  })
+  assert.deepEqual(await handler(), { qrContent: 'https://qr.example/wx-1', done: false }) // deadline = 61000
+  clock += 61_000
+  const terminal = await handler()
+  assert.equal(terminal.done, true)
+  assert.equal(terminal.error, '微信扫码超时（60 秒无确认），请重新发起')
+})
+
+test('微信凭证不完整（confirmed 缺 bot_token）：终态 error 且绝不落盘、绝不配对', async () => {
+  const wechat = makeWechatRig({
+    statuses: [{ status: 'confirmed', ilink_bot_id: 'wx-bot-1', ilink_user_id: 'wx-user-1' }],
+  })
+  const { store, sets } = makeStore()
+  const { wechat: handler } = createScanHandlers({
+    store, identity: wechat.identity, wechatClientFactory: wechat.factory, logger: { warn() {} },
+  })
+  await handler()
+  const terminal = await handler()
+  assert.equal(terminal.done, true)
+  assert.equal(terminal.error, '扫码成功但凭证不完整（ilink_bot_id/bot_token 缺失），请重新发起')
+  assert.deepEqual(sets, [])
+  assert.deepEqual(wechat.calls.addBinding, [])
+})
+
+test('微信 confirmed 缺 userId：凭证照落盘 saved:true，但不配对（回退 /pair 链路）', async () => {
+  const wechat = makeWechatRig({
+    statuses: [{ status: 'confirmed', ilink_bot_id: 'wx-bot-1', bot_token: 'tok-1' }],
+  })
+  const { store, sets } = makeStore()
+  const { wechat: handler } = createScanHandlers({
+    store, identity: wechat.identity, wechatClientFactory: wechat.factory, logger: { warn() {} },
+  })
+  await handler()
+  assert.deepEqual(await handler(), { qrContent: 'https://qr.example/wx-1', done: true, saved: true })
+  assert.equal(sets.length, 1)
+  assert.equal(sets[0][1].userId, '')
+  assert.deepEqual(wechat.calls.addBinding, [])
+})
+
+test('微信瞬态轮询错误（getQrcodeStatus 抛错）：done:false 本轮作罢，下一轮重试后可 confirmed', async () => {
+  const wechat = makeWechatRig({ statuses: [new Error('fetch failed'), WX_CONFIRMED] })
+  const { store, sets } = makeStore()
+  const { wechat: handler } = createScanHandlers({
+    store, identity: wechat.identity, wechatClientFactory: wechat.factory, logger: { warn() {} },
+  })
+  await handler()
+  assert.deepEqual(await handler(), { qrContent: 'https://qr.example/wx-1', done: false })
+  assert.deepEqual(await handler(), { qrContent: 'https://qr.example/wx-1', done: true, saved: true })
+  assert.equal(sets.length, 1)
+})
+
+test('微信已绑定（addBinding 返回 already-bound）与 identity 抛错：均 saved:true 不终态失败', async () => {
+  // already-bound：扫码微信本来就是成员，保持不变，流程照常完成
+  const bound = makeWechatRig({ statuses: [WX_CONFIRMED], bindResult: { ok: false, reason: 'already-bound' } })
+  const storeA = makeStore()
+  const a = createScanHandlers({
+    store: storeA.store, identity: bound.identity, wechatClientFactory: bound.factory, logger: { warn() {} },
+  })
+  await a.wechat()
+  assert.deepEqual(await a.wechat(), { qrContent: 'https://qr.example/wx-1', done: true, saved: true })
+  assert.equal(storeA.sets.length, 1)
+  // identity.addBinding 抛错：配对失败不拖垮凭证落盘（saved 仍 true）
+  const throwing = makeWechatRig({ statuses: [WX_CONFIRMED] })
+  throwing.identity.addBinding = () => { throw new Error('state.json 被锁') }
+  const storeB = makeStore()
+  const b = createScanHandlers({
+    store: storeB.store, identity: throwing.identity, wechatClientFactory: throwing.factory, logger: { warn() {} },
+  })
+  await b.wechat()
+  assert.deepEqual(await b.wechat(), { qrContent: 'https://qr.example/wx-1', done: true, saved: true })
+  assert.equal(storeB.sets.length, 1)
+  // identity 未注入（旧装配）：只落凭证不配对，不崩
+  const bare = makeWechatRig({ statuses: [WX_CONFIRMED] })
+  const storeC = makeStore()
+  const c = createScanHandlers({ store: storeC.store, wechatClientFactory: bare.factory, logger: { warn() {} } })
+  await c.wechat()
+  assert.deepEqual(await c.wechat(), { qrContent: 'https://qr.example/wx-1', done: true, saved: true })
+  assert.deepEqual(bare.calls.addBinding, [])
+})
+
+test('微信取码异常：getBotQrcode 缺 qrcode → 首调即终态 error；store.set 抛错 → 凭证落盘失败文案', async () => {
+  // 服务端未返回 qrcode：首调即终态
+  const noQr = makeWechatRig({ qrs: [{ qrcode_img_content: 'https://qr.example/broken' }] })
+  const a = createScanHandlers({ wechatClientFactory: noQr.factory, logger: { warn() {} } })
+  const resultA = await a.wechat()
+  assert.equal(resultA.done, true)
+  assert.equal(resultA.error, '微信服务端未返回二维码（qrcode 缺失），请稍后重试')
+  // store.set 抛错：凭证落盘失败终态（对齐钉钉流机契约）
+  const ok = makeWechatRig({ statuses: [WX_CONFIRMED] })
+  const warns = []
+  const store = { set: () => { throw new Error('disk full') } }
+  const b = createScanHandlers({
+    store, identity: ok.identity, wechatClientFactory: ok.factory, logger: { warn: (...args) => { warns.push(args) } },
+  })
+  await b.wechat()
+  const resultB = await b.wechat()
+  assert.equal(resultB.done, true)
+  assert.equal(resultB.error, '凭证落盘失败：disk full')
+  assert.ok(warns.some((args) => args[1] === '微信凭证落盘失败: disk full'))
+  assert.deepEqual(ok.calls.addBinding, []) // 落盘失败后不再配对
+})
+
+test('微信未知状态：fail-fast 终态 error（绝不死循环轮询）', async () => {
+  const wechat = makeWechatRig({ statuses: [{ status: 'weird' }] })
+  const { wechat: handler } = createScanHandlers({ wechatClientFactory: wechat.factory, logger: { warn() {} } })
+  await handler()
+  const terminal = await handler()
+  assert.equal(terminal.done, true)
+  assert.equal(terminal.error, '微信扫码返回未知状态：weird')
 })

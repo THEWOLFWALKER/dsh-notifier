@@ -550,16 +550,41 @@ export function registerConversationRouter(deps) {
     })
   })
 
-  // 追踪最近活跃 agent（默认投递目标）；agent 退出时清理绑定与合并窗
-  const trackAgent = (agent) => {
-    if (agent?.id !== undefined) latestSessionId = agent.id
+  // 追踪最近活跃 agent（默认投递目标）；agent 退出时清理绑定与合并窗。
+  // v0.7.3（#4）：DSH 的 agent/created | agent/disposed 事件签名是 (payload: { agent })，
+  // 监听器收到的是载荷对象而非 agent 本身——旧代码 agent?.id 恒 undefined，
+  // latestSessionId 永不赋值，未 /bind 用户的文本消息全部走到「没有活跃会话」被拒投
+  // （现象：命令能回、文本全丢）。此处解包 payload.agent（兼容直接传 agent 的旧宿主）。
+  const payloadAgent = (arg) => {
+    const agent = arg?.agent ?? arg
+    return (agent !== null && typeof agent === 'object' && agent.id !== undefined) ? agent : null
+  }
+  // 只追踪根 agent：后台 subagent 同样触发 agent/created，若不滤掉会把投递目标
+  // 劫持到 subagent 会话。宿主暴露 ctx.agents.roots() 时用它判定；老宿主无此 API
+  // 则退化为全量追踪（与修复前行为一致，仅解包修复生效）。
+  const rootIds = () => {
+    try {
+      const roots = ctx?.agents?.roots?.()
+      return (roots !== null && typeof roots === 'object') ? roots : null
+    } catch { return null }
+  }
+  const trackAgent = (payload) => {
+    const agent = payloadAgent(payload)
+    if (agent === null) return
+    const roots = rootIds()
+    if (roots !== null) {
+      const ids = (Array.isArray(roots) ? roots : Object.values(roots)).map((a) => a?.id)
+      if (!ids.includes(agent.id)) return // subagent：不劫持默认投递目标
+    }
+    latestSessionId = agent.id
   }
   try {
     disposers.push(ctx.on('agent/created', trackAgent))
   } catch { /* 宿主无此事件：默认绑定不可用，仍可 /bind */ }
   try {
-    disposers.push(ctx.on('agent/disposed', (agent) => {
-      if (agent?.id !== undefined && agent.id === latestSessionId) latestSessionId = null
+    disposers.push(ctx.on('agent/disposed', (payload) => {
+      const agent = payloadAgent(payload)
+      if (agent !== null && agent.id === latestSessionId) latestSessionId = null
       // 显式绑定到该 agent 的用户下次投递会收到「会话不存在」回执并自行 /bind，
       // 不在此清绑定：store 里的绑定在 agent 重启（同 id resume）后仍然有效。
     }))

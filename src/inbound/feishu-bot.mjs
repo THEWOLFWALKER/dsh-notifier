@@ -179,7 +179,15 @@ export function createFeishuInbound({ config, bus, fallbackTargets = [], logger 
       throw new Error(`${SDK_PACKAGE} 接口不完整（缺 Client/WSClient/EventDispatcher）`)
     }
     client = new sdk.Client({ appId: config.appId, appSecret: config.appSecret, domain })
-    wsClient = new sdk.WSClient({ appId: config.appId, appSecret: config.appSecret, domain, logger: null })
+    // v0.7.3（#1/#4/#6）：SDK 的 WSClient.start() → reConnect()/pullConnectConfig() 内部会调
+    // this.logger.info/debug/error，传 logger: null 在 SDK 1.46+ 直接抛
+    // "Cannot read properties of null (reading 'info')"，rejection 被外层吞掉后
+    // 长连接静默永远连不上。改传 noop 实现（error 级转发到插件 warn，保留排障可见性）。
+    const sdkWsLogger = {
+      info() {}, warn() {}, debug() {}, trace() {},
+      error: (...args) => warn(`飞书 SDK WSClient: ${args.map((a) => (a instanceof Error ? a.message : String(a))).join(' ')}`),
+    }
+    wsClient = new sdk.WSClient({ appId: config.appId, appSecret: config.appSecret, domain, logger: sdkWsLogger })
     await wsClient.start({
       eventDispatcher: new sdk.EventDispatcher({}).register({
         'im.message.receive_v1': (data) => handleMessage(data),
@@ -226,7 +234,15 @@ export function createFeishuInbound({ config, bus, fallbackTargets = [], logger 
 
   /** 把卡片 patch 成终态（不 await，3s 内先回 toast；失败静默）。 */
   function patchResolvedCard(data, card) {
-    const messageId = String(data?.message_id ?? data?.open_message_id ?? '')
+    // v0.7.3（#6）：长连接投递的 card.action.trigger 事件负载顶层没有 message_id，
+    // 实际位于 data.context.open_message_id；旧顺序取顶层字段恒为空串，
+    // 导致裁决后卡片永远 patch 不成终态（按钮可重复点）。
+    const messageId = String(
+      data?.context?.open_message_id
+      ?? data?.message_id
+      ?? data?.open_message_id
+      ?? '',
+    )
     if (messageId === '' || client === null) return
     client.im.v1.message.patch({
       path: { message_id: messageId },
@@ -305,13 +321,20 @@ export function createFeishuInbound({ config, bus, fallbackTargets = [], logger 
       })()
     },
 
-    /** 停止长连接（尽力而为：SDK 未暴露 stop 时只标记退出）。 */
+    /** 停止长连接（尽力而为；SDK 无优雅关闭时 terminate 底层 socket）。 */
     async stop() {
       running = false
       try {
         await startPromise
+        // v0.7.3（#4）：@larksuiteoapi/node-sdk（1.46/1.61/1.73）的 WSClient 没有
+        // close()/stop() 公开方法——宿主服务重激活时旧实例的 WS 永远不断开，
+        // 泄漏僵尸连接（事件被随机分发到旧连接、旧实例写 state 覆盖新实例）。
+        // 防御顺序：优雅方法优先，没有则 terminate SDK 内部持有的 ws 实例。
         if (wsClient !== null && typeof wsClient.close === 'function') await wsClient.close()
         else if (wsClient !== null && typeof wsClient.stop === 'function') await wsClient.stop()
+        else {
+          try { wsClient?.wsConfig?.getWSInstance?.()?.terminate?.() } catch { /* 尽力而为 */ }
+        }
       } catch { /* 关闭失败不致命 */ }
       wsClient = null
       client = null

@@ -13,7 +13,7 @@
 ![Channels](https://img.shields.io/badge/channels-27-00B4D8?style=flat-square)
 
 ![npm version](https://img.shields.io/npm/v/dsh-notifier?style=flat-square&logo=npm&logoColor=white)
-![tests](https://img.shields.io/badge/tests-797-brightgreen?style=flat-square)
+![tests](https://img.shields.io/badge/tests-815-brightgreen?style=flat-square)
 ![license](https://img.shields.io/badge/license-MIT-brightgreen?style=flat-square)
 ![awesome-dsh-plugin](https://img.shields.io/badge/awesome--dsh--plugin-listed-00B4D8?style=flat-square)
 ![omdsh workshop](https://img.shields.io/badge/omdsh-workshop-7C3AED?style=flat-square)
@@ -57,10 +57,6 @@ The web admin console (`admin.enabled: true`, loopback only, mobile-friendly sin
 ![Sessions](docs/screenshots/admin-sessions.png)
 ![Channels](docs/screenshots/admin-channels.png)
 
-**Pairing in action — first member becomes owner on an empty whitelist (v0.7.0):**
-
-![Pairing success — first member becomes owner](docs/screenshots/pairing-success.jpg)
-
 ## Quick start
 
 ```bash
@@ -99,8 +95,8 @@ That's it. `turn/end`, `approval/asked`, and `agent/error` events now reach ever
 | **Remote approval** | Answer approvals from your phone — Telegram buttons, Feishu cards, QQ / WxPusher / WeChat iLink / DingTalk reply `1`/`2`. Silence never approves. |
 | **Remote conversation** | Chat with your agent: plain text → `followup`/`inject`, `!` prefix steers mid-turn, a merge window reassembles mobile typing. |
 | **Mobile command center** (v0.5.0) | Long-task heartbeats (default 15min start) and stall alerts (default 10min no events); Telegram/Feishu cards carry a ⏹ stop button (HMAC one-time tokens, same trust chain as approvals); `/quiet`·`/unquiet` mute or restore a session's pushes from your phone. |
-| **Open event source** (v0.6.0) | Other plugins push via the `notifier` service (`export const inject = ['notifier']` — shared config, routing, ledger, rate limits, flush) and subscribe to every broadcast via `ctx.on('dsh-notifier/sent')`. Per-source rate limiting (10/min), 20k-codepoint clamps, never-reject API; consumer contract in [PLUGINS.md](PLUGINS.md). |
-| **Identity system** (v0.7.0) | "Who can drive inbound" becomes a runtime object: pairing codes (`/pair <code>` in any DM; first redeemer becomes owner), composite-key bindings (`channel:userId` — a Telegram-bound id no longer admits a Feishu message), role management (last owner can't be deleted or demoted), and rejection receipts that tell unbound senders how to get in. Empty whitelist boots into a guided state with a bootstrap pairing code on stderr instead of refusing to start. |
+| **Open event source** (v0.6.0) | Other plugins push via the `notifier` service (`ctx.inject(['notifier'], …)` — shared config, routing, ledger, rate limits, flush) and subscribe to every broadcast via `ctx.on('dsh-notifier/sent')`. Per-source rate limiting (10/min), 20k-codepoint clamps, never-reject API; consumer contract in [PLUGINS.md](PLUGINS.md). |
+| **Identity system** (v0.7.0) | "Who can drive inbound" becomes a runtime object: pairing codes (`/pair <code>` in any DM; first redeemer becomes owner), composite-key bindings (`channel:userId` — a Telegram-bound id no longer admits a Feishu message), role management (last owner can't be deleted or demoted), and rejection receipts that tell unbound senders how to get in. Empty whitelist boots into a guided state with a bootstrap pairing code on stderr instead of refusing to start. **Full setup-to-daily-use walkthrough: [docs/guide.md](docs/guide.md) (中文)**. |
 | **Multi-agent routing** (v0.3.2) | Bidirectional agent × channel matrix; sessions auto-register; `/agent` command family + `route.mjs` CLI. |
 | **Web admin console** (v0.3.3) | 127.0.0.1-only + Bearer token; six pages — dashboard / notify / members (v0.7) / bindings / sessions / channels; responsive ≤768px layout (v0.5). |
 | **QR login** (v0.3.1) | One-command official scan authorization for QQ / DingTalk / Feishu (WeChat keeps iLink). |

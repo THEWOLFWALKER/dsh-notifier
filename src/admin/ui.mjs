@@ -166,7 +166,7 @@ label.fld input { flex: 1; }
   </section>
 
   <section id="tab-channels" class="tabsec">
-    <p class="muted small">凭证写入 state.json（YAML 只做首次 bootstrap）。值为 *** 的字段视为未修改，提交时自动剔除；「测试发送」做连通性自检；qq / dingtalk / feishu 入站卡片支持扫码授权（v0.3.1 扫码流，UI 展示二维码内容并轮询状态）。</p>
+    <p class="muted small">凭证写入 state.json（YAML 只做首次 bootstrap）。值为 *** 的字段视为未修改，提交时自动剔除；「测试发送」做连通性自检；qq / dingtalk / feishu / wechat 入站卡片支持扫码授权（v0.3.1 扫码流，UI 展示二维码内容并轮询状态）。</p>
     <div id="channelCards"></div>
   </section>
 
@@ -234,7 +234,7 @@ label.fld input { flex: 1; }
 <script>
 'use strict'
 var TOKEN_KEY = 'dsh-admin-token'
-var SCAN_TYPES = ['qq', 'dingtalk', 'feishu']
+var SCAN_TYPES = ['qq', 'dingtalk', 'feishu', 'wechat']
 var state = { overview: null, bindings: null, sessions: null, channels: null, members: null }
 var draft = null
 var scanTimers = {}
@@ -577,6 +577,10 @@ function cardHtml(c) {
   var badge = c.configured ? '<span class="badge ok">已配置</span>' : '<span class="badge none">未配置</span>'
   var scan = c.direction === 'inbound' && SCAN_TYPES.indexOf(c.type) >= 0
     ? '<button data-scan="' + esc(c.type) + '">扫码授权</button>' : ''
+  // 微信专属提示：iLink 机器人 = 扫码微信的专属好友（1:1），扫码那一刻即完成配对
+  var wechatHint = c.type === 'wechat' && c.direction === 'inbound'
+    ? '<p class="muted small">点「扫码授权」网页直接出二维码，用<b>你自己的微信</b>扫并确认：机器人会出现在你的微信好友里（专属好友，只和你聊），<b>扫码那一刻就完成配对</b>，不需要配对码。</p>'
+    : ''
   var key = c.type + '|' + c.direction
   // v0.7（审查 #8）：testChannel 语义是出站连通性自检——入站凭证行按钮换文案，
   // 不再让用户误以为它能验证入站链路是否可用
@@ -589,6 +593,7 @@ function cardHtml(c) {
     + '<div class="card-head"><b class="mono">' + esc(c.type) + '</b><span class="muted small">' + dir + '</span>' + badge + '</div>'
     + '<div class="card-body" hidden>'
     + (fields || '<p class="muted small">（该通道暂无可编辑凭证键）</p>')
+    + wechatHint
     + (keys.length > 0 && !ro
       ? '<p class="muted small">值为 *** 的字段视为未修改，提交时自动剔除；带 * 为必填（空值不提交）。</p>' : '')
     + '<div class="row">' + controls

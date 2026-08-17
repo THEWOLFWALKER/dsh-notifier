@@ -14,13 +14,14 @@ import { createInboundBus } from '../src/inbound/bus.mjs'
  * 伪造 @larksuiteoapi/node-sdk：记录 Client/WSClient 全部交互。
  * wsClient.start() 捕获 eventDispatcher，测试用 handlers['im.message.receive_v1'] 直接投喂事件。
  */
-function makeFakeSdk({ failStart = false, failCreate = 0 } = {}) {
+function makeFakeSdk({ failStart = false, failCreate = 0, bareWs = false } = {}) {
   const state = {
     loadCount: 0,
     clientOptions: [],
     wsOptions: [],
     wsStarted: 0,
     closed: false,
+    terminated: false,
     dispatcher: null,
     sent: [],    // { receiveIdType, receiveId, msgType, content }
     patched: [], // { messageId, content }
@@ -63,6 +64,23 @@ function makeFakeSdk({ failStart = false, failCreate = 0 } = {}) {
     }
   }
 
+  /**
+   * 模拟 @larksuiteoapi/node-sdk 真身（1.46/1.61/1.73）：无 close()/stop() 公开方法，
+   * 底层 ws 实例藏在 wsConfig.getWSInstance() 后面（issue #4 Bug3 复现形态）。
+   */
+  class BareWSClient {
+    constructor(options) {
+      this.options = options
+      state.wsOptions.push(options)
+      this.wsConfig = { getWSInstance: () => ({ terminate: () => { state.terminated = true } }) }
+    }
+    async start({ eventDispatcher }) {
+      if (failStart) throw new Error('ws handshake failed')
+      state.wsStarted += 1
+      state.dispatcher = eventDispatcher
+    }
+  }
+
   class FakeEventDispatcher {
     constructor() {
       this.handlers = {}
@@ -73,7 +91,7 @@ function makeFakeSdk({ failStart = false, failCreate = 0 } = {}) {
     }
   }
 
-  const sdk = { Client: FakeClient, WSClient: FakeWSClient, EventDispatcher: FakeEventDispatcher }
+  const sdk = { Client: FakeClient, WSClient: bareWs ? BareWSClient : FakeWSClient, EventDispatcher: FakeEventDispatcher }
   const loader = async () => {
     state.loadCount += 1
     return sdk
@@ -525,4 +543,71 @@ test('ap: 审批回调不受 v0.5 改动影响（回归）', async () => {
   assert.match(toast.toast.content, /已批准/)
   assert.equal((await outcome).decision, 'allowed-once')
   await inbound.stop()
+})
+
+// ---------------------------------------------------------------- v0.7.3 GitHub issue 回归
+
+// issue #1/#4/#6：SDK 1.46+ 的 WSClient.start() 内部调 this.logger.info/debug/error，
+// logger: null 直接抛 "Cannot read properties of null" → 长连接静默不可用。
+test('WSClient 必须收到 noop logger 而非 null（#1/#4/#6）：error 级转发插件 warn', async () => {
+  const rig = makeRig()
+  rig.inbound.start()
+  await tick()
+  const wsLogger = rig.fake.state.wsOptions[0].logger
+  assert.notEqual(wsLogger, null, '绝不能再传 logger: null')
+  assert.equal(typeof wsLogger.info, 'function')
+  assert.equal(typeof wsLogger.warn, 'function')
+  assert.equal(typeof wsLogger.debug, 'function')
+  assert.equal(typeof wsLogger.error, 'function')
+  // error 级转发到插件 warn：SDK 内部错误不再不可见（排障要求）
+  wsLogger.error('[ws]', new Error('reconnect failed'))
+  assert.ok(rig.logger.lines.some((line) => line.includes('飞书 SDK WSClient') && line.includes('reconnect failed')))
+  // info/debug 静默：不刷屏宿主日志
+  const before = rig.logger.lines.length
+  wsLogger.info('[ws]', 'ws client ready')
+  wsLogger.debug('[ws]', 'get connect config success')
+  assert.equal(rig.logger.lines.length, before)
+  await rig.inbound.stop()
+})
+
+// issue #6：长连接投递的 card.action.trigger 负载顶层没有 message_id，
+// 实际位于 data.context.open_message_id；旧取法恒空 → 卡片永远 patch 不成终态。
+test('卡片终态 patch：messageId 读 data.context.open_message_id（#6），顶层字段兜底保留', async () => {
+  const logger = makeLogger()
+  const vault = createTokenVault({ secret: 'k' })
+  const bus = createInboundBus({ allowUsers: ['ou_1'], vault, logger })
+  const fake = makeFakeSdk()
+  const inbound = createFeishuInbound({ config: { appId: 'a', appSecret: 's' }, bus, logger, sdkLoader: fake.loader })
+  inbound.start()
+  await tick()
+  const key = 'ap:ctx:1'
+  const token = vault.mint(key)
+  bus.wait(key, 2000)
+  const toast = fake.state.dispatcher.handlers['card.action.trigger']({
+    // 真机实测负载形状：顶层 keys 只有 schema/event_id/…/operator/action/host/context
+    operator: { open_id: 'ou_1' },
+    action: { value: { act: buildApprovalAction('allowed-once', key, token) } },
+    context: { open_message_id: 'om_ctx_1' },
+  })
+  assert.equal(toast.toast.type, 'success')
+  await tick()
+  assert.equal(fake.state.patched.length, 1, 'context.open_message_id 必须被读到，卡片 patch 成终态')
+  assert.equal(fake.state.patched[0].messageId, 'om_ctx_1')
+  await inbound.stop()
+})
+
+// issue #4 Bug3：SDK WSClient 无 close()/stop()，旧 stop() 关不掉连接 →
+// 重激活泄漏僵尸 WS + 僵尸实例覆盖 state.json。现走 wsConfig.getWSInstance().terminate()。
+test('stop()：SDK 无 close/stop 时 terminate 底层 ws 实例（#4），不再泄漏僵尸连接', async () => {
+  const logger = makeLogger()
+  const bus = createInboundBus({ allowUsers: ['ou_1'], logger })
+  const fake = makeFakeSdk({ bareWs: true })
+  const inbound = createFeishuInbound({ config: { appId: 'a', appSecret: 's' }, bus, logger, sdkLoader: fake.loader })
+  inbound.start()
+  await tick()
+  assert.equal(fake.state.wsStarted, 1)
+  await inbound.stop()
+  assert.equal(fake.state.terminated, true, '应 terminate wsConfig 里的 ws 实例')
+  assert.equal(fake.state.closed, false, 'bare WS 原型上根本没有 close（形态校验）')
+  await inbound.stop() // 幂等
 })

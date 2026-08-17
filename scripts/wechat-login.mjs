@@ -13,6 +13,7 @@
 import { resolve } from 'node:path'
 import { createStore, defaultStateDir } from '../src/inbound/store.mjs'
 import { createIlinkClient, ILINK_BASE_URL } from '../src/inbound/_ilink-api.mjs'
+import { createIdentity } from '../src/inbound/identity.mjs'
 
 function parseArgs(argv) {
   const args = { state: '', timeout: 480, botType: '3' }
@@ -127,8 +128,18 @@ async function main() {
       }
       store.set('wechat:account', { accountId, token, baseUrl, userId, at: Date.now() })
       console.log(`\n微信连接成功：accountId=${accountId}${userId !== '' ? ` userId=${userId}` : ''}`)
+      // 扫码即配对：iLink 机器人是扫码微信的专属好友（1:1，只有扫码者能和它聊），
+      // 扫码确认那一刻身份已唯一确定——直接写绑定（首条即 owner），不需要配对码。
+      if (userId !== '') {
+        const bound = createIdentity({ store }).addBinding({ channel: 'wechat', userId, origin: 'paired' })
+        console.log(bound.ok
+          ? `扫码即配对完成：该微信已绑定为${bound.record.role === 'owner' ? ' owner（首位成员）' : '成员'}，无需再发 /pair。`
+          : '该微信已绑定过，无需重复配对。')
+      } else {
+        console.log('提示：本次登录未返回 userId（旧协议产物），未自动配对；重启后可用 /pair 配对码补齐。')
+      }
       console.log(`凭证已写入 ${stateFile}（wechat:account）。插件配置 inbound.wechat: {} 即可启用。`)
-      console.log('说明：同一 token 同时只能有一个网关实例在线。')
+      console.log('说明：机器人只和扫码微信一对一聊天；同一 token 同时只能有一个网关实例在线。')
       return 0
     }
     await sleep(1000)

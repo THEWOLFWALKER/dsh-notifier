@@ -1,22 +1,32 @@
 // dsh-notifier admin/scan.mjs
-// v0.3.3 网页扫码授权流状态机：把 v0.3.1 的三个扫码模块（qq/feishu 阻塞式 + dingtalk 步进式）
+// v0.3.3 网页扫码授权流状态机：把 v0.3.1 的扫码模块（qq/feishu 阻塞式 + dingtalk/wechat 步进式）
 // 适配成 POST /api/scan/:channel 的轮询契约——每次调用推进一步，返回
 // { qrContent, done, saved?, error? }，绝不 throw（失败一律 done:true + error 中文原因）。
 //
-// 两类流机：
+// 三类流机：
 //  - 阻塞式（qqScan/feishuRegister）：整体 Promise 跑在后台，onQr 回调尽早捕获二维码 URL；
 //    handler 首调发起并短暂等待二维码（≤1.5s，等不到也返回——UI 下一轮 2s 轮询自然拿到），
 //    后续调用读背景 Promise 状态；终态（ok → saved:true / 其余 → error）后复位，下次调用重开。
 //  - 步进式（钉钉设备授权流）：start() 建会话、poll() 逐轮步进，天然匹配轮询契约；
 //    EXPIRED 自动刷新 ≤3 次（对齐 scripts/channel-login.mjs CLI 行为）、结构性错误
 //    （missing-field/incomplete-registration/api-error）fail-fast、瞬态错误下一轮重试。
+//  - 步进式（微信 iLink 登录流，v0.7）：get_bot_qrcode 取码 → get_qrcode_status 逐轮步进，
+//    状态机对齐 scripts/wechat-login.mjs CLI（wait/scaned/scaned_but_redirect 跨机房/
+//    expired 自动刷新 ≤3 次/confirmed 取凭证）。
 //
 // 凭证落盘：qqScan/feishuRegister 自写 `<channel>:account`（0600 store）；钉钉由本文件
-// 写 `dingtalk:account`（与 CLI 同形 { appKey, appSecret, at }）。凭证内容绝不进日志与返回值。
+// 写 `dingtalk:account`（与 CLI 同形 { appKey, appSecret, at }）；微信由本文件写
+// `wechat:account`（与 CLI 同形 { accountId, token, baseUrl, userId, at }）。凭证内容绝不进日志与返回值。
+//
+// 微信「扫码即配对」（v0.7）：iLink 机器人是扫码微信的**专属好友**（1:1，只有扫码者能和它聊），
+// 扫码确认那一刻身份已唯一确定——confirmed 时直接 addBinding（origin=paired，首条即 owner），
+// 不需要再走配对码。userId 为空（旧协议产物）时只落凭证，配对回退 /pair 配对码链路。
 
 import { qqScan } from '../inbound/_qq-scan.mjs'
 import { feishuRegister } from '../inbound/_feishu-register.mjs'
 import { createDingtalkAuth } from '../inbound/_dingtalk-auth.mjs'
+import { ILINK_BASE_URL, createIlinkClient } from '../inbound/_ilink-api.mjs'
+import { ACCOUNT_KEY as WECHAT_ACCOUNT_KEY } from '../inbound/wechat-ilink.mjs'
 
 /** 首调等待二维码到达的宽限（毫秒）：等不到不等死，UI 轮询下一轮自然取到。 */
 const FIRST_QR_WAIT_MS = 1500
@@ -24,6 +34,8 @@ const FIRST_QR_WAIT_MS = 1500
 const DINGTALK_MAX_RESTARTS = 3
 /** 钉钉 poll 结构性错误码（重试无意义，fail-fast；对齐 CLI loginDingtalk 的判定）。 */
 const DINGTALK_STRUCTURAL_CODES = new Set(['missing-field', 'incomplete-registration', 'api-error'])
+/** 微信二维码过期自动刷新上限（对齐 scripts/wechat-login.mjs CLI 行为）。 */
+const WECHAT_MAX_RESTARTS = 3
 
 const errorMessage = (error) => (error instanceof Error ? error.message : String(error))
 
@@ -203,18 +215,157 @@ function makeDingtalkHandler({ auth, store, logger }) {
 }
 
 /**
+ * 微信 iLink 步进式扫码流机（对齐 scripts/wechat-login.mjs CLI 状态机）：
+ * get_bot_qrcode 取码 → 每轮 get_qrcode_status 步进（wait/scaned 继续等、
+ * scaned_but_redirect 切机房、expired 自动刷新 ≤3 次、confirmed 取凭证）。
+ * confirmed 时凭证落 wechat:account，并**扫码即配对**：iLink 机器人是扫码微信的专属
+ * 好友（1:1，协议上只有扫码者能与它对话），扫码者直接 addBinding（origin=paired），
+ * 首条绑定即 owner——微信通道不需要配对码。
+ * @param {object} options
+ * @param {{ set(key: string, value: object): void }} [options.store] - 凭证落盘 wechat:account。
+ * @param {object} [options.identity] - 身份绑定层（扫码即配对写入点；缺省只落凭证）。
+ * @param {object} [options.logger] - 日志对象（warn 用）。
+ * @param {string} [options.botType='3'] - iLink 机器人类型（一般不改）。
+ * @param {number} [options.timeoutMs=300000] - 扫码总超时毫秒（下限 30s）。
+ * @param {(baseUrl: string) => object} [options.clientFactory] - iLink 客户端工厂（测试注入）。
+ * @param {() => number} [options.now] - 时钟注入（测试用；默认 Date.now）。
+ * @returns {() => Promise<{qrContent: string, done: boolean, saved?: boolean, error?: string}>}
+ */
+function makeWechatHandler({
+  store, identity, logger, botType = '3', timeoutMs = 300_000, clientFactory, now = Date.now,
+} = {}) {
+  const warn = (message) => {
+    try { logger?.warn?.('[dsh-notifier/admin:scan]', message) } catch { /* 日志失败绝不致命 */ }
+  }
+  const makeClient = clientFactory ?? ((baseUrl) => createIlinkClient({ baseUrl }))
+  let phase = 'idle'
+  let client = null
+  let qrcode = ''
+  let qrContent = ''
+  let refreshCount = 0
+  let deadline = 0
+
+  function reset() {
+    phase = 'idle'
+    client = null
+    qrcode = ''
+    qrContent = ''
+    refreshCount = 0
+    deadline = 0
+  }
+
+  /** 取新二维码（expired 刷新也走这里）：qrcode 缺失向上抛，由调用方归一终态。 */
+  async function fetchQr() {
+    client = makeClient(ILINK_BASE_URL)
+    const response = await client.getBotQrcode(botType)
+    const code = String(response?.qrcode ?? '')
+    if (code === '') throw new Error('微信服务端未返回二维码（qrcode 缺失），请稍后重试')
+    qrcode = code
+    qrContent = String(response?.qrcode_img_content ?? '') || code
+  }
+
+  return async function handler() {
+    try {
+      if (phase === 'idle') {
+        phase = 'running'
+        deadline = now() + Math.max(30_000, timeoutMs)
+        await fetchQr()
+        return { qrContent, done: false }
+      }
+      if (now() > deadline) {
+        const seconds = Math.round(Math.max(30_000, timeoutMs) / 1000)
+        reset()
+        return { qrContent: '', done: true, error: `微信扫码超时（${seconds} 秒无确认），请重新发起` }
+      }
+      let response
+      try {
+        response = await client.getQrcodeStatus(qrcode)
+      } catch (error) {
+        // 瞬态（网络/HTTP 5xx）：本轮作罢，UI 下一轮 2s 轮询重试；总超时兜底不死循环
+        warn(`微信扫码状态轮询失败（下一轮重试）: ${errorMessage(error)}`)
+        return { qrContent, done: false }
+      }
+      const status = String(response?.status ?? 'wait')
+      if (status === 'wait' || status === 'scaned') return { qrContent, done: false }
+      if (status === 'scaned_but_redirect') {
+        // 跨机房重定向：换 baseUrl 继续问同一张码（对齐 CLI）
+        const host = String(response?.redirect_host ?? '')
+        if (host !== '') client = makeClient(`https://${host}`)
+        return { qrContent, done: false }
+      }
+      if (status === 'expired') {
+        refreshCount += 1
+        if (refreshCount > WECHAT_MAX_RESTARTS) {
+          reset()
+          return { qrContent: '', done: true, error: `二维码已连续过期 ${WECHAT_MAX_RESTARTS} 次，请重新发起扫码` }
+        }
+        warn(`微信二维码过期，自动刷新（${refreshCount}/${WECHAT_MAX_RESTARTS}）`)
+        await fetchQr()
+        return { qrContent, done: false }
+      }
+      if (status === 'confirmed') {
+        const accountId = String(response?.ilink_bot_id ?? '')
+        const token = String(response?.bot_token ?? '')
+        const baseUrl = String(response?.baseurl ?? '') || ILINK_BASE_URL
+        const userId = String(response?.ilink_user_id ?? '')
+        if (accountId === '' || token === '') {
+          reset()
+          return { qrContent: '', done: true, error: '扫码成功但凭证不完整（ilink_bot_id/bot_token 缺失），请重新发起' }
+        }
+        const qrAtEnd = qrContent
+        try {
+          store?.set?.(WECHAT_ACCOUNT_KEY, { accountId, token, baseUrl, userId, at: Date.now() })
+        } catch (error) {
+          warn(`微信凭证落盘失败: ${errorMessage(error)}`)
+          reset()
+          return { qrContent: qrAtEnd, done: true, error: `凭证落盘失败：${errorMessage(error)}` }
+        }
+        // 扫码即配对：专属好友 1:1，扫码者即成员（首条即 owner）；已绑定保持不变
+        if (identity !== null && userId !== '') {
+          try {
+            const bound = identity.addBinding({ channel: 'wechat', userId, origin: 'paired' })
+            if (bound.ok) {
+              warn(`微信扫码即配对：扫码微信已绑定为${bound.record.role === 'owner' ? 'owner（首位成员）' : '成员'}，无需配对码`)
+            } else {
+              warn(`微信扫码即配对：扫码微信已是绑定成员（${bound.reason}），保持不变`)
+            }
+          } catch (error) {
+            warn(`微信扫码即配对写入失败（不致命，可改用 /pair 配对码）: ${errorMessage(error)}`)
+          }
+        }
+        reset()
+        return { qrContent: qrAtEnd, done: true, saved: true }
+      }
+      // 未知 status（协议层五态之外）：fail-fast 不死循环
+      warn(`微信扫码返回未知状态: ${status || '(空)'}`)
+      reset()
+      return { qrContent: '', done: true, error: `微信扫码返回未知状态：${status || '(空)'}` }
+    } catch (error) {
+      const message = errorMessage(error)
+      warn(`微信扫码流异常: ${message}`)
+      reset()
+      return { qrContent: '', done: true, error: message }
+    }
+  }
+}
+
+/**
  * 创建网页扫码处理器表（装配层注入 admin api 的 scanHandlers）。
  * @param {object} [options]
  * @param {{ set(key: string, value: object): void }} [options.store] - state store（凭证落盘）。
- * @param {number} [options.timeoutMs=300000] - 阻塞式扫码总超时毫秒（qq/feishu）。
+ * @param {object} [options.identity] - 身份绑定层（微信扫码即配对写入点）。
+ * @param {number} [options.timeoutMs=300000] - 扫码总超时毫秒（qq/feishu 阻塞式与微信步进式共用）。
  * @param {object} [options.logger] - 日志对象。
  * @param {() => any} [options.qqBegin] - qq 流注入点（测试 mock；缺省 qqScan）。
  * @param {() => any} [options.feishuBegin] - feishu 流注入点（测试 mock；缺省 feishuRegister）。
  * @param {() => any} [options.dingtalkAuthFactory] - 钉钉授权实例工厂（测试 mock；缺省 createDingtalkAuth）。
- * @returns {{ qq: Function, dingtalk: Function, feishu: Function }} handler 表（形状见两类流机）。
+ * @param {(baseUrl: string) => any} [options.wechatClientFactory] - 微信 iLink 客户端工厂（测试 mock；缺省 createIlinkClient）。
+ * @param {() => number} [options.now] - 微信流时钟注入（测试用；缺省 Date.now）。
+ * @returns {{ qq: Function, dingtalk: Function, feishu: Function, wechat: Function }} handler 表（形状见三类流机）。
  */
 export function createScanHandlers({
-  store, logger, timeoutMs = 300_000, qqBegin, feishuBegin, dingtalkAuthFactory,
+  store, identity, logger, timeoutMs = 300_000, qqBegin, feishuBegin, dingtalkAuthFactory,
+  wechatClientFactory, now,
 } = {}) {
   const qqHandler = makeBlockingHandler({
     begin: qqBegin ?? ((onQr) => qqScan({ store, onQr, timeoutMs, logger })),
@@ -227,5 +378,6 @@ export function createScanHandlers({
     store,
     logger,
   })
-  return { qq: qqHandler, dingtalk: dingtalkHandler, feishu: feishuHandler }
+  const wechatHandler = makeWechatHandler({ store, identity, logger, timeoutMs, clientFactory: wechatClientFactory, now })
+  return { qq: qqHandler, dingtalk: dingtalkHandler, feishu: feishuHandler, wechat: wechatHandler }
 }

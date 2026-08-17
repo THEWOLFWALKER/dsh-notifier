@@ -3,6 +3,63 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 SemVer。
 DSH 处于 developer preview，0.x 阶段的次版本号提升允许小幅破坏性变更（会在条目中标注）。
 
+## [0.7.3] - 2026-08-17
+
+> GitHub issue 修复批：6 个 open issue 中的 5 个 bug 全部修复（#1/#2/#4/#6），
+> #3/#5（ask_user_question 桥接）依赖宿主侧事件发射，列入规划。
+
+### 修复：飞书 WSClient `logger: null` 静默崩溃（#1/#4-Bug2/#6-Bug1，三人三报）
+
+- `src/inbound/feishu-bot.mjs`：SDK 1.46+ 的 `WSClient.start() → reConnect()/pullConnectConfig()` 内部调 `this.logger.info/debug/error`，`logger: null` 直接抛 `Cannot read properties of null`，rejection 被吞后**长连接静默永远连不上**。改传 noop 实现，`error` 级转发到插件 warn（SDK 内部错误不再不可见），`info/debug` 静默不刷屏。
+
+### 修复：卡片终态 patch 读错 messageId 字段（#6-Bug2）
+
+- 长连接投递的 `card.action.trigger` 负载顶层没有 `message_id`，实际位于 `data.context.open_message_id`；旧取法恒空串 → 裁决后卡片永远 patch 不成终态（按钮可重复点）。取值顺序改为 `context.open_message_id` 优先，顶层字段兜底保留。
+
+### 修复：`agent/created` 载荷未解包，文本消息全部拒投（#4-Bug1）
+
+- `src/inbound/conversation.mjs`：DSH 事件签名是 `(payload: { agent })`，旧代码 `agent?.id` 恒 `undefined` → `latestSessionId` 永不赋值，未 `/bind` 用户的文本全部走到「没有活跃会话」（现象：**命令能回、文本全丢**）。解包 `payload.agent`（兼容直传 agent 的旧宿主）+ `agent/disposed` 同修。
+- 只追踪根 agent：后台 subagent 同样触发 `agent/created`，宿主暴露 `ctx.agents.roots()` 时过滤；老宿主无此 API 退化全量追踪。
+
+### 修复：`stop()` 关不掉 WSClient，重激活泄漏僵尸连接（#4-Bug3）
+
+- SDK（1.46/1.61/1.73）的 `WSClient` **没有 `close()/stop()`**，旧代码探测落空后旧实例 WS 永不断开：每次宿主重激活泄漏一条僵尸连接（事件被随机分发到旧连接）+ 僵尸实例用旧内存覆盖 `state.json`（`/bind` 绑定神秘丢失）。补 `wsConfig.getWSInstance().terminate()` 兜底。
+
+### 修复：入站配置不解析 `${ENV:NAME}` 引用（#2）
+
+- `src/index.mjs`：全部入站通道（feishu/qq/dingtalk/wxpusher/wechat）的 resolve 调用统一先过 `resolveEnvRefs`（与出站 `adapter.resolve(resolveEnvRefs(row))` 同构）。旧代码 README 示例 `${ENV:FEISHU_SECRET}` 原样透传 SDK → `invalid appId` 且无提示。
+
+### 测试
+
+- 新增 8 个回归用例（807 → 815）：WSClient logger 形态与 error 转发、`context.open_message_id` patch、bare WSClient（无 close/stop 形态）terminate、`{ agent }` 载荷解包（created/disposed）、subagent 过滤与无 roots 降级、入站 `${ENV:}` 展开。
+
+### 规划（未实施）
+
+- **#3/#5 `ask_user_question` 选项式提问桥接（计划 0.8.0）**：该提问通道（`@deepseek-ai/dsh-user-questions` 的 `UserQuestionService.ask()`）单 provider 且不发射任何 session 事件，插件层无法独立感知提问，本版本不硬上。0.8.0 分两步：
+  1. **插件侧先行**：新增远程提问工具 `ask_user`（模型调用即推选项卡片/编号回复，复用审批桥接栈：HMAC 一次性 token + 白名单 + 首达采纳 + 超时静默交还桌面），同时把审批卡片设施泛化出 `aq:` 选项动作格式；
+  2. **根治推上游**：推动 DSH 宿主为提问服务补会话事件（或 provider 优先级链，UI 优先、远程兜底）——事件到位后接线只是几行，两步设计互不阻塞。
+
+## [0.7.2-wechat.0] - 2026-08-17
+
+> 微信扫码即配对测试包（ prerelease ）：iLink 机器人是扫码微信的**专属好友**（1:1），
+> 扫码确认那一刻配对自动完成——网页扫码 GUI 补齐 + 三链路配对闭环 + 测试说明随包分发。
+
+### 新增：微信网页扫码授权（GUI）
+
+- **`wechat` 入站卡片「扫码授权」**（src/admin/scan.mjs `makeWechatHandler`）：iLink 步进式流机对齐 CLI 状态机（wait/scaned 步进、scaned_but_redirect 跨机房切 host、expired 自动刷新 ≤3 次、总超时兜底、未知状态 fail-fast），轮询契约与 qq/dingtalk/feishu 一致——微信从此全网页可配，不再必须开终端。
+- 卡片内置说明文案：扫码即配对、专属好友只和你聊。
+
+### 新增：扫码即配对（三链路闭环）
+
+- **网页扫码确认时**：凭证落 `wechat:account` + 立即 `addBinding(channel=wechat, userId=扫码者, origin=paired)`，首条绑定即 owner；userId 缺失只落凭证（回退 /pair 链路）；已绑定幂等跳过。
+- **CLI `wechat-login.mjs` 确认时**：同上，终端明示「扫码即配对完成，无需再发 /pair」。
+- **启动兜底（src/index.mjs）**：wechat 通道拉起前按凭证 userId 幂等补绑定，覆盖「绑定被误删」与「旧版 CLI 落盘缺 userId」两种现场。
+
+### 测试
+
+- `test/admin-scan.test.mjs` +10 用例（微信流机：基本流/重定向/过期刷新上限/超时/凭证缺失/缺 userId/瞬态重试/已绑定与 identity 异常降级/取码与落盘异常/未知状态），全量 797 → 807。
+- 新增 `WECHAT-TEST.md` 随包分发（离线用例 + 网页/CLI 真机步骤 + 验收清单）。
+
 ## [0.7.1] - 2026-08-17
 
 > 真机环境适配修复 + 文档对账（docs 审查线 5 项 + 测试隔离 P1）。
