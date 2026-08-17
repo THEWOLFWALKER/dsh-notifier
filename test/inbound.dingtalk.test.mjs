@@ -261,17 +261,19 @@ test('WS URL：endpoint + encodeURIComponent(ticket)（ticket 含 /、&、空格
   assert.equal(ws.url, `wss://dt-gw.fake?ticket=${encodeURIComponent(ticket)}`)
 })
 
-test('入站消息：data 二次 parse → bus.accept 形状（channel/userId/chatId/dt:msgId/trim 文本）', async () => {
+test('入站消息：data 二次 parse → bus.accept 形状（channel/userId/chatId/chatType/dt:msgId/trim 文本）', async () => {
   const rig = makeRig()
   const accepted = []
   rig.bus.onMessage((envelope) => accepted.push(envelope))
   await driveConnected(rig)
-  pushMessage({ msgId: 'msg_e1', text: { content: ' 跑一下测试 ' } })
+  // v0.7：conversationType 透传为 chatType（'1' 单聊/'2' 群聊，/pair 私聊判定依赖）
+  pushMessage({ msgId: 'msg_e1', conversationType: '1', text: { content: ' 跑一下测试 ' } })
   assert.equal(accepted.length, 1)
   assert.deepEqual(accepted[0], {
     channel: 'dingtalk',
     userId: 'staff_1',
     chatId: 'cid_1',
+    chatType: '1',
     messageId: 'dt:msg_e1',
     text: '跑一下测试',
   })

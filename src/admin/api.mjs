@@ -84,6 +84,23 @@ function deepCopyPlain(value) {
   }
 }
 
+/**
+ * v0.7 成员复合键 "<channel>:<userId>" 解析（管理台路由用）。
+ * userId 内含冒号也容忍（只按第一个冒号切）；渠道必须属六入站通道，userId 非空且 ≤128。
+ * @returns {{ channel: string, userId: string, raw: string } | null} 非法形状返回 null
+ */
+const MEMBER_KEY_HINT = '成员键形状：<channel>:<userId>（channel ∈ telegram/feishu/qq/wxpusher/wechat/dingtalk）'
+function parseMemberKey(key) {
+  const raw = String(key ?? '').trim()
+  const colon = raw.indexOf(':')
+  if (colon <= 0) return null
+  const channel = raw.slice(0, colon)
+  const userId = raw.slice(colon + 1)
+  if (!INBOUND_SET.has(channel)) return null
+  if (userId === '' || userId.length > 128) return null
+  return { channel, userId, raw }
+}
+
 /** 错误 → 可读消息（日志与审计用）。 */
 const errorMessage = (error) => (error instanceof Error ? error.message : String(error))
 
@@ -236,18 +253,31 @@ function describeBadChannelValue(key, value) {
  *   （装配层注入，如 health/self-check 包装）；缺省时 testChannel 抛 501
  * @param {Record<string, () => Promise<{qrContent, done, saved?}>>} [options.scanHandlers] -
  *   各入站通道的网页扫码处理器（装配层保证形状）；无对应通道处理器时 scanChannel 抛 501
+ * @param {object} [options.identity] - v0.7 身份绑定层实例（src/inbound/identity.mjs）；
+ *   与宿主 inbound 共用同一实例（store 读收敛让管理台写入半秒内对运行中宿主生效）；
+ *   缺失时成员查询按空表降级、成员写方法抛 501（能力不可用）
+ * @param {object} [options.pairing] - v0.7 配对码状态机实例（src/inbound/pairing.mjs）；
+ *   缺失时配对码查询按空表降级、铸造/撤销抛 501
+ * @param {() => boolean} [options.guidedProbe] - v0.7 引导态探针（与 bus.isGuided 同口径：
+ *   绑定表空 + allowUsers 空）；缺省按非引导态展示
  * @param {string} [options.stateDir] - 审计文件目录（缺省回落 './state'；测试注入临时目录）
  * @param {object} [options.logger] - cordis logger（warn 用）；缺省静默
  * @returns {object} API 实例：overview/getBindings/putBindings/getSessions/patchSession/
- *   getChannels/putChannel/testChannel/scanChannel/getAudit（appendAudit 为内部函数不外露）
+ *   getChannels/putChannel/testChannel/scanChannel/getMembers/putMember/deleteMember/
+ *   confirmPendingMember/dismissPendingMember/mintPairingCode/revokePairingCode/getAudit
+ *   （appendAudit 为内部函数不外露）
  */
 export function createAdminApi(options = {}) {
   const {
-    router, registry, store, notifier, channelsEnabled, outboundConfigs, channelTest, scanHandlers, stateDir, logger,
+    router, registry, store, notifier, channelsEnabled, outboundConfigs, channelTest, scanHandlers,
+    identity, pairing, guidedProbe = null, stateDir, logger,
   } = options ?? {}
 
   const warn = (message) => {
+    // stderr 双写（R5 审查 R5-2-P1-2：v0.6.1 可见性事故后 inbound 全家已双写，admin 层漏跟——
+    // dsh web profile 下 logger 不落 stdout，成员读失败降级/mint 500 兜底全部零可见）
     try { logger?.warn?.('[dsh-notifier/admin-api]', message) } catch { /* 日志失败绝不致命 */ }
+    try { console.error('[dsh-notifier/admin-api]', message) } catch { /* 控制台不可用不致命 */ }
   }
 
   // ---- store 防御壳：方法缺失/抛错一律按「无此数据」处理，绝不外泄 ----
@@ -760,6 +790,191 @@ export function createAdminApi(options = {}) {
       return result
     },
 
+    // ———————————————— v0.7 成员与配对码（计划书 §3.4/§3.5） ————————————————
+
+    /**
+     * 成员总览（只读，绝不抛）：成员绑定表 + 待确认绑定 + 在铸配对码（脱敏——只有
+     * 哈希前缀 id 与状态，绝无码面）+ 引导态标记。identity/pairing 未装配按空表降级。
+     * @returns {{ guided: boolean, members: object[], pending: object[], pairingCodes: object[] }}
+     */
+    getMembers() {
+      const readSafe = (fn, fallback) => {
+        try { return fn() } catch (error) { warn(`成员数据读取失败: ${errorMessage(error)}`); return fallback }
+      }
+      const members = identity === null ? [] : readSafe(() => identity.list().map((record) => ({
+        key: `${record.channel}:${record.userId}`,
+        channel: record.channel,
+        userId: record.userId,
+        label: record.label,
+        role: record.role,
+        origin: record.origin,
+        pairedAt: record.pairedAt,
+        lastSeenAt: record.lastSeenAt,
+      })), [])
+      const pending = identity === null ? [] : readSafe(() => identity.listPending().map((entry) => ({
+        key: `${entry.channel}:${entry.userId}`,
+        channel: entry.channel,
+        userId: entry.userId,
+        origin: entry.origin,
+        at: entry.at,
+      })), [])
+      const pairingCodes = pairing === null ? [] : readSafe(() => pairing.listActive(), [])
+      // 引导态口径与 bus.isGuided 一致（R5 审查 R5-2-P2-2：只判 identity.isEmpty() 时，
+      // allowUsers 非空但无通道凭证/整栈未启动的实例也亮「stderr 有引导码」——用户按提示
+      // 翻日志永远翻不到。引导码只在「绑定表空 + allowUsers 空 + 凭证就绪」时铸造）
+      const guided = guidedProbe === null ? false : readSafe(() => guidedProbe(), false)
+      return { guided, members, pending, pairingCodes }
+    },
+
+    /**
+     * 改成员 label / role。末位 owner 不可降级（守卫在此层，identity 只做数据操作）。
+     * @param {string} key - 复合键 "<channel>:<userId>"
+     * @param {{ label?: string, role?: string }} diff
+     * @throws {ApiError} 501 identity 未装配；422 键形状/字段校验失败或末位 owner 降级；404 成员不存在
+     */
+    putMember(key, diff) {
+      if (identity === null || typeof identity.updateBinding !== 'function') {
+        throw new ApiError(501, '身份绑定层未装配（宿主未启用 inbound）')
+      }
+      const parsed = parseMemberKey(key)
+      if (parsed === null) throw new ApiError(422, MEMBER_KEY_HINT)
+      const body = plainObjectOf(diff)
+      if (body === null) throw new ApiError(422, '请求体必须是 { label?, role? } 对象')
+      const normalized = {}
+      for (const [field, value] of Object.entries(body)) {
+        if (field === 'label') {
+          if (typeof value !== 'string') throw new ApiError(422, 'label 必须是字符串')
+          normalized.label = value.slice(0, 64)
+        } else if (field === 'role') {
+          if (value !== 'owner' && value !== 'member') throw new ApiError(422, 'role 只能是 owner 或 member')
+          normalized.role = value
+        } else {
+          throw new ApiError(422, `未知字段 "${field}"（可用：label/role）`)
+        }
+      }
+      if (Object.keys(normalized).length === 0) throw new ApiError(422, '至少提供 label 或 role 之一')
+      const current = identity.list(parsed.channel).find((record) => record.userId === parsed.userId)
+      if (current === undefined) throw new ApiError(404, `成员不存在：${parsed.raw}`)
+      if (normalized.role === 'member' && current.role === 'owner') {
+        let owners = 0
+        try { owners = identity.ownerCount() } catch { owners = 1 }
+        if (owners <= 1) {
+          throw new ApiError(422, '末位 owner 不可降级（否则实例将无人可管理）；请先在成员页提升另一位 owner')
+        }
+      }
+      const result = identity.updateBinding(parsed.channel, parsed.userId, normalized)
+      if (result.ok !== true) throw new ApiError(404, `成员不存在：${parsed.raw}`)
+      appendAudit('putMember', { key: parsed.raw, diff: normalized })
+      return { key: parsed.raw, saved: true, record: result.record }
+    },
+
+    /**
+     * 移除成员（末位 owner 不可删）。审计记录键与角色。
+     * @param {string} key - 复合键 "<channel>:<userId>"
+     * @throws {ApiError} 501 identity 未装配；422 键形状非法或末位 owner；404 成员不存在
+     */
+    deleteMember(key) {
+      if (identity === null || typeof identity.removeBinding !== 'function') {
+        throw new ApiError(501, '身份绑定层未装配（宿主未启用 inbound）')
+      }
+      const parsed = parseMemberKey(key)
+      if (parsed === null) throw new ApiError(422, MEMBER_KEY_HINT)
+      const current = identity.list(parsed.channel).find((record) => record.userId === parsed.userId)
+      if (current === undefined) throw new ApiError(404, `成员不存在：${parsed.raw}`)
+      if (current.role === 'owner') {
+        let owners = 0
+        try { owners = identity.ownerCount() } catch { owners = 1 }
+        if (owners <= 1) {
+          throw new ApiError(422, '末位 owner 不可删除（否则实例将无人可管理）；请先转移角色或添加成员')
+        }
+      }
+      const result = identity.removeBinding(parsed.channel, parsed.userId)
+      if (result.ok !== true) throw new ApiError(404, `成员不存在：${parsed.raw}`)
+      appendAudit('deleteMember', { key: parsed.raw, role: current.role })
+      return { key: parsed.raw, deleted: true }
+    },
+
+    /**
+     * 确认待确认绑定 → 转正为正式成员（扫码/订阅学习链的收口动作）。
+     * @param {string} key - 复合键 "<channel>:<userId>"
+     * @throws {ApiError} 501 identity 未装配；422 键形状非法；404 待确认条目不存在；409 已是成员
+     */
+    confirmPendingMember(key) {
+      if (identity === null || typeof identity.confirmPending !== 'function') {
+        throw new ApiError(501, '身份绑定层未装配（宿主未启用 inbound）')
+      }
+      const parsed = parseMemberKey(key)
+      if (parsed === null) throw new ApiError(422, MEMBER_KEY_HINT)
+      const result = identity.confirmPending(parsed.channel, parsed.userId)
+      if (result.ok !== true) {
+        if (result.reason === 'already-bound') throw new ApiError(409, `该身份已是成员：${parsed.raw}`)
+        throw new ApiError(404, `待确认绑定不存在：${parsed.raw}`)
+      }
+      appendAudit('confirmPending', { key: parsed.raw })
+      return { key: parsed.raw, confirmed: true, record: result.record }
+    },
+
+    /**
+     * 忽略待确认绑定（不转正、条目清除）。
+     * @param {string} key - 复合键 "<channel>:<userId>"
+     * @throws {ApiError} 501 identity 未装配；422 键形状非法；404 条目不存在
+     */
+    dismissPendingMember(key) {
+      if (identity === null || typeof identity.dismissPending !== 'function') {
+        throw new ApiError(501, '身份绑定层未装配（宿主未启用 inbound）')
+      }
+      const parsed = parseMemberKey(key)
+      if (parsed === null) throw new ApiError(422, MEMBER_KEY_HINT)
+      const result = identity.dismissPending(parsed.channel, parsed.userId)
+      if (result.ok !== true) throw new ApiError(404, `待确认绑定不存在：${parsed.raw}`)
+      appendAudit('dismissPending', { key: parsed.raw })
+      return { key: parsed.raw, dismissed: true }
+    },
+
+    /**
+     * 铸造配对码（v0.7 计划书 §3.4）。码面只在本次响应出现一次——刷新成员列表只见
+     * id 与状态；审计经 pairing.onAudit 回调流入 admin-audit.jsonl（此处不重复记）。
+     * @param {{ ttlMin?: number, label?: string }} [body]
+     * @returns {{ id: string, code: string, expiresAt: number }}
+     * @throws {ApiError} 501 pairing 未装配；422 ttlMin/label 校验失败
+     */
+    mintPairingCode(body = {}) {
+      if (pairing === null || typeof pairing.mint !== 'function') {
+        throw new ApiError(501, '配对码状态机未装配（宿主未启用 inbound）')
+      }
+      const input = plainObjectOf(body) ?? {}
+      let ttlMs
+      if (input.ttlMin !== undefined && input.ttlMin !== null) {
+        // typeof 守卫在前：Number(true)===1、Number(null)===0 会把布尔/空值溜成合法分钟数
+        if (typeof input.ttlMin !== 'number' || !Number.isInteger(input.ttlMin) || input.ttlMin < 1 || input.ttlMin > 1440) {
+          throw new ApiError(422, 'ttlMin 必须是 1-1440 的整数（分钟）')
+        }
+        ttlMs = input.ttlMin * 60 * 1000
+      }
+      const label = typeof input.label === 'string' ? input.label.slice(0, 64) : ''
+      const result = pairing.mint({ origin: 'admin', mintedBy: 'admin:web', ttlMs, label })
+      if (result.ok !== true) throw new ApiError(500, `配对码铸造失败：${String(result.reason ?? '未知')}`)
+      return { id: result.id, code: result.code, expiresAt: result.expiresAt }
+    },
+
+    /**
+     * 撤销在铸配对码（审计经 pairing.onAudit 流入，此处不重复记）。
+     * @param {string} id - 配对码 id（哈希前 8 位）
+     * @throws {ApiError} 501 pairing 未装配；422 id 形状非法；404 不存在或已终态
+     */
+    revokePairingCode(id) {
+      if (pairing === null || typeof pairing.revoke !== 'function') {
+        throw new ApiError(501, '配对码状态机未装配（宿主未启用 inbound）')
+      }
+      const normalized = String(id ?? '').trim()
+      if (normalized === '' || normalized.length > 32) throw new ApiError(422, '配对码 id 非法')
+      const result = pairing.revoke(normalized, { by: 'admin:web' })
+      if (result.ok !== true) {
+        throw new ApiError(404, `配对码不存在或已终态（${String(result.reason ?? 'not-found')}）`)
+      }
+      return { id: normalized, revoked: true }
+    },
+
     /**
      * 读审计日志（<stateDir>/admin-audit.jsonl，每行 { time, action, detail }）：
      * 全量、新在前；文件不存在/读取失败/损坏行一律按可读部分返回，绝不抛。
@@ -781,6 +996,14 @@ export function createAdminApi(options = {}) {
       }
       records.reverse() // 文件内旧→新，返回新→旧
       return records
+    },
+
+    /**
+     * v0.7：外部子系统（配对码状态机等）追加审计行。action 前缀约定「子系统:事件」
+     * （如 pairing:mint）；detail 必须可 JSON 序列化，失败只 warn 不上抛（与内部审计同纪律）。
+     */
+    appendAudit(action, detail) {
+      appendAudit(String(action ?? 'unknown'), detail)
     },
   }
   return api

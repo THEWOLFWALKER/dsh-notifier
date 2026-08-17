@@ -268,11 +268,13 @@ test('router：升级链在等待期触发再提醒，裁决后停止', async ()
   const rig = makeRig({
     approvalConfig: {
       timeoutMs: 5000,
-      escalation: { enabled: true, stages: [{ afterMs: 50, note: '催一催' }, { afterMs: 80, note: '再催' }] },
+      // 窗口拉宽（50→400ms）：原 50/80ms 双阶段夹 70ms 检查点，CI 负载下 sleep 越窗
+      // 会把「未触发」误报成已触发（flaky 根因）；语义不变——第一阶段已过、第二阶段未到
+      escalation: { enabled: true, stages: [{ afterMs: 50, note: '催一催' }, { afterMs: 400, note: '再催' }] },
     },
   })
   const pending = rig.handle({ toolName: 'rm', callId: 'c1', reason: 'x' })
-  await sleep(70) // 第一阶段已过、第二阶段未到
+  await sleep(150) // 宽窗中点：第一阶段必触发，第二阶段必未触发
   const card = rig.cards[0]
   rig.bus.decide({ approvalKey: card.approvalKey, decision: 'allowed-once', token: card.token })
   await pending

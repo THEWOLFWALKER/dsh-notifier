@@ -493,20 +493,83 @@ test('§5.5 对照（兼容红线）：admin 关 + 同样 store 账号 → 零�
   }
 })
 
-test('§5.5 wxpusher 凭证链尾：admin 开 + store appToken（无 YAML）→ resolve 成功（无跳过 warn、不崩）', async () => {
+test('§5.5 wxpusher 凭证链尾：admin 开 + store appToken（无 YAML）→ resolve 成功 + v0.7 引导态启动', async () => {
   const dir = tempDir({ 'wxpusher:account': { appToken: 'AT_solo' } })
   const rig = bootCtx()
   const port = await freePort()
   try {
     apply(rig.ctx, {
       channels: [{ type: 'webhook', url: 'http://127.0.0.1:1/hook' }],
-      // allowUsers 留空：整栈不进 → 不真起 HTTP 回调 server（resolve 结果由「无跳过 warn」证明）
+      // v0.7 行为契约变更（原「空名单不启动」→「凭证就绪即启动」）：引导态下注册面开放
+      // （/pair），业务面仍全拒（bus 引导态矩阵由 test/identity.test.mjs 覆盖）。
       inbound: { stateDir: dir },
       admin: { enabled: true, port },
     })
     assert.ok(!rig.warnings.some((w) => w.includes('inbound.wxpusher 跳过')),
       'store appToken 链尾兜底生效（resolve ok 而非因缺 appToken 跳过）')
-    assert.ok(!rig.warnings.some((w) => /inbound 已启动/.test(w)), 'allowUsers 空 → 不真启动（无副作用）')
+    assert.ok(rig.warnings.some((w) => /inbound 已启动：wxpusher/.test(w)),
+      'v0.7：allowUsers 空 + 凭证就绪 → 引导态启动（不再是死路）')
+    assert.ok(rig.warnings.some((w) => /【引导配对码】/.test(w)),
+      '引导态铸造 bootstrap 码（stderr 双写展示，绑定表非空后不再铸）')
+  } finally {
+    await rig.cleanup()
+  }
+})
+
+test('v0.7 密径持久化：首次启动铸随机密径落 store；二次启动复用同一路径（不换径）', async () => {
+  const dir = tempDir({ 'wxpusher:account': { appToken: 'AT_path' } })
+  const readState = () => JSON.parse(readFileSync(join(dir, 'state.json'), 'utf8'))
+  const rig = bootCtx()
+  const port = await freePort()
+  try {
+    apply(rig.ctx, {
+      channels: [{ type: 'webhook', url: 'http://127.0.0.1:1/hook' }],
+      inbound: { stateDir: dir },
+      admin: { enabled: true, port },
+    })
+    // 「回调服务器已监听」由 start() 内部打印，晚于装配层「已启动」日志——等它才稳
+    await waitFor(() => rig.warnings.some((w) => w.includes('回调服务器已监听')))
+    const first = readState()['wxpusher:webhookPath']
+    assert.match(first, /^\/hook\/[0-9a-f]{32}$/, '首铸密径落盘（随机 32B hex）')
+    const firstLog = rig.warnings.find((w) => w.includes('回调服务器已监听'))
+    assert.ok(firstLog.includes(first), '启动日志展示的回调 URL 就是落盘密径')
+  } finally {
+    await rig.cleanup()
+  }
+
+  // 二次启动（同 stateDir）：复用 first，不再重铸
+  const rig2 = bootCtx()
+  const port2 = await freePort()
+  try {
+    apply(rig2.ctx, {
+      channels: [{ type: 'webhook', url: 'http://127.0.0.1:1/hook' }],
+      inbound: { stateDir: dir },
+      admin: { enabled: true, port: port2 },
+    })
+    await waitFor(() => rig2.warnings.some((w) => w.includes('回调服务器已监听')))
+    const secondLog = rig2.warnings.find((w) => w.includes('回调服务器已监听'))
+    assert.ok(secondLog.includes(readState()['wxpusher:webhookPath']),
+      '二次启动复用持久化密径（用户控制台回调 URL 不因重启失效）')
+  } finally {
+    await rig2.cleanup()
+  }
+})
+
+test('v0.7 密径持久化：显式 webhookPath 配置仍是用户意志（不读不写持久化键）', async () => {
+  const dir = tempDir({ 'wxpusher:account': { appToken: 'AT_explicit', webhookPath: '/hook/my-own' } })
+  const rig = bootCtx()
+  const port = await freePort()
+  try {
+    apply(rig.ctx, {
+      channels: [{ type: 'webhook', url: 'http://127.0.0.1:1/hook' }],
+      inbound: { stateDir: dir },
+      admin: { enabled: true, port },
+    })
+    await waitFor(() => rig.warnings.some((w) => w.includes('回调服务器已监听')))
+    const log = rig.warnings.find((w) => w.includes('回调服务器已监听'))
+    assert.ok(log.includes('/hook/my-own'), '显式配置优先')
+    assert.equal(JSON.parse(readFileSync(join(dir, 'state.json'), 'utf8'))['wxpusher:webhookPath'], undefined,
+      '显式配置不写持久化键（YAML 用户自管生命周期）')
   } finally {
     await rig.cleanup()
   }

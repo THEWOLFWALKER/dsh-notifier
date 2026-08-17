@@ -8,6 +8,7 @@ import { createKeywordFilter, createGraceQueue } from './rules.mjs'
 // v0.5 状态上报 + 动作闭环
 import { createTurnTracker } from './status/turn-tracker.mjs'
 import { normalizeInbound, buildActionPayload } from './inbound/_contract.mjs'
+import { guardTargets } from './inbound/target-guard.mjs'
 
 /** 取会话所属工作区名：cwd 末段，否则 session id。 */
 export function workspaceNameOf(session) {
@@ -278,7 +279,14 @@ export function createEventListener(ctx, notifier, resolvedConfig, wiring = {}) 
     for (const raw of rawList) {
       const inbound = normalizeInbound(raw)
       if (inbound === null) continue
-      for (const target of inbound.notifyTargets()) {
+      // v0.7 形状守卫：动作卡片与审批卡片同一道防线（跨渠道串门目标 skip）。
+      // warn 必传（R5 审查 R5-3-P2-1：null 静默——守卫错杀在这条路径不可观测）
+      const targets = inbound.notifyTargets()
+      const { kept } = guardTargets(inbound.channel, targets, warn)
+      if (kept.length === 0 && targets.length > 0) {
+        warn(`动作卡片目标全被形状守卫拦截（${inbound.channel} ${targets.length} 个目标 0 个合格）——请核对通知目标 id 形态`)
+      }
+      for (const target of kept) {
         Promise.resolve(inbound.sendActionCard({
           chatId: target.chatId,
           title: message.title,

@@ -8,6 +8,7 @@
 // 军规：轮询循环里的任何异常只退避重试，绝不弄崩宿主；stop() 干净退出。
 
 import { createCallbackRefs } from './callback-refs.mjs'
+import { resolveNotifyTargets } from './target-guard.mjs'
 
 const DEFAULT_API_BASE = 'https://api.telegram.org'
 const POLL_TIMEOUT_S = 25
@@ -28,7 +29,7 @@ const DEFAULT_ERROR_BACKOFF_MS = 5000
  * @param {number} [options.errorBackoffMs=5000] - 轮询异常退避（测试可缩短）
  * @param {number} [options.callbackTtlMs] - 按钮短引用有效期（缺省 15min，略长于 token TTL）
  */
-export function createTelegramInbound({ config, bus, vault, store = null, logger = null, fetchImpl, errorBackoffMs, actions = null, callbackTtlMs } = {}) {
+export function createTelegramInbound({ config, bus, vault, store = null, logger = null, fetchImpl, errorBackoffMs, actions = null, callbackTtlMs, identity = null } = {}) {
   const apiBase = (config.apiBase || DEFAULT_API_BASE).replace(/\/+$/, '')
   const botToken = String(config.botToken ?? '')
   const backoffMs = Math.max(0, Number(errorBackoffMs) || DEFAULT_ERROR_BACKOFF_MS)
@@ -135,13 +136,23 @@ export function createTelegramInbound({ config, bus, vault, store = null, logger
     }
     const message = update.message
     if (message?.text !== undefined) {
-      bus.accept({
+      // v0.7：chatType 透传（/pair 私聊判定）；accept 返回值消费——拒绝/命令回执不再已读不回
+      const envelope = {
         channel: 'telegram',
         userId: String(message.from?.id ?? ''),
         chatId: String(message.chat?.id ?? ''),
+        chatType: String(message.chat?.type ?? ''),
         messageId: `msg:${message.message_id}:${message.chat?.id ?? ''}`,
         text: String(message.text),
-      })
+      }
+      const result = bus.accept(envelope)
+      if (result?.reply !== undefined) {
+        try {
+          await api('sendMessage', { chat_id: envelope.chatId, text: String(result.reply).slice(0, 4000) })
+        } catch (error) {
+          warn(`回执发送失败: ${error instanceof Error ? error.message : String(error)}`) // 回执失败不致命
+        }
+      }
     }
   }
 
@@ -263,7 +274,23 @@ export function createTelegramInbound({ config, bus, vault, store = null, logger
       }
     },
 
-    /** 目标 chat 列表（配置 notifyChatIds）。 */
+    /** v0.7 三级解析：绑定成员 → 配置 notifyChatIds（正数=用户）→（无全局回落，
+     *  telegram 的 v0.6 契约本就没有 allowUsers 兜底，行为不变）。
+     *  负数 id（-100…）是群/超级群/频道——渠道属性不是身份属性，走 extras 无条件保留
+     *  （与 qq notifyGroups 同语义；R5 审查：首版全塞 configTargets，绑定接管用户目标
+     *  后群目标被整体替换消失——群通知双杀 P1）。 */
+    notifyTargets() {
+      const chats = (Array.isArray(config.notifyChatIds) ? config.notifyChatIds : []).map(String)
+      return resolveNotifyTargets({
+        identity,
+        channel: 'telegram',
+        configTargets: chats.filter((id) => !id.startsWith('-')),
+        extraTargets: chats.filter((id) => id.startsWith('-')),
+        fallbackTargets: [],
+      })
+    },
+
+    /** 目标 chat 列表（配置 notifyChatIds；legacy 契约保留——identity 未注入时二者等价）。 */
     notifyChatIds() {
       return Array.isArray(config.notifyChatIds) ? config.notifyChatIds.map(String) : []
     },

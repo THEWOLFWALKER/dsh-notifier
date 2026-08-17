@@ -12,6 +12,7 @@
 // 任何异常只 warn，绝不弄崩宿主；stop() 干净退出。
 
 import { buildApprovalAction, parseApprovalAction, parseActionPayload } from './_contract.mjs'
+import { resolveNotifyTargets } from './target-guard.mjs'
 
 const DEFAULT_DOMAIN = 'https://open.feishu.cn'
 const SDK_PACKAGE = '@larksuiteoapi/node-sdk'
@@ -157,7 +158,7 @@ function buildActionCard({ title, content, actions: buttons = [] }) {
  * @param {ReturnType<typeof import('../actions.mjs').createActionDispatcher>} [options.actions]
  *   - v0.5 动作分发器（可空：缺省时 ac: 回调分支不存在，行为与 v0.4.0 一致）
  */
-export function createFeishuInbound({ config, bus, fallbackTargets = [], logger = null, sdkLoader, actions = null } = {}) {
+export function createFeishuInbound({ config, bus, fallbackTargets = [], logger = null, sdkLoader, actions = null, identity = null } = {}) {
   const domain = (config.domain || DEFAULT_DOMAIN).replace(/\/+$/, '')
   const allowUsers = Array.isArray(config.allowUsers) ? config.allowUsers.map(String) : []
   const warn = (message) => {
@@ -197,14 +198,27 @@ export function createFeishuInbound({ config, bus, fallbackTargets = [], logger 
         ? extractText(message.content)
         : `[不支持的消息类型：${message.message_type ?? 'unknown'}]`
       if (text === '') return
-      // bus 白名单 + 去重在 bus 层完成；本层只负责规范化 envelope
-      bus.accept({
+      // bus 白名单 + 去重在 bus 层完成；本层只负责规范化 envelope。
+      // v0.7：chat_type 透传（/pair 私聊判定）；accept 返回值消费——拒绝/命令回执不再已读不回
+      const envelope = {
         channel: 'feishu',
         userId: openId,
         chatId: String(message.chat_id ?? openId),
+        chatType: String(message.chat_type ?? ''),
         messageId,
         text,
-      })
+      }
+      const result = bus.accept(envelope)
+      if (result?.reply !== undefined && client !== null) {
+        // 回执尽力而为：失败只 warn 不上抛（A listener never throws）
+        const receiveId = envelope.chatId
+        client.im.v1.message.create({
+          params: { receive_id_type: receiveIdTypeOf(receiveId) },
+          data: { receive_id: receiveId, msg_type: 'text', content: JSON.stringify({ text: String(result.reply).slice(0, 4000) }) },
+        }).catch((error) => {
+          warn(`回执发送失败: ${error instanceof Error ? error.message : String(error)}`)
+        })
+      }
     } catch (error) {
       warn(`事件处理异常: ${error instanceof Error ? error.message : String(error)}`)
     }
@@ -304,10 +318,14 @@ export function createFeishuInbound({ config, bus, fallbackTargets = [], logger 
       startPromise = null
     },
 
-    /** 卡片推送目标：通道 allowUsers（缺省回落全局白名单）。 */
+    /** 卡片推送目标（v0.7 三级解析）：绑定成员 → 通道 allowUsers → 全局回落（仅绑定表整体空）。 */
     notifyTargets() {
-      const ids = allowUsers.length > 0 ? allowUsers : fallbackTargets.map(String)
-      return ids.map((id) => ({ chatId: id, userId: id })) // 私聊 open_id 即接收者即用户
+      return resolveNotifyTargets({
+        identity,
+        channel: 'feishu',
+        configTargets: allowUsers,
+        fallbackTargets,
+      })
     },
 
     /** 推送审批卡片（失败 null，caller 降级纯通知）。 */

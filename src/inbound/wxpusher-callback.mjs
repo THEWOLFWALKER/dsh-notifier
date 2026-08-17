@@ -14,6 +14,7 @@
 import { createHash } from 'node:crypto'
 import { createRateGate } from '../adapters/_tokens.mjs'
 import { startHttpCallback } from './http-callback.mjs'
+import { resolveNotifyTargets } from './target-guard.mjs'
 
 const SEND_ENDPOINT = 'https://wxpusher.zjiecode.com/api/send/message'
 const DEFAULT_PORT = 8103
@@ -78,7 +79,7 @@ export function resolveWxpusherInboundConfig(raw, { randomPath } = {}) {
  *        - HTTP server 启动器注入（测试用；默认 startHttpCallback）
  */
 export function createWxpusherInbound(options = {}) {
-  const { config, bus, store = null, fallbackTargets = [], logger = null } = options
+  const { config, bus, store = null, fallbackTargets = [], logger = null, identity = null } = options
   const fetchImpl = options.fetchImpl ?? globalThis.fetch?.bind(globalThis)
   const startServer = options.serverStarter ?? startHttpCallback
   const allowedIps = Array.isArray(config.allowedIps) ? config.allowedIps.map(String) : []
@@ -114,20 +115,37 @@ export function createWxpusherInbound(options = {}) {
         const appId = String(data.appId ?? '')
         const text = stripCommandPrefix(data.content, appId)
         if (uid === '' || text === '') return
-        bus.accept({
+        // v0.7：accept 返回值消费——拒绝/命令回执不再已读不回
+        const result = bus.accept({
           channel: 'wxpusher',
           userId: uid,
           chatId: uid,
           messageId: `cmd:${uid}:${time}:${hash6(text)}`,
           text,
         })
+        if (result?.reply !== undefined) {
+          pushToUid(uid, String(result.reply)).catch((error) => {
+            warn(`回执发送失败: ${error instanceof Error ? error.message : String(error)}`) // 回执失败不致命
+          })
+        }
         return
       }
       if (action === 'app_subscribe') {
         const uid = String(data.uid ?? '')
         if (uid !== '') {
           try { store?.set(`wxpusher:bind:${uid}`, { at: Date.now(), extra: String(data.extra ?? '') }) } catch { /* 落盘失败不致命 */ }
-          warn(`uid ${uid} 已订阅（绑定已学习${data.extra !== undefined ? `，extra=${String(data.extra)}` : ''}）`)
+          // v0.7 学习键汇流（计划书 §3.6）：订阅 uid 进待确认绑定，管理台成员页收口
+          // （origin=learned；已是成员时 addPending 幂等拒绝，不产生重复条目）
+          if (identity !== null && typeof identity.addPending === 'function') {
+            try {
+              const learned = identity.addPending({ channel: 'wxpusher', userId: uid, origin: 'learned', extra: { source: 'app_subscribe', extra: String(data.extra ?? '').slice(0, 256) } })
+              if (learned.ok) warn(`uid ${uid} 已订阅（已入待确认绑定，管理台成员页可转正）`)
+            } catch (error) {
+              warn(`订阅学习入待确认失败（不致命）: ${error instanceof Error ? error.message : String(error)}`)
+            }
+          } else {
+            warn(`uid ${uid} 已订阅（绑定已学习${data.extra !== undefined ? `，extra=${String(data.extra)}` : ''}）`)
+          }
         }
         return
       }
@@ -203,10 +221,14 @@ export function createWxpusherInbound(options = {}) {
       return server?.port ?? null
     },
 
-    /** 审批推送目标：notifyUids 优先，缺省回落全局白名单。 */
+    /** 审批推送目标（v0.7 三级解析）：绑定成员 → notifyUids → 全局回落（仅绑定表整体空）。 */
     notifyTargets() {
-      const ids = (config.notifyUids ?? []).length > 0 ? (config.notifyUids ?? []) : fallbackTargets.map(String)
-      return ids.map((id) => ({ chatId: id, userId: id }))
+      return resolveNotifyTargets({
+        identity,
+        channel: 'wxpusher',
+        configTargets: Array.isArray(config.notifyUids) ? config.notifyUids.map(String) : [],
+        fallbackTargets,
+      })
     },
 
     /** 推审批文本通知（无按钮，回复 1/2 裁决）；失败 null 降级纯通知。 */

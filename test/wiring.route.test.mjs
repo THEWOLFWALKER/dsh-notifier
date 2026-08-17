@@ -316,8 +316,8 @@ function makeApprovalRig({ interactive = [], routerFactory = null, notifierChann
 }
 
 test('审批分流：request.agent 有 id 时 notifyAll 收到的 channelTypes 只含绑定通道；无关交互渠道不发卡片', async () => {
-  const feishu = makeFakeInbound('feishu', [{ chatId: 'oc1', userId: 'u1' }])
-  const qq = makeFakeInbound('qq', [{ chatId: 'op1', userId: 'u2' }])
+  const feishu = makeFakeInbound('feishu', [{ chatId: 'oc_chat001', userId: 'u1' }])
+  const qq = makeFakeInbound('qq', [{ chatId: 'opengrp01', userId: 'u2' }])
   const rig = makeApprovalRig({
     interactive: [feishu, qq],
     notifierChannels: ['webhook', 'qq'],
@@ -338,7 +338,7 @@ test('审批分流：request.agent 有 id 时 notifyAll 收到的 channelTypes �
 })
 
 test('审批分流：request 无 agent 时回落全局广播（第二参空对象，卡片照发）', async () => {
-  const qq = makeFakeInbound('qq', [{ chatId: 'op1', userId: 'u2' }])
+  const qq = makeFakeInbound('qq', [{ chatId: 'opengrp01', userId: 'u2' }])
   const rig = makeApprovalRig({
     interactive: [qq],
     notifierChannels: ['webhook', 'qq'],
@@ -348,7 +348,7 @@ test('审批分流：request 无 agent 时回落全局广播（第二参空对�
   await new Promise((resolve) => setTimeout(resolve, 30))
   assert.deepEqual(rig.broadcasts[0].options, {}, '无 agent = 不分流，全局广播')
   assert.equal(qq.state.cards.length, 1, '全局广播下交互渠道照常收卡片')
-  rig.bus.accept({ channel: 'qq', userId: 'u2', chatId: 'op1', messageId: 'msg:1:op1', text: '1' })
+  rig.bus.accept({ channel: 'qq', userId: 'u2', chatId: 'opengrp01', messageId: 'msg:1:opengrp01', text: '1' })
   assert.equal(await outcome, 'allowed-once')
   rig.dispose()
 })

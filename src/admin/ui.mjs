@@ -73,6 +73,10 @@ label.fld input { flex: 1; }
 .chip.ok { color: var(--ok); border-color: var(--ok); }
 .chip.warn { color: var(--warn); border-color: var(--warn); }
 .chip.none { color: var(--muted); }
+.paircode { display: none; margin: 10px 0; padding: 14px 16px; border: 1px dashed var(--ok); border-radius: 8px; background: var(--panel2); }
+.paircode.show { display: block; }
+.paircode .code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 26px; letter-spacing: 4px; color: var(--ok); word-break: break-all; }
+.paircode .ttl { margin-top: 6px; font-size: 13px; color: var(--muted); }
 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
 .dot.ok { background: var(--ok); } .dot.off { background: var(--muted); }
 .auditlist { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 6px 12px; max-height: 300px; overflow: auto; }
@@ -106,7 +110,7 @@ label.fld input { flex: 1; }
 </head>
 <body>
 <header>
-  <h1>dsh-notifier 管理台<small>v0.6.5</small></h1>
+  <h1>dsh-notifier 管理台<small>v0.7.1</small></h1>
   <span id="loadState"></span>
   <button id="tokenState" title="点击输入或更换访问 token"></button>
   <button id="btnRefresh">刷新</button>
@@ -116,6 +120,7 @@ label.fld input { flex: 1; }
   <button class="tabbtn" data-tab="bindings">绑定矩阵</button>
   <button class="tabbtn" data-tab="sessions">会话</button>
   <button class="tabbtn" data-tab="channels">通道</button>
+  <button class="tabbtn" data-tab="members">成员</button>
   <button class="tabbtn" data-tab="notify">通知</button>
 </nav>
 <main>
@@ -165,6 +170,44 @@ label.fld input { flex: 1; }
     <div id="channelCards"></div>
   </section>
 
+  <section id="tab-members" class="tabsec">
+    <p class="muted small">v0.7 身份成员（inbound:bindings）：谁能驱动入站（会话/审批/命令）。<b>YAML allowUsers 只做首次导入</b>（origin=migrated），此后增删改以此页为准——运行中宿主半秒内热生效，无需重启。首位成员即 owner；owner 独占铸码/撤码/删成员/改角色，末位 owner 不可删不可降。成员换号：旧号在 IM 里发 /unpair，新号持新配对码 /pair。</p>
+    <div class="stats">
+      <div class="stat"><b id="mCount">–</b><span>成员</span></div>
+      <div class="stat"><b id="mOwners">–</b><span>owner</span></div>
+      <div class="stat"><b id="mPending">–</b><span>待确认绑定</span></div>
+    </div>
+    <div id="mGuided" class="msg show warn" hidden>引导态：绑定表为空。宿主启动日志（stderr）有一枚引导配对码，任意通道私聊机器人发送 /pair &lt;码&gt; 即成为 owner（首位成功者单胜，码随之作废）。</div>
+    <h3>成员表</h3>
+    <table>
+      <thead><tr><th style="width:90px">渠道</th><th>身份 id</th><th>备注</th><th style="width:100px">角色</th><th style="width:150px">配对时间</th><th style="width:150px">最近活跃</th><th style="width:70px">操作</th></tr></thead>
+      <tbody id="membersBody"></tbody>
+    </table>
+    <h3>配对码</h3>
+    <div class="row">
+      <input id="pairLabel" placeholder="备注（可选，≤64 字，核销时带上）" style="max-width:260px">
+      <select id="pairTtl">
+        <option value="10">10 分钟</option>
+        <option value="30">30 分钟</option>
+        <option value="60">1 小时</option>
+        <option value="1440">24 小时</option>
+      </select>
+      <button id="btnMint">生成配对码</button>
+      <span id="pairMsg" class="inline"></span>
+    </div>
+    <div id="pairCodeBox" class="paircode" hidden></div>
+    <table>
+      <thead><tr><th style="width:110px">id</th><th style="width:90px">来源</th><th style="width:80px">状态</th><th style="width:150px">铸造时间</th><th style="width:110px">剩余时效</th><th>备注</th><th style="width:70px">操作</th></tr></thead>
+      <tbody id="pairingBody"></tbody>
+    </table>
+    <h3>待确认绑定</h3>
+    <p class="muted small">扫码授权 / 订阅事件学到的身份（origin=learned）在此收口：确认即转正为成员，忽略即丢弃。 </p>
+    <table>
+      <thead><tr><th style="width:90px">渠道</th><th>身份 id</th><th style="width:110px">来源</th><th style="width:150px">发现时间</th><th style="width:150px">操作</th></tr></thead>
+      <tbody id="pendingBody"></tbody>
+    </table>
+  </section>
+
   <section id="tab-notify" class="tabsec">
     <p class="muted small">本页开着的浏览器收<b>系统桌面通知</b>（macOS 通知中心 / Windows Toast / Linux 通知服务）：事件流实时推送全部广播结果；页面不可见或最小化时弹系统通知，可见时只进下方日志。偏好保存在浏览器 localStorage；权限被拒后需在浏览器站点设置里重新允许。</p>
     <div class="stats">
@@ -192,7 +235,7 @@ label.fld input { flex: 1; }
 'use strict'
 var TOKEN_KEY = 'dsh-admin-token'
 var SCAN_TYPES = ['qq', 'dingtalk', 'feishu']
-var state = { overview: null, bindings: null, sessions: null, channels: null }
+var state = { overview: null, bindings: null, sessions: null, channels: null, members: null }
 var draft = null
 var scanTimers = {}
 var flashTimer = null
@@ -277,11 +320,11 @@ function inboundTypes() {
 }
 function loadAll() {
   setLoading(true)
-  return Promise.all([api('/api/overview'), api('/api/bindings'), api('/api/sessions'), api('/api/channels')])
+  return Promise.all([api('/api/overview'), api('/api/bindings'), api('/api/sessions'), api('/api/channels'), api('/api/members')])
     .then(function (rs) {
-      state.overview = rs[0]; state.bindings = rs[1]; state.sessions = rs[2]; state.channels = rs[3]
+      state.overview = rs[0]; state.bindings = rs[1]; state.sessions = rs[2]; state.channels = rs[3]; state.members = rs[4]
       draft = null
-      renderDashboard(); renderBindings(); renderSessions(); renderChannels()
+      renderDashboard(); renderBindings(); renderSessions(); renderChannels(); renderMembers()
       flash('已刷新 ' + new Date().toLocaleTimeString(), 'ok')
     })
     .catch(function (e) { flash('加载失败：' + errText(e), 'err') })
@@ -535,6 +578,9 @@ function cardHtml(c) {
   var scan = c.direction === 'inbound' && SCAN_TYPES.indexOf(c.type) >= 0
     ? '<button data-scan="' + esc(c.type) + '">扫码授权</button>' : ''
   var key = c.type + '|' + c.direction
+  // v0.7（审查 #8）：testChannel 语义是出站连通性自检——入站凭证行按钮换文案，
+  // 不再让用户误以为它能验证入站链路是否可用
+  var testLabel = c.direction === 'inbound' ? '连通性自检（出站）' : '测试发送'
   var controls = ro
     ? '<span class="muted small">只读：出站 webhook 走 YAML bootstrap（cordis.patch.yml channels）——'
       + esc(c.type) + ':account 键域归入站机器人凭证，网页写入会破坏扫码凭证</span>'
@@ -546,7 +592,7 @@ function cardHtml(c) {
     + (keys.length > 0 && !ro
       ? '<p class="muted small">值为 *** 的字段视为未修改，提交时自动剔除；带 * 为必填（空值不提交）。</p>' : '')
     + '<div class="row">' + controls
-    + '<button data-test="' + esc(key) + '">测试发送</button>' + scan + '</div>'
+    + '<button data-test="' + esc(key) + '" title="验证该渠道的出站链路连通性（入站凭证是否可用需在 IM 端实际收发验证）">' + esc(testLabel) + '</button>' + scan + '</div>'
     + '<div class="inline" data-cmsg="' + esc(key) + '"></div>'
     + '<div class="inline" data-smsg="' + esc(c.type) + '"></div>'
     + '</div></div>'
@@ -589,10 +635,10 @@ function saveChannel(key, btn) {
         return
       }
       // 热更新边界：store 凭证在下次插件启动时并入运行时（YAML ⊕ store 合并）；
-      // 入站扫码凭证同理，通道启动/重连在下次启动时发生——可先点「测试发送」即时验通。
+      // v0.7（审查 #8）：不再引导用户用出站自检去“验证”入站凭证——语义分开说清
       setStatus(msg, direction === 'inbound'
-        ? '凭证已保存（state.json，0600）；通道在插件下次启动时启用/重连，可先点「测试发送」验证'
-        : '凭证已保存（state.json，0600）；出站在插件下次启动时并入运行时（YAML ⊕ store 合并），可先点「测试发送」验证', 'ok')
+        ? '凭证已保存（state.json，0600）；入站通道在插件下次启动时启用/重连。入站是否可用请在 IM 端实际发消息验证'
+        : '凭证已保存（state.json，0600）；出站在插件下次启动时并入运行时（YAML ⊕ store 合并），可点「测试发送」验证出站链路', 'ok')
     })
     .catch(function (e) { setStatus(msg, '保存失败：' + errText(e), 'err') })
     .then(function () { btn.disabled = false; btn.textContent = old })
@@ -672,6 +718,156 @@ function onChannelsClick(ev) {
   if (head) {
     var body = head.parentNode.querySelector('.card-body')
     if (body) body.hidden = !body.hidden
+  }
+}
+
+// ---------- 成员页（v0.7）：身份绑定表 + 配对码生命周期 + 待确认绑定 ----------
+function fmtRemain(ms) {
+  var s = Math.floor(ms / 1000)
+  if (s <= 0) return '已过期'
+  var m = Math.floor(s / 60)
+  if (m >= 60) return Math.floor(m / 60) + ' 时 ' + (m % 60) + ' 分'
+  return m + ' 分 ' + (s % 60) + ' 秒'
+}
+var pairCountdownTimer = null
+function stopPairCountdown() {
+  if (pairCountdownTimer) { clearInterval(pairCountdownTimer); pairCountdownTimer = null }
+  var box = $('#pairCodeBox')
+  if (box) { box.hidden = true; box.className = 'paircode' }
+}
+function showPairCode(r) {
+  var box = $('#pairCodeBox')
+  box.innerHTML = '<div class="code">' + esc(r.code) + '</div>'
+    + '<div class="ttl">有效期至 ' + esc(fmtTime(r.expiresAt)) + '（<span data-remain></span>）——码面仅此一次展示，关闭后不可找回；发给用户私聊命令：/pair ' + esc(r.code) + '</div>'
+  box.hidden = false
+  box.className = 'paircode show'
+  stopPairCountdown()
+  var remain = box.querySelector('[data-remain]')
+  pairCountdownTimer = setInterval(function () {
+    var left = Number(r.expiresAt) - Date.now()
+    if (left <= 0) { stopPairCountdown(); return }
+    remain.textContent = '剩余 ' + fmtRemain(left)
+  }, 1000)
+  remain.textContent = '剩余 ' + fmtRemain(Number(r.expiresAt) - Date.now())
+}
+function mintPairingCode() {
+  var btn = $('#btnMint')
+  var msg = $('#pairMsg')
+  var body = { ttlMin: Number($('#pairTtl').value) || 10 }
+  var label = $('#pairLabel').value.trim()
+  if (label !== '') body.label = label
+  btn.disabled = true
+  api('/api/pairing', { method: 'POST', body: body })
+    .then(function (r) {
+      var res = plain(r)
+      showPairCode(res)
+      var ttlText = body.ttlMin >= 60 ? Math.floor(body.ttlMin / 60) + ' 小时内有效' : body.ttlMin + ' 分钟内有效'
+      setStatus(msg, '已铸造（id ' + (res.id || '') + '）。' + ttlText + '，单次核销。', 'ok')
+      return loadMembersOnly()
+    })
+    .catch(function (e) { setStatus(msg, '铸造失败：' + errText(e), 'err') })
+    .then(function () { btn.disabled = false })
+}
+function loadMembersOnly() {
+  return api('/api/members').then(function (r) { state.members = r; renderMembers() })
+    .catch(function (e) { flash('成员数据刷新失败：' + errText(e), 'err') })
+}
+function renderMembers() {
+  var m = plain(state.members)
+  var members = Array.isArray(m.members) ? m.members : []
+  var pending = Array.isArray(m.pending) ? m.pending : []
+  var codes = Array.isArray(m.pairingCodes) ? m.pairingCodes : []
+  $('#mCount').textContent = String(members.length)
+  $('#mOwners').textContent = String(members.filter(function (r) { return plain(r).role === 'owner' }).length)
+  $('#mPending').textContent = String(pending.length)
+  $('#mGuided').hidden = m.guided !== true
+  $('#membersBody').innerHTML = members.map(function (row) {
+    var r = plain(row)
+    return '<tr>'
+      + '<td><span class="chip ' + (r.role === 'owner' ? 'warn' : 'ok') + '">' + esc(r.channel) + '</span></td>'
+      + '<td class="mono" title="' + esc(r.key) + '">' + esc(r.userId) + '</td>'
+      + '<td><input data-mlabel="' + esc(r.key) + '" value="' + esc(r.label || '') + '" placeholder="备注" style="max-width:160px"></td>'
+      + '<td><select data-mrole="' + esc(r.key) + '">'
+      + '<option value="member"' + (r.role !== 'owner' ? ' selected' : '') + '>member</option>'
+      + '<option value="owner"' + (r.role === 'owner' ? ' selected' : '') + '>owner</option>'
+      + '</select></td>'
+      + '<td>' + esc(fmtTime(r.pairedAt)) + '</td>'
+      + '<td>' + (Number(r.lastSeenAt) > 0 ? esc(fmtTime(r.lastSeenAt)) : '—') + '</td>'
+      + '<td><button class="danger" data-mdel="' + esc(r.key) + '">删除</button></td>'
+      + '</tr>'
+  }).join('') || '<tr><td colspan="7" class="empty">暂无成员。引导态下宿主启动日志（stderr）有引导码：用户私聊机器人发送 /pair &lt;码&gt; 即成首位 owner。</td></tr>'
+  $('#pairingBody').innerHTML = codes.map(function (row) {
+    var r = plain(row)
+    var left = Number(r.expiresAt) - Date.now()
+    return '<tr>'
+      + '<td class="mono">' + esc(r.id || '') + '</td>'
+      + '<td>' + esc(r.origin || '') + '</td>'
+      + '<td><span class="chip ' + (r.state === 'active' ? 'ok' : 'warn') + '">' + esc(r.state || '') + '</span></td>'
+      + '<td>' + esc(fmtTime(r.mintedAt)) + '</td>'
+      + '<td>' + esc(fmtRemain(left)) + '</td>'
+      + '<td>' + esc(r.label || '') + '</td>'
+      + '<td><button class="danger" data-prevoke="' + esc(r.id) + '">撤销</button></td>'
+      + '</tr>'
+  }).join('') || '<tr><td colspan="7" class="empty">无在铸配对码。生成一枚发给要接入的成员（单次核销，过期作废）。</td></tr>'
+  $('#pendingBody').innerHTML = pending.map(function (row) {
+    var r = plain(row)
+    return '<tr>'
+      + '<td><span class="chip none">' + esc(r.channel) + '</span></td>'
+      + '<td class="mono">' + esc(r.userId) + '</td>'
+      + '<td>' + esc(r.origin || 'learned') + '</td>'
+      + '<td>' + esc(fmtTime(r.at)) + '</td>'
+      + '<td><button data-pconfirm="' + esc(r.key) + '">确认转正</button>'
+      + ' <button class="danger" data-pdismiss="' + esc(r.key) + '">忽略</button></td>'
+      + '</tr>'
+  }).join('') || '<tr><td colspan="5" class="empty">暂无待确认绑定（扫码/订阅学到的新身份会出现在这里）。</td></tr>'
+}
+function memberKeyOf(el, attr) { return el.getAttribute(attr) || '' }
+function onMembersChange(ev) {
+  var labelKey = ev.target.getAttribute && ev.target.getAttribute('data-mlabel')
+  var roleKey = ev.target.getAttribute && ev.target.getAttribute('data-mrole')
+  if (labelKey !== null && labelKey !== undefined && labelKey !== '' && ev.target.getAttribute('data-mlabel')) {
+    api('/api/members/' + encodeURIComponent(labelKey), { method: 'PUT', body: { label: ev.target.value } })
+      .then(function () { flash('备注已更新', 'ok'); return loadMembersOnly() })
+      .catch(function (e) { flash('备注更新失败：' + errText(e), 'err') })
+    return
+  }
+  if (roleKey) {
+    api('/api/members/' + encodeURIComponent(roleKey), { method: 'PUT', body: { role: ev.target.value } })
+      .then(function () { flash('角色已更新', 'ok'); return loadMembersOnly() })
+      .catch(function (e) { flash('角色更新失败：' + errText(e), 'err'); return loadMembersOnly() })
+  }
+}
+function onMembersClick(ev) {
+  var btn = ev.target.closest ? ev.target.closest('button') : null
+  if (!btn) return
+  if (btn.id === 'btnMint') { mintPairingCode(); return }
+  var delKey = memberKeyOf(btn, 'data-mdel')
+  if (delKey) {
+    if (!window.confirm('删除成员 ' + delKey + '？该身份立即失去入站权限（运行中宿主半秒内生效）。')) return
+    api('/api/members/' + encodeURIComponent(delKey), { method: 'DELETE' })
+      .then(function () { flash('已删除成员 ' + delKey, 'ok'); return loadMembersOnly() })
+      .catch(function (e) { flash('删除失败：' + errText(e), 'err') })
+    return
+  }
+  var revokeId = memberKeyOf(btn, 'data-prevoke')
+  if (revokeId) {
+    api('/api/pairing/' + encodeURIComponent(revokeId), { method: 'DELETE' })
+      .then(function () { flash('已撤销配对码 ' + revokeId, 'ok'); return loadMembersOnly() })
+      .catch(function (e) { flash('撤销失败：' + errText(e), 'err') })
+    return
+  }
+  var confirmKey = memberKeyOf(btn, 'data-pconfirm')
+  if (confirmKey) {
+    api('/api/members/' + encodeURIComponent(confirmKey) + '/confirm', { method: 'POST' })
+      .then(function () { flash('已确认转正 ' + confirmKey, 'ok'); return loadMembersOnly() })
+      .catch(function (e) { flash('确认失败：' + errText(e), 'err') })
+    return
+  }
+  var dismissKey = memberKeyOf(btn, 'data-pdismiss')
+  if (dismissKey) {
+    api('/api/members/' + encodeURIComponent(dismissKey) + '/dismiss', { method: 'POST' })
+      .then(function () { flash('已忽略 ' + dismissKey, 'ok'); return loadMembersOnly() })
+      .catch(function (e) { flash('操作失败：' + errText(e), 'err') })
   }
 }
 
@@ -835,6 +1031,9 @@ function init() {
   $('#tab-bindings').addEventListener('click', onBindingsClick)
   $('#tab-sessions').addEventListener('click', onSessionsClick)
   $('#tab-channels').addEventListener('click', onChannelsClick)
+  // v0.7 成员页事件委托（R5 审查 R5-2-P1-1：首版漏挂——铸码/删成员/撤码/转正/忽略/改角色整页死键）
+  $('#tab-members').addEventListener('click', onMembersClick)
+  $('#tab-members').addEventListener('change', onMembersChange)
   initNotifyTab()
   renderTokenState()
   loadAll()

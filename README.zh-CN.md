@@ -10,10 +10,10 @@
 ![Cordis](https://img.shields.io/badge/Cordis-%E6%8F%92%E4%BB%B6%E5%BC%80%E5%8F%91-FF6B6B?style=flat-square)
 ![零依赖](https://img.shields.io/badge/%E9%9B%B6%E4%BE%9D%E8%B5%96-000000?style=flat-square)
 ![双语](https://img.shields.io/badge/%E5%8F%8C%E8%AF%AD%E6%96%87%E6%A1%A3-EN%2F%E7%AE%80%E4%BD%93-00A98F?style=flat-square)
-![渠道](https://img.shields.io/badge/channels-25%2B-00B4D8?style=flat-square)
+![渠道](https://img.shields.io/badge/channels-27-00B4D8?style=flat-square)
 
 ![npm version](https://img.shields.io/npm/v/dsh-notifier?style=flat-square&logo=npm&logoColor=white)
-![tests](https://img.shields.io/badge/tests-718-brightgreen?style=flat-square)
+![tests](https://img.shields.io/badge/tests-797-brightgreen?style=flat-square)
 ![license](https://img.shields.io/badge/license-MIT-brightgreen?style=flat-square)
 ![awesome-dsh-plugin](https://img.shields.io/badge/awesome--dsh--plugin-%E5%AE%98%E6%96%B9%E6%94%B6%E5%BD%95-00B4D8?style=flat-square)
 ![omdsh workshop](https://img.shields.io/badge/omdsh-workshop-7C3AED?style=flat-square)
@@ -22,15 +22,15 @@
 ![沉默](https://img.shields.io/badge/%E6%B2%89%E9%BB%98-%E6%B0%B8%E4%B8%8D%E6%89%B9%E5%87%86-9C27B0?style=flat-square)
 ![推送](https://img.shields.io/badge/push%20it-real%20good-FF4081?style=flat-square)
 
-面向 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（DSH）的统一通知推送插件 —— 前端一个极简 `notify()` API，背后 25+ 渠道。
+面向 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（DSH）的统一通知推送插件 —— 前端一个极简 `notify()` API，背后 27 个渠道。
 
-你的 agent 和宿主本身都能经它推送：会话事件（`turn/end` · `approval/asked` · `agent/error`）自动通知，模型可直接调用 `notify` 工具，六条入站通道把审批与对话从手机带回。v0.3 加入本机网页控制台与多 agent 路由，v0.4 加入系统桌面通知，v0.5 把手机升级成指挥中心——长任务心跳、疑似卡住提醒、通知卡片自带停止按钮——全程零运行时依赖。
+你的 agent 和宿主本身都能经它推送：会话事件（`turn/end` · `approval/asked` · `agent/error`）自动通知，模型可直接调用 `notify` 工具，六条入站通道把审批与对话从手机带回。v0.3 加入本机网页控制台与多 agent 路由，v0.4 加入系统桌面通知，v0.5 把手机升级成指挥中心——长任务心跳、疑似卡住提醒、通知卡片自带停止按钮，v0.7 把「谁是家里人」从不透明 YAML 字符串升级为运行时身份体系——配对码准入、复合键绑定、管理台成员页——全程零运行时依赖。
 
 ## 工作原理
 
 ```
 DSH Agent ─notify() 工具───────┐
-                               ├─▶ notifier 核心 ─▶ 25+ 渠道（IM webhook / 推送 App / 国内生态）
+                               ├─▶ notifier 核心 ─▶ 27 个渠道（IM webhook / 推送 App / 国内生态）
 DSH 会话事件 ─自动推送──────────┘   分级路由 · 分档重试 · 长消息分段 · 防打扰 · 账本
                                    心跳 ⏱ / 卡住 ⚠（v0.5）──▶ 卡片自带 ⏹ 停止按钮
 你的手机 ─6 条入站通道──────────▶   远程审批（按钮 · 回复 1/2） · 远程会话（followup/inject/steer）
@@ -40,12 +40,13 @@ DSH 会话事件 ─自动推送──────────┘   分级路由
 
 ## 界面预览
 
-Web 管理台（`admin.enabled: true`，仅绑 127.0.0.1；v0.5 起移动端自适应）五页实拍（演示数据）：
+Web 管理台（`admin.enabled: true`，仅绑 127.0.0.1；v0.5 起移动端自适应）六页实拍（演示数据）：
 
 | 页面 | 内容 |
 |---|---|
 | **Dashboard 总览** | 会话统计、出/入站通道健康分组、最近审计 |
 | **通知页**（v0.4.0） | SSE 事件流实时推送、系统通知偏好、事件日志 |
+| **成员页**（v0.7.0） | 身份绑定（角色/备注/配对时间）、配对码铸造与撤销、待确认绑定收口 |
 | **绑定矩阵** | agent × 通道勾选网格、入站通道默认 agent |
 | **会话台账** | 每会话出站解析与覆盖编辑 |
 | **通道管理** | 全部渠道凭证建单（处处脱敏 `***`）、测试发送、扫码授权 |
@@ -56,11 +57,17 @@ Web 管理台（`admin.enabled: true`，仅绑 127.0.0.1；v0.5 起移动端自�
 ![Sessions](docs/screenshots/admin-sessions.png)
 ![Channels](docs/screenshots/admin-channels.png)
 
+**配对实拍——空白名单下首位 /pair 者成为 owner（v0.7.0）：**
+
+![配对成功——首位成员成为 owner](docs/screenshots/pairing-success.jpg)
+
 ## 快速开始
 
 ```bash
-dsh plugin add dsh-notifier
+dsh plugin add dsh-notifier --profile <profile-name>
 ```
+
+> `--profile` 必填（DSH 0.1.0-rc.6 起）：插件安装需指定目标 profile——填你实际运行的那个（如 `web`）。
 
 把渠道加进你的 profile patch（`cordis.patch.yml`）：
 
@@ -87,14 +94,15 @@ insert:
 | 功能 | 说明 |
 |---|---|
 | **双触发线** | 自动状态推送（`turn/end` · `approval/asked` · `agent/error`）+ 模型侧 `notify` 工具。 |
-| **25+ 渠道** | Telegram / Slack / Discord / 飞书 / 钉钉 / 企微 / QQ 机器人 / OneBot / Teams / Mattermost / Google Chat / Bark / Pushover / PushDeer / Chanify / ntfy / Gotify / iGot / WxPusher / PushPlus / Server酱 / Qmsg / 息知 / webhook / bell —— 零运行时依赖。 |
+| **27 个渠道** | Telegram / Slack / Discord / 飞书 / 钉钉 / 企微 / 企微应用 / QQ 机器人 / OneBot / Teams / Mattermost / Google Chat / Bark / Pushover / PushDeer / Chanify / ntfy / Gotify / iGot / WxPusher / PushPlus / Server酱 / Qmsg / 息知 / webhook / bell / 桌面通知 —— 零运行时依赖。 |
 | **分级路由** | `timeSensitive` / `active` / `passive` → 各渠道原生送达语义（静默推送、优先级标头、@提醒），配分档重试。 |
 | **远程审批** | 手机上回答审批 —— Telegram 按钮、飞书卡片、QQ / WxPusher / 微信 iLink / 钉钉回复 `1`/`2`。沉默永不批准。 |
 | **远程会话** | 与 agent 对话：纯文本 → `followup`/`inject`，`!` 前缀中途纠偏，合并窗拼回手机碎片输入。 |
 | **移动指挥中心**（v0.5.0） | 长任务心跳（默认 15min 起）与疑似卡住提醒（默认 10min 无事件）；Telegram / 飞书卡片自带 ⏹ 停止按钮（HMAC 一次性 token，与审批同一信任链）；`/quiet`·`/unquiet` 在手机上静默/恢复会话推送。 |
-| **开放事件源**（v0.6.0） | 其他插件经 `notifier` 服务推送（`ctx.inject(['notifier'], …)`——共享配置、路由、账本、限流、flush），并可 `ctx.on('dsh-notifier/sent')` 订阅每次广播结果。按源独立限流（默认 10/分钟）、2 万码点钳制、永不 reject 的 API；消费方契约见 [PLUGINS.md](PLUGINS.md)。 |
+| **开放事件源**（v0.6.0） | 其他插件经 `notifier` 服务推送（`export const inject = ['notifier']`——共享配置、路由、账本、限流、flush），并可 `ctx.on('dsh-notifier/sent')` 订阅每次广播结果。按源独立限流（默认 10/分钟）、2 万码点钳制、永不 reject 的 API；消费方契约见 [PLUGINS.md](PLUGINS.md)。 |
+| **身份体系**（v0.7.0） | 「谁能驱动入站」成为运行时对象：配对码准入（任意通道私聊 `/pair <码>`，首位核销者成为 owner）、复合键绑定（`channel:userId`——TG 绑定的 id 不再放行飞书消息）、角色管理（末位 owner 不可删不可降）、拒绝回执（未绑定者收到含自身身份与配对指引的回执）。空白名单引导态启动（bootstrap 码在 stderr），不再拒绝启动。 |
 | **多 agent 路由**（v0.3.2） | agent × 通道双向矩阵；会话创建即建档；`/agent` 命令族 + `route.mjs` CLI。 |
-| **Web 管理台**（v0.3.3） | 仅绑 127.0.0.1 + Bearer token；五页 —— 总览 / 通知 / 绑定 / 会话 / 通道；v0.5 起 ≤768px 移动端自适应。 |
+| **Web 管理台**（v0.3.3） | 仅绑 127.0.0.1 + Bearer token；六页 —— 总览 / 通知 / 成员（v0.7）/ 绑定 / 会话 / 通道；v0.5 起 ≤768px 移动端自适应。 |
 | **扫码授权**（v0.3.1） | QQ / 钉钉 / 飞书一条命令官方扫码授权（微信保持 iLink）。 |
 | **桌面通知**（v0.4.0） | `desktop` 原生渠道（`osascript` / `notify-send` / PowerShell toast）+ 管理台 SSE 实时流。 |
 | **长消息分段** | 超出预算的消息按序切成带 `（i/n）` 前缀的多段。 |
@@ -128,7 +136,7 @@ insert:
 
 | 模块 | 用途 | 键 |
 |---|---|---|
-| `inbound` | 远程审批 + 远程会话 | `allowUsers: [...]` |
+| `inbound` | 远程审批 + 远程会话 | `allowUsers: [...]`（v0.7 起仅做首次导入；此后经管理台或 `/pair` 运行时管理成员） |
 | `approval` | 超时、编号回复、升级提醒 | `mode: answer` |
 | `conversation` | 合并窗、steer 前缀 | `mergeWindowMs: 1500` |
 | `route` | 多 agent 路由 | `sessionTtlHours: 24` |
@@ -175,13 +183,13 @@ v0.5 状态上报线默认值：`longRunning` 与 `stall` **默认开**（15min 
 
 <!-- CHANNEL-MATRIX-END -->
 
-另有六个渠道开启入站（远程审批 + 远程会话）：`telegram`、`feishu`、`qq-bot`、`wxpusher`、`wechat`、`dingtalk` —— 长连接或长轮询，无需公网 IP（仅 WxPusher 回调需要公网可达）。v0.5 起 telegram 与 feishu 额外承载通知动作卡片（停止按钮）。
+另有六个渠道开启入站（远程审批 + 远程会话）：`telegram`、`feishu`、`qq-bot`、`wxpusher`、`wechat`、`dingtalk` —— 长连接或长轮询，无需公网 IP（仅 WxPusher 回调需要公网可达）。v0.5 起 telegram 与 feishu 额外承载通知动作卡片（停止按钮）。v0.7 起每条入站通道响应 `/help` `/whoami` `/pair` `/unpair` 注册命令，出站卡片目标走三级优先解析（该通道绑定 → 通道配置清单 → 全局回落）并按渠道做 id 形状守卫。
 
 ## 架构
 
 ```
 src/
-  adapters/           25+ 渠道适配器（resolve(cfg) + send(msg)）+ 声明式 spec 引擎
+  adapters/           27 个渠道适配器（resolve(cfg) + send(msg)）+ 声明式 spec 引擎
   config.mjs          渠道注册表 + 配置 schema —— 矩阵唯一事实来源
   index.mjs           插件装配：patch、工具、事件监听、admin 接线
   event-listener.mjs  自动推送线（防抖、去重、分级路由）+ v0.5 状态线接线
@@ -189,13 +197,14 @@ src/
   actions.mjs         v0.5 通知动作分发（turn/cancel，HMAC 一次性 token）
   notify.mjs          notify / notify_test 工具 + 滑动窗口限流
   routing/            多 agent 矩阵（resolveOutbound / resolveInbound）
-  inbound/            六条入站通道（telegram/feishu/qq/wxpusher/wechat/dingtalk）
+  inbound/            六条入站通道（telegram/feishu/qq/wxpusher/wechat/dingtalk）+ v0.7 身份栈
+                      （identity.mjs 绑定 · pairing.mjs 配对码 · commands.mjs 注册命令 · target-guard.mjs 目标解析）
   approval/           HMAC 一次性 token、去重、升级
-  admin/              网页控制台（5 页、SSE、bearer 鉴权、移动端自适应）
+  admin/              网页控制台（6 页、SSE、bearer 鉴权、移动端自适应）
   ledger.mjs          JSONL 账本 + 每日摘要
   rules.mjs           防打扰闸门（事件 / 关键词 / 宽限窗）
 scripts/              channel-login.mjs · test-channel.mjs · route.mjs · gen-channel-matrix.mjs
-test/                 673 个测试（node --test）
+test/                 797 个测试（node --test）
 ```
 
 设计准则：纯 ESM（`.mjs`）、零运行时依赖、绝大多数渠道走声明式 spec 引擎、适配器薄而诚实、无构建步骤。
@@ -203,7 +212,7 @@ test/                 673 个测试（node --test）
 ## 开发
 
 ```bash
-npm test          # node --test，673 个用例
+npm test          # node --test，797 个用例
 ```
 
 新增渠道：在 `src/adapters/` 实现适配器接口（`resolve(cfg)` + `send(msg)`），并在 `src/config.mjs` 注册；上方渠道矩阵由 `node scripts/gen-channel-matrix.mjs` 自动重生成。

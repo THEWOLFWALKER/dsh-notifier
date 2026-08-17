@@ -5,6 +5,14 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { apply } from '../src/index.mjs'
 
+// 真机残留 state 隔离（R6 审查 P1，2026-08-17 真机 796/1 事故）：
+// defaultStateDir() 读 $DSH_HOME → 在宿主真机跑过 dsh 的机器上
+// ~/.dsh/dsh-notifier/state.json 携带扫码凭证/绑定表，未显式传 stateDir 的 apply()
+// 经凭证回退读到真机残留——「无凭证不注册审批」断言当场翻车（沙箱无残留恒绿，
+// mock 盲区又一例）。文件加载即整文件隔离：DSH_HOME 指向一次性空目录。
+// node --test 每文件独立进程，不会泄漏到其他测试文件。
+process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-notifier-test-home-'))
+
 function bootCtx() {
   const warnings = []
   const listeners = {}
@@ -73,14 +81,15 @@ test('apply: inbound 白名单 + approval 配置 → 注册 approval/request；s
   assert.ok(warnings.some((w) => /未启动.*telegram/i.test(w) === false))
 })
 
-test('apply: approval 配置但白名单为空 → 只 warn 不注册（默认全拒）', () => {
+test('apply: approval 配置但无任何入站通道凭证 → 只 warn 不注册（无回传通道可承载裁决）', () => {
   const { ctx, listeners, warnings } = bootCtx()
   apply(ctx, {
     channels: [{ type: 'webhook', url: 'http://127.0.0.1:1/hook' }],
     approval: { mode: 'answer' },
   })
   assert.equal(listeners['approval/request'], undefined)
-  assert.ok(warnings.some((w) => /allowUsers 为空.*远程审批未启动/.test(w)))
+  // v0.7 文案变更：空名单不再是问题（引导态），无通道凭证才是
+  assert.ok(warnings.some((w) => /没有任何入站通道凭证.*远程审批未启动/.test(w)))
 })
 
 test('apply: 未配置 inbound/approval → 不注册 approval/request，零额外副作用', () => {

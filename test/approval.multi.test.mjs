@@ -36,7 +36,7 @@ test('_contract：buildApprovalAction / parseApprovalAction 互逆（approvalKey
 test('_contract：新契约实例透传（notifyTargets 字符串化、异常归一）', async () => {
   const raw = {
     channel: 'feishu',
-    notifyTargets: () => [{ chatId: 'oc1', userId: 'ou1' }, { chatId: 42 }],
+    notifyTargets: () => [{ chatId: 'oc_chat001', userId: 'ou1' }, { chatId: 42 }],
     sendApprovalCard: async () => { throw new Error('boom') },
     editResolved: async () => { throw new Error('boom') },
     sendText: async () => { throw new Error('boom') },
@@ -44,7 +44,7 @@ test('_contract：新契约实例透传（notifyTargets 字符串化、异常归
   const entry = normalizeInbound(raw)
   assert.equal(entry.channel, 'feishu')
   assert.deepEqual(entry.notifyTargets(), [
-    { chatId: 'oc1', userId: 'ou1' },
+    { chatId: 'oc_chat001', userId: 'ou1' },
     { chatId: '42', userId: '42' }, // userId 缺省回落 chatId
   ])
   assert.equal(await entry.sendApprovalCard({}), null) // 抛错 → null（caller 降级）
@@ -102,7 +102,7 @@ function makeFake(channel, { targets = [], failCards = false, failEdit = false }
 function makeRig({ interactive = [], telegram = null, approvalConfig = {}, router = null, channels = undefined } = {}) {
   const store = createStore(tempPath())
   const vault = createTokenVault({ secret: 'multi-secret' })
-  const bus = createInboundBus({ allowUsers: ['u1', 'u2', 'u3'], store, vault })
+  const bus = createInboundBus({ allowUsers: ['u1', 'u2', 'u3', '10001'], store, vault })
   const handlers = {}
   const ctx = {
     on: (event, handler) => {
@@ -126,8 +126,8 @@ function makeRig({ interactive = [], telegram = null, approvalConfig = {}, route
 }
 
 test('router 多通道：飞书+QQ 各收到卡片；广播文案含两渠道显示名', async () => {
-  const feishu = makeFake('feishu', { targets: [{ chatId: 'oc1', userId: 'u1' }] })
-  const qq = makeFake('qq', { targets: [{ chatId: 'op1', userId: 'u2' }] })
+  const feishu = makeFake('feishu', { targets: [{ chatId: 'oc_chat001', userId: 'u1' }] })
+  const qq = makeFake('qq', { targets: [{ chatId: 'opengrp01', userId: 'u2' }] })
   const rig = makeRig({ interactive: [feishu, qq] })
   const outcome = rig.handle()
   await new Promise((resolve) => setTimeout(resolve, 30))
@@ -147,13 +147,13 @@ test('router 多通道：飞书+QQ 各收到卡片；广播文案含两渠道显
 })
 
 test('router 多通道：编号回复跨通道裁决；editResolved 按通道路由到各自实例', async () => {
-  const feishu = makeFake('feishu', { targets: [{ chatId: 'oc1', userId: 'u1' }] })
-  const qq = makeFake('qq', { targets: [{ chatId: 'op1', userId: 'u2' }] })
+  const feishu = makeFake('feishu', { targets: [{ chatId: 'oc_chat001', userId: 'u1' }] })
+  const qq = makeFake('qq', { targets: [{ chatId: 'opengrp01', userId: 'u2' }] })
   const rig = makeRig({ interactive: [feishu, qq] })
   const outcome = rig.handle()
   await new Promise((resolve) => setTimeout(resolve, 30))
   // QQ 渠道用户回复 1（编号回复降级：无 token，走 decideTrusted）
-  const accepted = rig.bus.accept({ channel: 'qq', userId: 'u2', chatId: 'op1', messageId: 'msg:1:op1', text: '1' })
+  const accepted = rig.bus.accept({ channel: 'qq', userId: 'u2', chatId: 'opengrp01', messageId: 'msg:1:opengrp01', text: '1' })
   assert.equal(accepted.ok, true)
   assert.equal(await outcome, 'allowed-once')
   // 两渠道的卡片都要被改成已批准态，且 target 带各自 messageId
@@ -167,11 +167,11 @@ test('router 多通道：编号回复跨通道裁决；editResolved 按通道路
 })
 
 test('router 多通道：首达采纳——编号回复后按钮再点返回 already-resolved', async () => {
-  const qq = makeFake('qq', { targets: [{ chatId: 'op1', userId: 'u2' }] })
+  const qq = makeFake('qq', { targets: [{ chatId: 'opengrp01', userId: 'u2' }] })
   const rig = makeRig({ interactive: [qq] })
   const outcome = rig.handle()
   await new Promise((resolve) => setTimeout(resolve, 30))
-  rig.bus.accept({ channel: 'qq', userId: 'u2', chatId: 'op1', messageId: 'msg:1:op1', text: '2' })
+  rig.bus.accept({ channel: 'qq', userId: 'u2', chatId: 'opengrp01', messageId: 'msg:1:opengrp01', text: '2' })
   assert.equal(await outcome, 'rejected')
   const card = qq.state.cards[0]
   const verdict = rig.bus.decide({
@@ -187,8 +187,8 @@ test('router 多通道：首达采纳——编号回复后按钮再点返回 alr
 })
 
 test('router 多通道：单渠道卡片失败降级——pushedTo 只剩成功渠道，广播只提成功渠道', async () => {
-  const feishu = makeFake('feishu', { targets: [{ chatId: 'oc1', userId: 'u1' }], failCards: true })
-  const qq = makeFake('qq', { targets: [{ chatId: 'op1', userId: 'u2' }] })
+  const feishu = makeFake('feishu', { targets: [{ chatId: 'oc_chat001', userId: 'u1' }], failCards: true })
+  const qq = makeFake('qq', { targets: [{ chatId: 'opengrp01', userId: 'u2' }] })
   const rig = makeRig({ interactive: [feishu, qq] })
   const outcome = rig.handle()
   await new Promise((resolve) => setTimeout(resolve, 30))
@@ -209,11 +209,11 @@ test('router 多通道：单渠道卡片失败降级——pushedTo 只剩成功�
 })
 
 test('router 多通道：editResolved 抛错被吞（回执尽力而为）', async () => {
-  const qq = makeFake('qq', { targets: [{ chatId: 'op1', userId: 'u2' }], failEdit: true })
+  const qq = makeFake('qq', { targets: [{ chatId: 'opengrp01', userId: 'u2' }], failEdit: true })
   const rig = makeRig({ interactive: [qq] })
   const outcome = rig.handle()
   await new Promise((resolve) => setTimeout(resolve, 30))
-  rig.bus.accept({ channel: 'qq', userId: 'u2', chatId: 'op1', messageId: 'msg:1:op1', text: '1' })
+  rig.bus.accept({ channel: 'qq', userId: 'u2', chatId: 'opengrp01', messageId: 'msg:1:opengrp01', text: '1' })
   assert.equal(await outcome, 'allowed-once') // 编辑失败不影响裁决结果
   rig.dispose()
 })
@@ -221,8 +221,9 @@ test('router 多通道：editResolved 抛错被吞（回执尽力而为）', asy
 test('router 兼容：deps.telegram 旧入口（v0.2.0 形状）仍走单通道路径', async () => {
   const edits = []
   const telegram = {
-    // userId 落白名单（u1）：v0.6.3 编号回复只认卡片送达过的渠道+用户
-    notifyChatIds: () => ['u1'],
+    // userId 落白名单（10001，TG chat id 数字形态——v0.7 形状守卫后假 id 必须用真形态）：
+    // v0.6.3 编号回复只认卡片送达过的渠道+用户
+    notifyChatIds: () => ['10001'],
     sendApprovalCard: async (payload) => ({ messageId: 7, payload }),
     editResolved: async (chatId, messageId, text) => { edits.push([chatId, messageId, text]) },
     sendText: async () => true,
@@ -233,7 +234,7 @@ test('router 兼容：deps.telegram 旧入口（v0.2.0 形状）仍走单通道�
   assert.match(rig.broadcasts[0].content, /Telegram 已发可点按钮/)
   // 用编号回复路径裁决（legacy 假实例未记录卡片 payload，无法走按钮 token）。
   // 卡片送达过 telegram（pushedTo）→ telegram 白名单用户的 1 可裁决
-  rig.bus.accept({ channel: 'telegram', userId: 'u1', chatId: 'u1', messageId: 'm1', text: '1' })
+  rig.bus.accept({ channel: 'telegram', userId: '10001', chatId: '10001', messageId: 'm1', text: '1' })
   assert.equal(await outcome, 'allowed-once')
   assert.equal(edits.length, 1) // legacy editResolved(chatId, messageId, text) 3 参签名被正确调用
   assert.equal(edits[0][1], 7)
@@ -241,8 +242,8 @@ test('router 兼容：deps.telegram 旧入口（v0.2.0 形状）仍走单通道�
 })
 
 test('router 多通道：无按钮通道（capabilities.buttons=false，如 QQ 官方机器人）文案分流', async () => {
-  const feishu = makeFake('feishu', { targets: [{ chatId: 'oc1', userId: 'u1' }] })
-  const qq = makeFake('qq', { targets: [{ chatId: 'op1', userId: 'u2' }] })
+  const feishu = makeFake('feishu', { targets: [{ chatId: 'oc_chat001', userId: 'u1' }] })
+  const qq = makeFake('qq', { targets: [{ chatId: 'opengrp01', userId: 'u2' }] })
   qq.capabilities = { buttons: false } // QQ 官方机器人：无通用交互按钮卡片
   const rig = makeRig({ interactive: [feishu, qq] })
   const outcome = rig.handle()
@@ -253,7 +254,7 @@ test('router 多通道：无按钮通道（capabilities.buttons=false，如 QQ �
   // 无按钮通道照常收到审批推送（文本通知形态，sendApprovalCard 契约不变）
   assert.equal(qq.state.cards.length, 1)
   // QQ 用户用编号回复裁决
-  rig.bus.accept({ channel: 'qq', userId: 'u2', chatId: 'op1', messageId: 'msg:1:op1', text: '1' })
+  rig.bus.accept({ channel: 'qq', userId: 'u2', chatId: 'opengrp01', messageId: 'msg:1:opengrp01', text: '1' })
   assert.equal(await outcome, 'allowed-once')
   rig.dispose()
 })
@@ -272,7 +273,7 @@ test('router 多通道：无交互渠道时广播退化为纯编号回复话术'
 })
 
 test('router 多通道：intended 兜底正路径——分流渠道卡片发送失败，广播教过的编号回复仍可裁决（v0.6.4 R1-P2-1）', async () => {
-  const feishu = makeFake('feishu', { targets: [{ chatId: 'oc1', userId: 'u1' }], failCards: true })
+  const feishu = makeFake('feishu', { targets: [{ chatId: 'oc_chat001', userId: 'u1' }], failCards: true })
   const telegram = makeFake('telegram', { targets: [{ chatId: '42', userId: 'u3' }] })
   const router = { resolveOutbound: () => ({ channelTypes: ['feishu'], quiet: false, source: 'agent-exact' }) }
   const rig = makeRig({ interactive: [feishu, telegram], router })
@@ -284,14 +285,14 @@ test('router 多通道：intended 兜底正路径——分流渠道卡片发送�
   // 广播照发（全失败话术），教了「回复 1 批准 / 2 拒绝」
   assert.match(rig.broadcasts[0].content, /回复 1 批准 \/ 2 拒绝/)
   // 意图渠道上白名单用户回复 1 → intended 兜底命中（堵住「卡片失败 + 广播教回复」死路）
-  const accepted = rig.bus.accept({ channel: 'feishu', userId: 'u1', chatId: 'oc1', messageId: 'msg:i:1', text: '1' })
+  const accepted = rig.bus.accept({ channel: 'feishu', userId: 'u1', chatId: 'oc_chat001', messageId: 'msg:i:1', text: '1' })
   assert.equal(accepted.ok, true)
   assert.equal(await outcome, 'allowed-once')
   rig.dispose()
 })
 
 test('router 多通道：intended 收紧对照——非意图渠道的裸 1 仍拒绝（跨渠道不兜底）', async () => {
-  const feishu = makeFake('feishu', { targets: [{ chatId: 'oc1', userId: 'u1' }], failCards: true })
+  const feishu = makeFake('feishu', { targets: [{ chatId: 'oc_chat001', userId: 'u1' }], failCards: true })
   const telegram = makeFake('telegram', { targets: [{ chatId: '42', userId: 'u3' }] })
   const router = { resolveOutbound: () => ({ channelTypes: ['feishu'], quiet: false, source: 'agent-exact' }) }
   const rig = makeRig({ interactive: [feishu, telegram], router })
@@ -306,7 +307,7 @@ test('router 多通道：intended 收紧对照——非意图渠道的裸 1 仍�
 })
 
 test('router 多通道：空集回落全局广播——agent 绑定解析为空集时不再零卡零广播（v0.6.5 R4-1-P3-5）', async () => {
-  const feishu = makeFake('feishu', { targets: [{ chatId: 'oc1', userId: 'u1' }] })
+  const feishu = makeFake('feishu', { targets: [{ chatId: 'oc_chat001', userId: 'u1' }] })
   const router = { resolveOutbound: () => ({ channelTypes: [], quiet: false, source: 'agent-exact' }) }
   const rig = makeRig({ interactive: [feishu], router })
   const outcome = rig.handle({ toolName: 'bash', callId: 'call-e', agent: { id: 'agent-1' } })
@@ -315,7 +316,7 @@ test('router 多通道：空集回落全局广播——agent 绑定解析为空�
   assert.equal(feishu.state.cards.length, 1)
   assert.equal(rig.broadcasts.length, 1)
   // intendedChannels=null（全局语义）：卡片已送达 feishu，编号回复照常可裁决
-  rig.bus.accept({ channel: 'feishu', userId: 'u1', chatId: 'oc1', messageId: 'msg:e:1', text: '2' })
+  rig.bus.accept({ channel: 'feishu', userId: 'u1', chatId: 'oc_chat001', messageId: 'msg:e:1', text: '2' })
   assert.equal(await outcome, 'rejected')
   rig.dispose()
 })

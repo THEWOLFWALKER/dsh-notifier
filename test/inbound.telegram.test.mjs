@@ -188,7 +188,7 @@ test('长轮询：message 文本走 bus.accept（白名单+去重由 bus 负责�
         ok: true,
         result: [{
           update_id: 11,
-          message: { message_id: 5, text: '在吗', from: { id: 42 }, chat: { id: 42 } },
+          message: { message_id: 5, text: '在吗', from: { id: 42 }, chat: { id: 42, type: 'private' } },
         }],
       }
     },
@@ -199,7 +199,7 @@ test('长轮询：message 文本走 bus.accept（白名单+去重由 bus 负责�
   await tg.stop()
   assert.equal(accepted.length, 1)
   assert.deepEqual(accepted[0], {
-    channel: 'telegram', userId: '42', chatId: '42', messageId: 'msg:5:42', text: '在吗',
+    channel: 'telegram', userId: '42', chatId: '42', chatType: 'private', messageId: 'msg:5:42', text: '在吗',
   })
   const updates = calls.filter((call) => call.method === 'getUpdates')
   assert.ok(updates.length >= 1)

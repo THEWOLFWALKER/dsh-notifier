@@ -10,6 +10,7 @@ import { createHash } from 'node:crypto'
 import { createWxpusherInbound, resolveWxpusherInboundConfig } from '../src/inbound/wxpusher-callback.mjs'
 import { createInboundBus } from '../src/inbound/bus.mjs'
 import { createStore } from '../src/inbound/store.mjs'
+import { createIdentity } from '../src/inbound/identity.mjs'
 
 const SEND_ENDPOINT = 'https://wxpusher.zjiecode.com/api/send/message'
 
@@ -206,6 +207,41 @@ test('app_subscribe：学习 uid 绑定落 store；extra 透传记录', async ()
   assert.ok(row !== undefined)
   assert.equal(row.extra, 'bind-code-9')
   assert.ok(rig.lines.some((line) => line.includes('UID_1 已订阅')))
+  await rig.inbound.stop()
+})
+
+test('v0.7 学习键汇流：identity 装配时 app_subscribe uid 进待确认绑定（管理台收口）', async () => {
+  const rig = makeRig()
+  const identity = createIdentity({ store: rig.store })
+  rig.inbound = createWxpusherInbound({
+    config: { appToken: 'AT', webhookPath: '/hook/secret123', host: '127.0.0.1', port: 0, notifyUids: [], allowedIps: [] },
+    bus: rig.bus, store: rig.store, identity, logger: { warn: () => {} }, fetchImpl: () => Promise.resolve(jsonResponse({ code: 1000 })),
+  })
+  liveInbounds.push(rig.inbound)
+  rig.inbound.start()
+  await tick()
+  await post(rig, { action: 'app_subscribe', data: { uid: '990011', extra: 'scan-qr' } })
+  const pending = identity.listPending()
+  assert.equal(pending.length, 1, '订阅 uid 进待确认绑定')
+  assert.equal(pending[0].key ?? `${pending[0].channel}:${pending[0].userId}`, 'wxpusher:990011')
+  assert.equal(pending[0].origin, 'learned')
+  // 幂等：重复订阅事件不产生重复条目
+  await post(rig, { action: 'app_subscribe', data: { uid: '990011' } })
+  assert.equal(identity.listPending().length, 1)
+  // 已是成员：不进待确认（addPending 查绑定表拒绝 already-bound；allowUsers 不是绑定）
+  identity.addBinding({ channel: 'wxpusher', userId: 'UID_1' })
+  await post(rig, { action: 'app_subscribe', data: { uid: 'UID_1' } })
+  assert.equal(identity.listPending().some((entry) => entry.userId === 'UID_1'), false)
+  await rig.inbound.stop()
+})
+
+test('v0.7 学习键汇流：identity 未装配时保持旧行为（只落 wxpusher:bind 不入待确认）', async () => {
+  const rig = makeRig()
+  rig.inbound.start()
+  await tick()
+  await post(rig, { action: 'app_subscribe', data: { uid: '990011' } })
+  assert.ok(rig.store.get('wxpusher:bind:990011') !== undefined)
+  assert.equal(rig.store.get('inbound:pending'), undefined, '未装配 identity 不写待确认表')
   await rig.inbound.stop()
 })
 

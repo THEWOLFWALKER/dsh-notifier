@@ -34,6 +34,13 @@ function makeApi(overrides = {}, { latencyMs = 0 } = {}) {
     testChannel: { via: 'testChannel', healthy: true },
     scanChannel: { via: 'scanChannel', qr: 'QR-CONTENT' },
     getAudit: { via: 'getAudit', entries: [] },
+    getMembers: { via: 'getMembers', guided: false, members: [], pending: [], pairingCodes: [] },
+    putMember: { via: 'putMember', saved: true },
+    deleteMember: { via: 'deleteMember', deleted: true },
+    confirmPendingMember: { via: 'confirmPendingMember', confirmed: true },
+    dismissPendingMember: { via: 'dismissPendingMember', dismissed: true },
+    mintPairingCode: { via: 'mintPairingCode', id: 'abcd1234', code: 'ABCDEFGH', expiresAt: 0 },
+    revokePairingCode: { via: 'revokePairingCode', revoked: true },
   }
   for (const [name, result] of Object.entries(results)) {
     api[name] = async (...args) => {
@@ -467,4 +474,82 @@ test('XSS 回归：UI 渲染层 esc() 行为与覆盖面（innerHTML 拼接必�
   for (const probe of ['esc(fmtTime(r.time))', 'esc(row.title)', "esc(c.type)", 'esc(id)']) {
     assert.ok(ADMIN_UI_HTML.includes(probe), `渲染层必须包含 ${probe}`)
   }
+})
+
+// ---------------------------------------------------------------- v0.7 成员/配对码路由（鉴权 + 参数透传 + 错误映射）
+
+test('v0.7 路由：成员与配对码七条路由全挂载，鉴权先行（无 token 401，错误 token 401）', async () => {
+  await withServer({}, async (rig) => {
+    const routes = [
+      { method: 'GET', path: '/api/members' },
+      { method: 'PUT', path: '/api/members/feishu%3Aou_1', body: { label: 'x' } },
+      { method: 'DELETE', path: '/api/members/feishu%3Aou_1' },
+      { method: 'POST', path: '/api/members/feishu%3Aou_1/confirm' },
+      { method: 'POST', path: '/api/members/feishu%3Aou_1/dismiss' },
+      { method: 'POST', path: '/api/pairing', body: { ttlMin: 10 } },
+      { method: 'DELETE', path: '/api/pairing/abcd1234' },
+    ]
+    for (const route of routes) {
+      assert.equal((await call(rig, route.path, { method: route.method, body: route.body, token: null })).status, 401,
+        `${route.method} ${decodeURIComponent(route.path)} 无 token 必 401`)
+      assert.equal((await call(rig, route.path, { method: route.method, body: route.body, token: 'wrong' })).status, 401,
+        `${route.method} ${decodeURIComponent(route.path)} 错 token 必 401`)
+    }
+    // 正确 token：全部 200 且命中对应 api 方法
+    for (const route of routes) {
+      const response = await call(rig, route.path, { method: route.method, body: route.body })
+      assert.equal(response.status, 200, `${route.method} ${decodeURIComponent(route.path)} 正确 token 应 200`)
+    }
+    const names = rig.calls.map((entry) => entry.name)
+    assert.deepEqual(names.sort(), [
+      'confirmPendingMember', 'deleteMember', 'dismissPendingMember', 'getMembers',
+      'mintPairingCode', 'putMember', 'revokePairingCode',
+    ])
+  })
+})
+
+test('v0.7 路由：:key/:id 参数解码透传（URL 编码的复合键与配对码 id）', async () => {
+  await withServer({}, async (rig) => {
+    await call(rig, '/api/members/feishu%3Aou_user01', { method: 'PUT', body: { role: 'owner' } })
+    assert.deepEqual(rig.calls.at(-1).args, ['feishu:ou_user01', { role: 'owner' }], '复合键解码后透传')
+
+    await call(rig, '/api/pairing/abcd1234', { method: 'DELETE' })
+    assert.deepEqual(rig.calls.at(-1).args, ['abcd1234'])
+
+    await call(rig, '/api/pairing', { method: 'POST', body: { ttlMin: 30, label: '新成员' } })
+    assert.deepEqual(rig.calls.at(-1).args, [{ ttlMin: 30, label: '新成员' }], 'JSON body 解析后透传')
+  })
+})
+
+test('v0.7 路由：ApiError status 映射（422/404/501）与错误形状 { error }', async () => {
+  const statusOf = (status) => async (...args) => { throw apiError(status, `boom-${args.length}`) }
+  await withServer({ apiOverrides: {
+    putMember: statusOf(422),
+    deleteMember: statusOf(404),
+    mintPairingCode: statusOf(501),
+    confirmPendingMember: statusOf(409),
+  } }, async (rig) => {
+    const cases = [
+      { method: 'PUT', path: '/api/members/k', body: {}, expected: 422 },
+      { method: 'DELETE', path: '/api/members/k', expected: 404 },
+      { method: 'POST', path: '/api/pairing', body: {}, expected: 501 },
+      { method: 'POST', path: '/api/members/k/confirm', expected: 409 },
+    ]
+    for (const item of cases) {
+      const response = await call(rig, item.path, { method: item.method, body: item.body })
+      assert.equal(response.status, item.expected)
+      const body = await jsonOf(response)
+      assert.match(body.error, /^boom-/)
+    }
+  })
+})
+
+test('v0.7 路由：路径段数不匹配 404（/api/members/:key/confirm 后再多一段不命中任何路由）', async () => {
+  await withServer({}, async (rig) => {
+    assert.equal((await call(rig, '/api/members/a/b/c/d')).status, 404)
+    assert.equal((await call(rig, '/api/pairing/abc/extra')).status, 404)
+    assert.equal((await call(rig, '/api/members/feishu%3Aou_1/reject', { method: 'POST' })).status, 404,
+      '未知子动作 reject 不是路由')
+    assert.equal(rig.calls.length, 0, '未命中路由不触碰 api 层')
+  })
 })

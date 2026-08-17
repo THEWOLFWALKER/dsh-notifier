@@ -2,22 +2,29 @@
 
 > 写给下一个 agent。本文档是完整的工作上下文快照：设计理念、军规约定、架构地图、
 > 版本脉络、审查记录、已知坑、待办清单。读完这一份即可无缝接手。
-> 交接时刻：2026-08-16，HEAD = `42d0323`（v0.6.4 已提交，718/718 测试全绿）。
+> 交接时刻：2026-08-16，v0.7.0（身份体系）代码与文档已完成、797/797 全绿，R5 审查循环已收口（复审零 P1/P2）。
+> 上一稳定发布位 v0.6.5 = `b2d23c0`（npm 与 GitHub 发布位 `0221d1e` 已对齐）。
+
+> **📌 文档线交接留言（2026-08-17，主 agent）**：
+> 你们副本里那五项文档修复（README 安装命令 `--profile`、渠道数 27、admin 截图补齐、截图区文字、测试计数）在其副本内有效，但**权威仓库此前未含这些改动**——本轮已按你们结论在权威仓库落地（`--profile` 命令、27 渠道枚举、注入写法静态化 `export const inject`、配对实拍图）。两边文档现在应基本对齐。
+> **合并时注意一处策略分歧**：截图策略——你们补了 5 张 admin 真实截图（权威仓库已恢复引用并采用）；配对图 `pairing-success.jpg`（v0.7 引导态实拍，真机验证产物）是我补的，两边合并时保留即可。
+> 另：真机验证确认——引导态 bootstrap 码 → `/pair` → owner 全链路通过（DSH 0.1.0-rc.6, TG）。
 
 ---
 
 ## 0. 一句话
 
 dsh-notifier 是 DSH（一个 agent 宿主，cordis 插件体系）的统一通知推送插件：
-一个 `notify()` API 出多个渠道（telegram/feishu/qq/wxpusher/wechat/dingtalk/bark/...16+），
+一个 `notify()` API 出多个渠道（telegram/feishu/qq/wxpusher/wechat/dingtalk/bark/...27 = 12 专属 adapter + 15 spec 渠道），
 外加**远程审批**（agent 请求危险操作时推卡片到手机，点按钮/回复 1/2 远程裁决）、
 **远程会话**（手机上回复消息 inject 进 agent 会话）、**移动指挥中心**（长任务心跳/疑似卡住提醒/停止任务按钮）、
 **开放事件源**（其他插件经 notifier 服务推送 + 订阅 `dsh-notifier/sent` 事件）、
-**本机 Web 管理台**（凭证/路由/扫码授权，移动端适配）。
+**身份体系**（配对码准入/复合键绑定/运行时成员管理，v0.7）、
+**本机 Web 管理台**（凭证/路由/成员/扫码授权，移动端适配）。
 零运行时依赖（只用 fetch + node:crypto + 原生 WebSocket）。
 
 - 语言/运行时：Node.js ESM（.mjs），无 TypeScript，无构建步骤
-- 代码量：src+test+scripts ≈ 25,500 行；46 个测试文件，718 测试
+- 代码量：src+test+scripts ≈ 28,800 行；43 个测试文件，797 测试
 - 文档：README.md / README.zh-CN.md / ADAPTER.md（渠道接入规范）/ PLUGINS.md（插件互操作）/ docs/v0.5-design.md / docs/v0.6-design.md / CHANGELOG.md（最详细的历史）
 
 ---
@@ -26,11 +33,11 @@ dsh-notifier 是 DSH（一个 agent 宿主，cordis 插件体系）的统一通�
 
 | 项 | 状态 |
 |---|---|
-| 版本 | package.json = 0.6.4，CHANGELOG 已写，admin UI 版本串已同步 |
-| git | 工作区干净，全部已提交（`42d0323`） |
-| 测试 | `npm test` = **718 pass / 0 fail**（约 100~180s，串行跑） |
-| 发布 | v0.6.4 **未打 tag、未 git archive 打包**——用户上一个指令是「打包发布一个版本」，本次因额度耗尽改为交接，下一个 agent 应先完成发布动作 |
-| 真机验证 | v0.6.1 修过 TG 真机事故（见 §5）；v0.6.2~v0.6.4 的修复**尚未真机复验**（锁/读收敛/intended 兜底都是 mock 测不出全貌的） |
+| 版本 | package.json = 0.7.0，CHANGELOG 已写，admin UI 版本串（v0.7.0）、双语 README、HANDOFF 均已同步 |
+| git | v0.7.0 全部改动在工作区（identity/pairing/target-guard/commands 四新文件 + 六 adapter + admin 三件套 + 17 测试文件改动）；R5 审查循环已收口（复审零 P1/P2），待提交发版 |
+| 测试 | `npm test` = **797 pass / 0 fail**（约 110s，串行跑；v0.6.5 基线 733 → +64） |
+| 发布 | **发包前核对四处计数一致——README.md 徽章/正文、README.zh-CN.md 徽章/正文、HANDOFF.md、admin UI 版本串（src/admin/ui.mjs）——任何一处与实际不符先修再发**（v0.7 开发中 README.zh-CN.md 曾被写空 213→0 行，git 恢复后重建——文件操作后必须 wc -l 验证） |
+| 真机验证 | v0.6.1 修过 TG 真机事故（见 §5）；**v0.7 真机测试通过（2026-08-17，v0.7.0-realtest 包）**（v0.6.2~v0.6.5 的修复随 v0.7 包一并覆盖；若后续发现具体场景未覆盖，回补下方待办 3） |
 
 ---
 
@@ -84,12 +91,16 @@ src/
 ├── actions.mjs          # v0.5 动作分发器（ac: 回调 → turn/cancel 等，白名单动作面）
 ├── public.mjs           # v0.6 开放服务面（其他插件 push + dsh-notifier/sent 事件）
 ├── tool-register.mjs    # notify 工具注册给 agent
-├── adapters/            # 出站渠道（_engine 共享引擎；spec-channels.mjs 一个文件吃 16 个 JSON 规范渠道）
+├── adapters/            # 出站渠道（_engine 共享引擎；spec-channels.mjs 一个文件吃 15 个 JSON 规范渠道）
 ├── inbound/             # 入站（双向通道核心）
 │   ├── bus.mjs          # 入站总线：白名单+去重+审批 waiter+消息扇出（消费语义：true=停止扇出）
 │   ├── store.mjs        # state.json 持久化（§2.3 并发三层防御都在这）
 │   ├── tokens.mjs       # token vault（mint/verify，HMAC）
 │   ├── callback-refs.mjs# v0.6.2 短引用注册表（TG callback_data 64B 限制）
+│   ├── identity.mjs     # v0.7 身份绑定层（复合键绑定表/角色/待确认/迁移）
+│   ├── pairing.mjs      # v0.7 配对码状态机（六态/SHA-256/暴力锁出/bootstrap）
+│   ├── commands.mjs     # v0.7 注册命令（/help /whoami /pair /unpair）
+│   ├── target-guard.mjs # v0.7 目标解析三级优先 + 渠道形状守卫
 │   ├── conversation.mjs # 远程会话（入站消息 → agent 会话 inject）
 │   ├── telegram-bot.mjs / feishu-bot.mjs / qq-gw.mjs / wechat-ilink.mjs /
 │   │   dingtalk-stream.mjs / wxpusher-callback.mjs   # 各通道长连接/轮询实现
@@ -119,6 +130,8 @@ src/
 | v0.6.2 | 真机事故#2 | TG `callback_data` 64B 硬限 → BUTTON_DATA_INVALID 400。短引用注册表（`r:<8字符>`，单次核销+TTL 15min+FIFO 256） |
 | v0.6.3 | 首轮三路审查修复 | 11 项：审批 waiter 预注册竞态 / state 键级合并防互抹 / state 定期瘦身 / 空目标可见化 / 分段部分送达不整条重试 / 编号回复收紧到送达渠道 / 账本审计 0600 等 |
 | v0.6.4 | 二轮审查修复 | 6 项：跨进程写锁 / 损坏中止 / 读收敛 / 编号回复 intended 兜底（堵「卡片发送失败但广播教回复 1」死路）/ pushedTo 增量落账 / counter 随机起点 + bus.dispose() + dedup 清扫线联动 |
+| v0.6.5 | 三轮审查修复 | 20+ 项：ntfy 中文标题/chanify 路径两个 mock 盲区真机必炸 P1、onebot CQ 注入、锁 owner 校验、损坏自愈、putChannel 白名单、SSE 上限、审计轮转 |
+| v0.7.0 | 身份体系 | 「谁是家里人」从 YAML 字符串升为运行时对象：配对码六态（SHA-256 落盘+暴力锁出）、复合键绑定（修跨渠道串扰）、引导态启动（空白名单不再死路）、拒绝回执、注册命令 /pair /unpair、管理台成员页、目标解析三级优先+形状守卫。11 项 UX 审查全闭环，733→797（R5 审查修复后） |
 
 详见 CHANGELOG.md——每条都写了根因和审查编号，是理解「这个项目怕什么」的最好材料。
 
@@ -163,18 +176,15 @@ src/
 
 ## 7. 待办清单（下一个 agent 的行动项，按优先级）
 
-1. **发布 v0.6.4**（用户本想本轮做，被额度打断）：
-   - `git tag v0.6.4`
-   - 打发布包：项目惯例是 `git archive`（`git archive --format=zip --prefix=dsh-notifier/ v0.6.4 -o /workspace/dsh-notifier-v0.6.4.zip`，参考 v0.6.3 的做法）
-   - 若发布流程含 CHANGELOG 对比链接，补 `[0.6.4]: ...v0.6.3...HEAD` 链接（看文件尾有没有链接定义段）
-2. **第三轮 review**（用户原始意图「开启多轮 review」还没完）：建议主题——
-   - v0.6.4 修复质量复核（重点：锁的自旋等待在主线程 `Atomics.wait` 是否可接受；读收敛的 500ms 节流与 dirty 键语义）
-   - admin/ 域还没被专项审过（api.mjs 的输入校验、scan.mjs 的扫码状态机）
-   - adapters/spec-channels.mjs（16 渠道一文件，注入面/转义）
-3. **真机复验 v0.6.2~v0.6.4**：重点场景——TG 审批按钮点击（callback ref 展开链）、
-   CLI 改路由后宿主不重启秒级生效（读收敛）、两进程同时写 state.json（锁）。
+1. ~~发布 v0.6.4~~、~~第三轮 review（R4-1/R4-2/R4-3）~~、~~v0.6.5 发布~~：均已完成（见 CHANGELOG 0.6.5 条目）。
+2. **v0.7 身份体系**：代码+测试+文档全部落地（identity.mjs/pairing.mjs/commands.mjs/target-guard.mjs 四新文件；UX 审查 11 项全闭环；R5 三路审查 P1×6 P2×9 P3×21 修复 + 复审 R5b 零 P1/P2；797 全绿；**真机测试通过 2026-08-17**）。剩余：提交发版 v0.7.0（发布前按上方「发布」行核对四处计数）。
+3. ~~真机复验 v0.6.2~v0.7~~：**已通过（2026-08-17）**。重点场景备忘（若后续发现未覆盖再回补）——TG 审批按钮点击（callback ref 展开链）、
+   CLI 改路由后宿主不重启秒级生效（读收敛）、两进程同时写 state.json（锁）、
+   **新装机空 allowUsers 引导态**（stderr bootstrap 码 → IM 里 /pair → 成为 owner 全链路）、
+   TG 绑定 id 在飞书发消息被拒并收到拒绝回执（复合键）。
 4. **可选优化**（审查中提过但未做）：`act:*` 待决动作记录的 TTL 清扫已有（24h），
    但 callback-refs 注册表容量 256 偏保守，高峰期可能 FIFO 挤掉在途引用——真机观察到再调。
+   v0.8 评估项：YAML allowUsers 移除（v0.7 已 deprecated 为首次导入）。
 
 ---
 
@@ -182,7 +192,7 @@ src/
 
 ```bash
 cd dsh-notifier
-npm test                    # 718 测试，约 2 分钟
+npm test                    # 797 测试，约 2 分钟
 npm run lint 2>/dev/null || node --check src/index.mjs   # 无 lint 配置的话用 node --check
 node scripts/route.mjs --help        # 路由 CLI
 node scripts/channel-login.mjs --help

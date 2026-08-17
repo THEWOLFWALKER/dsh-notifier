@@ -12,6 +12,10 @@ import { join, resolve } from 'node:path'
 import { parseArgs, buildContext, runRouteCli, USAGE } from '../scripts/route.mjs'
 import { createStore } from '../src/inbound/store.mjs'
 
+// 缺省路径隔离（R6 审查同源）：buildContext 无 --state 时走 defaultStateDir()，
+// 会在真机 home 建 ~/.dsh/dsh-notifier/（污染用户目录）。整文件指向一次性空目录。
+process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-notifier-route-home-'))
+
 /** 完整 argv 形态（下标 2 起为命令，与 channel-login.mjs parseArgs 同约定）。 */
 const argvOf = (...parts) => ['node', 'route.mjs', ...parts]
 

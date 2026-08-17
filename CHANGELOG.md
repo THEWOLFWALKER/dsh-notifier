@@ -3,6 +3,91 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 SemVer。
 DSH 处于 developer preview，0.x 阶段的次版本号提升允许小幅破坏性变更（会在条目中标注）。
 
+## [0.7.1] - 2026-08-17
+
+> 真机环境适配修复 + 文档对账（docs 审查线 5 项 + 测试隔离 P1）。
+> 「797 全绿」自此在真机（存在 `~/.dsh` 残留 state 的机器）同样成立。
+
+### 修复：测试隔离（真机 796/1 事故，P1）
+
+- **index.test.mjs 未隔离默认 state 目录**：`defaultStateDir()` 读 `$DSH_HOME` → 在宿主真机跑过 dsh 的机器上，`~/.dsh/dsh-notifier/state.json` 携带扫码凭证/绑定表，未显式传 `stateDir` 的 `apply()` 经凭证回退读到真机残留——「无凭证不注册审批」断言当场翻车（沙箱无残留恒绿，mock 盲区又一例）。文件级修复：加载即设 `DSH_HOME` 指向一次性空目录（`node --test` 每文件独立进程，不泄漏其他测试文件）。修复前残留条件复现 10/1，修复后 11/11。
+- **route-cli.test.mjs 同源**：无 `--state` 的 `buildContext()` 会在真机 home 建 `~/.dsh/dsh-notifier/`（污染用户目录），同样整文件隔离。
+
+### 修复：文档对账（docs 审查线确认项，权威仓库同步落地）
+
+- **README 安装命令缺 `--profile`（P1）**：裸 `dsh plugin add dsh-notifier` 真机必报错；双语补 `--profile <profile-name>` 及一句说明。
+- **渠道计数 25+ → 27（P2）**：实际 12 专属 adapter + 15 spec 渠道 = 27；双语徽章/正文/架构图/目录树五处同步，枚举补 WeCom App（wecom-app）与 desktop。
+- **HANDOFF 计数（P2）**：「spec-channels 吃 16 个」实为 15；「16+ 渠道」实为 27。
+- **打包裂图根因**：v0.7.0 zip 排除了 `docs/screenshots/`，README 五处截图引用在包内裂图——截图随包分发（仓库内文件本就齐全，非仓库缺陷）。
+
+## [0.7.0] - 2026-08-16
+
+> 身份体系（v0.7 计划书全量落地）：把「谁是家里人」从 YAML 不透明字符串提升为运行时
+> 对象——配对码准入、复合键绑定、管理台成员页、目标解析三级优先、跨渠道串门双防线。
+> 11 项 UX 审查问题全部闭环；测试 733 → 797（+64），两处实现级 P1 在测试矩阵中当场抓获；
+> R5 三路审查（P1×6 P2×9 P3×21）修复后复审 R5b 零 P1/P2；真机测试通过（2026-08-17）。
+
+### 新增：身份绑定层（src/inbound/identity.mjs）
+
+- **复合键绑定表**（`inbound:bindings`，键 `<channel>:<userId>`）：修复跨渠道串扰的入站半边——TG 绑定的 id 不再放行飞书消息（UX 审查 #5）。读失败回退空对象（fail-open 读军规），坏形状整条丢弃、坏字段回退默认。
+- **角色系统**：首条绑定为 owner（含 bootstrap 单胜），其后为 member；owner 独占铸码/撤码/删成员/改角色；末位 owner 不可删不可降（管理台/API/命令三层同守卫）。
+- **YAML 迁移**：`allowUsers` 启动播撒为绑定记录（origin=migrated，幂等、只增不减），对每个已启用通道各播一条；此后增删以管理台为准（YAML deprecated，v0.8 评估移除）。
+- **待确认绑定**（`inbound:pending`）：订阅/扫码学到的身份（origin=learned）先进待确认区，管理台「确认」转正（origin=confirmed）或「忽略」丢弃。
+
+### 新增：配对码状态机（src/inbound/pairing.mjs）
+
+- **六态生命周期**：minted → active → redeemed / expired / revoked / locked；SHA-256 落盘（盘上只有哈希，码面仅在铸造响应/引导日志出现一次）；8 位 31 字符易读字母表（剔除 I/L/O/0/1）≈ 39.6 bit 熵；TTL 默认 10 分钟。
+- **用户级暴力防护**：滑动窗内同一 `channel:userId` 连续 5 次核销失败锁出 10 分钟（「连续错 5 次锁码」无法按码计数——错误尝试的哈希命不中任何条目，暴力防护的正确单位是用户）。
+- **注册命令**（/help /whoami /pair /unpair）：/pair 群聊拒答（码不消费，引导私聊）；/unpair 末位 owner 拒绝；命令回执尽力而为（失败只 warn）。
+- **引导态**：绑定表为空 + 凭证就绪时自动铸造 bootstrap 码（stderr 双写展示，10 分钟有效，首位 /pair 成功者成为 owner，码随核销作废；重铸替换旧码）。原「空 allowUsers 不启动」死路（UX 审查 #1）改为引导态启动：注册面开放（/pair），业务面全拒。
+- **拒绝回执**（UX 审查 #2/#3）：未绑定者的业务消息不再已读不回——回执含发送者自身身份 + 渠道维度 + 配对指引，60 秒节流；引导态裸消息回引导文案。伪造「1」不裁决任何等待中的审批（静默永不批准红线）。
+
+### 新增：管理台成员页（admin API 五方法 + UI Tab）
+
+- **API**：`GET /api/members`（三表聚合 + 引导态标记，读失败降级空表）、`PUT /api/members/:key`（改 label/role）、`DELETE /api/members/:key`、`POST /api/members/:key/confirm|dismiss`（待确认收口）、`POST /api/pairing`（铸码，码面只出现一次）、`DELETE /api/pairing/:id`（撤码）。守卫全表：501 未装配 / 422 键形状与字段校验（含 ttlMin 1-1440 整数、未知字段拒绝）/ 404 / 409（已是成员）。
+- **UI**：成员表（角色/备注/配对时间/最近活跃）、配对码区（铸码/撤码/在铸列表，码面只在铸造弹层出现）、待确认绑定区；与宿主共用同一 store 实例，增删半秒内热生效（无需重启）。
+
+### 新增：目标解析三级优先 + 形状守卫（src/inbound/target-guard.mjs）
+
+- **三级优先**（出站卡片目标，六通道 adapter 全接）：该通道绑定成员 → 通道配置清单（notifyUsers/allowUsers/notifyChatIds/notifyUids）→ 全局回落（仅当绑定表整体为空，纯兼容模式用户行为零变化）。绑定表非空但该通道零绑定零配置时宁可不发也不回落全局（跨渠道错发是 P1）。qq 群目标（notifyGroups）是渠道属性，绑定接管用户目标后群通知不消失。
+- **形状守卫**（发送前最后一道防线，两消费点：审批 router + 动作卡 event-listener）：按渠道校验 id 形态——TG 纯数字、飞书 ou_/oc_/on_ 前缀、wxpusher 数字 uid 为强形态；qq/wechat/dingtalk 宽松（宁可放过不可错杀——错杀真成员是 P1）；未知渠道 fail-open。
+- **学习键汇流**：wxpusher app_subscribe 订阅事件学到的 uid 进待确认绑定（identity 未装配保持旧行为）。
+- **密径持久化**：wxpusher webhookPath 未显式配置时首铸随机密径落 store（`wxpusher:webhookPath`），重启复用——原缺省每次启动随机换路径，用户已填进 WxPusher 控制台的回调 URL 立即失效；显式配置仍是用户意志。
+
+### 修复（本轮开发中由测试矩阵抓获）
+
+- **resolveNotifyTargets 字符串清单全过滤（P1）**：配置清单（feishu allowUsers / qq notifyUsers / wxpusher notifyUids）是原始 id 字符串数组，首版只按对象形态读——字符串元素全被 `chatId=''` 过滤清空，静默回落全局白名单（错发目标）。
+- **清单并集不去重（P3）**：users 与 groups 出现同一 id 时二级分支直拼数组会同卡双发；并入时按 chatId 去重。
+- **mintPairingCode ttlMin 布尔漏洞（P3）**：`Number(true)===1` 会把布尔值溜成合法分钟数；改为 typeof 守卫在前。
+- **测试 flaky 根治**：升级链测试的 50/80ms 双阶段夹 70ms 检查点在 CI 负载下越窗误报；窗口拉宽至 50/400ms 夹 150ms（语义不变）。
+
+### 修复：R5 三路审查（身份线/管理台线/六通道线，P1×6 P2×9 P3×21）
+
+- **形态表想象编码三处全错（P1，R5-3）**：TG 群/频道 id 恒为负数（-100…），原 `^\d+$` 把合法配置的群目标整体错杀；wxpusher 真实 UID 是 `UID_` 前缀，纯数字形态错杀全部订阅用户；feishu `un_` 不是发送侧 receiveIdType（必炸），从形态表剔除。教训固化：形态表必须与真实平台 id 对账，测试不得按同一想象书写（否则把错误锁成"绿测"）。
+- **migrate 无一次性标记（P1，R5-1）**：每次启动重播撒 YAML，「只增不减」退化为「管理台删除的成员重启后被复活」——删减权收归管理台单一入口的契约被推翻。落 `inbound:migrated` 标记后永不再播撒。
+- **迁移实例 ownerCount 恒 0（P2，R5-1）**：播撒记录全 member，违反「首位成员即 owner」契约且 bootstrap 永不铸造；空表首条播撒置 owner。播撒同时按渠道 id 形态过滤（TG 数字 id 不播给飞书）。
+- **管理台成员页整页死键（P1，R5-2）**：ui.mjs 首版漏挂事件委托——铸码/删成员/撤码/转正/忽略/改角色全部点不动；admin warn 未双写 stderr（dsh web profile 下 logger 不落 stdout，降级路径零可见）——与 v0.6.1 inbound 双写军规对齐。
+- **锁出窗口滑脱（P2，R5-1）**：只按滑窗计数判锁，「锁 10 分钟」承诺在最早一次失败滑出窗口的瞬间失效；lockedUntil 时间戳持久化，锁定时刻落盘后只看此刻。
+- **已绑定成员可被恶意烧码（P2，R5-1）**：/pair 先核销后判绑定会把单次码白白烧掉（任意已绑定成员可恶意提交有效码阻止新成员入伙）；改为先查身份短路，不触碰配对码。
+- **QQ C2C 回执不带 msg_id（P2，R5-3）**：走主动消息配额，真机大概率被平台 4xx 拒掉（mock fetch 不校验被动回复权限，单测测不出）；回执带 msg_id 走被动回复。
+- **引导态口径分裂（P2，R5-2）**：管理台只判 identity.isEmpty()，allowUsers 非空但整栈未启动的实例也亮「stderr 有引导码」——用户按提示翻日志永远翻不到；guidedProbe 探针注入，与 bus.isGuided 同口径。
+- **动作卡目标全拦截零告警（P2，R5-3）**：guardTargets 静默过滤后 event-listener 不知情；kept 为 0 且 targets 非空时 warn「请核对通知目标 id 形态」。
+- **契约 notifyTargets 未包裹（P2，R5-3）**：adapter 抛异常会击穿 _contract 归一层；try/catch 按空目标降级。
+- **撤销/锁定前缀撞车（P3，R5-1）**：8 位 id 前缀与终态条目撞车时 find 可能先命中终态条目，真正要处置的在铸码无法撤销；只在在铸（minted/active）条目中找。
+- **拒绝消息不进去重表（P3，R5-3）**：平台对未回执消息会重投，同一 messageId 每次重投都重走判定链（60s 节流只兜回执不兜 warn 刷屏）；拒绝路径同样 remember。
+- **状态文件有界化（P3）**：锁出表完全过期的旧条目写路径顺手清除（锁出中的条目绝不清除，安全语义优先）；待确认绑定 7 天 TTL 读路径清扫（陌生人扫码写入后无人确认，只增不减）。
+- **UI 铸码提示硬编码 10 分钟（P3）**：TTL 可选 10/30/60/1440 分钟，提示按实际选择展示；测试恒真断言改真断言。
+
+### 行为契约变更（0.x 允许，标注）
+
+- **YAML allowUsers 降级为首次导入**：迁移后删 YAML 用户不再生效（管理台是唯一删减入口）；不迁移的老实例行为不变（绑定表空 → 全局回落原样）。
+- **空 allowUsers + 凭证就绪 = 引导态启动**（原为不启动）：引导配对码在 stderr，首位绑定者成为 owner。
+- **wxpusher 随机密径跨重启稳定**（原每次重启换路径，需重填控制台回调地址）。
+
+### 测试
+
+- 全量 **797 pass / 0 fail**（node --test，约 110s；733 → 797，+64）。新增覆盖：identity 迁移/复合键/角色/待确认生命周期（含 7 天 TTL 清扫）、pairing 六态全表（哈希落盘/审计回调/锁出滑窗与有界化/bootstrap 重铸/终态清扫/大小写归一）、bus 引导态矩阵与红线（伪造审批不裁决/拒绝路径去重）、注册命令四条（群聊拒答/末位 owner/异常不上抛）、target-guard 三级矩阵（含字符串清单回归）+ 六渠道真实形态表、admin 五方法守卫全表 + 配对码脱敏 + 审计落盘 + guidedProbe 口径、HTTP 七路由鉴权与参数透传、学习键汇流（幂等/已是成员/未装配旧行为）、密径持久化（首铸/复用/显式优先）。
+
 ## [0.6.5] - 2026-08-16
 
 > 第三轮三路并行代码审查（R4-1 store/bus/审批 / R4-2 admin / R4-3 出站渠道）修复轮：

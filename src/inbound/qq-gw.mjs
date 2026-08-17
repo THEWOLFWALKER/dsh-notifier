@@ -14,6 +14,7 @@
 // （带 msg_id 关联事件）有独立配额，5 条内免主动消息权限。
 
 import { createTokenManager, createRateGate } from '../adapters/_tokens.mjs'
+import { resolveNotifyTargets } from './target-guard.mjs'
 
 const TOKEN_URL = 'https://bots.qq.com/app/getAppAccessToken'
 const DEFAULT_API_BASE = 'https://api.sgroup.qq.com'
@@ -79,7 +80,7 @@ function stripMention(content) {
  * @param {number} [options.reconnectCapMs=30000] - 重连退避上限
  */
 export function createQqInbound(options = {}) {
-  const { config, bus, fallbackTargets = [], logger = null } = options
+  const { config, bus, fallbackTargets = [], logger = null, identity = null } = options
   // 防御性兜底：绕过 resolveQqInboundConfig 直接构造时也保证 apiBase 可用
   const apiBase = (String(config?.apiBase ?? '').trim() || DEFAULT_API_BASE).replace(/\/+$/, '')
   const fetchImpl = options.fetchImpl ?? globalThis.fetch?.bind(globalThis)
@@ -214,7 +215,15 @@ export function createQqInbound(options = {}) {
         const text = String(d?.content ?? '').trim()
         if (messageId === '' || userId === '' || text === '') return
         targetKinds.set(userId, 'user')
-        bus.accept({ channel: 'qq', userId, chatId: userId, messageId, text })
+        // v0.7：accept 返回值消费——拒绝/命令回执不再已读不回。
+        // msg_id 必带（R5 审查 R5-3-P2-3：C2C 不带 msg_id 走主动消息额度，真机大概率被
+        // 平台 4xx 拒掉——mock fetch 不校验被动回复权限，单测测不出；带 msg_id 走被动回复）
+        const result = bus.accept({ channel: 'qq', userId, chatId: userId, messageId, text })
+        if (result?.reply !== undefined) {
+          postMessage(userId, String(result.reply), messageId).catch((error) => {
+            warn(`回执发送失败: ${error instanceof Error ? error.message : String(error)}`) // 回执失败不致命
+          })
+        }
         return
       }
       if (t === 'GROUP_AT_MESSAGE_CREATE') {
@@ -224,7 +233,13 @@ export function createQqInbound(options = {}) {
         const text = stripMention(d?.content)
         if (messageId === '' || userId === '' || chatId === '' || text === '') return
         targetKinds.set(chatId, 'group')
-        bus.accept({ channel: 'qq', userId, chatId, messageId, text })
+        // v0.7：群聊拒绝回执发回群（含「请私聊发送 /pair」引导）
+        const result = bus.accept({ channel: 'qq', userId, chatId, messageId, text })
+        if (result?.reply !== undefined) {
+          postMessage(chatId, String(result.reply), messageId).catch((error) => {
+            warn(`回执发送失败: ${error instanceof Error ? error.message : String(error)}`) // 回执失败不致命
+          })
+        }
         return
       }
     } catch (error) {
@@ -362,15 +377,17 @@ export function createQqInbound(options = {}) {
       startPromise = null
     },
 
-    /** 审批推送目标：notifyUsers（单聊）+ notifyGroups（群），缺省回落全局白名单（按单聊）。 */
+    /** 审批推送目标（v0.7 三级解析）：绑定成员 → notifyUsers → 全局回落（仅绑定表整体空）；
+     *  notifyGroups 是渠道属性（群通知）不是身份属性，无条件并入——绑定表接管用户
+     *  目标不等于群通知就此消失（v0.6 行为保留）。 */
     notifyTargets() {
-      const targets = []
-      for (const id of config.notifyUsers ?? []) targets.push({ chatId: id, userId: id })
-      for (const id of config.notifyGroups ?? []) targets.push({ chatId: id, userId: id })
-      if (targets.length === 0) {
-        for (const id of fallbackTargets.map(String)) targets.push({ chatId: id, userId: id })
-      }
-      return targets
+      return resolveNotifyTargets({
+        identity,
+        channel: 'qq',
+        configTargets: (Array.isArray(config.notifyUsers) ? config.notifyUsers : []).map(String),
+        fallbackTargets,
+        extraTargets: (Array.isArray(config.notifyGroups) ? config.notifyGroups : []).map(String),
+      })
     },
 
     /** 推审批文本通知（无按钮，回复 1/2 裁决）；失败 null 降级纯通知。 */

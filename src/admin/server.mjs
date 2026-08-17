@@ -52,7 +52,9 @@ function apiStatusOf(error) {
  * 创建 Web 管理台服务器（构造即建 server，listen 由 start() 触发）。
  * @param {object} options
  * @param {object} options.api - 管理台 API（overview/getBindings/putBindings/getSessions/patchSession/
- *                               getChannels/putChannel/testChannel/scanChannel/getAudit 十个方法）
+ *                               getChannels/putChannel/testChannel/scanChannel/getMembers/
+ *                               putMember/deleteMember/confirmPendingMember/dismissPendingMember/
+ *                               mintPairingCode/revokePairingCode/getAudit）
  * @param {(token: string) => boolean} options.verifyToken - Bearer token 校验（严格 === true 才放行）
  * @param {string} [options.host='127.0.0.1'] - 只绑本机回环（红线：永不绑公网）
  * @param {number} [options.port=8104] - 监听端口；0 = 随机可用端口（测试用）
@@ -67,7 +69,9 @@ function apiStatusOf(error) {
  */
 export function createAdminServer({ api, verifyToken, host = '127.0.0.1', port = 8104, ui = '', events = null, heartbeatMs = DEFAULT_HEARTBEAT_MS, logger } = {}) {
   const warn = (message) => {
+    // stderr 双写（R5 审查 R5-2-P1-2：与 api.mjs 同款纪律，web profile 下 logger 不落 stdout）
     try { logger?.warn?.('[dsh-notifier/admin:server]', message) } catch { /* 日志失败绝不致命 */ }
+    try { console.error('[dsh-notifier/admin:server]', message) } catch { /* 控制台不可用不致命 */ }
   }
   const htmlPage = ui === '' ? FALLBACK_UI : String(ui)
 
@@ -83,6 +87,14 @@ export function createAdminServer({ api, verifyToken, host = '127.0.0.1', port =
     { method: 'PUT', segments: ['api', 'channels', ':type'], handler: ({ params, body }) => api.putChannel(params.type, body.config ?? body) },
     { method: 'POST', segments: ['api', 'channels', ':type', 'test'], handler: ({ params }) => api.testChannel(params.type) },
     { method: 'POST', segments: ['api', 'scan', ':channel'], handler: ({ params }) => api.scanChannel(params.channel) },
+    // v0.7 成员与配对码（键形 "<channel>:<userId>"，冒号在路径段内合法——decodeSegment 已解 %3A）
+    { method: 'GET', segments: ['api', 'members'], handler: () => api.getMembers() },
+    { method: 'PUT', segments: ['api', 'members', ':key'], handler: ({ params, body }) => api.putMember(params.key, body) },
+    { method: 'DELETE', segments: ['api', 'members', ':key'], handler: ({ params }) => api.deleteMember(params.key) },
+    { method: 'POST', segments: ['api', 'members', ':key', 'confirm'], handler: ({ params }) => api.confirmPendingMember(params.key) },
+    { method: 'POST', segments: ['api', 'members', ':key', 'dismiss'], handler: ({ params }) => api.dismissPendingMember(params.key) },
+    { method: 'POST', segments: ['api', 'pairing'], handler: ({ body }) => api.mintPairingCode(body) },
+    { method: 'DELETE', segments: ['api', 'pairing', ':id'], handler: ({ params }) => api.revokePairingCode(params.id) },
     { method: 'GET', segments: ['api', 'audit'], handler: () => api.getAudit() },
     { method: 'GET', segments: ['api', 'events'], sse: true }, // v0.4.0 通知事件流（handle 内特判）
   ]

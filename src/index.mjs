@@ -11,6 +11,8 @@ import { createLedger, yesterdayWindow } from './ledger.mjs'
 // 阶段 4/5：inbound 回传栈（远程审批 + 会话路由）
 import { createStore, defaultStateDir } from './inbound/store.mjs'
 import { createTokenVault } from './inbound/tokens.mjs'
+import { createIdentity } from './inbound/identity.mjs'
+import { createPairing } from './inbound/pairing.mjs'
 import { createInboundBus } from './inbound/bus.mjs'
 import { createTelegramInbound } from './inbound/telegram-bot.mjs'
 import { createFeishuInbound, resolveFeishuInboundConfig } from './inbound/feishu-bot.mjs'
@@ -389,11 +391,28 @@ export function apply(ctx, config = {}) {
     ? inboundRaw.wxpusher : {}
   const wxAccount = adminEnabled ? accountOf('wxpusher:account') : null
   const wxMerged = { ...wxAccount, ...wxExplicit }
+  // v0.7 密径持久化：webhookPath 未显式配置时复用 store 首铸密径——缺省每次启动
+  // 随机换路径，用户已填进 WxPusher 控制台的回调 URL 立即失效（真机事故：每次
+  // 重启都要去控制台改地址）。首铸落盘 wxpusher:webhookPath；显式配置仍是用户意志。
+  let wxPathPersistNeeded = false
+  if (String(wxMerged.webhookPath ?? '').trim() === '') {
+    const persistedPath = store.get('wxpusher:webhookPath')
+    if (typeof persistedPath === 'string' && persistedPath.startsWith('/') && persistedPath.length > 1) {
+      wxMerged.webhookPath = persistedPath
+    } else {
+      wxPathPersistNeeded = true // 本次 resolve 生成新随机密径，成功后落盘复用
+    }
+  }
   const wxResolved = (Object.keys(wxExplicit).length > 0 || wxAccount !== null)
     ? resolveWxpusherInboundConfig(wxMerged)
     : null
   if (wxResolved !== null && !wxResolved.ok) warn(`inbound.wxpusher 跳过: ${wxResolved.reason}`)
   const wxOk = wxResolved?.ok === true
+  if (wxOk && wxPathPersistNeeded) {
+    try { store.set('wxpusher:webhookPath', wxResolved.config.webhookPath) } catch (error) {
+      warn(`wxpusher 密径持久化失败（下次重启将重新生成，需重填回调地址）: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
 
   // 微信 iLink inbound：显式配置 inbound.wechat（可为空对象）时启用；
   // 凭证优先取登录 CLI 落盘的 wechat:account（需先执行 node scripts/wechat-login.mjs）。
@@ -403,13 +422,86 @@ export function apply(ctx, config = {}) {
   const wechatWanted = wechatExplicit || (adminEnabled && accountOf('wechat:account') !== null)
   const wechatRaw = wechatExplicit ? inboundRaw.wechat : {}
 
-  if (allowUsers.length > 0 && (approvalWanted || inboundBotToken !== '' || feishuOk || qqOk || wxOk || wechatWanted || dingtalkOk)) {
+  // v0.7 身份层（计划书 §3.1/§3.2）：绑定表一等公民。YAML allowUsers 启动播撒为
+  // 绑定记录（origin:'migrated'，幂等、只增不减——删减权收归管理台单一入口）；
+  // 绑定表与 YAML 均空 = 引导态：六通道凭证就绪即启动，仅开放注册面（/pair 等）。
+  // identity/pairing 提升到外层作用域：admin（成员页/配对码）与 inbound 共用同一实例。
+  // 配对审计晚绑定：管理台在 inbound 之后装配，先入内存队（有界），装配后转发 admin-audit.jsonl；
+  // admin 未启用则排队丢弃（审计文件属管理台，不存在静默丢审记的口径问题）。
+  let pairingAuditSink = null
+  const pairingAuditBacklog = []
+  const identity = createIdentity({ store, logger })
+  const pairing = createPairing({
+    store,
+    logger,
+    onAudit: (event, detail) => {
+      try {
+        if (pairingAuditSink !== null) pairingAuditSink(`pairing:${event}`, detail)
+        else if (pairingAuditBacklog.length < 200) pairingAuditBacklog.push([`pairing:${event}`, detail])
+      } catch { /* 审计失败不致命 */ }
+    },
+  })
+  // wechat 不进迁移通道表：其凭证 resolve 在 inbound 块内才做（首启播撒到死通道会产生
+  // 永不生效的成员行；一次性迁移下首启正是唯一播撒机会——宁可少播，/pair 补齐）
+  const enabledInboundChannels = [
+    inboundBotToken !== '' ? 'telegram' : '',
+    feishuOk ? 'feishu' : '',
+    qqOk ? 'qq' : '',
+    wxOk ? 'wxpusher' : '',
+    dingtalkOk ? 'dingtalk' : '',
+  ].filter((name) => name !== '')
+  try {
+    const migrated = identity.migrate(allowUsers, enabledInboundChannels)
+    // info 助手带 console 回落（R5 审查 R5-2-P3-6：裸 logger?.info?. 在无 info 通道的宿主零可见）
+    if (migrated.added > 0) info(`白名单迁移：${migrated.added} 条绑定落盘（渠道：${enabledInboundChannels.join('/') || '无'}）`)
+    else if (migrated.skipped === true) info('白名单迁移：已标记完成（YAML 不再播撒，增删以管理台为准）')
+  } catch (error) {
+    warn(`身份绑定迁移失败（继续以既有绑定表运行）: ${error instanceof Error ? error.message : String(error)}`)
+  }
+  const guidedBoot = identity.isEmpty() && allowUsers.length === 0
+
+  // v0.7 启动门（修审查 #1）：通道凭证就绪即启动——白名单不再拦启动；空名单进入引导态
+  // （业务面照旧全拒，仅注册面开放，红线不降级）。v0.6 兼容分支：无通道凭证但
+  // approval 已配且名单非空时照旧注册（裁决无人应答超时回落桌面，行为与 0.6 一致）；
+  // 名单与绑定表全空且无通道 → 不启动（引导提示）。
+  const anyChannelReady = inboundBotToken !== '' || feishuOk || qqOk || wxOk || wechatWanted || dingtalkOk
+  const inboundReady = anyChannelReady
+    || (approvalWanted && (allowUsers.length > 0 || identity.size() > 0))
+  if (inboundReady) {
+    // 引导态铸造 bootstrap 码：仅 stderr（warn 双写）与管理台两个出口，不出网不落明文。
+    // 绑定表非空后不再铸造（常规配对码走管理台/owner）。
+    let bootstrapCode = null
+    const showBootstrap = (minted) => {
+      if (minted?.ok !== true) return
+      const minutes = Math.max(1, Math.round((minted.expiresAt - Date.now()) / 60000))
+      // 码面只在此处出现一次（R5 审查 R5-2-P3-5：指令行重复印码面，审计口径双计）
+      warn(`【引导配对码】${minted.code}（${minutes} 分钟内有效，首位 /pair 成功者成为 owner）\n` +
+        '在任意已启用通道私聊机器人发送：/pair <上方配对码>')
+    }
+    if (guidedBoot) {
+      try {
+        bootstrapCode = pairing.mint({ origin: 'bootstrap', mintedBy: 'system:boot' })
+        showBootstrap(bootstrapCode)
+      } catch (error) {
+        warn(`bootstrap 引导码铸造失败（注册面仍可用，管理台可补铸）: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+
     const vault = createTokenVault({
       secret: typeof inboundRaw.tokenSecret === 'string' && inboundRaw.tokenSecret !== ''
         ? inboundRaw.tokenSecret
         : undefined,
     })
-    const bus = createInboundBus({ allowUsers, store, vault, logger })
+    const bus = createInboundBus({
+      allowUsers,
+      identity,
+      pairing,
+      store,
+      vault,
+      logger,
+      // 引导码过期后首个 /pair 触发重铸（自愈：用户迟到不必重启宿主），stderr 再展示
+      onBootstrapRemint: showBootstrap,
+    })
     // v0.6.4（审查 R2-P2-5）：停机时总线整体收场——在途 waiter 以 null 结束（= 超时
     // 回退桌面语义）、消息处理器全摘；dedup 清扫线联动其窗口。
     sweepBusRef = bus
@@ -464,13 +556,14 @@ export function apply(ctx, config = {}) {
           vault,
           store,
           logger,
+          identity, // v0.7 三级目标解析：绑定成员优先
           actions, // v0.5 动作按钮（ac: 回调 → turn/cancel）
         })
         instance.start()
         interactiveInstances.push(instance)
         replyTargets.set('telegram', instance)
         disposers.push(() => instance.stop())
-        warn(`inbound 已启动：telegram 长轮询（白名单 ${allowUsers.length} 人；审批模式 ${approvalRaw.mode === 'answer' ? 'answer（远程可决）' : approvalWanted ? 'observe（只旁观）' : '未配置'}）`)
+        warn(`inbound 已启动：telegram 长轮询（绑定 ${identity.size()} 人${guidedBoot ? '，引导态：等待 /pair 配对' : ''}；审批模式 ${approvalRaw.mode === 'answer' ? 'answer（远程可决）' : approvalWanted ? 'observe（只旁观）' : '未配置'}）`)
         return instance
       })
     }
@@ -483,6 +576,7 @@ export function apply(ctx, config = {}) {
           config: feishuResolved.config,
           bus,
           fallbackTargets: allowUsers,
+          identity, // v0.7 三级目标解析：绑定成员优先
           logger,
           actions, // v0.5 动作按钮（ac: 回调 → turn/cancel）
         })
@@ -503,6 +597,7 @@ export function apply(ctx, config = {}) {
           config: qqResolved.config,
           bus,
           fallbackTargets: allowUsers,
+          identity, // v0.7 三级目标解析：绑定成员优先（群目标无条件保留）
           logger,
         })
         instance.start()
@@ -522,6 +617,7 @@ export function apply(ctx, config = {}) {
           bus,
           store,
           fallbackTargets: allowUsers,
+          identity, // v0.7 三级目标解析：绑定成员优先
           logger,
         })
         instance.start()
@@ -545,6 +641,7 @@ export function apply(ctx, config = {}) {
             bus,
             store,
             fallbackTargets: allowUsers,
+            identity, // v0.7 三级目标解析：绑定成员优先
             logger,
           })
           instance.start()
@@ -566,6 +663,7 @@ export function apply(ctx, config = {}) {
           bus,
           store,
           fallbackTargets: allowUsers,
+          identity, // v0.7 三级目标解析：绑定成员优先
           logger,
         })
         instance.start()
@@ -627,8 +725,9 @@ export function apply(ctx, config = {}) {
     } catch (error) {
       warn(`会话路由装配失败，已跳过（inbound 通道与审批不受影响）: ${error instanceof Error ? error.message : String(error)}`)
     }
-  } else if (approvalWanted && allowUsers.length === 0) {
-    warn('approval 已配置但 inbound.allowUsers 为空：远程审批未启动（白名单默认全拒）。请在 inbound.allowUsers 填入你的 telegram user id 或飞书 open_id')
+  } else if (approvalWanted) {
+    // v0.7：无任何入站通道凭证时不启动（无回传通道可承载裁决）；有凭证即进入引导态。
+    warn('approval 已配置但没有任何入站通道凭证：远程审批未启动。请先配置任一通道（如 inbound.telegram.botToken 或扫码落盘凭证），启动后经 /pair 配对即可使用')
   }
 
   // v0.3.3 Web 管理台装配（设计稿 §5 + §0.5-6）：admin.enabled 开启时起 HTTP 壳 + API
@@ -689,9 +788,17 @@ export function apply(ctx, config = {}) {
         outboundConfigs: () => Object.fromEntries(resolved.channels.map((entry) => [entry.type, entry.config])),
         channelTest: (type) => runChannelTest({ type, rawConfig: testRawConfigOf(type) }),
         scanHandlers,
+        identity, // v0.7 成员页：与 inbound 共用同一实例（store 读收敛 → 写入半秒内热生效）
+        pairing, // v0.7 配对码铸造/撤销
+        guidedProbe: () => identity.isEmpty() && allowUsers.length === 0, // 与 bus.isGuided 同口径（R5-2-P2-2）
         stateDir,
         logger,
       })
+      // v0.7：接通配对审计晚绑定（inbound 阶段积压的事件此刻转发 admin-audit.jsonl）
+      try {
+        pairingAuditSink = (action, detail) => adminApi.appendAudit(action, detail)
+        for (const [action, detail] of pairingAuditBacklog.splice(0)) adminApi.appendAudit(action, detail)
+      } catch { /* 审计接线失败不致命（配对功能不受影响） */ }
       const adminServer = createAdminServer({
         api: adminApi,
         verifyToken,

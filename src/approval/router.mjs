@@ -11,6 +11,7 @@
 
 import { createEscalationChain } from './escalation.mjs'
 import { normalizeInbound } from '../inbound/_contract.mjs'
+import { guardTargets } from '../inbound/target-guard.mjs'
 import { workspaceOf } from '../routing/session-registry.mjs'
 
 const OUTCOME_ALLOWED = 'allowed-once'
@@ -181,7 +182,11 @@ export function registerApprovalHandler(deps) {
     for (const inbound of interactive) {
       if (channelTypes !== null && !channelTypes.includes(inbound.channel)) continue
       let anySuccess = false
-      for (const target of inbound.notifyTargets()) {
+      // v0.7 形状守卫（计划书 §3.5）：目标进发送前按渠道校验 id 形态——TG 数字 id 混进
+      // 飞书目标位这类跨渠道串门在此拦截（warn + skip，不中断其余目标）。
+      const { kept, skipped } = guardTargets(inbound.channel, inbound.notifyTargets(), warn)
+      if (skipped.length > 0) warn(`形状守卫跳过 ${skipped.length} 个目标（${inbound.channel}）`)
+      for (const target of kept) {
         const card = await inbound.sendApprovalCard({
           chatId: target.chatId,
           title,

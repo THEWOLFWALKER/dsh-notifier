@@ -205,7 +205,8 @@ test('bus：白名单外用户被拒，白名单内用户通过并触发处理�
   bus.onMessage((env) => seen.push(env))
   assert.equal(bus.allows('42'), true)
   assert.equal(bus.allows('43'), false)
-  assert.deepEqual(bus.accept(envelope({ userId: '43' })), { ok: false, reason: 'whitelist' })
+  // 拒绝也进去了重表（R5-3-P3-2）：两条消息必须用不同 messageId（真实平台保证全局唯一）
+  assert.deepEqual(bus.accept(envelope({ userId: '43', messageId: 'msg:1:43' })), { ok: false, reason: 'whitelist' })
   assert.equal(seen.length, 0)
   assert.deepEqual(bus.accept(envelope()), { ok: true })
   assert.equal(seen.length, 1)

@@ -32,6 +32,7 @@
 import { createHash } from 'node:crypto'
 import { createTokenManager } from '../adapters/_tokens.mjs'
 import { createBreaker } from './_breaker.mjs'
+import { resolveNotifyTargets } from './target-guard.mjs'
 
 const DEFAULT_API_BASE = 'https://api.dingtalk.com'
 const DEFAULT_OAPI_BASE = 'https://oapi.dingtalk.com'
@@ -91,7 +92,7 @@ export function resolveDingtalkInboundConfig(raw, { credentials } = {}) {
  * @param {number} [options.reconnectCapMs=60000] - 重连退避上限
  */
 export function createDingtalkInbound(options = {}) {
-  const { config, bus, store = null, fallbackTargets = [], logger = null } = options
+  const { config, bus, store = null, fallbackTargets = [], logger = null, identity = null } = options
   // 防御性兜底：绕过 resolveDingtalkInboundConfig 直接构造时也保证两个 base 可用
   const apiBase = (String(config?.apiBase ?? '').trim() || DEFAULT_API_BASE).replace(/\/+$/, '')
   const oapiBase = (String(config?.oapiBase ?? '').trim() || DEFAULT_OAPI_BASE).replace(/\/+$/, '')
@@ -231,7 +232,21 @@ export function createDingtalkInbound(options = {}) {
     if (String(msg.msgtype ?? '') !== 'text') return // 图片/富文本等暂不支持，静默忽略
     const text = String(msg.text?.content ?? '').trim()
     if (text === '') return
-    bus.accept({ channel: 'dingtalk', userId, chatId, messageId: `dt:${msgId}`, text })
+    // v0.7：conversationType 透传（'1' 单聊 / '2' 群聊，/pair 私聊判定）；
+    // accept 返回值消费——拒绝/命令回执不再已读不回
+    const result = bus.accept({
+      channel: 'dingtalk',
+      userId,
+      chatId,
+      chatType: String(msg.conversationType ?? ''),
+      messageId: `dt:${msgId}`,
+      text,
+    })
+    if (result?.reply !== undefined) {
+      sendReply(chatId, String(result.reply)).catch((error) => {
+        warn(`回执发送失败: ${error instanceof Error ? error.message : String(error)}`) // 回执失败不致命
+      })
+    }
   }
 
   function handleFrame(raw) {
@@ -404,11 +419,14 @@ export function createDingtalkInbound(options = {}) {
       startPromise = null
     },
 
-    /** 审批推送目标：notifyUsers 优先，缺省回落全局白名单。 */
+    /** 审批推送目标（v0.7 三级解析）：绑定成员 → notifyUsers → 全局回落（仅绑定表整体空）。 */
     notifyTargets() {
-      const configured = Array.isArray(config?.notifyUsers) ? config.notifyUsers.map(String) : []
-      const ids = configured.length > 0 ? configured : fallbackTargets.map(String)
-      return ids.map((id) => ({ chatId: id, userId: id }))
+      return resolveNotifyTargets({
+        identity,
+        channel: 'dingtalk',
+        configTargets: Array.isArray(config?.notifyUsers) ? config.notifyUsers.map(String) : [],
+        fallbackTargets,
+      })
     },
 
     /** 推审批文本通知（无按钮，回复 1/2 裁决）；失败 null 降级纯通知。 */

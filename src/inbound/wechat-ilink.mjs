@@ -21,6 +21,7 @@ import {
   extractIlinkText,
 } from './_ilink-api.mjs'
 import { createBreaker } from './_breaker.mjs'
+import { resolveNotifyTargets } from './target-guard.mjs'
 
 const SYNC_BUF_KEY = 'wechat:sync_buf'
 const ACCOUNT_KEY = 'wechat:account'
@@ -87,7 +88,7 @@ export function resolveWechatInboundConfig(raw, { credentials } = {}) {
  * @param {(ms: number) => Promise<void>} [options.sleep] - sleep 注入（测试用）
  */
 export function createWechatIlinkInbound(options = {}) {
-  const { config, bus, store = null, fallbackTargets = [], logger = null } = options
+  const { config, bus, store = null, fallbackTargets = [], logger = null, identity = null } = options
   const sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)))
   const client = createIlinkClient({
     baseUrl: config.baseUrl,
@@ -143,7 +144,13 @@ export function createWechatIlinkInbound(options = {}) {
     if (text === '') return // 非文本（图片/语音/视频）暂不支持，静默忽略
     const rawId = String(msg.message_id ?? '').trim() || String(msg.client_id ?? '').trim()
     const messageId = rawId !== '' ? `wx:${rawId}` : `wx:${from}:${hash6(text)}`
-    bus.accept({ channel: 'wechat', userId: from, chatId: from, messageId, text })
+    // v0.7：accept 返回值消费——拒绝/命令回执不再已读不回
+    const result = bus.accept({ channel: 'wechat', userId: from, chatId: from, messageId, text })
+    if (result?.reply !== undefined) {
+      sendTextInternal(from, String(result.reply)).catch((error) => {
+        warn(`回执发送失败: ${error instanceof Error ? error.message : String(error)}`) // 回执失败不致命
+      })
+    }
   }
 
   async function pollLoop() {
@@ -274,10 +281,14 @@ export function createWechatIlinkInbound(options = {}) {
       loopPromise = null
     },
 
-    /** 审批推送目标：notifyUsers 优先，缺省回落全局白名单。 */
+    /** 审批推送目标（v0.7 三级解析）：绑定成员 → notifyUsers → 全局回落（仅绑定表整体空）。 */
     notifyTargets() {
-      const ids = config.notifyUsers.length > 0 ? config.notifyUsers : fallbackTargets.map(String)
-      return ids.map((id) => ({ chatId: id, userId: id }))
+      return resolveNotifyTargets({
+        identity,
+        channel: 'wechat',
+        configTargets: Array.isArray(config.notifyUsers) ? config.notifyUsers.map(String) : [],
+        fallbackTargets,
+      })
     },
 
     /** 推审批文本通知（无按钮，回复 1/2 裁决）；失败 null 降级纯通知。 */

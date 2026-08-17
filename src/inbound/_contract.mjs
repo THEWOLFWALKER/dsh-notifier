@@ -96,14 +96,21 @@ export function normalizeInbound(raw, fallbackChannel = '') {
     raw,
     capabilities: { buttons },
     notifyTargets() {
-      if (typeof raw.notifyTargets === 'function') {
-        return raw.notifyTargets()
-          .map((t) => ({ chatId: String(t.chatId), userId: String(t.userId ?? t.chatId) }))
+      // 异常归一 []（R5 审查 R5-3-P2-2：sendApprovalCard/editTarget/sendText 都有守护，
+      // 唯独 notifyTargets 裸调——某通道解析抛错会沿防抖/宽限窗定时器冒成 uncaught
+      // exception，「绝不弄崩宿主」军规被打破）。失败即零目标：宁可不发不崩宿主。
+      try {
+        if (typeof raw.notifyTargets === 'function') {
+          return raw.notifyTargets()
+            .map((t) => ({ chatId: String(t.chatId), userId: String(t.userId ?? t.chatId) }))
+        }
+        if (legacy) {
+          return raw.notifyChatIds().map((id) => ({ chatId: String(id), userId: String(id) }))
+        }
+        return []
+      } catch {
+        return []
       }
-      if (legacy) {
-        return raw.notifyChatIds().map((id) => ({ chatId: String(id), userId: String(id) }))
-      }
-      return []
     },
     async sendApprovalCard(payload) {
       if (typeof raw.sendApprovalCard !== 'function') return null
