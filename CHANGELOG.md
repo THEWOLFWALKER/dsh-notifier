@@ -3,6 +3,30 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 SemVer。
 DSH 处于 developer preview，0.x 阶段的次版本号提升允许小幅破坏性变更（会在条目中标注）。
 
+## [0.8.0-tg.0] - 2026-08-17（Telegram 真机测试包）
+
+> v0.8 远程提问（issue #3/#5，规划书《选项卡通知》M1）首个可测版本。
+> 测试步骤见包内 `TG-TEST.md`。
+
+### 新增：ask_user 远程提问工具（`src/questions/router.mjs`）
+
+- agent 可向手机推送 1-4 个选择题（每问 2-5 选项，支持多选），用户作答后答案回传 agent。
+- **选项卡为主、编号兜底**（P4）：飞书/Telegram 单选推选项卡片（一选项一钮）；编号文案只发卡片未送达的渠道（无按钮通道 / 卡片投递失败 / 多选）。
+- **发错可再答**：越界编号 / 单选回多项 → 回执提示 + 选项重发，问题保持待决，不作废。
+- **超时永不代答**（P2）：超时 answered=false 交还桌面，绝不编造默认答案。
+- 回调载荷短引用压缩（复用 v0.6.2 `r:<ref>` 机制，P7 不携带选项文本）；token 单次核销 + 首达采纳；30s/60s 催办升级链（复用审批 escalation）。
+- 配置：`questions.enabled`（默认 true）/ `timeoutMs`（默认 300000，30s-30min 钳制）/ `rateLimitPerMinute`（默认 6）。
+
+### 修复：Telegram `editResolved` 契约签名错位（真机 mock 盲区）
+
+- `src/inbound/telegram-bot.mjs`：契约 `editTarget` 非 legacy 路径传 `(target, text)` 两参，TG 实现按 `(chatId, messageId, text)` 三参收 → 真机 `chat_id` 收到 target 对象，TG 400 被吞，**超时/编号回复路径的卡片终态编辑静默失败**。双形状防御解析兼容两种调用。
+- 同类模式回顾：v0.6.2 `callback_data` 64 字节事故同源——mock fetch 不校验参数形状，835 用例全绿也测不出，真机才暴露。
+
+### 测试
+
+- 新增 `test/questions.test.mjs`（19 用例）：卡片分流、发错重发、多选中英文逗号、超时不代答、伪造 token、首达采纳、参数校验、限流、dispose。
+- 测试抓出 1 个真 bug 并修复：`askQuestions` 从裁决信封取答案读错层级（`outcome.idxs` → `outcome.decision.idxs`），作答路径答案恒空。
+
 ## [0.7.3] - 2026-08-17
 
 > GitHub issue 修复批：6 个 open issue 中的 5 个 bug 全部修复（#1/#2/#4/#6），

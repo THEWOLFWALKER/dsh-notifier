@@ -353,6 +353,18 @@ test('editResolved：编辑远端卡片为最终状态（按钮失效提示）',
   assert.match(edited[0].body.text, /已远程批准/)
 })
 
+test('editResolved：契约两参形状 (target, text)——normalizeInbound 非 legacy 路径（v0.8 真机修复）', async () => {
+  const { fetchImpl, calls } = makeFetch({ editMessageText: { ok: true, result: true } })
+  const tg = createTelegramInbound({ config: CONFIG, bus: makeBus(), vault: createTokenVault(), fetchImpl })
+  // 账本 pushedTo 行形状：{channel, chatId, userId, messageId, kind:'aq'}
+  await tg.editResolved({ channel: 'telegram', chatId: 42, userId: '42', messageId: 9, kind: 'aq' }, '⏱ 超时未作答：已交还桌面（按钮失效）')
+  const edited = calls.filter((call) => call.method === 'editMessageText')
+  assert.equal(edited.length, 1)
+  assert.equal(edited[0].body.chat_id, 42, 'chat_id 必须是数字 id（对象错位在真机 TG 400）')
+  assert.equal(edited[0].body.message_id, 9)
+  assert.match(edited[0].body.text, /超时未作答/)
+})
+
 // ---------------------------------------------------------------- v0.5 动作闭环
 
 test('sendActionCard：按钮经短引用压缩（v0.6.2：ac 负载同超 64 字节硬限）', async () => {

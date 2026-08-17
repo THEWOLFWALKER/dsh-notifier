@@ -11,7 +11,7 @@
 // 军规：handler 3s 内必须返回（超时服务端会重推，重推由 bus 的 messageId 去重吸收）；
 // 任何异常只 warn，绝不弄崩宿主；stop() 干净退出。
 
-import { buildApprovalAction, parseApprovalAction, parseActionPayload } from './_contract.mjs'
+import { buildApprovalAction, buildQuestionAction, parseApprovalAction, parseActionPayload, parseQuestionAction } from './_contract.mjs'
 import { resolveNotifyTargets } from './target-guard.mjs'
 
 const DEFAULT_DOMAIN = 'https://open.feishu.cn'
@@ -122,6 +122,43 @@ function buildActionResolvedCard(text) {
   }
 }
 
+/** 已作答态提问卡片（v0.8，防过期按钮二次点击）。 */
+function buildQuestionResolvedCard(text) {
+  return {
+    config: { wide_screen_mode: true },
+    header: {
+      template: 'grey',
+      title: { tag: 'plain_text', content: '提问已作答' },
+    },
+    elements: [{ tag: 'div', text: { tag: 'lark_md', content: text } }],
+  }
+}
+
+/**
+ * v0.8 提问选项卡片（单选：每选项一个按钮，value.act = aq:<qKey>:<idx>:<token>）。
+ * 多选暂无卡片形态（表单组件回调负载未实测）：caller 判 multiSelect 不发卡，编号兜底。
+ */
+function buildQuestionCard({ title, content, qKey, token, options = [] }) {
+  const actions = options.map((label, idx) => ({
+    tag: 'button',
+    text: { tag: 'plain_text', content: `${idx + 1}. ${String(label).slice(0, 30)}` },
+    type: 'default',
+    value: { act: buildQuestionAction(qKey, String(idx), token) },
+  }))
+  return {
+    config: { wide_screen_mode: true },
+    header: {
+      template: 'turquoise',
+      title: { tag: 'plain_text', content: `❓ ${String(title ?? '').slice(0, 100)}` },
+    },
+    elements: [
+      { tag: 'div', text: { tag: 'lark_md', content: String(content ?? '') } },
+      { tag: 'hr' },
+      { tag: 'action', actions },
+    ],
+  }
+}
+
 /** v0.5 动作卡片（通知文本 + 自定义按钮行；按钮 value.act = ac:<actionKey>:<token>）。 */
 function buildActionCard({ title, content, actions: buttons = [] }) {
   const actions = (Array.isArray(buttons) ? buttons : [])
@@ -157,8 +194,10 @@ function buildActionCard({ title, content, actions: buttons = [] }) {
  * @param {() => Promise<object>} [options.sdkLoader] - SDK 懒加载器（测试注入；默认动态 import）
  * @param {ReturnType<typeof import('../actions.mjs').createActionDispatcher>} [options.actions]
  *   - v0.5 动作分发器（可空：缺省时 ac: 回调分支不存在，行为与 v0.4.0 一致）
+ * @param {object} [options.questions]
+ *   - v0.8 提问桥裁决入口（可空：缺省时 aq: 回调回「未知操作」，行为与 v0.7 一致）
  */
-export function createFeishuInbound({ config, bus, fallbackTargets = [], logger = null, sdkLoader, actions = null, identity = null } = {}) {
+export function createFeishuInbound({ config, bus, fallbackTargets = [], logger = null, sdkLoader, actions = null, identity = null, questions = null } = {}) {
   const domain = (config.domain || DEFAULT_DOMAIN).replace(/\/+$/, '')
   const allowUsers = Array.isArray(config.allowUsers) ? config.allowUsers.map(String) : []
   const warn = (message) => {
@@ -267,6 +306,21 @@ export function createFeishuInbound({ config, bus, fallbackTargets = [], logger 
         const text = result?.message ?? '该操作已处理或已过期'
         patchResolvedCard(data, buildActionResolvedCard(`${text}（来源：飞书用户 ${data?.operator?.open_id ?? '?'}）`))
         return { toast: { type: result?.ok === true ? 'success' : 'info', content: text } }
+      }
+      // v0.8 提问作答按钮：aq:<qKey>:<idx>:<token>（questions 注入时才处理）
+      const questionAction = parseQuestionAction(raw)
+      if (questionAction !== null) {
+        if (questions === null) return { toast: { type: 'info', content: '未知操作' } }
+        const verdict = questions.decide({
+          qKey: questionAction.qKey,
+          optIdx: questionAction.optIdx,
+          token: questionAction.token,
+          via: 'feishu:button',
+          userId: String(data?.operator?.open_id ?? '(unknown)'),
+        })
+        const text = verdict?.message ?? '该提问已回答或已过期'
+        patchResolvedCard(data, buildQuestionResolvedCard(`${text}（来源：飞书用户 ${data?.operator?.open_id ?? '?'}）`))
+        return { toast: { type: verdict?.ok === true ? 'success' : 'info', content: text } }
       }
       const approvalAction = parseApprovalAction(raw)
       if (approvalAction === null) return { toast: { type: 'info', content: '未知操作' } }
@@ -380,12 +434,32 @@ export function createFeishuInbound({ config, bus, fallbackTargets = [], logger 
       }
     },
 
-    /** 把卡片改成终态（账本 pushedTo 行 target = {channel, chatId, userId, messageId}）。 */
+    /**
+     * v0.8 推送提问选项卡片（单选按钮，一选项一钮）。
+     * @returns {Promise<{ messageId: string } | null>} 多选（暂无卡片形态）/失败返回 null，
+     *   caller 降级编号回复文案——选项卡为主，编号是兜底。
+     */
+    async sendQuestionCard({ chatId, title, content, qKey, token, options = [], multiSelect = false }) {
+      if (client === null || multiSelect === true) return null
+      try {
+        const messageId = await sendInteractive(chatId, buildQuestionCard({ title, content, qKey, token, options }))
+        return messageId !== '' ? { messageId } : null
+      } catch (error) {
+        warn(`提问卡片发送失败: ${error instanceof Error ? error.message : String(error)}`)
+        return null
+      }
+    },
+
+    /** 把卡片改成终态（账本 pushedTo 行 target = {channel, chatId, userId, messageId, kind?}）。 */
     async editResolved(target, text) {
       if (client === null || target?.messageId === undefined) return
+      // kind 'aq' = 提问卡片（终态文案用「提问已作答」头，不误标「审批已完成」）
+      const card = target?.kind === 'aq'
+        ? buildQuestionResolvedCard(text)
+        : buildResolvedCard(text)
       await client.im.v1.message.patch({
         path: { message_id: String(target.messageId) },
-        data: { content: JSON.stringify(buildResolvedCard(text)) },
+        data: { content: JSON.stringify(card) },
       }).catch(() => {})
     },
 

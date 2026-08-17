@@ -3,12 +3,14 @@
 //  - callback_query 按钮：callback_data 携带一次性 token，点击即裁决（首达采纳）
 //    · ap:<decision>:<approvalKey>:<token> —— 审批按钮（bus.decide）
 //    · ac:<actionKey>:<token> —— v0.5 动作按钮（actions.dispatch，如「停止任务」）
+//    · aq:<qKey>:<idx>:<token> —— v0.8 提问作答按钮（questions.decide）
 //  - message 文本：走 bus 白名单 + 去重后交给 conversation router
 //  - offset cursor 持久化（store），重启不重复消费
 // 军规：轮询循环里的任何异常只退避重试，绝不弄崩宿主；stop() 干净退出。
 
 import { createCallbackRefs } from './callback-refs.mjs'
 import { resolveNotifyTargets } from './target-guard.mjs'
+import { buildQuestionAction } from './_contract.mjs'
 
 const DEFAULT_API_BASE = 'https://api.telegram.org'
 const POLL_TIMEOUT_S = 25
@@ -25,11 +27,13 @@ const DEFAULT_ERROR_BACKOFF_MS = 5000
  * @param {object} [options.logger]
  * @param {ReturnType<typeof import('../actions.mjs').createActionDispatcher>} [options.actions]
  *   - v0.5 动作分发器（可空：缺省时 ac: 回调分支不存在，行为与 v0.4.0 一致）
+ * @param {object} [options.questions]
+ *   - v0.8 提问桥裁决入口（可空：缺省时 aq: 回调分支不存在，行为与 v0.7 一致）
  * @param {typeof fetch} [options.fetchImpl] - 测试注入
  * @param {number} [options.errorBackoffMs=5000] - 轮询异常退避（测试可缩短）
  * @param {number} [options.callbackTtlMs] - 按钮短引用有效期（缺省 15min，略长于 token TTL）
  */
-export function createTelegramInbound({ config, bus, vault, store = null, logger = null, fetchImpl, errorBackoffMs, actions = null, callbackTtlMs, identity = null } = {}) {
+export function createTelegramInbound({ config, bus, vault, store = null, logger = null, fetchImpl, errorBackoffMs, actions = null, callbackTtlMs, identity = null, questions = null } = {}) {
   const apiBase = (config.apiBase || DEFAULT_API_BASE).replace(/\/+$/, '')
   const botToken = String(config.botToken ?? '')
   const backoffMs = Math.max(0, Number(errorBackoffMs) || DEFAULT_ERROR_BACKOFF_MS)
@@ -96,6 +100,23 @@ export function createTelegramInbound({ config, bus, vault, store = null, logger
             chat_id: query.message.chat.id,
             message_id: query.message.message_id,
             text: `${actionText}\n（来源：telegram user ${query.from?.id ?? '?'}）`,
+          }).catch(() => {})
+        }
+        return
+      }
+      // v0.8 提问作答按钮：aq:<qKey>:<idx>:<token>（questions 注入时才存在此分支）
+      if (parts[0] === 'aq' && questions !== null && parts.length >= 4) {
+        const qKey = parts.slice(1, -2).join(':')
+        const optIdx = parts[parts.length - 2]
+        const token = parts[parts.length - 1]
+        const verdict = questions.decide({ qKey, optIdx, token, via: 'telegram', userId: query.from?.id })
+        const text = verdict?.message ?? '该提问已回答或已过期'
+        await api('answerCallbackQuery', { callback_query_id: query.id, text: String(text).slice(0, 200) }).catch(() => {})
+        if (query.message?.chat?.id !== undefined) {
+          await api('editMessageText', {
+            chat_id: query.message.chat.id,
+            message_id: query.message.message_id,
+            text: `${text}\n（来源：telegram user ${query.from?.id ?? '?'}）`,
           }).catch(() => {})
         }
         return
@@ -183,6 +204,8 @@ export function createTelegramInbound({ config, bus, vault, store = null, logger
   }
 
   return {
+    channel: 'telegram',
+
     /** 启动长轮询（幂等）。 */
     start() {
       if (running) return
@@ -255,8 +278,45 @@ export function createTelegramInbound({ config, bus, vault, store = null, logger
       }
     },
 
-    /** 把远端消息编辑为最终状态（桌面先处理时防止过期按钮二次审批）。 */
-    async editResolved(chatId, messageId, text) {
+    /**
+     * v0.8 推送提问选项卡片（单选：每选项一行按钮，一选项一钮）。
+     * @returns {Promise<{ messageId: number } | null>} 多选（暂无卡片形态）/无选项/失败
+     *   返回 null，caller 降级编号回复文案——选项卡为主，编号是兜底。
+     */
+    async sendQuestionCard({ chatId, title, content, qKey, token, options = [], multiSelect = false }) {
+      if (multiSelect === true) return null
+      try {
+        // v0.6.2 同审批卡：callback_data 只放短引用 r:<ref>（TG 64 字节硬限，P7）
+        const rows = options
+          .map((label, idx) => ({
+            text: `${idx + 1}. ${String(label).slice(0, 60)}`,
+            callback_data: `r:${refs.mint(buildQuestionAction(qKey, String(idx), token))}`,
+          }))
+        if (rows.length === 0) return null
+        const result = await api('sendMessage', {
+          chat_id: chatId,
+          text: `❓ ${title}\n\n${content}`,
+          reply_markup: { inline_keyboard: rows.map((row) => [row]) }, // 一选项一行，手机端可读
+        })
+        return { messageId: result?.message_id }
+      } catch (error) {
+        warn(`提问卡片发送失败: ${error instanceof Error ? error.message : String(error)}`)
+        return null
+      }
+    },
+
+    /**
+     * 把远端消息编辑为最终状态（桌面先处理时防止过期按钮二次审批）。
+     * v0.8 契约对齐：normalizeInbound 非 legacy 路径传 (target, text) 两参——本通道
+     * 自 v0.7 有 notifyTargets() 即非 legacy，旧三参 (chatId, messageId, text) 签名
+     * 与契约错位（真机上 chat_id 收到 target 对象 → TG 400 被吞，超时/编号回复路径的
+     * 终态编辑静默失败；mock fetch 不校验参数形状，单测测不出）。双形状防御解析。
+     */
+    async editResolved(targetOrChatId, messageIdOrText, maybeText) {
+      const isTarget = targetOrChatId !== null && typeof targetOrChatId === 'object'
+      const chatId = isTarget ? targetOrChatId.chatId : targetOrChatId
+      const messageId = isTarget ? targetOrChatId.messageId : messageIdOrText
+      const text = isTarget ? messageIdOrText : maybeText
       await api('editMessageText', { chat_id: chatId, message_id: messageId, text }).catch(() => {})
     },
 

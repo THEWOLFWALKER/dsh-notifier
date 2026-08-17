@@ -21,6 +21,7 @@ import { createWxpusherInbound, resolveWxpusherInboundConfig } from './inbound/w
 import { createWechatIlinkInbound, resolveWechatInboundConfig, ACCOUNT_KEY } from './inbound/wechat-ilink.mjs'
 import { createDingtalkInbound, resolveDingtalkInboundConfig } from './inbound/dingtalk-stream.mjs'
 import { registerApprovalHandler } from './approval/router.mjs'
+import { createQuestionBridge, registerAskUserTool } from './questions/router.mjs'
 import { registerConversationRouter } from './inbound/conversation.mjs'
 // v0.5：动作闭环（通知按钮 → 内置处置动作）
 import { createActionDispatcher } from './actions.mjs'
@@ -531,6 +532,14 @@ export function apply(ctx, config = {}) {
     actionsRef = actions
     disposers.push(() => actions.dispose())
 
+    // v0.8 提问桥：桥体要在审批路由之后创建（需要 interactiveInstances，且编号回复
+    // 处理器挂载顺序 = 消费优先级）；而 telegram/feishu 装配在前——先给通道一个
+    // 晚绑定的裁决代理，桥体就绪前点 aq: 按钮只会得到「未就绪」回执，不会崩。
+    let questionsBridge = null
+    const questionsForChannels = {
+      decide: (payload) => questionsBridge?.decide(payload) ?? { ok: false, message: '提问服务未就绪' },
+    }
+
     // v0.3.0 多通道装配：交互渠道实例（统一契约，approval 卡片推送用）与回执通道表。
     // telegram 为 v0.2.0 旧形状（notifyChatIds），经 _contract.normalizeInbound 归一；
     // 后续通道（feishu/qq/wxpusher/wechat）按统一契约逐个挂进这两个容器。
@@ -561,6 +570,7 @@ export function apply(ctx, config = {}) {
           logger,
           identity, // v0.7 三级目标解析：绑定成员优先
           actions, // v0.5 动作按钮（ac: 回调 → turn/cancel）
+          questions: questionsForChannels, // v0.8 提问作答按钮（aq: 回调 → questions.decide）
         })
         instance.start()
         interactiveInstances.push(instance)
@@ -582,6 +592,7 @@ export function apply(ctx, config = {}) {
           identity, // v0.7 三级目标解析：绑定成员优先
           logger,
           actions, // v0.5 动作按钮（ac: 回调 → turn/cancel）
+          questions: questionsForChannels, // v0.8 提问作答按钮（aq: 回调 → questions.decide）
         })
         instance.start()
         interactiveInstances.push(instance)
@@ -717,6 +728,34 @@ export function apply(ctx, config = {}) {
     // v0.5：通道全部挂载后才暴露交互实例列表（eventListener 的 pushActionCard 每次
     // 经 normalizeInbound 防御归一，这里的赋值只发生在装配期一次）
     interactiveRaw = interactiveInstances
+
+    // v0.8 远程提问桥（ask_user 工具 + aq: 账本 + 编号回复兜底）。桥体在审批路由
+    // 之后创建并 attach——bus.onMessage 的插入序即消费优先级：'1'/'2' 在有待决
+    // 审批时由审批先消费，提问编号（含 1,3 多选）随后接管；questions.enabled=false
+    // 整体关闭（不注册工具、不挂编号处理器，行为与 v0.7 逐字节一致）。
+    if (resolved.questions.enabled) {
+      try {
+        questionsBridge = createQuestionBridge({
+          bus,
+          vault,
+          store,
+          notifier,
+          interactive: () => interactiveRaw, // 惰性 getter：桥体每次裁决取最新实例表
+          logger,
+          config: resolved.questions,
+        })
+        const disposeAskTool = registerAskUserTool(ctx, questionsBridge, {
+          rateLimitPerMinute: resolved.questions.rateLimitPerMinute,
+          defaultTimeoutMs: resolved.questions.timeoutMs,
+        })
+        if (disposeAskTool !== null) disposers.push(disposeAskTool)
+        questionsBridge.attach()
+        disposers.push(() => questionsBridge.dispose())
+        warn(`远程提问已启用：ask_user 工具（限流 ${resolved.questions.rateLimitPerMinute} 次/分钟，超时 ${Math.round(resolved.questions.timeoutMs / 1000)}s 不代答）；飞书/Telegram 单选选项卡 + 全渠道编号兜底`)
+      } catch (error) {
+        warn(`questions 桥装配失败，已跳过（其余能力不受影响）: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
 
     // 阶段 5：会话路由——白名单用户的文本按 idle/busy 语义投进 agent（followup/inject/steer）
     const replyViaChannel = async (channel, chatId, text) => {
@@ -866,6 +905,7 @@ export function apply(ctx, config = {}) {
 }
 
 export { resolveConfig, createNotifier, createEventListener, registerNotifyTool }
+export { createQuestionBridge, registerAskUserTool } from './questions/router.mjs'
 export { maskChannelConfig, CHANNEL_TYPES } from './config.mjs'
 export { NotifyError, ERROR_CODES } from './adapters/_shared.mjs'
 // 阶段 4/5：inbound 回传栈（供测试与其它插件复用）

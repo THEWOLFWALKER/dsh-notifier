@@ -12,6 +12,10 @@
 //     notifyTargets() -> [{ chatId, userId }],            // 审批卡推送目标
 //     async sendApprovalCard({ chatId, title, content, approvalKey, token })
 //       -> { messageId } | null,                          // 失败 null，caller 降级纯通知
+//     async sendActionCard({ chatId, title, content, actions })      // v0.5 可选
+//       -> { messageId } | null,
+//     async sendQuestionCard({ chatId, title, content, qKey, token, // v0.8 可选
+//                              options, multiSelect }) -> { messageId } | null,
 //     async editResolved(target, text),                   // target = 账本 pushedTo 行
 //     async sendText(chatId, text) -> boolean,            // 命令回执
 //   }
@@ -62,6 +66,33 @@ export function parseActionPayload(data) {
   if (parts[0] !== ACTION_PAYLOAD_PREFIX || parts.length < 3) return null
   return {
     actionKey: parts.slice(1, -1).join(':'),
+    token: parts[parts.length - 1],
+  }
+}
+
+// ---- v0.8 远程提问（ask_user 工具 → 选项卡片/编号回复）----
+// 与 ap:/ac: 完全同构的第三种负载：aq:<qKey>:<optIdx>:<token>。
+//  - qKey = aq:<8hex>（随机短键，不含冒号；解析仍按「倒数第二段=optIdx、末段=token、
+//    中间归 qKey」防御性重组，与审批键的切法一致）
+//  - optIdx = 选项下标（'0'..'4'）或 'm'（多选提交标记，实际所选经卡片表单回带）
+
+export const QUESTION_ACTION_PREFIX = 'aq'
+
+/** 组装提问作答负载：aq:<qKey>:<optIdx>:<token>。 */
+export function buildQuestionAction(qKey, optIdx, token) {
+  return `${QUESTION_ACTION_PREFIX}:${qKey}:${optIdx}:${token}`
+}
+
+/**
+ * 解析提问作答负载。格式不符返回 null。
+ * @returns {{ qKey: string, optIdx: string, token: string } | null}
+ */
+export function parseQuestionAction(data) {
+  const parts = String(data ?? '').split(':')
+  if (parts[0] !== QUESTION_ACTION_PREFIX || parts.length < 4) return null
+  return {
+    qKey: parts.slice(1, -2).join(':'),
+    optIdx: parts[parts.length - 2],
     token: parts[parts.length - 1],
   }
 }
@@ -127,7 +158,17 @@ export function normalizeInbound(raw, fallbackChannel = '') {
       try {
         return await raw.sendActionCard(payload)
       } catch {
-        return null // caller 降级为纯通知
+        return null // caller 降级为通知
+      }
+    },
+    // v0.8 提问卡片（可选方法）：未实现的通道恒 null，caller 降级为编号回复文案——
+    // 与 sendActionCard 同一兜底哲学：卡片缺席时文字路径永远在（规划书 P4）。
+    async sendQuestionCard(payload) {
+      if (typeof raw.sendQuestionCard !== 'function') return null
+      try {
+        return await raw.sendQuestionCard(payload)
+      } catch {
+        return null
       }
     },
     async editTarget(target, text) {

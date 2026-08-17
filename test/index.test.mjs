@@ -195,5 +195,6 @@ test('v0.6.1 inbound 逐通道隔离：telegram 装配炸了不崩 apply，其�
   assert.ok(warnings.some((w) => /inbound:telegram 装配失败，已跳过/.test(w)),
     `应点名 telegram 装配失败（实际：${warnings.join(' | ')}）`)
   assert.ok(!warnings.some((w) => /inbound 已启动：telegram/.test(w)), 'telegram 不应有启动成功告警')
-  assert.deepEqual(defs.map((def) => def.name).sort(), ['notify', 'notify_test'], '出站工具照常注册（apply 未被拖垮）')
+  // v0.8 起 questions 桥默认启用，ask_user 也会注册；本断言只关心出站工具未被拖垮
+  assert.deepEqual(defs.map((def) => def.name).sort(), ['ask_user', 'notify', 'notify_test'], '出站工具照常注册（apply 未被拖垮）')
 })
