@@ -21,7 +21,6 @@ import { createWxpusherInbound, resolveWxpusherInboundConfig } from './inbound/w
 import { createWechatIlinkInbound, resolveWechatInboundConfig, ACCOUNT_KEY } from './inbound/wechat-ilink.mjs'
 import { createDingtalkInbound, resolveDingtalkInboundConfig } from './inbound/dingtalk-stream.mjs'
 import { registerApprovalHandler } from './approval/router.mjs'
-import { createQuestionBridge, registerAskUserTool } from './questions/router.mjs'
 import { registerConversationRouter } from './inbound/conversation.mjs'
 // v0.5：动作闭环（通知按钮 → 内置处置动作）
 import { createActionDispatcher } from './actions.mjs'
@@ -294,10 +293,12 @@ export function apply(ctx, config = {}) {
   // hint「回复 /stop 取消」仍全通道可达，动作卡片自然缺席——兼容红线自洽。
   let actionsRef = null
   let interactiveRaw = []
+  let busRef = null
   disposers.push(createEventListener(ctx, notifier, resolved, {
     router,
     registry,
-    actions: () => actionsRef, // 惰性：stall/心跳触发时（装配早已完成）才解引用
+    bus: () => busRef,
+    actions: () => actionsRef,
     interactive: () => interactiveRaw,
   }))
   const disposeTool = registerNotifyTool(ctx, notifier, {
@@ -352,11 +353,8 @@ export function apply(ctx, config = {}) {
   const fsExplicit = inboundRaw.feishu !== null && typeof inboundRaw.feishu === 'object'
   const fsWanted = fsExplicit || (adminEnabled && accountOf('feishu:account') !== null)
   const fsRaw = fsExplicit ? inboundRaw.feishu : {}
-  // v0.7.3（#2）：入站配置同样解析 ${ENV:NAME} 引用（与出站 adapter.resolve(resolveEnvRefs(row))
-  // 同构）——旧代码只有 feishu 的 resolve 收 envRefs 参数且装配层没传，README 示例
-  // ${ENV:FEISHU_SECRET} 原样透传 SDK 导致 invalid appId。全部入站通道在装配层统一预处理。
   const feishuResolved = fsWanted
-    ? resolveFeishuInboundConfig(resolveEnvRefs(fsRaw), { credentials: store.get('feishu:account') })
+    ? resolveFeishuInboundConfig(fsRaw, { credentials: store.get('feishu:account') })
     : null
   if (feishuResolved !== null && !feishuResolved.ok) warn(`inbound.feishu 跳过: ${feishuResolved.reason}`)
   const feishuOk = feishuResolved?.ok === true
@@ -369,7 +367,7 @@ export function apply(ctx, config = {}) {
   const qqWanted = qqExplicit || (adminEnabled && accountOf('qq:account') !== null)
   const qqRaw = qqExplicit ? inboundRaw.qq : {}
   const qqResolved = qqWanted
-    ? resolveQqInboundConfig(resolveEnvRefs(qqRaw), { credentials: store.get('qq:account') })
+    ? resolveQqInboundConfig(qqRaw, { credentials: store.get('qq:account') })
     : null
   if (qqResolved !== null && !qqResolved.ok) warn(`inbound.qq 跳过: ${qqResolved.reason}`)
   const qqOk = qqResolved?.ok === true
@@ -381,7 +379,7 @@ export function apply(ctx, config = {}) {
   const dtWanted = dtExplicit || (adminEnabled && accountOf('dingtalk:account') !== null)
   const dtRaw = dtExplicit ? inboundRaw.dingtalk : {}
   const dingtalkResolved = dtWanted
-    ? resolveDingtalkInboundConfig(resolveEnvRefs(dtRaw), { credentials: store.get('dingtalk:account') })
+    ? resolveDingtalkInboundConfig(dtRaw, { credentials: store.get('dingtalk:account') })
     : null
   if (dingtalkResolved !== null && !dingtalkResolved.ok) warn(`inbound.dingtalk 跳过: ${dingtalkResolved.reason}`)
   const dingtalkOk = dingtalkResolved?.ok === true
@@ -408,7 +406,7 @@ export function apply(ctx, config = {}) {
     }
   }
   const wxResolved = (Object.keys(wxExplicit).length > 0 || wxAccount !== null)
-    ? resolveWxpusherInboundConfig(resolveEnvRefs(wxMerged))
+    ? resolveWxpusherInboundConfig(wxMerged)
     : null
   if (wxResolved !== null && !wxResolved.ok) warn(`inbound.wxpusher 跳过: ${wxResolved.reason}`)
   const wxOk = wxResolved?.ok === true
@@ -509,6 +507,7 @@ export function apply(ctx, config = {}) {
     // v0.6.4（审查 R2-P2-5）：停机时总线整体收场——在途 waiter 以 null 结束（= 超时
     // 回退桌面语义）、消息处理器全摘；dedup 清扫线联动其窗口。
     sweepBusRef = bus
+    busRef = bus
     disposers.push(() => bus.dispose())
 
     // v0.5 动作分发器：vault/store 之后创建（无环），telegram/feishu 按钮回调消费。
@@ -531,14 +530,6 @@ export function apply(ctx, config = {}) {
     })
     actionsRef = actions
     disposers.push(() => actions.dispose())
-
-    // v0.8 提问桥：桥体要在审批路由之后创建（需要 interactiveInstances，且编号回复
-    // 处理器挂载顺序 = 消费优先级）；而 telegram/feishu 装配在前——先给通道一个
-    // 晚绑定的裁决代理，桥体就绪前点 aq: 按钮只会得到「未就绪」回执，不会崩。
-    let questionsBridge = null
-    const questionsForChannels = {
-      decide: (payload) => questionsBridge?.decide(payload) ?? { ok: false, message: '提问服务未就绪' },
-    }
 
     // v0.3.0 多通道装配：交互渠道实例（统一契约，approval 卡片推送用）与回执通道表。
     // telegram 为 v0.2.0 旧形状（notifyChatIds），经 _contract.normalizeInbound 归一；
@@ -570,7 +561,6 @@ export function apply(ctx, config = {}) {
           logger,
           identity, // v0.7 三级目标解析：绑定成员优先
           actions, // v0.5 动作按钮（ac: 回调 → turn/cancel）
-          questions: questionsForChannels, // v0.8 提问作答按钮（aq: 回调 → questions.decide）
         })
         instance.start()
         interactiveInstances.push(instance)
@@ -592,7 +582,6 @@ export function apply(ctx, config = {}) {
           identity, // v0.7 三级目标解析：绑定成员优先
           logger,
           actions, // v0.5 动作按钮（ac: 回调 → turn/cancel）
-          questions: questionsForChannels, // v0.8 提问作答按钮（aq: 回调 → questions.decide）
         })
         instance.start()
         interactiveInstances.push(instance)
@@ -645,26 +634,10 @@ export function apply(ctx, config = {}) {
     // 微信 iLink inbound：getupdates 长轮询 + sendmessage 回执（裸协议，零依赖）。
     // 凭证缺省回落登录 CLI 落盘的 wechat:account；审批无按钮，靠编号回复裁决。
     if (wechatWanted) {
-      const wechatResolved = resolveWechatInboundConfig(resolveEnvRefs(wechatRaw), { credentials: store.get(ACCOUNT_KEY) })
+      const wechatResolved = resolveWechatInboundConfig(wechatRaw, { credentials: store.get(ACCOUNT_KEY) })
       if (!wechatResolved.ok) {
         warn(`inbound.wechat 跳过: ${wechatResolved.reason}`)
       } else {
-        // 扫码即配对兜底（v0.7）：iLink 机器人是扫码微信的专属好友（1:1），凭证里的
-        // userId 就是扫码者——扫码/网页授权时已写入绑定；这里幂等补一道，覆盖
-        // 「凭证在、绑定被误删」与旧版 CLI 落盘缺 userId 提示重扫两种场景。
-        try {
-          const scanUserId = String(wechatResolved.config.userId ?? '').trim()
-          if (scanUserId !== '') {
-            const ensured = identity.addBinding({ channel: 'wechat', userId: scanUserId, origin: 'paired' })
-            if (ensured.ok) {
-              warn(`wechat 扫码即配对：扫码微信已绑定为${ensured.record.role === 'owner' ? 'owner（首位成员）' : '成员'}，无需 /pair 配对码`)
-            }
-          } else {
-            warn('wechat 凭证缺少 userId（旧版扫码产物）：重新扫码后扫码微信将自动配对，或用 /pair 配对码补齐')
-          }
-        } catch (error) {
-          warn(`wechat 扫码即配对兜底失败（不致命）: ${error instanceof Error ? error.message : String(error)}`)
-        }
         startInboundChannel('wechat', () => {
           const instance = createWechatIlinkInbound({
             config: wechatResolved.config,
@@ -678,7 +651,7 @@ export function apply(ctx, config = {}) {
           interactiveInstances.push(instance)
           replyTargets.set('wechat', instance)
           disposers.push(() => instance.stop())
-          warn(`inbound 已启动：wechat iLink 长轮询（专属好友 1:1；文本审批通知 + 编号回复裁决）`)
+          warn(`inbound 已启动：wechat iLink 长轮询（文本审批通知 + 编号回复裁决）`)
           return instance
         })
       }
@@ -728,34 +701,6 @@ export function apply(ctx, config = {}) {
     // v0.5：通道全部挂载后才暴露交互实例列表（eventListener 的 pushActionCard 每次
     // 经 normalizeInbound 防御归一，这里的赋值只发生在装配期一次）
     interactiveRaw = interactiveInstances
-
-    // v0.8 远程提问桥（ask_user 工具 + aq: 账本 + 编号回复兜底）。桥体在审批路由
-    // 之后创建并 attach——bus.onMessage 的插入序即消费优先级：'1'/'2' 在有待决
-    // 审批时由审批先消费，提问编号（含 1,3 多选）随后接管；questions.enabled=false
-    // 整体关闭（不注册工具、不挂编号处理器，行为与 v0.7 逐字节一致）。
-    if (resolved.questions.enabled) {
-      try {
-        questionsBridge = createQuestionBridge({
-          bus,
-          vault,
-          store,
-          notifier,
-          interactive: () => interactiveRaw, // 惰性 getter：桥体每次裁决取最新实例表
-          logger,
-          config: resolved.questions,
-        })
-        const disposeAskTool = registerAskUserTool(ctx, questionsBridge, {
-          rateLimitPerMinute: resolved.questions.rateLimitPerMinute,
-          defaultTimeoutMs: resolved.questions.timeoutMs,
-        })
-        if (disposeAskTool !== null) disposers.push(disposeAskTool)
-        questionsBridge.attach()
-        disposers.push(() => questionsBridge.dispose())
-        warn(`远程提问已启用：ask_user 工具（限流 ${resolved.questions.rateLimitPerMinute} 次/分钟，超时 ${Math.round(resolved.questions.timeoutMs / 1000)}s 不代答）；飞书/Telegram 单选选项卡 + 全渠道编号兜底`)
-      } catch (error) {
-        warn(`questions 桥装配失败，已跳过（其余能力不受影响）: ${error instanceof Error ? error.message : String(error)}`)
-      }
-    }
 
     // 阶段 5：会话路由——白名单用户的文本按 idle/busy 语义投进 agent（followup/inject/steer）
     const replyViaChannel = async (channel, chatId, text) => {
@@ -836,7 +781,7 @@ export function apply(ctx, config = {}) {
       // API 函数层（UI/CLI 共用）：注入 v0.3.2 的 router/registry、store、notifier 与
       // 出站渠道快照（outboundConfigs 取 resolved.channels——含 store overlay 后的最终态；
       // putChannel 运行时新写的 store 字段要到下次启动才进快照，即「重启生效」语义）。
-      const scanHandlers = createScanHandlers({ store, logger, identity })
+      const scanHandlers = createScanHandlers({ store, logger })
       const adminApi = createAdminApi({
         router,
         registry,
@@ -905,7 +850,6 @@ export function apply(ctx, config = {}) {
 }
 
 export { resolveConfig, createNotifier, createEventListener, registerNotifyTool }
-export { createQuestionBridge, registerAskUserTool } from './questions/router.mjs'
 export { maskChannelConfig, CHANNEL_TYPES } from './config.mjs'
 export { NotifyError, ERROR_CODES } from './adapters/_shared.mjs'
 // 阶段 4/5：inbound 回传栈（供测试与其它插件复用）

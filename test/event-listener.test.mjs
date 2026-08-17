@@ -563,3 +563,17 @@ test('v0.5 dispose：tracker 定时器被清（退出后不再触发 stall）', 
   t.advance(3_600_000)
   assert.equal(pushes.length, 0, 'dispose 后不再触发')
 })
+
+test('B3 dispose 级联：agent/disposed 事件调 bus.abandonByAgent（裸 agent 与 { agent } 载荷均可）', () => {
+  const { ctx, listeners } = fakeCtx()
+  const notifier = { notifyAll: async () => ({ ok: true }), flush: async () => {} }
+  const disposed = []
+  const bus = { abandonByAgent: (agentId) => { disposed.push(agentId); return 1 } }
+  const dispose = createEventListener(ctx, notifier, { enabled: true, debounceMs: 10, summaryMaxChars: 100, titlePrefix: '' }, {
+    bus: () => bus,
+  })
+  listeners['agent/disposed'][0]({ id: 's9' })
+  listeners['agent/disposed'][0]({ agent: { id: 's9' } })
+  assert.deepEqual(disposed, ['s9', 's9'], '裸 agent 与 { agent } 容器形态都解包出 id')
+  dispose()
+})

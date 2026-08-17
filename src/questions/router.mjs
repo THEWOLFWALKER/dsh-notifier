@@ -92,6 +92,12 @@ export function createQuestionBridge(deps) {
       store.set(key, { ...row, ...extra, status: 'resolved', decision, resolvedAt: Date.now() })
       return true
     },
+    terminate(key, extra = {}) {
+      const row = store.get(key)
+      if (row === undefined || row.status !== 'pending') return false
+      store.set(key, { ...row, ...extra, status: 'resolved', decision: 'terminated', resolvedAt: Date.now() })
+      return true
+    },
     /** 最近一条待决提问（编号回复降级）：精确用户 → 同渠道 → 任意渠道（提问恒广播）。 */
     latestPendingFor(channel, userId) {
       let exact = null
@@ -204,7 +210,7 @@ export function createQuestionBridge(deps) {
   }
 
   /** 统一裁决入口（token 路径）。返回 { ok, message, answers? }。 */
-  function decide({ qKey, optIdx, values, token, via = 'unknown', userId = '(unknown)' }) {
+  function decide({ qKey, optIdx, values, token, via = 'unknown', userId = '(unknown)', chatId = undefined }) {
     const row = ledger.get(qKey)
     if (row === undefined || row.status !== 'pending') {
       return { ok: false, message: '该提问已回答或已过期' }
@@ -214,6 +220,12 @@ export function createQuestionBridge(deps) {
       return { ok: false, message: `作答被拒绝（${verdict.reason === 'expired' ? '已过期' : '校验失败'}）` }
     }
     if (verdict.key !== qKey) return { ok: false, message: '作答被拒绝（问题不匹配）' }
+    if (chatId !== undefined && chatId !== null && String(chatId) !== '') {
+      const pushedTo = Array.isArray(row.pushedTo) ? row.pushedTo : []
+      if (!pushedTo.some((target) => String(target?.chatId ?? '') === String(chatId))) {
+        return { ok: false, message: '请到原会话操作' }
+      }
+    }
     const optIdxes = optIdx === 'm' ? values : [optIdx]
     return settle(qKey, row, optIdxes, via, userId)
   }
@@ -303,12 +315,13 @@ export function createQuestionBridge(deps) {
    *           timeoutMs?: number, context?: string }} payload
    * @returns {Promise<{ ok: boolean, answered: boolean, results: object[], reason?: string }>}
    */
-  async function askQuestions(payload) {
+  async function askQuestions(payload, execContext = {}) {
     const questions = Array.isArray(payload?.questions) ? payload.questions : []
     const timeoutMs = Math.max(1000, Number(payload?.timeoutMs) || defaultTimeoutMs)
     if (questions.length === 0) return { ok: false, answered: false, results: [], reason: 'questions 不能为空' }
     const results = []
     let allAnswered = true
+    const agentId = execContext?.agent?.id ?? execContext?.agent?.session?.id ?? execContext?.session?.id ?? null
     for (const question of questions) {
       if (disposed) {
         results.push({ question: String(question?.question ?? ''), answered: false, reason: 'stopped' })
@@ -324,17 +337,19 @@ export function createQuestionBridge(deps) {
           options: question.options.map((option) => String(option.label)),
           multiSelect: question.multiSelect === true,
           context: String(payload?.context ?? ''),
+          agentId: agentId !== null && String(agentId) !== '' ? String(agentId) : null,
           pushedTo: [],
         })
         // waiter 预注册先于推卡（v0.6.3 审批时序同款：早到作答不被丢）
-        const waitPromise = bus.wait(qKey, timeoutMs)
+        const waitPromise = bus.wait(qKey, timeoutMs, {
+          agentId: agentId !== null ? String(agentId) : '',
+          onAbandon: () => { try { ledger.terminate(qKey) } catch { } },
+        })
         const pushedTo = await pushQuestion(qKey, token, question)
         const row = ledger.get(qKey)
         if (row !== undefined) store.set(qKey, { ...row, pushedTo })
         const startedAt = Date.now()
         escalation.start(qKey, (_key, stage) => {
-          // 提醒不重发选项列表（卡片渠道的选项就在卡片上；编号渠道重发会刷屏），
-          // 只做轻提醒并指路：卡片点按钮 / 无卡片渠道回编号。
           notifier.notifyAll({
             title: `提问仍在等待作答：${String(question.question ?? '').slice(0, 40)}`,
             content: `${stage.note ?? '仍在等待作答'}（已等待 ${Math.round((Date.now() - startedAt) / 1000)}s）。请点击选项卡片按钮作答；无卡片渠道可回复选项编号。`,
@@ -343,6 +358,13 @@ export function createQuestionBridge(deps) {
         })
         outcome = await waitPromise
         escalation.stop(qKey)
+        const rowAfterWait = ledger.get(qKey)
+        if (rowAfterWait?.decision === 'terminated') {
+          await markResolved(rowAfterWait?.pushedTo ?? pushedTo ?? [], '⏹ 已终止：agent 会话已结束，提问取消')
+          results.push({ question: String(question.question ?? ''), answered: false, reason: 'terminated' })
+          allAnswered = false
+          continue
+        }
       } catch (error) {
         warn(`提问推送/等待异常（交还桌面语义）: ${error instanceof Error ? error.message : String(error)}`)
         try { escalation.stop(qKey) } catch { /* 清理不致命 */ }
@@ -469,7 +491,7 @@ export function registerAskUserTool(ctx, bridge, options = {}) {
         return [{ type: 'text', text: `用户已作答：\n${lines.join('\n')}` }]
       },
     },
-    async execute(rawArgs) {
+    async execute(rawArgs, execContext) {
       if (!limiter.allow()) {
         return { ok: false, rateLimited: true, rateLimit: limiter.limit, answered: false, results: [] }
       }
@@ -478,7 +500,7 @@ export function registerAskUserTool(ctx, bridge, options = {}) {
         return { ok: false, answered: false, results: [], reason: validated.reason }
       }
       try {
-        return await bridge.askQuestions(validated)
+        return await bridge.askQuestions(validated, execContext)
       } catch (error) {
         return { ok: false, answered: false, results: [], reason: error instanceof Error ? error.message : String(error) }
       }

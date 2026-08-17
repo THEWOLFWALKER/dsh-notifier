@@ -246,6 +246,25 @@ test('按钮作答：token 裁决 → 卡片终态编辑（已作答文案）+ �
   rig.bridge.dispose()
 })
 
+test('按钮作答：转发点击 chat 不一致 → 拒绝并保留待决，原会话仍可正常作答', async () => {
+  const rig = makeRig()
+  const pending = rig.bridge.askQuestions({ questions: [SINGLE] })
+  await sleep(30)
+  const tg = rig.instances[0]
+  const payload = tg.cards[0]
+  const wrong = rig.bridge.decide({ qKey: payload.qKey, optIdx: '0', token: payload.token, via: 'telegram', userId: '100', chatId: '999' })
+  assert.equal(wrong.ok, false)
+  assert.match(wrong.message, /请到原会话操作/)
+  const row = rig.store.get(payload.qKey)
+  assert.equal(row.status, 'pending')
+  const right = rig.bridge.decide({ qKey: payload.qKey, optIdx: '0', token: payload.token, via: 'telegram', userId: '100', chatId: '100' })
+  assert.equal(right.ok, true)
+  const result = await pending
+  assert.equal(result.answered, true)
+  assert.deepEqual(result.results[0].answers, ['测试环境'])
+  rig.bridge.dispose()
+})
+
 test('首达采纳：作答后同 token 再点按钮被拒（问题已回答）', async () => {
   const rig = makeRig()
   const pending = rig.bridge.askQuestions({ questions: [SINGLE] })
@@ -351,7 +370,7 @@ test('registerAskUserTool：参数校验失败返回明确原因，不触达桥'
   const { ctx, defs } = makeToolCtx()
   const dispose = registerAskUserTool(ctx, forbidden, { rateLimitPerMinute: 6 })
   assert.equal(defs.length, 1)
-  const result = await defs[0].execute({ questions: [] })
+    const result = await defs[0].execute({ questions: [] }, { agent: { id: 'agent-1' } })
   assert.equal(result.ok, false)
   assert.match(result.reason, /1 到 4/)
   assert.equal(result.answered, false)
@@ -367,7 +386,7 @@ test('registerAskUserTool：完整注册形状 + 渲染 + 端到端作答', asyn
   const def = defs[0]
   assert.equal(def.name, 'ask_user')
   assert.deepEqual(def.parameters.required, ['questions'])
-  const first = def.execute({ questions: [{ question: '选一个', options: [{ label: '甲' }, { label: '乙' }] }] })
+  const first = def.execute({ questions: [{ question: '选一个', options: [{ label: '甲' }, { label: '乙' }] }] }, { agent: { id: 'agent-1' } })
   await sleep(30)
   const payload = rig.instances[0].cards[0]
   rig.bridge.decide({ qKey: payload.qKey, optIdx: '1', token: payload.token, via: 'telegram', userId: '100' })
@@ -400,16 +419,37 @@ test('registerAskUserTool：限流——每分钟第二次调用直接拒，不�
   dispose()
 })
 
-test('dispose 反注册编号回复处理器：后续裸编号不再消费', async () => {
-  const rig = makeRig({ inbounds: [{ channel: 'qq', card: false }], channelTypes: ['qq'] })
-  const pending = rig.bridge.askQuestions({ questions: [SINGLE] })
+test('B3 dispose 级联：ask_user 任务在 agent/disposed 后标记 terminated', async () => {
+  const store = createStore(tempPath())
+  const vault = createTokenVault({ secret: 'test-secret' })
+  const bus = createInboundBus({ allowUsers: ['42', '100'], store, vault })
+  const broadcasts = []
+  const notifier = { channels: ['telegram'], notifyAll: async (msg, opts) => { broadcasts.push({ msg, opts }); return { ok: true, delivered: [], skipped: [], failed: [] } } }
+  const instances = [{
+    raw: {
+      channel: 'telegram',
+      notifyTargets: () => [{ chatId: '100', userId: '100' }],
+      async sendQuestionCard(payload) { return { messageId: 1 } },
+      async editResolved(target, text) { broadcasts.push({ target, text }) },
+      async sendText() { return true },
+    },
+  }]
+  const bridge = createQuestionBridge({
+    bus,
+    vault,
+    store,
+    notifier,
+    interactive: () => instances.map((item) => item.raw),
+    config: { timeoutMs: 800, escalation: { enabled: false } },
+  })
+  bridge.attach()
+  const pending = bridge.askQuestions({ questions: [SINGLE] }, { agent: { id: 'agent-9' } })
   await sleep(30)
-  rig.bridge.dispose()
-  // dispose 后消息订阅已摘：qq 的 2 不再裁决（也不会异常）
-  assert.deepEqual(
-    rig.bus.accept({ channel: 'qq', userId: '42', chatId: '42', messageId: 'msg:q:9', text: '2' }),
-    { ok: true },
-  )
+  assert.equal(bus.abandonByAgent('agent-9'), 1)
   const result = await pending
-  assert.equal(result.answered, false, 'dispose 后编号回复失效 → 超时收场')
+  assert.equal(result.answered, false)
+  assert.equal(result.results[0].reason, 'terminated')
+  assert.equal(store.keys('aq:').length, 1)
+  assert.equal(store.get(store.keys('aq:')[0]).decision, 'terminated')
+  bridge.dispose()
 })

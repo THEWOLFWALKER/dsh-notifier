@@ -327,12 +327,15 @@ test('bus：wait 超时 → resolve(null)（静默永不批准）', async () => 
   assert.equal(bus.pendingCount(), 0)
 })
 
-test('bus：abandon 让等待者以 null 收场且清理计时器', async () => {
+test('bus：abandonByAgent 只收归属该 agent 的等待者', async () => {
   const bus = createInboundBus({ allowUsers: ['42'] })
-  const waiting = bus.wait('ap:ab:1', 5000)
-  assert.equal(bus.abandon('ap:ab:1'), true)
-  assert.equal(await waiting, null)
-  assert.equal(bus.abandon('ap:ab:1'), false) // 不存在 → false
+  const first = bus.wait('ap:a:1', 5000, { agentId: 'agent-1' })
+  const second = bus.wait('ap:b:1', 5000, { agentId: 'agent-2' })
+  assert.equal(bus.abandonByAgent('agent-1'), 1)
+  assert.equal(await first, null)
+  assert.equal(bus.pendingCount(), 1)
+  assert.equal(bus.abandonByAgent('agent-2'), 1)
+  assert.equal(await second, null)
   assert.equal(bus.pendingCount(), 0)
 })
 

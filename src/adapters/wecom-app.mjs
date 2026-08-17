@@ -12,23 +12,44 @@ const TOKEN_URL = 'https://qyapi.weixin.qq.com/cgi-bin/gettoken'
 const SEND_URL = 'https://qyapi.weixin.qq.com/cgi-bin/message/send'
 const INVALID_TOKEN_CODES = new Set([40014, 42001])
 
+function hasConfiguredValue(value) {
+  return value !== undefined && value !== null && !(typeof value === 'string' && value.trim() === '')
+}
+
+function pickConfigValue(cfg, ...names) {
+  if (cfg === null || typeof cfg !== 'object') return undefined
+  for (const name of names) {
+    if (Object.prototype.hasOwnProperty.call(cfg, name)) {
+      const value = cfg[name]
+      if (hasConfiguredValue(value)) return value
+    }
+  }
+  const lowerNames = names.map((name) => String(name).toLowerCase())
+  for (const [key, value] of Object.entries(cfg)) {
+    if (!lowerNames.includes(key.toLowerCase())) continue
+    if (hasConfiguredValue(value)) return value
+  }
+  return undefined
+}
+
 /** 校验并归一化配置；缺失抛中文指引。 */
 export function resolve(cfg = {}) {
   const corpid = str(cfg.corpid)
   const secret = str(cfg.secret)
-  const agentId = cfg.agentId
+  const agentIdRaw = pickConfigValue(cfg, 'agentId', 'agentid')
+  const touserRaw = pickConfigValue(cfg, 'touser', 'toUser')
   const missing = []
   if (corpid === '') missing.push('corpid（企业 ID，企业微信管理后台「我的企业」页）')
   if (secret === '') missing.push('secret（应用 Secret，管理后台「应用管理」→ 对应应用页）')
-  if (agentId === undefined || !Number.isFinite(Number(agentId))) missing.push('agentId（应用 AgentId，同一页面顶部，数字）')
+  if (agentIdRaw === undefined || !Number.isFinite(Number(agentIdRaw))) missing.push('agentId（应用 AgentId，同一页面顶部，数字）')
   if (missing.length > 0) {
     throw new NotifyError(`wecom-app 未配置：${missing.join('、')} 未填写`, ERROR_CODES.NOT_CONFIGURED)
   }
   return {
     corpid,
     secret,
-    agentId: Number(agentId),
-    touser: str(cfg.touser) || '@all',
+    agentId: Number(agentIdRaw),
+    touser: str(touserRaw) || '@all',
     msgtype: str(cfg.msgtype) === 'markdown' ? 'markdown' : 'text',
     timeoutMs: num(cfg.timeoutMs, 10000, 1000, 60000),
   }

@@ -115,6 +115,32 @@ test('pushplus: 端点 + token + markdown template', async () => {
   assert.equal(body.template, 'markdown')
 })
 
+test('pushplus: 合法 channel 透传到请求体', async () => {
+  const cap = capture({ code: 200 })
+  await pushplus.send(pushplus.resolve({ token: 'PT', channel: 'wechat' }), MSG)
+  const seen = await cap.done()
+  const body = JSON.parse(seen.body)
+  assert.equal(body.channel, 'wechat')
+})
+
+test('pushplus: 非法 channel warn 并拒绝发送', async () => {
+  const cap = capture({ code: 200 })
+  const original = console.error
+  const lines = []
+  console.error = (...args) => lines.push(args.join(' '))
+  try {
+    assert.throws(
+      () => pushplus.resolve({ token: 'PT', channel: 'wexchat' }),
+      (e) => e instanceof NotifyError && /channel/.test(e.message),
+    )
+  } finally {
+    console.error = original
+  }
+  const seen = await cap.done()
+  assert.equal(seen, null)
+  assert.ok(lines.some((line) => /pushplus/.test(line) && /wexchat/.test(line)))
+})
+
 test('serverchan: 端点含 sct + form 表单', async () => {
   const cap = capture({ code: 0 })
   await serverchan.send(serverchan.resolve({ sct: 'SCT123' }), MSG)
@@ -141,6 +167,22 @@ test('bark: JSON POST 到 endpoint，group/level 透传', async () => {
   assert.equal(body.body, '正文 markdown **bold**')
   assert.equal(body.group, 'g1')
   assert.equal(body.level, 'active')
+})
+
+test('bark: 配 device → 请求体含 device（V2 多设备路由）', async () => {
+  const cap = capture({ code: 200 })
+  await bark.send(bark.resolve({ key: 'K1', device: 'iPhone15' }), MSG)
+  const seen = await cap.done()
+  const body = JSON.parse(seen.body)
+  assert.equal(body.device, 'iPhone15')
+})
+
+test('bark: 不配 device → 请求体无 device 字段（行为兼容）', async () => {
+  const cap = capture({ code: 200 })
+  await bark.send(bark.resolve({ key: 'K1' }), MSG)
+  const seen = await cap.done()
+  const body = JSON.parse(seen.body)
+  assert.equal('device' in body, false)
 })
 
 test('bark: 非 200 code 抛错误', async () => {

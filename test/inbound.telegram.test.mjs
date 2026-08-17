@@ -353,16 +353,56 @@ test('editResolved：编辑远端卡片为最终状态（按钮失效提示）',
   assert.match(edited[0].body.text, /已远程批准/)
 })
 
-test('editResolved：契约两参形状 (target, text)——normalizeInbound 非 legacy 路径（v0.8 真机修复）', async () => {
-  const { fetchImpl, calls } = makeFetch({ editMessageText: { ok: true, result: true } })
-  const tg = createTelegramInbound({ config: CONFIG, bus: makeBus(), vault: createTokenVault(), fetchImpl })
-  // 账本 pushedTo 行形状：{channel, chatId, userId, messageId, kind:'aq'}
-  await tg.editResolved({ channel: 'telegram', chatId: 42, userId: '42', messageId: 9, kind: 'aq' }, '⏱ 超时未作答：已交还桌面（按钮失效）')
+test('B2 editResolved：edit 失败 → warn 出现 + fallback 调用（suffix 文本 + 清空 reply_markup）', async () => {
+  const { fetchImpl, calls } = makeFetch({
+    editMessageText: (body, n) => {
+      if (n === 1) return { ok: false, description: 'message is not modified' }
+      return { ok: true, result: true }
+    },
+  })
+  const original = console.error
+  const lines = []
+  const loggerLines = []
+  const logger = { warn: (...args) => loggerLines.push(args.join(' ')) }
+  console.error = (...args) => lines.push(args.join(' '))
+  try {
+    const tg = createTelegramInbound({ config: CONFIG, bus: makeBus(), vault: createTokenVault(), fetchImpl, logger })
+    await tg.editResolved(42, 9, '✅ 已远程批准')
+  } finally {
+    console.error = original
+  }
   const edited = calls.filter((call) => call.method === 'editMessageText')
-  assert.equal(edited.length, 1)
-  assert.equal(edited[0].body.chat_id, 42, 'chat_id 必须是数字 id（对象错位在真机 TG 400）')
-  assert.equal(edited[0].body.message_id, 9)
-  assert.match(edited[0].body.text, /超时未作答/)
+  assert.equal(edited.length, 2, '首次失败后应补发一次兜底')
+  assert.match(edited[0].body.text, /已远程批准/)
+  assert.match(edited[1].body.text, /已远程批准/)
+  assert.match(edited[1].body.text, /按钮失效/, '兜底文本带失效后缀')
+  assert.deepEqual(edited[1].body.reply_markup, { inline_keyboard: [] }, '兜底清空按钮')
+  assert.ok(lines.some((line) => /inbound:telegram/.test(line) && /终态编辑失败/.test(line)),
+    `stderr 应出现终态编辑失败告警（实际：${lines.join(' | ')}）`)
+  assert.ok(loggerLines.some((line) => /终态编辑失败/.test(line)), 'logger.warn 也应收到告警')
+})
+
+test('B2 editResolved：edit 失败且兜底也失败 → 双 warn，不抛错', async () => {
+  const { fetchImpl, calls } = makeFetch({
+    editMessageText: { ok: false, description: 'message is not modified' },
+  })
+  const original = console.error
+  const lines = []
+  const loggerLines = []
+  const logger = { warn: (...args) => loggerLines.push(args.join(' ')) }
+  console.error = (...args) => lines.push(args.join(' '))
+  try {
+    const tg = createTelegramInbound({ config: CONFIG, bus: makeBus(), vault: createTokenVault(), fetchImpl, logger })
+    await tg.editResolved(42, 9, '✅ 已远程批准')
+  } finally {
+    console.error = original
+  }
+  const edited = calls.filter((call) => call.method === 'editMessageText')
+  assert.equal(edited.length, 2, '首次失败 + 兜底失败各一次')
+  assert.ok(lines.some((line) => /终态编辑失败/.test(line)), '首次失败告警在场')
+  assert.ok(lines.some((line) => /终态失效兜底再次失败/.test(line)), '兜底失败告警在场')
+  assert.ok(loggerLines.some((line) => /终态编辑失败/.test(line)), '首次失败告警在场')
+  assert.ok(loggerLines.some((line) => /终态失效兜底再次失败/.test(line)), '兜底失败告警在场')
 })
 
 // ---------------------------------------------------------------- v0.5 动作闭环

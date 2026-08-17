@@ -16,6 +16,7 @@ const DEFAULT_API_BASE = 'https://api.telegram.org'
 const POLL_TIMEOUT_S = 25
 const POLL_ABORT_MS = (POLL_TIMEOUT_S + 10) * 1000
 const DEFAULT_ERROR_BACKOFF_MS = 5000
+const TERMINAL_FALLBACK_SUFFIX = '（按钮失效）'
 
 /**
  * 创建 Telegram 入站通道。
@@ -44,6 +45,11 @@ export function createTelegramInbound({ config, bus, vault, store = null, logger
     try { logger?.warn?.('[dsh-notifier/inbound:telegram]', message) } catch { /* 日志失败绝不致命 */ }
     // v0.6.1 双写 stderr：宿主 logger 不落 stdout 时轮询/装配告警仍可见（真机事故复盘）
     try { console.error('[dsh-notifier/inbound:telegram]', message) } catch { /* 控制台不可用不致命 */ }
+  }
+
+  const makeTerminalFallbackText = (text) => {
+    const base = String(text ?? '')
+    return base === '' ? TERMINAL_FALLBACK_SUFFIX : `${base}\n${TERMINAL_FALLBACK_SUFFIX}`
   }
 
   const api = async (method, body = {}) => {
@@ -317,7 +323,21 @@ export function createTelegramInbound({ config, bus, vault, store = null, logger
       const chatId = isTarget ? targetOrChatId.chatId : targetOrChatId
       const messageId = isTarget ? targetOrChatId.messageId : messageIdOrText
       const text = isTarget ? messageIdOrText : maybeText
-      await api('editMessageText', { chat_id: chatId, message_id: messageId, text }).catch(() => {})
+      try {
+        await api('editMessageText', { chat_id: chatId, message_id: messageId, text })
+      } catch (error) {
+        warn(`终态编辑失败，改发失效兜底: ${error instanceof Error ? error.message : String(error)}`)
+        try {
+          await api('editMessageText', {
+            chat_id: chatId,
+            message_id: messageId,
+            text: makeTerminalFallbackText(text),
+            reply_markup: { inline_keyboard: [] },
+          })
+        } catch (error2) {
+          warn(`终态失效兜底再次失败，按钮可能仍可点击: ${error2 instanceof Error ? error2.message : String(error2)}`)
+        }
+      }
     },
 
     /**
