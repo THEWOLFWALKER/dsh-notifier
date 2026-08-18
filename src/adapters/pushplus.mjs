@@ -10,6 +10,11 @@ export const type = 'pushplus'
 const ENDPOINT = 'https://www.pushplus.plus/send'
 
 const TEMPLATES = new Set(['html', 'txt', 'json', 'markdown'])
+const ALLOWED_CHANNELS = new Set(['wechat', 'webwx', 'wecom', 'dingtalk'])
+
+function warn(message) {
+  try { console.error('[dsh-notifier/pushplus]', message) } catch { /* 控制台不可用不致命 */ }
+}
 
 /** 校验并归一化配置；缺失抛中文指引。 */
 export function resolve(cfg = {}) {
@@ -18,11 +23,16 @@ export function resolve(cfg = {}) {
     throw new NotifyError('pushplus 未配置：token（扫码关注推推公众号获取，见 https://www.pushplus.plus）未填写', ERROR_CODES.NOT_CONFIGURED)
   }
   const template = str(cfg.template) || 'markdown'
+  const channel = str(cfg.channel)
+  if (channel !== '' && !ALLOWED_CHANNELS.has(channel)) {
+    warn(`pushplus channel 非法：${channel}（仅支持 wechat/webwx/wecom/dingtalk）`)
+    throw new NotifyError(`pushplus 配置非法：channel 仅支持 wechat/webwx/wecom/dingtalk（当前：${channel}）`, ERROR_CODES.NOT_CONFIGURED)
+  }
   return {
     token,
     template: TEMPLATES.has(template) ? template : 'markdown',
     topic: str(cfg.topic),
-    channel: str(cfg.channel),
+    channel,
     timeoutMs: num(cfg.timeoutMs, 10000, 1000, 60000),
   }
 }

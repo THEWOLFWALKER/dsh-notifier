@@ -13,6 +13,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, writeFileSync } from 'node:fs'
+import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -67,7 +68,27 @@ function bootCtx() {
       on(event, fn) { (listeners[event] ??= []).push(fn); return () => {} },
       effect(fn) { effects.push(fn) },
     },
+    async cleanup() {
+      for (const fn of effects) {
+        try {
+          const dispose = fn()
+          const result = typeof dispose === 'function' ? dispose() : dispose
+          if (result != null && typeof result.then === 'function') await result
+        } catch { /* 卸载失败不致命 */ }
+      }
+    },
   }
+}
+
+function freePort() {
+  return new Promise((resolve, reject) => {
+    const server = createServer()
+    server.on('error', reject)
+    server.listen(0, '127.0.0.1', () => {
+      const { port } = server.address()
+      server.close(() => resolve(port))
+    })
+  })
 }
 
 // ---------------------------------------------------------------- notify 工具分流
@@ -227,6 +248,8 @@ test('index 装配：apply 返回 resolved；createAgentRouter/createSessionRegi
   assert.deepEqual(resolved.channels.map((entry) => entry.type), ['webhook'])
   assert.equal(typeof indexExports.createAgentRouter, 'function')
   assert.equal(typeof indexExports.createSessionRegistry, 'function')
+  assert.equal(typeof indexExports.createQuestionBridge, 'function')
+  assert.equal(typeof indexExports.registerAskUserTool, 'function')
   assert.equal(typeof indexExports.workspaceOf, 'function')
   assert.equal(indexExports.workspaceOf({ header: { cwd: '/tmp/dsh-notifier' } }), 'dsh-notifier')
 })
@@ -243,6 +266,18 @@ test('index 装配：registry.dispose 幂等——apply 两次并重复执行清
   assert.equal(effects.length, 2)
   assert.doesNotThrow(() => { for (const cleanup of effects) cleanup() })
   assert.doesNotThrow(() => { for (const cleanup of effects) cleanup() }, '重复清理（含 registry.dispose 二次调用）不抛')
+})
+
+test('index 装配：questions.enabled 时注册 ask_user', async () => {
+  const { ctx, defs, cleanup } = bootCtx()
+  const stateDir = tempDir()
+  const port = await freePort()
+  apply(ctx, {
+    channels: [{ type: 'webhook', url: 'http://127.0.0.1:1/hook' }],
+    inbound: { stateDir, wxpusher: { appToken: 'token-1', port } },
+  })
+  assert.equal(defs.some((def) => def.name === 'ask_user'), true)
+  await cleanup()
 })
 
 test('index 装配冒烟：注入的真 router 生效——route:agents 绑定让 notify 工具广播只发绑定通道', async () => {

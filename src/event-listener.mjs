@@ -184,6 +184,7 @@ export function createEventListener(ctx, notifier, resolvedConfig, wiring = {}) 
   const events = resolvedConfig.events ?? { turnEnd: { enabled: true, kinds: {} }, approval: true, agentError: true }
   const router = wiring.router ?? null
   const registry = wiring.registry ?? null
+  const busFn = typeof wiring.bus === 'function' ? wiring.bus : null
   // v0.5 动作闭环（全可选、惰性求值；调用点自带 try/catch + null 判定）
   const actionsFn = typeof wiring.actions === 'function' ? wiring.actions : null
   const interactiveFn = typeof wiring.interactive === 'function' ? wiring.interactive : null
@@ -395,11 +396,17 @@ export function createEventListener(ctx, notifier, resolvedConfig, wiring = {}) 
     // 某些宿主不提供 agent/error 总线：静默降级，session/event 触发线不受影响
   }
   try {
-    // v0.5：agent 退出即清 tracker 档（turn/end 缺席的兜底，防泄漏）
-    const disposeAgentDisposed = ctx.on('agent/disposed', (agent) => tracker.observeAgentDisposed(agent))
+    const disposeAgentDisposed = ctx.on('agent/disposed', (payload) => {
+      const agent = payload?.agent ?? payload
+      tracker.observeAgentDisposed(agent)
+      const bus = busFn !== null ? (() => { try { return busFn() } catch { return null } })() : null
+      const agentId = typeof agent?.id === 'string' ? agent.id : typeof agent?.session?.id === 'string' ? agent.session.id : ''
+      if (bus !== null && agentId !== '' && typeof bus.abandonByAgent === 'function') {
+        try { bus.abandonByAgent(agentId) } catch { }
+      }
+    })
     if (typeof disposeAgentDisposed === 'function') extraDisposers.push(disposeAgentDisposed)
   } catch {
-    // 宿主无 agent/disposed 事件：靠 turn/end + MAX_TRACKED 淘汰兜底
   }
 
   // 返回可被 cordis await 的清理：flush 未到期的 turn/end 防抖与宽限窗任务，并等待所有在途推送完成。

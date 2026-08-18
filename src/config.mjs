@@ -263,6 +263,19 @@ export function resolveConfig(config = {}) {
     ? Math.max(0, Math.trunc(raw.toolRateLimitPerMinute))
     : 10
 
+  // v0.8 远程提问（ask_user 工具）：默认启用；超时默认 5 分钟（30s-30min 钳制在
+  // questions/router 的 validateAskArgs），限流默认 6 次/分钟（提问比通知更稀缺）。
+  const rawQuestions = (raw.questions !== null && typeof raw.questions === 'object') ? raw.questions : {}
+  const questions = {
+    enabled: rawQuestions.enabled !== false,
+    timeoutMs: typeof rawQuestions.timeoutMs === 'number' && Number.isFinite(rawQuestions.timeoutMs) && rawQuestions.timeoutMs > 0
+      ? Math.trunc(rawQuestions.timeoutMs)
+      : 300_000,
+    rateLimitPerMinute: typeof rawQuestions.rateLimitPerMinute === 'number' && Number.isFinite(rawQuestions.rateLimitPerMinute)
+      ? Math.max(0, Math.trunc(rawQuestions.rateLimitPerMinute))
+      : 6,
+  }
+
   // 空闲宽限窗（阶段 2 规则引擎）：turn 结束后等 N 秒，期间用户在页面/终端输入即取消打扰。
   const graceSeconds = typeof raw.graceSeconds === 'number' && Number.isFinite(raw.graceSeconds)
     ? Math.max(0, Math.trunc(raw.graceSeconds))
@@ -338,6 +351,7 @@ export function resolveConfig(config = {}) {
     titlePrefix,
     events,
     toolRateLimitPerMinute,
+    questions,
     graceSeconds,
     routing: (raw.routing !== null && typeof raw.routing === 'object') ? raw.routing : {},
     // v0.6.1：inbound 块对齐 channels 的 ${ENV:NAME} 密钥引用语义（真机事故 §7：

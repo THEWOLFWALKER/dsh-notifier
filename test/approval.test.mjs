@@ -324,16 +324,29 @@ test('router：多 chat 推送全部入账 pushedTo；卡片失败降级纯通�
   assert.equal(await pending, 'desktop')
 })
 
-test('router：dispose 反注册事件与消息订阅，后续 accept 不再触发裁决', async () => {
-  const rig = makeRig({ approvalConfig: { timeoutMs: 800, escalation: { enabled: false } } })
-  rig.dispose()
-  assert.equal(rig.handlers['approval/request'], undefined) // 事件已反注册
-  // 消息订阅也已退订：accept 文本不影响任何东西（不再裁决、不抛错）
-  assert.deepEqual(
-    rig.bus.accept({ channel: 'wechat', userId: '42', chatId: 'w', messageId: 'm1', text: '1' }),
-    { ok: true },
-  )
-  assert.equal(rig.bus.pendingCount(), 0)
+test('router：dispose 级联终止在途审批，pending 记录落 terminated', async () => {
+  const store = createStore(tempPath())
+  const vault = createTokenVault({ secret: 's' })
+  const bus = createInboundBus({ allowUsers: ['42'], store, vault })
+  const handlers = {}
+  const ctx = { on: (event, handler) => { handlers[event] = handler; return () => {} } }
+  const broadcasts = []
+  const edits = []
+  const notifier = { notifyAll: async (msg) => { broadcasts.push(msg); return { ok: true } } }
+  const telegram = {
+    notifyChatIds: () => ['100'],
+    sendApprovalCard: async ({ chatId, approvalKey, token }) => { edits.push({ chatId, approvalKey, token }); return { messageId: 1 } },
+    editResolved: async (...args) => { edits.push({ args }) }
+  }
+  registerApprovalHandler({ ctx, notifier, bus, vault, store, telegram, counterStart: 0, approvalConfig: { mode: 'answer', timeoutMs: 800, escalation: { enabled: false } } })
+  const pending = handlers['approval/request']({ toolName: 'rm', callId: 'c1', agent: { id: 'agent-1' } }, () => 'desktop')
+  await sleep(20)
+  assert.equal(bus.abandonByAgent('agent-1'), 1)
+  assert.equal(await pending, 'desktop')
+  const row = store.get('ap:c1:1')
+  assert.equal(row.decision, 'terminated')
+  assert.equal(row.status, 'resolved')
+  assert.ok(edits.some((item) => /已终止/.test(String(item.args?.at(-1) ?? ''))))
 })
 
 test('router：callId 缺失回退 toolName；请求字段异常不崩（key 仍可铸出）', async () => {

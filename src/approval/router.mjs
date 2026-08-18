@@ -109,6 +109,12 @@ export function registerApprovalHandler(deps) {
       store.set(key, { ...row, status: 'resolved', decision, resolvedAt: Date.now() })
       return true
     },
+    terminate(key, extra = {}) {
+      const row = store.get(key)
+      if (row === undefined || row.status !== 'pending') return false
+      store.set(key, { ...row, ...extra, status: 'resolved', decision: 'terminated', resolvedAt: Date.now() })
+      return true
+    },
     /**
      * 最近一条待决审批（编号回复降级用）。匹配优先级：
      *  1) 精确：卡片实际送达过该 (channel,userId)；
@@ -271,7 +277,7 @@ export function registerApprovalHandler(deps) {
       }
       ledger.add(key, {
         toolName: request?.toolName ?? '(unknown)',
-        agentId: request?.agent?.id ?? null,
+        agentId: request?.agent?.id ?? request?.agent?.session?.id ?? null,
         pushedTo: [],
         // v0.6.4（审查 R1-P2-1）：意图渠道入账——null = 全局广播（= 全部交互渠道），
         // 数组 = 分流结果。编号回复 intended 兜底据此判定「广播教了回复 1 但卡片没送达」。
@@ -281,10 +287,20 @@ export function registerApprovalHandler(deps) {
       // 发卡 + 广播，限速门下数秒级）再 bus.wait——窗口内用户点按钮/回复 1/2 会命中
       // already-resolved 被静默丢弃，此后永远无人能裁决 → 超时回落桌面。先注册 waiter
       // 再推卡，早到的裁决由 waiter 承接（超时计时从推卡开始，含推送耗时，语义可接受）。
-      const decisionPromise = mode === 'answer' ? bus.wait(key, timeoutMs) : null
+      const waitOptions = {
+        agentId: request?.agent?.id ?? request?.agent?.session?.id ?? null,
+        onAbandon: () => { try { ledger.terminate(key) } catch { } },
+      }
+      const decisionPromise = mode === 'answer' ? bus.wait(key, timeoutMs, waitOptions) : null
       const pushedTo = await pushApproval(key, token, request, channelTypes)
       const row = ledger.get(key)
-      if (row !== undefined) store.set(key, { ...row, pushedTo })
+      if (row !== undefined && row.status === 'pending') {
+        store.set(key, { ...row, pushedTo })
+      }
+      if (ledger.get(key)?.decision === 'terminated') {
+        await markRemoteResolved(pushedTo, '⏹ 已终止：agent 会话已结束，审批取消')
+        return next()
+      }
 
       if (mode !== 'answer') {
         return next() // observe：只旁观，桌面照常决定
@@ -302,6 +318,10 @@ export function registerApprovalHandler(deps) {
 
       const decision = await decisionPromise
       escalation.stop(key)
+      if (ledger.get(key)?.decision === 'terminated') {
+        await markRemoteResolved(pushedTo, '⏹ 已终止：agent 会话已结束，审批取消')
+        return next()
+      }
       if (decision === null) {
         ledger.resolve(key, 'timeout')
         await markRemoteResolved(pushedTo, '⏱ 超时未响应：已交还桌面处理（按钮失效）')

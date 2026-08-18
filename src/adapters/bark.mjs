@@ -27,7 +27,10 @@ export function resolve(cfg = {}) {
   if (endpoint === '') {
     throw new NotifyError('bark 未配置：key（Bark 设备 key，App 内获取）未填写', ERROR_CODES.NOT_CONFIGURED)
   }
-  return { endpoint, timeoutMs: num(cfg.timeoutMs, 5000, 1000, 60000) }
+  const resolved = { endpoint, timeoutMs: num(cfg.timeoutMs, 5000, 1000, 60000) }
+  const device = str(cfg.device)
+  if (device !== '') resolved.device = device
+  return resolved
 }
 
 /** 发送通知；Bark 返回 code !== 200 时抛带中文指引的错误。endpoint 不写进错误信息（携带 key）。 */
@@ -35,6 +38,7 @@ export async function send(resolved, msg) {
   const body = { title: msg.title, body: msg.content }
   if (msg.group !== undefined) body.group = msg.group
   if (msg.level !== undefined && LEVELS.has(msg.level)) body.level = msg.level
+  if (resolved.device !== '') body.device = resolved.device
   const response = await postJson(resolved.endpoint, body, { timeoutMs: resolved.timeoutMs, channel: 'bark' })
   const payload = await responseJson(response, 'bark')
   if (typeof payload?.code !== 'number') {

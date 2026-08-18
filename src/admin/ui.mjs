@@ -110,7 +110,7 @@ label.fld input { flex: 1; }
 </head>
 <body>
 <header>
-  <h1>dsh-notifier 管理台<small>v0.7.1</small></h1>
+  <h1>dsh-notifier 管理台<small>v0.8.2</small></h1>
   <span id="loadState"></span>
   <button id="tokenState" title="点击输入或更换访问 token"></button>
   <button id="btnRefresh">刷新</button>
