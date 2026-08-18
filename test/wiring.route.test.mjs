@@ -308,6 +308,105 @@ test('index 装配冒烟：注入的真 router 生效——route:agents 绑定�
   }
 })
 
+test('状态清扫：aq 已决行超 24h 删除，窗口内保留', async () => {
+  const stateDir = tempDir()
+  const now = Date.now()
+  writeFileSync(join(stateDir, 'state.json'), JSON.stringify({
+    'aq:old': { status: 'resolved', decision: 'terminated', resolvedAt: now - 25 * 60 * 60 * 1000 },
+    'aq:new': { status: 'resolved', decision: 'answered', resolvedAt: now - 60 * 60 * 1000 },
+  }))
+  const { ctx, cleanup } = bootCtx()
+  apply(ctx, {
+    channels: [{ type: 'webhook', url: 'http://127.0.0.1:1/hook' }],
+    inbound: { stateDir },
+  })
+  const store = createStore(join(stateDir, 'state.json'))
+  assert.equal(store.get('aq:old'), undefined)
+  assert.equal(store.get('aq:new').decision, 'answered')
+  await cleanup()
+})
+
+test('状态清扫：aq 崩溃残留跨重启回收，在途 pending 保留', async () => {
+  const stateDir = tempDir()
+  const now = Date.now()
+  writeFileSync(join(stateDir, 'state.json'), JSON.stringify({
+    'aq:orphan': { status: 'pending', createdAt: now - 3 * 60 * 60 * 1000 },
+    'aq:live': { status: 'pending', createdAt: now },
+  }))
+  const { ctx, cleanup } = bootCtx()
+  apply(ctx, {
+    channels: [{ type: 'webhook', url: 'http://127.0.0.1:1/hook' }],
+    inbound: { stateDir },
+  })
+  const restarted = createStore(join(stateDir, 'state.json'))
+  assert.equal(restarted.get('aq:orphan'), undefined)
+  assert.equal(restarted.get('aq:live').status, 'pending')
+  await cleanup()
+})
+
+
+test('状态清扫：ap answer 孤儿删除，observe 与旧行保留', async () => {
+  const stateDir = tempDir()
+  const now = Date.now()
+  writeFileSync(join(stateDir, 'state.json'), JSON.stringify({
+    'ap:answer-orphan': { mode: 'answer', status: 'pending', createdAt: now - 3 * 60 * 60 * 1000 },
+    'ap:observe': { mode: 'observe', status: 'pending', createdAt: now - 3 * 60 * 60 * 1000 },
+    'ap:legacy': { status: 'pending', createdAt: now - 3 * 60 * 60 * 1000 },
+  }))
+  const { ctx, cleanup } = bootCtx()
+  apply(ctx, {
+    channels: [{ type: 'webhook', url: 'http://127.0.0.1:1/hook' }],
+    inbound: { stateDir },
+    approval: { mode: 'answer', timeoutMs: 120000 },
+  })
+  const restarted = createStore(join(stateDir, 'state.json'))
+  assert.equal(restarted.get('ap:answer-orphan'), undefined)
+  assert.equal(restarted.get('ap:observe').mode, 'observe')
+  assert.equal(restarted.get('ap:legacy').mode, undefined)
+  await cleanup()
+})
+
+test('状态清扫：approval 超时配置放大时保留在途 answer，清扫更老孤儿', async () => {
+  const stateDir = tempDir()
+  const now = Date.now()
+  writeFileSync(join(stateDir, 'state.json'), JSON.stringify({
+    'ap:inflight': { mode: 'answer', status: 'pending', createdAt: now - 5 * 60 * 60 * 1000 },
+    'ap:orphan': { mode: 'answer', status: 'pending', createdAt: now - 7 * 60 * 60 * 1000 },
+  }))
+  const { ctx, cleanup } = bootCtx()
+  apply(ctx, {
+    channels: [{ type: 'webhook', url: 'http://127.0.0.1:1/hook' }],
+    inbound: { stateDir },
+    approval: { mode: 'answer', timeoutMs: 3 * 60 * 60 * 1000 },
+  })
+  const restarted = createStore(join(stateDir, 'state.json'))
+  assert.equal(restarted.get('ap:inflight').status, 'pending')
+  assert.equal(restarted.get('ap:orphan'), undefined)
+  await cleanup()
+})
+
+test('状态清扫：act 孤儿 pending 回收，dedup 既有窗口行为不变', async () => {
+  const stateDir = tempDir()
+  const now = Date.now()
+  writeFileSync(join(stateDir, 'state.json'), JSON.stringify({
+    'act:orphan': { status: 'pending', createdAt: now - 3 * 60 * 60 * 1000 },
+    'act:resolved': { status: 'resolved', resolvedAt: now - 25 * 60 * 60 * 1000 },
+    'dedup:old': now - 26 * 60 * 60 * 1000,
+    'dedup:new': now,
+  }))
+  const { ctx, cleanup } = bootCtx()
+  apply(ctx, {
+    channels: [{ type: 'webhook', url: 'http://127.0.0.1:1/hook' }],
+    inbound: { stateDir },
+  })
+  const store = createStore(join(stateDir, 'state.json'))
+  assert.equal(store.get('act:orphan'), undefined)
+  assert.equal(store.get('act:resolved'), undefined)
+  assert.equal(store.get('dedup:old'), undefined)
+  assert.equal(store.get('dedup:new'), now)
+  await cleanup()
+})
+
 // ---------------------------------------------------------------- 审批分流（approval/router deps.router）
 
 /** 新契约假交互通道（approval.multi.test.mjs makeFake 同款，精简版）。 */

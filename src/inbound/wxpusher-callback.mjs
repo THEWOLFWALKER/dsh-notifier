@@ -18,6 +18,16 @@ import { resolveNotifyTargets } from './target-guard.mjs'
 
 const SEND_ENDPOINT = 'https://wxpusher.zjiecode.com/api/send/message'
 const DEFAULT_PORT = 8103
+// v0.8.4 INJ-1：uid 字符白名单 + 长度上限。WxPusher 上行回调无签名，uid 直接进入
+// 身份/路由判定——约束形态降低伪造/路径穿插/资源膨胀面。允许字母数字 + 常用分隔符，
+// 拒绝空白、控制字符、路径分隔（`/`）、引号等注入载体；超长（>128，与身份层一致）拒收。
+const UID_MAX_LEN = 128
+const UID_PATTERN = /^[A-Za-z0-9_.:\-]+$/
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1'])
+
+function isValidWxUid(uid) {
+  return typeof uid === 'string' && uid.length > 0 && uid.length <= UID_MAX_LEN && UID_PATTERN.test(uid)
+}
 
 /** content → 6 位十六进制摘要（合成幂等键用）。 */
 function hash6(content) {
@@ -95,7 +105,25 @@ export function createWxpusherInbound(options = {}) {
   let startPromise = null
   let server = null // { port, close }
 
+  let warnedPublicExposure = false
+
+  function warnPublicExposureIfNeeded() {
+    const host = String(config.host ?? '')
+    const isLoopback = host === '' || LOOPBACK_HOSTS.has(host) || host.startsWith('127.')
+    if (!isLoopback && allowedIps.length === 0 && !warnedPublicExposure) {
+      warnedPublicExposure = true
+      warn(`回调绑定非本地回环 ${host} 且未配置 allowedIps——拒绝全部回调来源（公网暴露面安全拦截）。请配置 allowedIps 为 WxPusher 出口 IP 或改回 127.0.0.1 走反向代理`)
+    }
+  }
+
   function ipAllowed(ip) {
+    // v0.8.4 INJ-1/OTH-1：公网/多网卡绑定且未配置 allowedIps 时，回调面即公开冒用面
+    // ——任意外网 IP 都能 POST 密径冒充绑定用户审批。此时缺 allowedIps 必须拒绝全部
+    // 来源（fail-closed），并显式告警；本地回环（默认）不受影响（守住安全默认）。
+    warnPublicExposureIfNeeded()
+    const host = String(config.host ?? '')
+    const isLoopback = host === '' || LOOPBACK_HOSTS.has(host) || host.startsWith('127.')
+    if (!isLoopback && allowedIps.length === 0) return false
     if (allowedIps.length === 0) return true
     const bare = String(ip ?? '').replace(/^::ffff:/, '')
     return allowedIps.some((entry) => entry.replace(/^::ffff:/, '') === bare)
@@ -103,7 +131,7 @@ export function createWxpusherInbound(options = {}) {
 
   function handlePayload(payload, { ip } = {}) {
     if (!ipAllowed(ip)) {
-      warn(`拒绝回调来源 IP：${ip}（不在 allowedIps）`)
+      warn(`拒绝回调来源 IP：${ip}（不在 allowedIps 或公网绑定未配名单）`)
       return
     }
     const action = String(payload?.action ?? '')
@@ -114,8 +142,15 @@ export function createWxpusherInbound(options = {}) {
         const time = String(data.time ?? '')
         const appId = String(data.appId ?? '')
         const text = stripCommandPrefix(data.content, appId)
-        if (uid === '' || text === '') return
-        // v0.7：accept 返回值消费——拒绝/命令回执不再已读不回
+        // v0.8.4 INJ-1：uid 形态校验先行（拒超长/空串/空白/控制字符/路径穿插）
+        if (!isValidWxUid(uid)) {
+          warn(`send_up_cmd 拒绝非法 uid 形态（len=${String(data.uid ?? '').length}）：${uid === '' ? '(empty)' : `${uid}`.slice(0, 32)}`)
+          return
+        }
+        if (text === '') return
+        // v0.7：accept 返回值消费——拒绝/命令回执不再已读不回。
+        // v0.8.4 INJ-1：授权门槛仍由 bus 身份/白名单裁决——只有已确认绑定的 uid 能到达
+        // 业务扇出，app_subscribe 学习到的待确认 uid 不在此列，天然无裁决能力。
         const result = bus.accept({
           channel: 'wxpusher',
           userId: uid,
@@ -132,20 +167,24 @@ export function createWxpusherInbound(options = {}) {
       }
       if (action === 'app_subscribe') {
         const uid = String(data.uid ?? '')
-        if (uid !== '') {
-          try { store?.set(`wxpusher:bind:${uid}`, { at: Date.now(), extra: String(data.extra ?? '') }) } catch { /* 落盘失败不致命 */ }
-          // v0.7 学习键汇流（计划书 §3.6）：订阅 uid 进待确认绑定，管理台成员页收口
-          // （origin=learned；已是成员时 addPending 幂等拒绝，不产生重复条目）
-          if (identity !== null && typeof identity.addPending === 'function') {
-            try {
-              const learned = identity.addPending({ channel: 'wxpusher', userId: uid, origin: 'learned', extra: { source: 'app_subscribe', extra: String(data.extra ?? '').slice(0, 256) } })
-              if (learned.ok) warn(`uid ${uid} 已订阅（已入待确认绑定，管理台成员页可转正）`)
-            } catch (error) {
-              warn(`订阅学习入待确认失败（不致命）: ${error instanceof Error ? error.message : String(error)}`)
-            }
-          } else {
-            warn(`uid ${uid} 已订阅（绑定已学习${data.extra !== undefined ? `，extra=${String(data.extra)}` : ''}）`)
+        // v0.8.4 INJ-1：app_subscribe 只进学习队列（待确认绑定），绝不直接当已绑定；
+        // 形态校验同样先行，杜绝攻击者用非法 uid 投毒待确认表 / 膨胀 store 键。
+        if (!isValidWxUid(uid)) {
+          warn(`app_subscribe 拒绝非法 uid 形态（len=${String(data.uid ?? '').length}）：${uid === '' ? '(empty)' : `${uid}`.slice(0, 32)}`)
+          return
+        }
+        try { store?.set(`wxpusher:bind:${uid}`, { at: Date.now(), extra: String(data.extra ?? '') }) } catch { /* 落盘失败不致命 */ }
+        // v0.7 学习键汇流（计划书 §3.6）：订阅 uid 进待确认绑定，管理台成员页收口
+        // （origin=learned；已是成员时 addPending 幂等拒绝，不产生重复条目）
+        if (identity !== null && typeof identity.addPending === 'function') {
+          try {
+            const learned = identity.addPending({ channel: 'wxpusher', userId: uid, origin: 'learned', extra: { source: 'app_subscribe', extra: String(data.extra ?? '').slice(0, 256) } })
+            if (learned.ok) warn(`uid ${uid} 已订阅（已入待确认绑定，管理台成员页可转正）`)
+          } catch (error) {
+            warn(`订阅学习入待确认失败（不致命）: ${error instanceof Error ? error.message : String(error)}`)
           }
+        } else {
+          warn(`uid ${uid} 已订阅（绑定已学习${data.extra !== undefined ? `，extra=${String(data.extra)}` : ''}）`)
         }
         return
       }
@@ -189,6 +228,7 @@ export function createWxpusherInbound(options = {}) {
       running = true
       startPromise = (async () => {
         try {
+          warnPublicExposureIfNeeded()
           server = await startServer({
             path: config.webhookPath,
             host: config.host,

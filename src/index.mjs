@@ -248,11 +248,15 @@ export function apply(ctx, config = {}) {
   // 入站消息落一个 dedup 键、审批/动作核销后账本行永留），长跑进程 state.json 单调
   // 膨胀且全量重写随之变慢。定期清扫：dedup 窗口 24h（留 1h 余量防时钟回拨），已决
   // 审批/动作保留 24h 供审计，超期即删（首启 + 每 6h；sweepPrefix 走脏键合并写，
-  // 与 CLI/他进程并发写互不覆盖）。pending 行不清（在等裁决，宁可多留一行）。
-  // v0.6.4：dedup 清扫线联动 bus 窗口（窗口可配时硬编码 25h 会误清未过期键或漏清）；
+  // 与 CLI/他进程并发写互不覆盖）。pending 行仅在超过活 waiter 合法寿命后清扫，
+  // observe 审批与无法分类的旧行保留。
+  // v0.6.4：dedup 清扫线联动 bus 窗口（窗口可配时硬编码 25h 会误清未过期键或漏清）;
   // bus 在白名单块才创建（可能不创建），sweep 注册在前——用外层惰性引用兜住。
   let sweepBusRef = null
   {
+    const approvalTimeoutMs = Math.max(1000, Number(approvalRaw.timeoutMs) || 120000)
+    const questionTimeoutMs = Math.max(1000, Number(resolved.questions?.timeoutMs) || 300000)
+    const orphanHorizonMs = Math.max(2 * 60 * 60 * 1000, approvalTimeoutMs * 2, questionTimeoutMs * 2)
     const sweepOnce = () => {
       try {
         const windowMs = sweepBusRef?.dedupWindowMs ?? 24 * 60 * 60 * 1000
@@ -261,8 +265,13 @@ export function apply(ctx, config = {}) {
         const resolvedHorizon = Date.now() - 24 * 60 * 60 * 1000
         const expiredRow = (_key, row) => row?.status === 'resolved'
           && typeof row.resolvedAt === 'number' && row.resolvedAt < resolvedHorizon
-        store.sweepPrefix('ap:', expiredRow)
-        store.sweepPrefix('act:', expiredRow)
+        const orphanPending = (_key, row) => row?.status === 'pending'
+          && typeof row.createdAt === 'number' && row.createdAt < Date.now() - orphanHorizonMs
+        const apExpired = (_key, row) => expiredRow(_key, row)
+          || (orphanPending(_key, row) && row?.mode === 'answer')
+        store.sweepPrefix('ap:', apExpired)
+        store.sweepPrefix('act:', (_key, row) => expiredRow(_key, row) || orphanPending(_key, row))
+        store.sweepPrefix('aq:', (_key, row) => expiredRow(_key, row) || orphanPending(_key, row))
       } catch { /* 清扫失败不致命，下轮再试 */ }
     }
     sweepOnce()

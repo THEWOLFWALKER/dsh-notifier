@@ -399,6 +399,92 @@ test('按钮作答：chatId 相同但跨通道（via 非原通道）→ 拒绝�
   rig.bridge.dispose()
 })
 
+test('AUTH-1 总线层来源校验：card 到 chat A，chat B 的 bus.decide 被拒且不核销，原会话仍可答', async () => {
+  const rig = makeRig()
+  const pending = rig.bridge.askQuestions({ questions: [SINGLE] })
+  await sleep(30)
+  const tg = rig.instances[0]
+  const payload = tg.cards[0]
+  // 转发到非目标 chat 999 → 总线明确拒绝 source-chat-mismatch（AUTH-1：allowChats 已注册）
+  const forwarded = rig.bus.decide({
+    approvalKey: payload.qKey,
+    decision: 'allowed-once',
+    token: payload.token,
+    via: 'telegram:button',
+    userId: '100',
+    chatId: '999',
+  })
+  assert.deepEqual(forwarded, { ok: false, reason: 'source-chat-mismatch' })
+  assert.equal(rig.store.get(payload.qKey).status, 'pending', '转发裁决不落终态/不核销 wait')
+  // 原会话 chat 100 仍可答（走 questions.decide 真实按钮路径）
+  const right = rig.bridge.decide({ qKey: payload.qKey, optIdx: '0', token: payload.token, via: 'telegram', userId: '100', chatId: '100' })
+  assert.equal(right.ok, true)
+  const result = await pending
+  assert.equal(result.answered, true)
+  assert.deepEqual(result.results[0].answers, ['测试环境'])
+  rig.bridge.dispose()
+})
+
+// v0.8.4 AUTH-1：空目标（无任何可送卡会话）→ allowChats 为空 Map，不放行任意 chat。
+test('AUTH-1 空目标：无推卡会话时任意 chatId 的 bus.decide 均被拒（不放行 wildcard）', async () => {
+  const rig = makeRig({ inbounds: [{ channel: 'telegram', card: true, targets: [] }], channelTypes: ['telegram'] })
+  const pending = rig.bridge.askQuestions({ questions: [SINGLE] })
+  await sleep(30)
+  const keys = rig.store.keys('aq:')
+  assert.equal(keys.length, 1, '在途问题存在')
+  const qKey = keys[0]
+  // 无任何可送卡会话 → bus.wait 用空 allowChats 注册。用合法 token 走按钮裁决，任意 chatId
+  // 都会命中空 Map → source-chat-mismatch（不放行 wildcard），且不核销 wait。
+  const token = rig.vault.mint(qKey)
+  const verdict = rig.bus.decide({
+    approvalKey: qKey,
+    decision: 'allowed-once',
+    token,
+    via: 'telegram:button',
+    userId: '100',
+    chatId: '100',
+  })
+  assert.deepEqual(verdict, { ok: false, reason: 'source-chat-mismatch' })
+  assert.equal(rig.store.get(qKey).status, 'pending', '空目标下载决不落终态')
+  const result = await pending // 超时收场（不代答）
+  assert.equal(result.answered, false)
+  rig.bridge.dispose()
+})
+
+// v0.8.4 SEC-5/6：同渠道非提问者回裸编号被拒（onChannel 收紧 → 不命中、不消费、不落终态）。
+test('SEC-5/6 同渠道非提问者：回裸编号被拒（不消费不裁决，问题保持待决）', async () => {
+  // 卡片送达 qq 用户 100（提示该用户可答）；channelTypes=['qq'] 且卡已送达 → hintChannels=[]，
+  // 不存在 hint 兜底。同渠道另一绑定用户 42 回裸 1：SEC-5/6 下不命中（不同 userId）、不消费。
+  const rig = makeRig({ inbounds: [{ channel: 'qq', card: true, targets: [{ chatId: 'qquser100', userId: '100' }] }], channelTypes: ['qq'] })
+  const pending = rig.bridge.askQuestions({ questions: [SINGLE] })
+  await sleep(30)
+  assert.equal(rig.instances[0].cards.length, 1, 'qq 卡片已送达')
+  const seen = []
+  rig.bus.onMessage((envelope) => { seen.push(envelope.text); return false })
+  rig.bus.accept({ channel: 'qq', userId: '42', chatId: '42', messageId: 'm1', text: '1' })
+  assert.deepEqual(seen, ['1'], '非提问者裸编号不被消费，落回对话路由')
+  const rows = rig.store.keys('aq:').map((key) => rig.store.get(key))
+  assert.equal(rows.filter((row) => row.status === 'pending').length, 1, '非提问者作答不落终态')
+  const result = await pending
+  assert.equal(result.answered, false, '问题未被他人代答')
+  rig.bridge.dispose()
+})
+
+// v0.8.4 SEC-5/6 正控：正确用户正确渠道回编号仍可作答（收紧不误伤合法用户）。
+test('SEC-5/6 正控：卡片送达的用户本人（正确渠道）回裸编号可正常作答', async () => {
+  // 卡片送达 qq 用户 100（pushedTo 含 userId 100），hintChannels=[]。用户本人回 1 → exact 命中。
+  const rig = makeRig({ inbounds: [{ channel: 'qq', card: true, targets: [{ chatId: 'qquser100', userId: '100' }] }], channelTypes: ['qq'] })
+  const pending = rig.bridge.askQuestions({ questions: [SINGLE] })
+  await sleep(30)
+  assert.equal(rig.instances[0].cards.length, 1, 'qq 卡片已送达')
+  rig.bus.accept({ channel: 'qq', userId: '100', chatId: 'qquser100', messageId: 'm1', text: '1' })
+  const result = await pending
+  assert.equal(result.answered, true)
+  assert.deepEqual(result.results[0].answers, ['测试环境'])
+  assert.match(result.results[0].via, /qq:reply/)
+  rig.bridge.dispose()
+})
+
 test('首达采纳：作答后同 token 再点按钮被拒（问题已回答）', async () => {
   const rig = makeRig()
   const pending = rig.bridge.askQuestions({ questions: [SINGLE] })

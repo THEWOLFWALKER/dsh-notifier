@@ -34,9 +34,11 @@ export function createActionDispatcher({ vault = null, store = null, logger = nu
     /**
      * 铸造动作凭证：key = act:<kind>:<rand>（随机段跨重启唯一，counter 重置不碰撞）。
      * 未注册的 kind / vault 缺失 / 账本写入失败 → null（调用方降级为纯文本通知）。
+     * @param {object} [meta] - v0.8.4 F-08 来源会话元数据 { channel, chatId }（可选）。
+     *   单目标铸造时记录来源会话供 dispatch 校验；多目标广播由调用方随后 markSource 补记。
      * @returns {{ key: string, token: string } | null}
      */
-    mintAction(kind, payload = {}) {
+    mintAction(kind, payload = {}, meta = {}) {
       try {
         const normalizedKind = typeof kind === 'string' ? kind.trim() : ''
         if (normalizedKind === '' || !handlers.has(normalizedKind)) return null
@@ -49,8 +51,15 @@ export function createActionDispatcher({ vault = null, store = null, logger = nu
           warn(`token 铸造失败: ${error instanceof Error ? error.message : String(error)}`)
           return null
         }
+        const srcChats = (meta !== null && typeof meta === 'object'
+          && typeof meta.channel === 'string' && meta.channel !== ''
+          && typeof meta.chatId === 'string' && meta.chatId !== '')
+          ? { [meta.channel]: [meta.chatId] }
+          : null
         try {
-          store?.set(key, { kind: normalizedKind, payload, status: 'pending', createdAt: Date.now() })
+          const row = { kind: normalizedKind, payload, status: 'pending', createdAt: Date.now() }
+          if (srcChats !== null) row.srcChats = srcChats
+          store?.set(key, row)
         } catch (error) {
           // 账本失败 = 无法核销 = 绝不能发出卡片（发出即无首达保障）
           warn(`动作账本写入失败，降级不发卡片: ${error instanceof Error ? error.message : String(error)}`)
@@ -63,12 +72,65 @@ export function createActionDispatcher({ vault = null, store = null, logger = nu
     },
 
     /**
+     * v0.8.4 F-08：登记某动作已送达的 (channel, chatId)，供 dispatch 校验点击来源。
+     * 多目标广播（同一动作卡发往多个通道/会话）由调用方在发送前登记、失败后撤销。
+     */
+    markSource(actionKey, channel, chatId) {
+      try {
+        if (typeof actionKey !== 'string' || actionKey === ''
+          || typeof channel !== 'string' || channel === ''
+          || typeof chatId !== 'string' || chatId === '') return
+        const row = store?.get(actionKey)
+        if (row === undefined || row.status !== 'pending') return
+        const srcChats = (row.srcChats !== null && typeof row.srcChats === 'object' && !Array.isArray(row.srcChats))
+          ? row.srcChats
+          : {}
+        const list = Array.isArray(srcChats[channel]) ? [...srcChats[channel]] : []
+        if (!list.includes(chatId)) list.push(chatId)
+        try { store.set(actionKey, { ...row, srcChats: { ...srcChats, [channel]: list } }) } catch { /* 落账失败不致命 */ }
+      } catch {
+        /* 来源登记失败不致命 */
+      }
+    },
+
+    /**
+     * v0.8.4 F-08：撤销某动作的 (channel, chatId) 来源登记（发送失败/降级时回滚）。
+     */
+    unmarkSource(actionKey, channel, chatId) {
+      try {
+        if (typeof actionKey !== 'string' || actionKey === ''
+          || typeof channel !== 'string' || channel === ''
+          || typeof chatId !== 'string' || chatId === '') return
+        const row = store?.get(actionKey)
+        if (row === undefined || row.status !== 'pending') return
+        const srcChats = (row.srcChats !== null && typeof row.srcChats === 'object' && !Array.isArray(row.srcChats))
+          ? row.srcChats
+          : null
+        if (srcChats === null) return
+        const list = Array.isArray(srcChats[channel]) ? srcChats[channel].filter((item) => item !== chatId) : []
+        const next = { ...srcChats }
+        if (list.length === 0) delete next[channel]
+        else next[channel] = list
+        const nextRow = { ...row }
+        if (Object.keys(next).length > 0) nextRow.srcChats = next
+        else delete nextRow.srcChats
+        try { store.set(actionKey, nextRow) } catch { /* 落账失败不致命 */ }
+      } catch {
+        /* 来源撤销失败不致命 */
+      }
+    },
+
+    /**
      * 核销并执行动作（通道回调入口）。
+     * @param {object} [opts.chatId] - v0.8.4 F-08 点击所在的会话（通道回调透传）。
+     *   账本已记录来源会话（srcChats）时：点击会话必须在该通道允许集合内，否则拒绝
+     *   （source-chat-mismatch）；缺点击会话（新卡必须带）→ 拒绝。无来源元数据的
+     *   历史卡 → 显式 warn + 兼容放行（不打旧卡，绝不静默放行转发）。
      * @returns {{ ok: boolean, reason?: string, message: string }}
      *   ok = 本次点击是否生效（核销成功且 handler 已调用）；message 为给操作者的反馈文案。
      *   任何失败路径返回中文文案，绝不 throw。
      */
-    dispatch({ actionKey, token, via = 'unknown', userId = '(unknown)' } = {}) {
+    dispatch({ actionKey, token, via = 'unknown', userId = '(unknown)', chatId = undefined } = {}) {
       try {
         if (typeof actionKey !== 'string' || actionKey === '') {
           return { ok: false, reason: 'malformed', message: '无效操作' }
@@ -97,6 +159,26 @@ export function createActionDispatcher({ vault = null, store = null, logger = nu
         }
         if (row.status !== 'pending') {
           return { ok: false, reason: 'already-resolved', message: '该操作已处理' }
+        }
+        // v0.8.4 F-08：来源会话校验（对齐 SEC-1 / questions.decide 的 chatId 比对）。
+        // 账本无来源元数据 → 显式 warn + 兼容放行（升级前在途卡片不打历史，但也绝不
+        // 静默——每次都告警，转发点击不会安静漏过）。新卡（有 srcChats）必须校验。
+        const srcChats = (row.srcChats !== null && typeof row.srcChats === 'object' && !Array.isArray(row.srcChats))
+          ? row.srcChats
+          : null
+        if (srcChats !== null) {
+          const clickVia = String(via ?? '').split(':')[0]
+          const allowed = Array.isArray(srcChats[clickVia]) ? srcChats[clickVia] : []
+          if (chatId === undefined || chatId === null || String(chatId) === '') {
+            // 新卡必须携带点击会话；缺失时无法确证来源，从严拒绝（含跨通道转发）。
+            return { ok: false, reason: 'source-chat-required', message: '请到原会话操作' }
+          }
+          if (!allowed.includes(String(chatId))) {
+            warn(`动作 ${actionKey} 点击会话拒绝（via ${clickVia}，chatId ${String(chatId)} 不在来源集合）`)
+            return { ok: false, reason: 'source-chat-mismatch', message: '请到原会话操作' }
+          }
+        } else if (row.srcChats === undefined) {
+          warn(`动作 ${actionKey} 账本缺来源会话元数据（srcChats），按历史卡兼容放行（转发风险请核对卡片来源）`)
         }
         const handler = handlers.get(row.kind)
         if (handler === undefined) {

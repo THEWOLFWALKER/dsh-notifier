@@ -141,6 +141,7 @@ test('router：observe 模式只旁观——推完卡片立即交还桌面', asy
   assert.equal(rig.broadcasts[0].level, 'timeSensitive')
   const row = rig.store.get('ap:c1:1')
   assert.equal(row.status, 'pending') // observe 不落决议
+  assert.equal(row.mode, 'observe')
   rig.dispose()
 })
 
@@ -157,6 +158,7 @@ test('router：answer 模式远程批准——token 首达采纳，账本落 all
   assert.equal(await pending, 'allowed-once')
   assert.equal(rig.store.get('ap:c1:1').status, 'resolved')
   assert.equal(rig.store.get('ap:c1:1').decision, 'allowed-once')
+  assert.equal(rig.store.get('ap:c1:1').mode, 'answer')
   assert.equal(rig.edits.length, 1)
   assert.match(rig.edits[0].text, /已远程批准/)
   rig.dispose()

@@ -120,6 +120,19 @@ test('store：sweepPrefix 只清理判定超期的键，返回清理数', () => 
   assert.deepEqual(store.keys('ap:'), ['ap:keep'])
 })
 
+test('store：sweepPrefix 混合谓词只删除命中行，保留其余键', () => {
+  const { path } = tempStorePath()
+  const store = createStore(path)
+  store.set('aq:resolved-old', { status: 'resolved', resolvedAt: 1 })
+  store.set('aq:pending-live', { status: 'pending', createdAt: Date.now() })
+  store.set('aq:other', { status: 'resolved', resolvedAt: Date.now() })
+  const removed = store.sweepPrefix('aq:', (_key, row) => row.status === 'resolved' && row.resolvedAt === 1)
+  assert.equal(removed, 1)
+  assert.equal(store.get('aq:resolved-old'), undefined)
+  assert.equal(store.get('aq:pending-live').status, 'pending')
+  assert.equal(store.get('aq:other').status, 'resolved')
+})
+
 test('store：defaultStateDir 尊重 DSH_HOME，回退 ~/.dsh/dsh-notifier', () => {
   const savedHome = process.env.DSH_HOME
   const savedUser = process.env.HOME

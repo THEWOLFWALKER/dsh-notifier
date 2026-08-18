@@ -271,6 +271,95 @@ test('allowedIps：来源 IP 不在名单 → 丢弃（密径之外的第二道�
   await rig.inbound.stop()
 })
 
+// ---------------------------------------------------------------- v0.8.4 INJ-1 uid 形态 + 授权门槛
+
+test('INJ-1 send_up_cmd：非法 uid 形态（空白/控制字符/路径穿插/超长）一律拒收不入站', async () => {
+  const rig = makeRig()
+  const accepted = []
+  rig.bus.onMessage((envelope) => accepted.push(envelope))
+  rig.inbound.start()
+  await tick()
+
+  const badUids = [
+    ['   ', '全空白'],
+    ['UID_1\n2', '埋控制字符'],
+    ['../etc/passwd', '路径穿插'],
+    ['UID_1; rm -rf', '命令穿插'],
+    ['x'.repeat(200), '超长'],
+  ]
+  for (const [uid] of badUids) {
+    await post(rig, { action: 'send_up_cmd', data: { uid, time: '1', content: 'hi' } })
+  }
+  // 空串
+  await post(rig, { action: 'send_up_cmd', data: { uid: '', time: '2', content: 'hi' } })
+  assert.equal(accepted.length, 0, '非法/空 uid 不得进入 bus')
+  assert.ok(rig.lines.some((line) => line.includes('非法 uid')), `应显式 warn 非法 uid（实际：${rig.lines.join(' | ')}）`)
+
+  // 合法 uid 仍可入站（正控）
+  await post(rig, { action: 'send_up_cmd', data: { uid: 'UID_1', time: '3', content: 'hi' } })
+  assert.equal(accepted.length, 1)
+  await rig.inbound.stop()
+})
+
+test('INJ-1 app_subscribe：只进学习队列（待确认），不直接获得裁决权（send_up_cmd 需过身份层）', async () => {
+  const rig = makeRig()
+  const identity = createIdentity({ store: rig.store })
+  rig.bus = createInboundBus({ identity, store: rig.store, logger: { warn: () => {} } })
+  rig.inbound = createWxpusherInbound({
+    config: { appToken: 'AT', webhookPath: '/hook/secret123', host: '127.0.0.1', port: 0, notifyUids: [], allowedIps: [] },
+    bus: rig.bus, store: rig.store, identity, logger: { warn: () => {} }, fetchImpl: () => Promise.resolve(jsonResponse({ code: 1000 })),
+  })
+  liveInbounds.push(rig.inbound)
+  rig.inbound.start()
+  await tick()
+
+  // 新订阅 uid → 只进待确认表
+  await post(rig, { action: 'app_subscribe', data: { uid: '990011' } })
+  const pending = identity.listPending()
+  assert.equal(pending.length, 1, '订阅 uid 进待确认绑定')
+  assert.ok(pending.every((entry) => entry.origin === 'learned'))
+  assert.equal(identity.allows('wxpusher', '990011'), false, '待确认 uid 尚未绑定，不具备准入/裁决权')
+
+  // 该 uid 的 send_up_cmd → bus 拒绝（身份层挡下），不进入审批/路由
+  let delivered = 0
+  rig.bus.onMessage(() => { delivered += 1 })
+  await post(rig, { action: 'send_up_cmd', data: { uid: '990011', time: '1', content: '1' } })
+  assert.equal(delivered, 0, '未确认绑定的 send_up_cmd 不得到达审批/路由')
+
+  // 确认转正后才有裁决入口（须由管理台 confirm）
+  identity.confirmPending('wxpusher', '990011')
+  assert.equal(identity.allows('wxpusher', '990011'), true, '确认后才具备准入能力')
+  await rig.inbound.stop()
+})
+
+test('INJ-1/OTH-1：显式公网绑定且未配置 allowedIps → 拒绝全部回调来源（不静默放开）', async () => {
+  const lines = []
+  const logger = { warn: (p, m) => lines.push(`${p} ${m}`) }
+  const bus = createInboundBus({ allowUsers: ['UID_1'], store: createStore(tempPath()), logger: { warn: () => {} } })
+  let delivered = 0
+  bus.onMessage(() => { delivered += 1 })
+  const inbound = createWxpusherInbound({
+    config: { appToken: 't', webhookPath: '/hook/x', host: '0.0.0.0', port: 0 },
+    bus,
+    logger,
+    fetchImpl: makePushFetch().fetchImpl,
+  })
+  liveInbounds.push(inbound)
+  inbound.start()
+  await tick()
+
+  const port = inbound.port
+  const response = await fetch(`http://127.0.0.1:${port}/hook/x`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ action: 'send_up_cmd', data: { uid: 'UID_1', time: '1', content: 'hi' } }),
+  })
+  assert.equal(response.status, 200, '静默：不让探测者从响应码判断拦截')
+  assert.equal(delivered, 0, '公网绑定未配 allowedIps → 回调被拒')
+  assert.ok(lines.some((line) => /公网暴露面/.test(line)), `应显式 warn 公网未配 allowedIps（实际：${lines.join(' | ')}）`)
+  await inbound.stop()
+})
+
 // ---------------------------------------------------------------- 定向推送
 
 test('sendApprovalCard：单 uid 定向推送 + 编号回复话术；msg 合成 id；带超时 signal', async () => {

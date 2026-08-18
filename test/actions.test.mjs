@@ -180,3 +180,95 @@ test('全防御：dispatch 空参/异常 vault/store 均不外抛', () => {
   assert.equal(broken.mintAction('a/b', {}), null)
   assert.equal(broken.dispatch({ actionKey: 'act:a/b:x', token: 't' }).ok, false)
 })
+
+// ---------------------------------------------------------------- v0.8.4 F-08 来源会话校验
+
+test('F-08 来源会话校验：mint 记源 + 匹配成功 / 转发拒绝 / 缺会话拒绝', async () => {
+  const { dispatcher } = setup()
+  const calls = []
+  dispatcher.register('turn/cancel', (p) => { calls.push(p); return { ok: true, message: 'done' } })
+
+  // mint 时记录来源通道+会话
+  const minted = dispatcher.mintAction('turn/cancel', { sessionId: 's' }, { channel: 'telegram', chatId: '42' })
+  assert.ok(minted !== null)
+
+  // 原会话点击 → 成功
+  const orig = dispatcher.dispatch({ actionKey: minted.key, token: minted.token, via: 'telegram:action', userId: 42, chatId: '42' })
+  assert.equal(orig.ok, true, '来源匹配应执行')
+
+  // 注：首达采纳已核销，后续用例用新的 mint
+})
+
+test('F-08 dispatch：转发点击拒绝（mismatch），不执行 handler', async () => {
+  const { dispatcher } = setup()
+  const calls = []
+  dispatcher.register('turn/cancel', (p) => { calls.push(p); return { ok: true } })
+  const minted = dispatcher.mintAction('turn/cancel', { sessionId: 's' }, { channel: 'telegram', chatId: '42' })
+
+  const forwarded = dispatcher.dispatch({ actionKey: minted.key, token: minted.token, via: 'telegram:action', userId: 42, chatId: '999' })
+  assert.equal(forwarded.ok, false)
+  assert.equal(forwarded.reason, 'source-chat-mismatch')
+  assert.match(forwarded.message, /原会话/)
+  assert.equal(calls.length, 0, '转发点击不得执行 handler')
+  assert.equal(dispatcher.dispatch({ actionKey: minted.key, token: minted.token, via: 'telegram:action', userId: 42, chatId: '999' }).reason, 'source-chat-mismatch')
+})
+
+test('F-08 dispatch：来源已记但缺点击会话（chatId 未传）→ 拒绝，不静默放行', async () => {
+  const { dispatcher } = setup()
+  const calls = []
+  dispatcher.register('turn/cancel', (p) => { calls.push(p); return { ok: true } })
+  const minted = dispatcher.mintAction('turn/cancel', { sessionId: 's' }, { channel: 'telegram', chatId: '42' })
+
+  const missing = dispatcher.dispatch({ actionKey: minted.key, token: minted.token, via: 'telegram:action', userId: 42 })
+  assert.equal(missing.ok, false)
+  assert.equal(missing.reason, 'source-chat-required')
+  assert.equal(calls.length, 0)
+})
+
+test('F-08 dispatch：跨通道转发拒绝（来源只记在 telegram，点击来自 feishu）', async () => {
+  const { dispatcher } = setup()
+  const calls = []
+  dispatcher.register('turn/cancel', (p) => { calls.push(p); return { ok: true } })
+  const minted = dispatcher.mintAction('turn/cancel', { sessionId: 's' }, { channel: 'telegram', chatId: '42' })
+
+  const cross = dispatcher.dispatch({ actionKey: minted.key, token: minted.token, via: 'feishu:action', userId: 7, chatId: 'oc_42' })
+  assert.equal(cross.ok, false)
+  assert.equal(cross.reason, 'source-chat-mismatch')
+  assert.equal(calls.length, 0)
+})
+
+test('F-08 dispatch：markSource 补记多目标，markSource/unmarkSource 生命周期', async () => {
+  const { store, dispatcher } = setup()
+  const calls = []
+  dispatcher.register('turn/cancel', (p) => { calls.push(p); return { ok: true } })
+  const minted = dispatcher.mintAction('turn/cancel', { sessionId: 's' })
+  assert.equal(store.get(minted.key).srcChats, undefined, '无 meta → 账本无来源（历史卡兼容）')
+
+  // 广播两个通道目标 → 各有来源
+  dispatcher.markSource(minted.key, 'telegram', '42')
+  dispatcher.markSource(minted.key, 'feishu', 'oc_42')
+  assert.deepEqual([...store.get(minted.key).srcChats.telegram], ['42'])
+  assert.deepEqual([...store.get(minted.key).srcChats.feishu], ['oc_42'])
+
+  // 转发到未登记会话 → 拒绝
+  const bad = dispatcher.dispatch({ actionKey: minted.key, token: minted.token, via: 'telegram:action', userId: 42, chatId: '7' })
+  assert.equal(bad.reason, 'source-chat-mismatch')
+  assert.equal(calls.length, 0)
+
+  // 原来源都可点成功
+  assert.equal(dispatcher.dispatch({ actionKey: minted.key, token: minted.token, via: 'telegram:action', userId: 42, chatId: '42' }).ok, true)
+})
+
+test('F-08 dispatch：legacy 老卡（无来源元数据）→ 显式 warn + 兼容放行', async () => {
+  const loggerLines = []
+  const logger = { warn: (p, m) => loggerLines.push(`${p} ${m}`) }
+  const dispatcher = createActionDispatcher({ vault: createTokenVault({ secret: 'test-secret' }), store: memoryStore(), logger })
+  const calls = []
+  dispatcher.register('turn/cancel', (p) => { calls.push(p); return { ok: true } })
+
+  const minted = dispatcher.mintAction('turn/cancel', { sessionId: 's' }) // 无 meta → legacy
+  const result = dispatcher.dispatch({ actionKey: minted.key, token: minted.token, via: 'telegram:action', userId: 42, chatId: '999' })
+  assert.equal(result.ok, true, '老卡缺来源元数据：兼容放行')
+  assert.equal(calls.length, 1, '兼容路径仍执行 handler')
+  assert.ok(loggerLines.some((line) => /srcChats/.test(line)), '应显式 warn 来源元数据缺失')
+})

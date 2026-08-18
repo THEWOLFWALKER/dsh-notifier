@@ -7,6 +7,7 @@ import { createFeishuInbound, resolveFeishuInboundConfig } from '../src/inbound/
 import { buildApprovalAction, buildQuestionAction } from '../src/inbound/_contract.mjs'
 import { createTokenVault } from '../src/inbound/tokens.mjs'
 import { createInboundBus } from '../src/inbound/bus.mjs'
+import { createActionDispatcher } from '../src/actions.mjs'
 
 // ---------------------------------------------------------------- fake SDK
 
@@ -460,6 +461,7 @@ test('sendActionCard：interactive 卡片携带按钮行（value.act = ac 负载
   assert.ok(actionElement !== undefined, '应含 action 按钮块')
   assert.equal(actionElement.actions[0].text.content, '⏹ 停止任务')
   assert.equal(actionElement.actions[0].value.act, 'ac:act:turn/cancel:abcd:tok.sig')
+  assert.equal(actionElement.actions[0].value.srcChat, 'ou_1')
   await rig.inbound.stop()
 })
 
@@ -582,6 +584,59 @@ test('card.action.trigger：SEC-1 来源会话匹配通过 / 转发到其他会�
   await tick()
   assert.equal(fake.state.patched.length, 1, '匹配会话点击应 patch 终态')
   assert.equal(fake.state.patched[0].messageId, 'om_orig')
+  await inbound.stop()
+})
+
+// v0.8.4 F-08：飞书动作卡来源会话校验——匹配通过；转发拒绝；缺来源元数据兼容放行。
+test('ac: 卡片回调：F-08 来源会话匹配通过 / 转发拒绝；缺 srcChats 旧卡兼容', async () => {
+  const logger = makeLogger()
+  const vault = createTokenVault({ secret: 'k' })
+  const storeData = new Map()
+  const store = {
+    get: (key, fallback) => (storeData.has(key) ? storeData.get(key) : fallback),
+    set: (key, value) => { storeData.set(key, value) },
+    delete: (key) => { storeData.delete(key) },
+  }
+  const actions = createActionDispatcher({ vault, store, logger })
+  const dispatched = []
+  const realDispatch = actions.dispatch.bind(actions)
+  actions.dispatch = (p) => { dispatched.push(p); return realDispatch(p) }
+  actions.register('turn/cancel', (p) => ({ ok: true, message: '✅ 已停止任务' }))
+  const minted = actions.mintAction('turn/cancel', { sessionId: 'sess-1' }, { channel: 'feishu', chatId: 'oc_orig' })
+  actions.markSource(minted.key, 'feishu', 'oc_orig')
+  // 独立 legacy 卡：账本无来源元数据（旧卡场景）
+  const legacyMinted = actions.mintAction('turn/cancel', { sessionId: 'sess-legacy' })
+
+  const fake = makeFakeSdk()
+  const inbound = createFeishuInbound({ config: { appId: 'a', appSecret: 's' }, bus: createInboundBus({ allowUsers: ['ou_1'], logger }), logger, sdkLoader: fake.loader, actions })
+  inbound.start()
+  await tick()
+
+  const makeEvent = (value, chatId) => ({
+    operator: { open_id: 'ou_1' },
+    action: { value },
+    context: { open_message_id: 'om_aq', open_chat_id: chatId },
+  })
+
+  const value = { act: `ac:${minted.key}:${minted.token}`, srcChat: 'oc_orig' }
+  // 先是转发到其他会话 → 拒绝，不裁决（合法原会话仍能后点）
+  const forwarded = fake.state.dispatcher.handlers['card.action.trigger'](makeEvent(value, 'oc_elsewhere'))
+  assert.equal(forwarded.toast.type, 'info')
+  assert.match(forwarded.toast.content, /原会话/)
+  assert.equal(dispatched.length, 0, '转发点击不得执行')
+
+  // 原会话点击 → 成功，chatId 透传 dispatch
+  const ok = fake.state.dispatcher.handlers['card.action.trigger'](makeEvent(value, 'oc_orig'))
+  assert.equal(ok.toast.type, 'success')
+  assert.equal(dispatched.length, 1)
+  assert.equal(dispatched[0].chatId, 'oc_orig')
+
+  // 独立 legacy 卡（账本无 srcChats、卡片无 srcChat）→ 兼容放行
+  const legacy = fake.state.dispatcher.handlers['card.action.trigger'](
+    makeEvent({ act: `ac:${legacyMinted.key}:${legacyMinted.token}` }, 'oc_legacy'),
+  )
+  assert.equal(legacy.toast.type, 'success', '缺来源元数据旧卡兼容放行')
+  assert.equal(dispatched.length, 2)
   await inbound.stop()
 })
 

@@ -108,10 +108,11 @@ export function createTelegramInbound({ config, bus, vault, store = null, logger
       return
     }
       // v0.5 动作按钮：ac:<actionKey>:<token>（actions 注入时才存在此分支）
+      // v0.8.4 F-08：透传点击会话 chatId 供 actions.dispatch 做来源校验（转发拒绝）。
       if (parts[0] === 'ac' && actions !== null && parts.length >= 3) {
         const actionKey = parts.slice(1, -1).join(':')
         const token = parts[parts.length - 1]
-        const result = actions.dispatch({ actionKey, token, via: 'telegram:action', userId: query.from?.id })
+        const result = actions.dispatch({ actionKey, token, via: 'telegram:action', userId: query.from?.id, chatId: query.message?.chat?.id })
         const actionText = result?.ok === true
           ? result.message
           : (result?.message ?? '该操作已处理或已过期')
@@ -286,7 +287,7 @@ export function createTelegramInbound({ config, bus, vault, store = null, logger
             && typeof button.label === 'string' && button.label.trim() !== ''
             && typeof button.data === 'string' && button.data !== '')
           // v0.6.2：同审批卡——ac:<key>:<token> 同样超限，一律经短引用压缩
-          .map((button) => ({ text: button.label, callback_data: `r:${refs.mint(button.data)}` }))
+          .map((button) => ({ text: button.label, callback_data: `r:${refs.mint(button.data, { chatId })}` }))
         if (rows.length === 0) return null
         const result = await api('sendMessage', {
           chat_id: chatId,

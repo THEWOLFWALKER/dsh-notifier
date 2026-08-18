@@ -9,6 +9,8 @@ import { join } from 'node:path'
 import { createTelegramInbound } from '../src/inbound/telegram-bot.mjs'
 import { createTokenVault } from '../src/inbound/tokens.mjs'
 import { createStore } from '../src/inbound/store.mjs'
+import { createActionDispatcher } from '../src/actions.mjs'
+import { buildActionPayload } from '../src/inbound/_contract.mjs'
 
 function tempPath() {
   return join(mkdtempSync(join(tmpdir(), 'dsh-notifier-tg-')), 'state.json')
@@ -140,13 +142,13 @@ test('v0.6.2 短引用点击链：动作卡 ac: 负载经 ref 展开 → actions
   const button = calls.find((call) => call.method === 'sendMessage').body.reply_markup.inline_keyboard[0][0]
   assert.ok(`ac:act:turn/cancel:ws-abcdef12:${token}`.length > 64, '原始负载确实超限（修复的必要性前提）')
 
-  queue.push({ update_id: 1, callback_query: { id: 'c1', from: { id: 42 }, message: { chat: { id: 42 }, message_id: 12 }, data: button.callback_data } })
+  queue.push({ update_id: 1, callback_query: { id: 'c1', from: { id: 42 }, message: { chat: { id: 100 }, message_id: 12 }, data: button.callback_data } })
   tg.start()
   await new Promise((resolve) => setTimeout(resolve, 60))
   await tg.stop()
 
   assert.equal(dispatched.length, 1)
-  assert.deepEqual(dispatched[0], { actionKey: 'act:turn/cancel:ws-abcdef12', token, via: 'telegram:action', userId: 42 })
+  assert.deepEqual(dispatched[0], { actionKey: 'act:turn/cancel:ws-abcdef12', token, via: 'telegram:action', userId: 42, chatId: 100 })
 })
 
 // v0.8.3 SEC-1 提问按钮链：aq 短引用展开 → questions.decide 收到点击会话 chatId；
@@ -600,4 +602,77 @@ test('ac: 回调：actions 缺省时分支不存在（与 v0.4.0 行为一致，
   await tg.stop()
   assert.equal(calls.filter((call) => call.method === 'answerCallbackQuery').length, 0, 'actions 未注入：不 answer 不编辑')
   assert.equal(calls.filter((call) => call.method === 'editMessageText').length, 0)
+})
+
+// ---------------------------------------------------------------- v0.8.4 F-08 动作卡来源会话
+
+function memoryActionStore() {
+  const data = new Map()
+  return {
+    get: (key, fallback) => (data.has(key) ? data.get(key) : fallback),
+    set: (key, value) => { data.set(key, value) },
+    delete: (key) => { data.delete(key) },
+  }
+}
+
+function acCallback(chatId, data, id = 'cbq9') {
+  return {
+    update_id: 1,
+    callback_query: { id, from: { id: 42 }, message: { chat: { id: chatId }, message_id: 15 }, data },
+  }
+}
+
+/** 投喂单个 ac 回调，返回 rolling mock 的调用记录。 */
+function runSingleAcCallback(dispatcher, update, vault) {
+  const queue = [update]
+  const rolling = makeFetch({
+    getUpdates: () => ({ ok: true, result: queue.splice(0, 1) }),
+    answerCallbackQuery: () => ({ ok: true, result: true }),
+    editMessageText: () => ({ ok: true, result: true }),
+  })
+  const tg = createTelegramInbound({ config: CONFIG, bus: makeBus(), vault, fetchImpl: rolling.fetchImpl, errorBackoffMs: 10, actions: dispatcher })
+  return new Promise((resolve) => {
+    tg.start()
+    setTimeout(() => tg.stop().then(() => resolve({ rolling })), 60)
+  })
+}
+
+test('F-08 ac: 回调：来源匹配 → dispatch 成功（原会话）', async () => {
+  const vault = createTokenVault({ secret: 'k' })
+  const dispatcher = createActionDispatcher({ vault, store: memoryActionStore() })
+  const executed = []
+  dispatcher.register('turn/cancel', (p) => { executed.push(p); return { ok: true, message: '✅ 已停止任务' } })
+  const minted = dispatcher.mintAction('turn/cancel', { sessionId: 's' }, { channel: 'telegram', chatId: '42' })
+  const data = buildActionPayload(minted.key, minted.token)
+
+  const { rolling } = await runSingleAcCallback(dispatcher, acCallback(42, data), vault)
+  assert.equal(executed.length, 1, '原会话点击应执行')
+  assert.match(rolling.calls.filter((c) => c.method === 'answerCallbackQuery')[0].body.text, /已停止任务/)
+})
+
+test('F-08 ac: 回调：转发到其他会话 → dispatch 拒绝，不执行', async () => {
+  const vault = createTokenVault({ secret: 'k' })
+  const dispatcher = createActionDispatcher({ vault, store: memoryActionStore() })
+  const executed = []
+  dispatcher.register('turn/cancel', (p) => { executed.push(p); return { ok: true } })
+  const minted = dispatcher.mintAction('turn/cancel', { sessionId: 's' }, { channel: 'telegram', chatId: '42' })
+  const data = buildActionPayload(minted.key, minted.token)
+
+  const { rolling } = await runSingleAcCallback(dispatcher, acCallback(999, data), vault)
+  assert.equal(executed.length, 0, '转发点击不得执行')
+  assert.match(rolling.calls.filter((c) => c.method === 'answerCallbackQuery')[0].body.text, /原会话/)
+})
+
+test('F-08 ac: 回调：legacy 老卡（无来源元数据）→ 兼容放行 + 显式 warn', async () => {
+  const vault = createTokenVault({ secret: 'k' })
+  const loggerLines = []
+  const dispatcher = createActionDispatcher({ vault, store: memoryActionStore(), logger: { warn: (p, m) => loggerLines.push(`${p} ${m}`) } })
+  const executed = []
+  dispatcher.register('turn/cancel', (p) => { executed.push(p); return { ok: true, message: '✅' } })
+  const minted = dispatcher.mintAction('turn/cancel', { sessionId: 's' }) // 无 meta → legacy
+  const data = buildActionPayload(minted.key, minted.token)
+
+  await runSingleAcCallback(dispatcher, acCallback(9999, data), vault)
+  assert.equal(executed.length, 1, '老卡兼容放行执行')
+  assert.ok(loggerLines.some((line) => /srcChats/.test(line)), `应显式 warn 来源缺失（实际：${loggerLines.join(' | ')}）`)
 })

@@ -297,6 +297,7 @@ export function registerApprovalHandler(deps) {
         warn('审批分流解析为空集，回落全局广播（检查该 agent 的路由绑定与全局渠道池）')
       }
       ledger.add(key, {
+        mode,
         toolName: request?.toolName ?? '(unknown)',
         agentId: request?.agent?.id ?? request?.agent?.session?.id ?? null,
         pushedTo: [],

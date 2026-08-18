@@ -103,7 +103,7 @@ export function createQuestionBridge(deps) {
     /**
      * 最近一条待决提问（编号回复降级）。匹配优先级：
      *  1) exact 推送过该 (channel,userId)；
-     *  2) onChannel 该 channel 推送过（他人代答）；
+     *  2) onChannel 该 channel 推送过且 userId 一致；
      *  3) hint 该 channel 收到过本问题的编号话术（=aq 行 hintChannels 含该渠道）——
      *     替代旧 `any` 无条件兜底（SEC-2 / C-2 / BUG-11：关死「既没送卡、又没广播编号
      *     话术的渠道裸数字越权仲裁」的面）。无卡片渠道的合法编号作答由 hint 接住。
@@ -117,9 +117,9 @@ export function createQuestionBridge(deps) {
         if (row?.status !== 'pending') continue
         const pushed = Array.isArray(row.pushedTo) ? row.pushedTo : []
         if (pushed.some((target) => target.channel === channel)) {
-          if (onChannel === null || row.createdAt > onChannel.row.createdAt) onChannel = { key, row }
           if (pushed.some((target) => target.channel === channel && String(target.userId) === String(userId))) {
             if (exact === null || row.createdAt > exact.row.createdAt) exact = { key, row }
+            if (onChannel === null || row.createdAt > onChannel.row.createdAt) onChannel = { key, row }
           }
         }
         if (hint === null && isHintedChannel(row, channel)) hint = { key, row }
@@ -147,7 +147,7 @@ export function createQuestionBridge(deps) {
   }
 
   /** 推一个问题：选项卡片为主（单选按钮），编号文案只发卡片未送达的渠道（兜底）。 */
-  async function pushQuestion(qKey, token, question) {
+  async function pushQuestion(qKey, token, question, allowChats = null) {
     const title = `提问：${String(question.question).slice(0, 60)}`
     const context = String(question.context ?? '').trim()
     const content = [
@@ -179,6 +179,14 @@ export function createQuestionBridge(deps) {
         })
         if (card !== null) {
           pushedTo.push({ channel: inbound.channel, chatId: target.chatId, userId: target.userId, messageId: card.messageId, kind: 'aq' })
+          if (allowChats !== null) {
+            let chatSet = allowChats.get(inbound.channel)
+            if (chatSet === undefined) {
+              chatSet = new Set()
+              allowChats.set(inbound.channel, chatSet)
+            }
+            chatSet.add(String(target.chatId))
+          }
           deliveredTypes.add(inbound.channel)
           persistPushed()
         }
@@ -361,12 +369,16 @@ export function createQuestionBridge(deps) {
           agentId: agentId !== null && String(agentId) !== '' ? String(agentId) : null,
           pushedTo: [],
         })
-        // waiter 预注册先于推卡（v0.6.3 审批时序同款：早到作答不被丢）
+        // waiter 预注册先于推卡（v0.6.3 审批时序同款：早到作答不被丢）。
+        // AUTH-1：wait 登记允许会话范围（allowChats）；pushQuestion 每送达一张卡片即
+        // 把它对应的 chatId 并入 allowChats（空目标 = 空 Map，不放行任意 chat）。
+        const allowChats = new Map()
         const waitPromise = bus.wait(qKey, timeoutMs, {
           agentId: agentId !== null ? String(agentId) : '',
           onAbandon: () => { try { ledger.terminate(qKey) } catch { } },
+          allowChats,
         })
-        const { pushedTo, hintChannels } = await pushQuestion(qKey, token, question)
+        const { pushedTo, hintChannels } = await pushQuestion(qKey, token, question, allowChats)
         const row = ledger.get(qKey)
         if (row !== undefined) store.set(qKey, { ...row, pushedTo, hintChannels })
         const startedAt = Date.now()

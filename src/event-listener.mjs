@@ -288,12 +288,22 @@ export function createEventListener(ctx, notifier, resolvedConfig, wiring = {}) 
         warn(`动作卡片目标全被形状守卫拦截（${inbound.channel} ${targets.length} 个目标 0 个合格）——请核对通知目标 id 形态`)
       }
       for (const target of kept) {
+        // v0.8.4 F-08：发送前先登记来源会话（channel + chatId），dispatch 据此校验点击
+        // 来源（转发拒绝）。登记先行避免「已发出卡片但账本无来源」的竞态窗口；发送失败
+        // /降级 null 时撤销登记，绝不含糊地放行未知来源。尽力而为：失败不拖累主链路。
+        try { dispatcher.markSource(minted.key, inbound.channel, String(target.chatId)) } catch { /* 登记失败不致命 */ }
         Promise.resolve(inbound.sendActionCard({
           chatId: target.chatId,
           title: message.title,
           content: message.content,
           actions: [{ label: '⏹ 停止任务', data }],
-        })).catch(() => { /* 单通道失败不拖累其余 */ })
+        })).then((card) => {
+          if (card === null || card === undefined) {
+            try { dispatcher.unmarkSource(minted.key, inbound.channel, String(target.chatId)) } catch { /* 撤销失败不致命 */ }
+          }
+        }).catch(() => {
+          try { dispatcher.unmarkSource(minted.key, inbound.channel, String(target.chatId)) } catch { /* 撤销失败不致命 */ }
+        })
       }
     }
   }

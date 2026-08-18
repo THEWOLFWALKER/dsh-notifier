@@ -160,7 +160,7 @@ function buildQuestionCard({ title, content, qKey, token, options = [], chatId }
 }
 
 /** v0.5 动作卡片（通知文本 + 自定义按钮行；按钮 value.act = ac:<actionKey>:<token>）。 */
-function buildActionCard({ title, content, actions: buttons = [] }) {
+function buildActionCard({ title, content, actions: buttons = [], chatId }) {
   const actions = (Array.isArray(buttons) ? buttons : [])
     .filter((button) => button !== null && typeof button === 'object'
       && typeof button.label === 'string' && button.label.trim() !== ''
@@ -169,7 +169,8 @@ function buildActionCard({ title, content, actions: buttons = [] }) {
       tag: 'button',
       text: { tag: 'plain_text', content: button.label },
       type: 'danger',
-      value: { act: button.data },
+      // v0.8.4 F-08：动作卡同样嵌入来源会话（srcChat），callback 侧比对点击会话
+      value: { act: button.data, srcChat: String(chatId ?? '') },
     }))
   return {
     config: { wide_screen_mode: true },
@@ -328,11 +329,15 @@ export function createFeishuInbound({ config, bus, fallbackTargets = [], logger 
       // v0.5 动作按钮：ac:<actionKey>:<token>（actions 注入时才处理）
       if (action !== null) {
         if (actions === null) return { toast: { type: 'info', content: '未知操作' } }
+        if (!sourceChatAllowed(value, data)) {
+          return { toast: { type: 'info', content: '请到原会话操作' } }
+        }
         const result = actions.dispatch({
           actionKey: action.actionKey,
           token: action.token,
           via: 'feishu:action',
           userId: String(data?.operator?.open_id ?? '(unknown)'),
+          chatId: clickedChatOf(data),
         })
         const text = result?.message ?? '该操作已处理或已过期'
         patchResolvedCard(data, buildActionResolvedCard(`${text}（来源：飞书用户 ${data?.operator?.open_id ?? '?'}）`))
@@ -462,7 +467,7 @@ export function createFeishuInbound({ config, bus, fallbackTargets = [], logger 
      */
     async sendActionCard({ chatId, title, content, actions: buttons = [] }) {
       if (client === null) return null
-      const card = buildActionCard({ title, content, actions: buttons })
+      const card = buildActionCard({ title, content, actions: buttons, chatId })
       if (!Array.isArray(card.elements) || !card.elements.some((element) => element?.tag === 'action')) return null
       try {
         const messageId = await sendInteractive(chatId, card)
