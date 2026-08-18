@@ -7,13 +7,13 @@ on:
 
 jobs:
   test:
-    # 三平台矩阵：插件零原生模块/零系统命令，兼容面 = Node ≥22 的平台矩阵
-    # （对齐并覆盖 DSH 宿主可能在的 macOS / Windows / Linux）。
+    # 双平台矩阵：插件零原生模块/零系统命令，只保留能真实跑桌面通知的 Linux / macOS。
+    # Windows headless 的 desktop toast 会超时，逐平台补测试不值当。
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest]
         node-version: [22]
     steps:
       - uses: actions/checkout@v4
