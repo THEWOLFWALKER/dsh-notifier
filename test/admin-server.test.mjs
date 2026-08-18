@@ -358,13 +358,20 @@ test('400：非 JSON body → { error: "请求体不是合法 JSON" }', async ()
   })
 })
 
-test('413：请求体超过 1MB 上限 → 中文 error，绝不进 api', async () => {
+test('413：请求体超过 1MB 上限 → 请求被拒（413 或平台 fetch 抛错），绝不进 api', async () => {
   await withServer({}, async (rig) => {
-    const response = await call(rig, '/api/bindings', { method: 'PUT', body: 'x'.repeat(1024 * 1024 + 1) })
-    assert.equal(response.status, 413)
-    const payload = await jsonOf(response)
-    assert.match(payload.error, /1MB/)
-    assert.equal(rig.calls.length, 0)
+    let response
+    try {
+      response = await call(rig, '/api/bindings', { method: 'PUT', body: 'x'.repeat(1024 * 1024 + 1) })
+    } catch (error) {
+      assert.match(error.message, /fetch failed/, '客户端对超限 body 只能被拒（fetch failed）或拿到 413，不能成功')
+    }
+    if (response) {
+      assert.equal(response.status, 413, '拿到响应则必须是 413（Linux 下原有断言保留）')
+      const payload = await jsonOf(response)
+      assert.match(payload.error, /1MB/)
+    }
+    assert.equal(rig.calls.length, 0, '超限请求绝不触达 api')
   })
 })
 
