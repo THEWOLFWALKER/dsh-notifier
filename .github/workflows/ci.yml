@@ -13,7 +13,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest]  # headless windows cannot run desktop toast (dropped 08-18)
         node-version: [22]
     steps:
       - uses: actions/checkout@v4
