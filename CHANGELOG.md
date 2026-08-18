@@ -3,6 +3,27 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 SemVer。
 DSH 处于 developer preview，0.x 阶段的次版本号提升允许小幅破坏性变更（会在条目中标注）。
 
+## [0.8.3] - 2026-08-18
+
+### 修复：提问编号回复竞态收紧（SEC-2，questions 侧 any→hint）
+
+- `src/questions/router.mjs`：`latestPendingFor` 的编号回复兜底从「无条件取最近一条 pending（`any`）」收紧为「该渠道确实收到过本问题的编号话术（`hint`，=aq 行 `hintChannels`）」，匹配优先级 `exact → onChannel → hint`。关死「既没送卡、又没广播编号话术的渠道裸数字越权仲裁」的面（架构审查 SEC-2 / C-2 / BUG-11）。
+- `src/questions/router.mjs`：`pushQuestion` 把广播编号话术的渠道集合 `hintChannels` 一并返回，`askQuestions` 落账到 aq 行；`isHintedChannel` 对无该字段的旧行恒 false（fail-closed 从严，升级瞬间在途最多超时回退，绝不越权）。
+- 降级链三支不断：卡片送达（exact）/ 同渠道他人代答（onChannel）/ 无卡渠道收到编号话术（hint）全部保留；`P4 全渠道无卡片`、`P4 投递失败` 用例保持绿。
+- **approval 侧零改动**（approval 已无 `any`，本版只收紧 questions）。
+
+### 修复：审批编号二次决策消费一致性（E-2，approval 侧对齐 questions）
+
+- `src/approval/router.mjs`：`handleNumberedReply` 在 `verdict.ok===false`（已决竞态：首达采纳/超时已 settle、账本暂未翻终态）时，从「不消费 + 无回执」改为「消费（`return true`，阻断裸 `'1'/'2'` 落回对话路由）+ 回执「该审批已被处理（首达采纳，此次回复无效）」」，对齐 `questions/router.mjs:316-318` 既有姿态（架构审查 E-2）。
+- `pending === null`（无匹配待决审批）路径**不变**：裸 `'1'/'2'` 是正常会话消息，仍不消费、落回对话路由——两簇方向相反的行为用测试钉死，防过度收紧/过度放宽。
+- `bus`/`settle`/`decideTrusted`/`latestPendingFor`/questions 侧零改动；首达采纳、token 单次核销、降级链语义不变。
+
+### 测试
+
+- `test/questions.test.mjs` 新增 5 用例：跨渠道抢答拒绝、hint 正控、多 pending 定向隔离、旧行 fail-closed、exact/hint 优先级稳定。
+- `test/approval.test.mjs` 新增 4 用例：已决竞态消费+回执、回执失败仍消费（B8）、无匹配裸编号不消费（B3/B9）、未 settle 正常 pending 仍走裁决（B1）。
+- `npm test`：862/862 通过（858 基线 + 4 新增；approval 相关既有用例零改动仍全绿）。
+
 ## [0.8.2] - 2026-08-18
 
 ### 修复：ask_user 装配回归 + 入站 ENV 解析回退

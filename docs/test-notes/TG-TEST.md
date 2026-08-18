@@ -1,4 +1,4 @@
-# Telegram 通道测试包（0.8.0-tg.0）
+# Telegram 通道内部测试包（0.8.2）
 
 本包用于验证 **v0.8 远程提问（ask_user 工具）** 的 Telegram 真机链路：
 agent 提问 → 手机收到选项卡片（一选项一行按钮）→ 点按钮作答 → 答案回传 agent。
@@ -12,7 +12,7 @@ agent 提问 → 手机收到选项卡片（一选项一行按钮）→ 点按�
 ```bash
 node --test test/questions.test.mjs          # 提问桥 19 用例（卡片分流/发错重发/超时不代答）
 node --test test/inbound.telegram.test.mjs   # TG 通道契约 18 用例（含 v0.8 签名修复）
-npm test                                     # 全量 835 用例
+npm test                                     # 全量 846 用例
 ```
 
 全绿再上真机。
@@ -20,7 +20,7 @@ npm test                                     # 全量 835 用例
 ## 二、安装与配置
 
 ```bash
-dsh plugin add ./dsh-notifier-0.8.0-tg.0.zip --profile <你的profile>
+dsh plugin add ./ --profile <你的profile>   # 或安装当前 0.8.2 发布包
 ```
 
 `cordis.patch.yml`（Telegram 已配好的只需加 `questions` 段）：

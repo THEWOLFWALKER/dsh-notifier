@@ -102,7 +102,7 @@ test('v0.6.2 短引用点击链：审批卡 ref 展开 → bus.decide 收到完�
 
   const cbq = (id, data, updateId) => ({
     update_id: updateId,
-    callback_query: { id, from: { id: 42 }, message: { chat: { id: 42 }, message_id: 9 }, data },
+    callback_query: { id, from: { id: 42 }, message: { chat: { id: 100 }, message_id: 9 }, data },
   })
   queue.push(cbq('c1', approveRef, 1), cbq('c2', approveRef, 2), cbq('c3', rejectRef, 3))
 
@@ -111,7 +111,7 @@ test('v0.6.2 短引用点击链：审批卡 ref 展开 → bus.decide 收到完�
   await tg.stop()
 
   assert.equal(decisions.length, 2, '批准 + 拒绝各决策一次；重复点击同 ref 不再决策')
-  assert.deepEqual(decisions[0], { approvalKey: 'ap:rm:1', decision: 'allowed-once', token, via: 'telegram', userId: 42 })
+  assert.deepEqual(decisions[0], { approvalKey: 'ap:rm:1', decision: 'allowed-once', token, via: 'telegram', userId: 42, chatId: 100 })
   assert.equal(decisions[1].decision, 'rejected')
   const answers = calls.filter((call) => call.method === 'answerCallbackQuery')
   assert.equal(answers.length, 3)
@@ -149,6 +149,80 @@ test('v0.6.2 短引用点击链：动作卡 ac: 负载经 ref 展开 → actions
   assert.deepEqual(dispatched[0], { actionKey: 'act:turn/cancel:ws-abcdef12', token, via: 'telegram:action', userId: 42 })
 })
 
+// v0.8.3 SEC-1 提问按钮链：aq 短引用展开 → questions.decide 收到点击会话 chatId；
+// 转发点击被拒且引用不消费，原会话可正常作答。
+test('v0.8.3 SEC-1 提问短引用：chatId 透传 questions.decide；转发拒绝后原会话仍可作答', async () => {
+  const verdicts = []
+  const questions = { decide: (p) => { verdicts.push(p); return { ok: true, message: '✅ 已作答' } } }
+  const vault = createTokenVault({ secret: 'k' })
+  const token = vault.mint('aq:abc123:0')
+
+  const queue = []
+  const { fetchImpl, calls } = makeFetch({
+    sendMessage: { ok: true, result: { message_id: 5 } },
+    answerCallbackQuery: { ok: true, result: {} },
+    editMessageText: { ok: true, result: {} },
+    getUpdates: () => ({ ok: true, result: queue.splice(0, 2) }),
+  })
+  const tg = createTelegramInbound({ config: CONFIG, bus: makeBus(), vault, fetchImpl, errorBackoffMs: 10, questions })
+
+  await tg.sendQuestionCard({ chatId: 100, title: 'q', content: 'c', qKey: 'aq:abc123', token, options: ['A', 'B'] })
+  const qRef = calls.find((call) => call.method === 'sendMessage').body.reply_markup.inline_keyboard[0][0].callback_data
+
+  // 转发到 chat 200 拒绝；原会话 chat 100 通过
+  queue.push(
+    { update_id: 1, callback_query: { id: 'f1', from: { id: 42 }, message: { chat: { id: 200 }, message_id: 5 }, data: qRef } },
+    { update_id: 2, callback_query: { id: 'f2', from: { id: 42 }, message: { chat: { id: 100 }, message_id: 5 }, data: qRef } },
+  )
+
+  tg.start()
+  await new Promise((resolve) => setTimeout(resolve, 80))
+  await tg.stop()
+
+  const answers = calls.filter((call) => call.method === 'answerCallbackQuery')
+  assert.match(answers[0].body.text, /请到原会话操作/, '转发点击收到拒绝回执')
+  assert.equal(verdicts.length, 1, '转发点击不进入 questions.decide')
+  assert.deepEqual(verdicts[0], { qKey: 'aq:abc123', optIdx: '0', token, via: 'telegram', userId: 42, chatId: 100 })
+})
+
+// v0.8.3 SEC-1 转发拒绝：同一 ref 的按钮被转到别的 chat 点击 → 回执拒绝且不消费引用，
+// 合法原会话随后仍可正常裁决（ref 未被转发点击吃掉）。
+test('v0.8.3 SEC-1 短引用转发拒绝：跨 chat 点击回执拒绝，引用保留、原会话仍可裁决', async () => {
+  const decisions = []
+  const bus = { accept: () => {}, decide: (p) => { decisions.push(p); return { ok: true } } }
+  const vault = createTokenVault({ secret: 'k' })
+  const token = vault.mint('ap:rm:2')
+
+  const queue = []
+  const { fetchImpl, calls } = makeFetch({
+    sendMessage: { ok: true, result: { message_id: 9 } },
+    answerCallbackQuery: { ok: true, result: {} },
+    editMessageText: { ok: true, result: {} },
+    getUpdates: () => ({ ok: true, result: queue.splice(0, 3) }),
+  })
+  const tg = createTelegramInbound({ config: CONFIG, bus, vault, fetchImpl, errorBackoffMs: 10 })
+
+  // 发卡到 chat 100（按钮 ref 记录 origin chatId=100）
+  await tg.sendApprovalCard({ chatId: 100, title: 't', content: 'c', approvalKey: 'ap:rm:2', token })
+  const approveRef = calls.find((call) => call.method === 'sendMessage').body.reply_markup.inline_keyboard[0][0].callback_data
+
+  // 1) 转发到 chat 200 点击 → 拒绝「请到原会话操作」，bus.decide 不被调起
+  // 2) 原会话 chat 100 点击 → 裁决正常生效
+  queue.push(
+    { update_id: 1, callback_query: { id: 'f1', from: { id: 42 }, message: { chat: { id: 200 }, message_id: 9 }, data: approveRef } },
+    { update_id: 2, callback_query: { id: 'f2', from: { id: 42 }, message: { chat: { id: 100 }, message_id: 9 }, data: approveRef } },
+  )
+
+  tg.start()
+  await new Promise((resolve) => setTimeout(resolve, 80))
+  await tg.stop()
+
+  const answers = calls.filter((call) => call.method === 'answerCallbackQuery')
+  assert.match(answers[0].body.text, /请到原会话操作/, '转发点击收到拒绝回执')
+  assert.equal(decisions.length, 1, '转发点击不进入裁决分支')
+  assert.deepEqual(decisions[0], { approvalKey: 'ap:rm:2', decision: 'allowed-once', token, via: 'telegram', userId: 42, chatId: 100 })
+})
+
 // v0.6.2 注册表单元：单次核销 / TTL / 容量 FIFO（时钟注入，零真实等待）
 test('v0.6.2 callback-refs：mint/take 单次核销、TTL 过期、容量 FIFO 淘汰', async () => {
   const { createCallbackRefs } = await import('../src/inbound/callback-refs.mjs')
@@ -172,6 +246,41 @@ test('v0.6.2 callback-refs：mint/take 单次核销、TTL 过期、容量 FIFO �
   assert.equal(refs.take(r1), null, '容量满 FIFO 淘汰最旧')
   assert.equal(refs.take(r2), 'x2')
   assert.equal(refs.take(r4), 'x4')
+})
+
+// v0.8.3 SEC-1：短引用来源会话元数据 + 非核销读取（peek）。三态：正常带元数据、
+// 无元数据（升版前在途卡片兼容）、过期/淘汰后读取。
+test('v0.8.3 callback-refs：mint 带来源会话元数据，peek 非核销读取且不消费条目', async () => {
+  const { createCallbackRefs } = await import('../src/inbound/callback-refs.mjs')
+  let clock = 1000
+  const refs = createCallbackRefs({ ttlMs: 60_000, max: 3, now: () => clock })
+
+  // 正常态：带 chatId 元数据，peek 读得到、take 依旧只出 data
+  const r = refs.mint('ap:allowed-once:ap:rm:1:tk', { chatId: 100 })
+  assert.deepEqual(refs.peek(r), { data: 'ap:allowed-once:ap:rm:1:tk', origin: { chatId: 100 } })
+  assert.equal(refs.take(r), 'ap:allowed-once:ap:rm:1:tk', 'take 语义不变，仍返回 data')
+  assert.equal(refs.peek(r), null, 'take 之后 peek 也读不到（引用已核销）')
+
+  // 无元数据（旧发卡路径）：peek 返回 origin null，调用方按兼容路径处理
+  const legacy = refs.mint('aq:abc12:0:tk')
+  assert.deepEqual(refs.peek(legacy), { data: 'aq:abc12:0:tk', origin: null })
+  assert.equal(refs.take(legacy), 'aq:abc12:0:tk')
+
+  // 过期态：peek 返回 null（与 take 一致，不把过期元数据放行）
+  clock += 61_000
+  const exp = refs.mint('ap:refused:ap:x:1:tk', { chatId: 'oc_g' })
+  clock += 61_000
+  assert.equal(refs.peek(exp), null, 'TTL 过期后 peek 为 null')
+  assert.equal(refs.take(exp), null)
+
+  // 容量淘汰：peek 对最旧被淘汰的条目也读不到
+  const a = refs.mint('z1', { chatId: 'a' })
+  const b2 = refs.mint('z2', { chatId: 'b' })
+  const c = refs.mint('z3', { chatId: 'c' })
+  const d = refs.mint('z4', { chatId: 'd' }) // 淘汰 a
+  assert.equal(refs.peek(a), null, '容量满 FIFO 淘汰后 peek 读不到')
+  assert.deepEqual(refs.peek(b2).origin, { chatId: 'b' })
+  assert.equal(refs.peek(d).data, 'z4')
 })
 
 // ---------------------------------------------------------------- 长轮询

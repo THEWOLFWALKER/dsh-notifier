@@ -1,6 +1,6 @@
 {
   "name": "dsh-notifier",
-  "version": "0.8.2",
+  "version": "0.8.3",
   "description": "DSH 统一通知推送插件：一个 notify() API 打天下 + 多渠道 adapter；远程审批/远程会话支持 telegram/feishu/qq/wxpusher/wechat/dingtalk 六通道双向回传；移动指挥中心（长任务心跳 / 疑似卡住提醒 / 通知按钮停止任务）；开放事件源（其他插件经 notifier 服务推送 + dsh-notifier/sent 事件订阅）；QQ/钉钉/飞书官方扫码授权；本机 Web 管理台（凭证/路由/扫码授权网页可管，移动端适配）。零运行时依赖（只用 fetch + node:crypto + 原生 WebSocket）。",
   "type": "module",
   "main": "src/index.mjs",
@@ -13,7 +13,6 @@
     "test",
     "scripts",
     "cordis.patch.yml",
-    "WECHAT-TEST.md",
     "CHANGELOG.md"
   ],
   "scripts": {
@@ -57,7 +56,6 @@
     "qq-bot",
     "weixin",
     "ilink",
-    "dingtalk",
     "qr-login",
     "remote-approval"
   ],

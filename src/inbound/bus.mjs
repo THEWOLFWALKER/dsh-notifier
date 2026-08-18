@@ -207,7 +207,10 @@ export function createInboundBus(options = {}) {
       if (existing !== undefined && !existing.settled) return existing.promise
       const agentId = typeof options.agentId === 'string' ? options.agentId : ''
       const onAbandon = typeof options.onAbandon === 'function' ? options.onAbandon : null
-      const entry = { resolve: null, settled: false, timer: null, promise: null, agentId, onAbandon }
+      // v0.8.3 SEC-1：允许会话范围（channel → chatId 集合）。按钮裁决来源校验用；
+      // 缺省 null = 不限制（编号回复/旧装配不受影响）。
+      const allowChats = options.allowChats ?? null
+      const entry = { resolve: null, settled: false, timer: null, promise: null, agentId, onAbandon, allowChats }
       entry.promise = new Promise((resolve) => {
         entry.resolve = resolve
         entry.timer = setTimeout(() => {
@@ -261,7 +264,7 @@ export function createInboundBus(options = {}) {
       return { ok: true }
     },
 
-    decide({ approvalKey, decision, token, via = 'unknown', userId = '(unknown)' }) {
+    decide({ approvalKey, decision, token, via = 'unknown', userId = '(unknown)', chatId = undefined }) {
       if (decision !== 'allowed-once' && decision !== 'rejected') {
         return { ok: false, reason: 'invalid-decision' }
       }
@@ -270,6 +273,18 @@ export function createInboundBus(options = {}) {
         const verdict = vault.verify(token)
         if (!verdict.ok) return { ok: false, reason: verdict.reason }
         if (verdict.key !== approvalKey) return { ok: false, reason: 'key-mismatch' }
+      }
+      // v0.8.3 SEC-1：来源会话校验（仅按钮裁决路径）。wait 注册了允许会话范围时，
+      // 点击会话必须落在范围内；不匹配返回明确拒绝，不核销 wait 状态（合法原会话仍可裁决）。
+      // 缺省 allowChats=null 或 chatId 未传时跳过（编号回复/旧装配不受影响）。
+      const entry = waiters.get(approvalKey)
+      if (entry !== undefined && entry.allowChats !== null && chatId !== undefined && chatId !== null && String(chatId) !== '') {
+        const allowed = entry.allowChats
+        const channel = String(via ?? '').split(':')[0]
+        const chatSet = allowed.get(channel)
+        if (chatSet === undefined || !chatSet.has(String(chatId))) {
+          return { ok: false, reason: 'source-chat-mismatch' }
+        }
       }
       return this.settle(approvalKey, decision, via, userId)
     },

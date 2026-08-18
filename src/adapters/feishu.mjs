@@ -1,7 +1,8 @@
 // dsh-notifier adapter: feishu
 // 飞书自定义机器人：POST https://open.feishu.cn/open-apis/bot/v2/hook/<TOKEN>。
-// 可选「加签」模式：timestamp + "\n" + secret 做 HMAC-SHA256 后 base64（与钉钉算法相同，
-// 但飞书不 URL 编码、timestamp 用秒）。用 interactive 卡片展示 title + markdown 正文。
+// 可选「加签」模式：飞书官方算法——HMAC key 取 stringToSign = timestamp + "\n" + secret，
+// data 为空字符串，base64 后随请求 JSON body 的 timestamp/sign 字段一起发送（不放 URL，issue #8）。
+// 用 interactive 卡片展示 title + markdown 正文。
 // 配置：webhook（完整地址，secret）+ secret（可选加签密钥）。
 
 import { createHmac } from 'node:crypto'
@@ -9,23 +10,18 @@ import { postJson, responseJson, str, num, NotifyError, ERROR_CODES } from './_s
 
 export const type = 'feishu'
 
-/** 飞书官方加签：stringToSign = timestamp + "\n" + secret；sign = base64(HmacSHA256)，秒级时间戳。 */
+/**
+ * 飞书官方加签：#8 修正。stringToSign = timestamp + "\n" + secret 是 HMAC 的 key（不是 message），
+ * data 为空字符串；sign = base64(HmacSHA256)，秒级时间戳。与钉钉算法（secret 当 key、stringToSign 当 message）不同。
+ */
 export function feishuSign(secret, timestamp) {
   const stringToSign = `${timestamp}\n${secret}`
-  return createHmac('sha256', secret).update(stringToSign, 'utf8').digest('base64')
+  return createHmac('sha256', stringToSign).update('').digest('base64')
 }
 
 /** 秒级时间戳（字符串）。 */
 export function feishuTimestamp(now = Date.now()) {
   return String(Math.floor(now / 1000))
-}
-
-/** 在 webhook 上追加 timestamp 与 sign（secret 为空则原样返回）。 */
-export function signedUrl(webhook, secret, timestamp = feishuTimestamp()) {
-  if (!secret) return webhook
-  const sign = feishuSign(secret, timestamp)
-  const sep = webhook.includes('?') ? '&' : '?'
-  return `${webhook}${sep}timestamp=${timestamp}&sign=${sign}`
 }
 
 /** 校验并归一化配置；缺失抛中文指引。 */
@@ -45,7 +41,6 @@ export function resolve(cfg = {}) {
 
 /** 发送 interactive 卡片；飞书 code !== 0 时抛带中文指引的错误。 */
 export async function send(resolved, msg) {
-  const url = signedUrl(resolved.webhook, resolved.secret || undefined)
   const atPrefix = resolved.atOpenId !== '' && msg.level === 'timeSensitive'
     ? `<at user_id="${resolved.atOpenId}"></at>\n`
     : ''
@@ -56,7 +51,13 @@ export async function send(resolved, msg) {
       elements: [{ tag: 'markdown', content: `${atPrefix}${msg.content}` }],
     },
   }
-  const response = await postJson(url, body, { timeoutMs: resolved.timeoutMs, channel: 'feishu' })
+  // #8：飞书要求 timestamp/sign 随 JSON body 发送（不放 URL）；secret 为空时不加签名字段。
+  if (resolved.secret) {
+    const timestamp = feishuTimestamp()
+    body.timestamp = timestamp
+    body.sign = feishuSign(resolved.secret, timestamp)
+  }
+  const response = await postJson(resolved.webhook, body, { timeoutMs: resolved.timeoutMs, channel: 'feishu' })
   const payload = await responseJson(response, 'feishu')
   if (typeof payload?.code !== 'number') {
     throw new NotifyError('feishu 返回格式异常：缺少 code', ERROR_CODES.API_ERROR)

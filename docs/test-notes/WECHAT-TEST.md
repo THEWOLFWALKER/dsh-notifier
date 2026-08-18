@@ -1,4 +1,4 @@
-# 微信通道测试包（0.7.2-wechat.0）
+# 微信通道测试包（0.8.2）
 
 本包用于验证 **微信扫码即配对**：iLink 机器人是扫码微信的专属好友（1:1），
 扫码确认那一刻配对自动完成，不需要配对码。
@@ -10,7 +10,7 @@
 ```bash
 node --test test/admin-scan.test.mjs      # 扫码流机 30 用例（含微信 10 用例）
 node --test test/inbound.wechat.test.mjs  # 微信入站通道契约
-npm test                                  # 全量 807 用例
+npm test                                  # 全量 846 用例
 ```
 
 全绿再上真机。
@@ -19,7 +19,7 @@ npm test                                  # 全量 807 用例
 
 ```bash
 # 1. 安装本测试包（覆盖已装版本）
-dsh plugin add ./dsh-notifier-0.7.2-wechat.0.tgz --profile <你的profile>
+dsh plugin add ./ --profile <你的profile>   # 或安装当前 0.8.2 发布包
 ```
 
 `cordis.patch.yml` 开管理台（唯一要改的配置）：

@@ -75,17 +75,30 @@ test('dingtalk: errcode 非 0 抛带中文指引的错误', async () => {
   await cap.done()
 })
 
-test('feishu: send 走加签 URL + interactive 卡片', async () => {
+test('feishu: send 走原样 URL + interactive 卡片，#8 timestamp/sign 进 JSON body', async () => {
   const cap = capture({ code: 0, msg: "success" })
   await feishu.send(feishu.resolve({ webhook: 'https://open.feishu.cn/open-apis/bot/v2/hook/X', secret: 'S' }), MSG)
   const seen = await cap.done()
-  assert.ok(seen.url.startsWith('https://open.feishu.cn/open-apis/bot/v2/hook/X'))
-  assert.ok(seen.url.includes('timestamp='))
-  assert.ok(seen.url.includes('sign='))
+  assert.equal(seen.url, 'https://open.feishu.cn/open-apis/bot/v2/hook/X', '签名不得拼进 URL query')
+  assert.equal(seen.url.includes('?'), false)
   const body = JSON.parse(seen.body)
   assert.equal(body.msg_type, 'interactive')
   assert.equal(body.card.header.title.content, '标题')
   assert.equal(body.card.elements[0].content, '正文 markdown **bold**')
+  assert.match(body.timestamp, /^\d{10}$/, 'body 应含秒级 timestamp')
+  assert.ok(typeof body.sign === 'string' && body.sign.length > 0, 'body 应含 sign')
+  // 与秒级 timestamp 对应：sign 由同一 timestamp 算出
+  assert.equal(body.sign, feishu.feishuSign('S', body.timestamp))
+})
+
+test('feishu: send 无 secret 时请求体不含 timestamp/sign（保持不加签名行为）', async () => {
+  const cap = capture({ code: 0, msg: "success" })
+  await feishu.send(feishu.resolve({ webhook: 'https://open.feishu.cn/open-apis/bot/v2/hook/X' }), MSG)
+  const seen = await cap.done()
+  assert.equal(seen.url, 'https://open.feishu.cn/open-apis/bot/v2/hook/X')
+  const body = JSON.parse(seen.body)
+  assert.equal('timestamp' in body, false, '无 secret 时 body 不含 timestamp')
+  assert.equal('sign' in body, false, '无 secret 时 body 不含 sign')
 })
 
 test('wxpusher: 端点 + appToken + uids + contentType=1', async () => {

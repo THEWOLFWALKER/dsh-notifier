@@ -83,8 +83,17 @@ test('escalation：stages 为空时 start 是 no-op；dispose 清一切', async 
 
 // ---------------------------------------------------------------- router 端到端
 
-/** 组装一套最小依赖（真实 bus/vault/store + 假 ctx/notifier/telegram）。 */
-function makeRig({ approvalConfig = {}, chatIds = ['100'], mode = 'answer' } = {}) {
+/**
+ * 组装一套最小依赖（真实 bus/vault/store + 假 ctx/notifier/telegram）。
+ * @param {object} [options]
+ * @param {object} [options.approvalConfig]
+ * @param {string[]} [options.chatIds]
+ * @param {'answer'|'observe'} [options.mode]
+ * @param {((chatId: string, text: string) => boolean|Promise<boolean>) | null} [options.sendText]
+ *   给 telegram 补 sendText 桩（norm 化后回执可用）。缺省不实现 → norm 化 sendText
+ *   对缺方法返回 false（回执静默失败，不升级抛错）。
+ */
+function makeRig({ approvalConfig = {}, chatIds = ['100'], mode = 'answer', sendText = null } = {}) {
   const store = createStore(tempPath())
   const vault = createTokenVault({ secret: 'test-secret' })
   // 白名单含 42（个人号）与 100（= 推送 chatId 对应的用户），供编号回复匹配测试
@@ -111,6 +120,7 @@ function makeRig({ approvalConfig = {}, chatIds = ['100'], mode = 'answer' } = {
     },
     editResolved: async (chatId, messageId, text) => { edits.push({ chatId, messageId, text }) },
   }
+  if (typeof sendText === 'function') telegram.sendText = sendText
   const dispose = registerApprovalHandler({
     ctx, notifier, bus, vault, store, telegram,
     counterStart: 0, // v0.6.4 生产随机化 counter 起点；测试固定 0 保住 ap:<callId>:<n> 确定性断言
@@ -196,6 +206,39 @@ test('router：token 单次核销——同 token 二次裁决被拒（按钮双�
   rig.dispose()
 })
 
+// v0.8.3 SEC-1：按钮裁决来源会话校验——转发点击（chat 不在可接受范围）被拒，
+// 不核销 wait 状态；原会话点击仍可生效。
+test('router：SEC-1 按钮来源会话不匹配 → 拒绝且不核销，原会话仍可裁决', async () => {
+  const rig = makeRig({ approvalConfig: { timeoutMs: 5000 } })
+  const pending = rig.handle({ toolName: 'rm', callId: 'c1', reason: 'x' })
+  await sleep(20)
+  const card = rig.cards[0]
+  // 转发到非目标 chat（999）点击 → 明确拒绝，账本保持 pending（不落终态）
+  const forwarded = rig.bus.decide({
+    approvalKey: card.approvalKey,
+    decision: 'allowed-once',
+    token: card.token,
+    via: 'telegram:button',
+    userId: '42',
+    chatId: '999',
+  })
+  assert.deepEqual(forwarded, { ok: false, reason: 'source-chat-mismatch' })
+  assert.equal(rig.store.get('ap:c1:1').status, 'pending', '转发点击不得落终态/核销 wait')
+  // 原会话（卡片实际送达的 chat 100）点击 → 正常批准
+  const original = rig.bus.decide({
+    approvalKey: card.approvalKey,
+    decision: 'allowed-once',
+    token: card.token,
+    via: 'telegram:button',
+    userId: '42',
+    chatId: '100',
+  })
+  assert.deepEqual(original, { ok: true })
+  assert.equal(await pending, 'allowed-once')
+  assert.equal(rig.store.get('ap:c1:1').status, 'resolved')
+  rig.dispose()
+})
+
 test('router：伪造/篡改 token 被拒（bad-signature / key-mismatch），审批继续等到超时', async () => {
   const rig = makeRig({ approvalConfig: { timeoutMs: 800, escalation: { enabled: false } } })
   const pending = rig.handle({ toolName: 'rm', callId: 'c1', reason: 'x' })
@@ -261,6 +304,80 @@ test('router：numberedReply: false 关闭编号回复降级', async () => {
   // 而不是 v0.6.3 收紧的未送达兜底移除
   rig.bus.accept({ channel: 'telegram', userId: '100', chatId: '100', messageId: 'msg:t:1', text: '1' })
   assert.equal(await pending, 'desktop') // 未被编号回复裁决 → 超时
+  rig.dispose()
+})
+
+// v0.8.3 E-2：审批编号回复对已决竞态（首达采纳/超时已 settle、账本暂未翻终态）消费 + 回执，
+// 对齐 questions/router.mjs:316-318 既有姿态——不把裸 '1'/'2' 漏进对话路由。
+test('router：E-2 已决竞态编号回复 → 消费 + 回执「该审批已被处理」', async () => {
+  const texts = []
+  const rig = makeRig({
+    approvalConfig: { timeoutMs: 5000, escalation: { enabled: false } },
+    sendText: async (chatId, text) => { texts.push({ chatId, text }); return true },
+  })
+  const seen = []
+  rig.bus.onMessage((envelope) => { seen.push(envelope.text); return false })
+  const pending = rig.handle({ toolName: 'rm', callId: 'c1', reason: 'x' })
+  await sleep(20)
+  const card = rig.cards[0]
+  // 首达采纳：按钮路径 settle waiter（账本仍 pending，handler 尚在 await decisionPromise）
+  assert.deepEqual(
+    rig.bus.decide({ approvalKey: card.approvalKey, decision: 'allowed-once', token: card.token, via: 'telegram:button', userId: '42', chatId: '100' }),
+    { ok: true },
+  )
+  // 窄竞态窗内第二条编号回复 '1'：latestPendingFor 仍命中 pending，decideTrusted 返回 already-resolved
+  assert.deepEqual(
+    rig.bus.decideTrusted({ approvalKey: card.approvalKey, decision: 'allowed-once', via: 'telegram:reply', userId: '100' }),
+    { ok: false, reason: 'already-resolved' },
+  )
+  rig.bus.accept({ channel: 'telegram', userId: '100', chatId: '100', messageId: 'msg:t:2', text: '1' })
+  // 已决竞态 → 消费：后注册观察者看不到该消息（不进对话路由）
+  assert.equal(seen.length, 0, '已决竞态的裸编号被消费，不落回对话路由')
+  // 回执送达：含「已被处理」/「首达采纳」核心语义
+  assert.equal(texts.length, 1)
+  assert.equal(texts[0].chatId, '100')
+  assert.match(texts[0].text, /已被处理/)
+  assert.match(texts[0].text, /首达采纳/)
+  assert.equal(await pending, 'allowed-once')
+  rig.dispose()
+})
+
+test('router：E-2 已决竞态即使回执失败仍消费（B8，不因回执缺失漏进会话）', async () => {
+  // 默认 rig 的 telegram 无 sendText → norm 化 sendText 返回 false（回执静默失败）
+  const rig = makeRig({ approvalConfig: { timeoutMs: 5000, escalation: { enabled: false } } })
+  const seen = []
+  rig.bus.onMessage((envelope) => { seen.push(envelope.text); return false })
+  const pending = rig.handle({ toolName: 'rm', callId: 'c1', reason: 'x' })
+  await sleep(20)
+  const card = rig.cards[0]
+  rig.bus.decide({ approvalKey: card.approvalKey, decision: 'allowed-once', token: card.token, via: 'telegram:button', userId: '42', chatId: '100' })
+  rig.bus.accept({ channel: 'telegram', userId: '100', chatId: '100', messageId: 'msg:t:2', text: '1' })
+  assert.equal(seen.length, 0, '回执失败也不影响消费，裸编号不落回对话路由')
+  assert.equal(await pending, 'allowed-once')
+  rig.dispose()
+})
+
+test('router：E-2 无匹配待决审批的裸编号不被消费（B3/B9，钉死不过度收紧）', async () => {
+  const rig = makeRig({ approvalConfig: { timeoutMs: 5000, escalation: { enabled: false } } })
+  const seen = []
+  rig.bus.onMessage((envelope) => { seen.push(envelope.text); return false })
+  // 无任何待决审批：裸 '1' 是正常会话消息，必须落回对话路由（不裁决不回执）
+  rig.bus.accept({ channel: 'telegram', userId: '100', chatId: '100', messageId: 'msg:t:1', text: '1' })
+  assert.deepEqual(seen, ['1'], '无匹配审批时裸编号不被消费，落回对话路由')
+  rig.dispose()
+})
+
+test('router：E-2 未 settle 的正常 pending 编号回复仍走裁决（B1，不被误消费）', async () => {
+  const rig = makeRig({ approvalConfig: { timeoutMs: 5000, escalation: { enabled: false } } })
+  const seen = []
+  rig.bus.onMessage((envelope) => { seen.push(envelope.text); return false })
+  const pending = rig.handle({ toolName: 'rm', callId: 'c1', reason: 'x' })
+  await sleep(20)
+  // 正常 pending（未 settle）：编号回复 '1' 应裁决批准，而非被「已决竞态」分支吞掉
+  rig.bus.accept({ channel: 'telegram', userId: '100', chatId: '100', messageId: 'msg:t:1', text: '1' })
+  assert.equal(await pending, 'allowed-once')
+  assert.equal(rig.store.get('ap:c1:1').decision, 'allowed-once')
+  assert.equal(seen.length, 0, '正常裁决路径消费该消息')
   rig.dispose()
 })
 

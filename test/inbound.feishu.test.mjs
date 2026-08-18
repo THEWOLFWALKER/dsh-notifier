@@ -4,7 +4,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createFeishuInbound, resolveFeishuInboundConfig } from '../src/inbound/feishu-bot.mjs'
-import { buildApprovalAction } from '../src/inbound/_contract.mjs'
+import { buildApprovalAction, buildQuestionAction } from '../src/inbound/_contract.mjs'
 import { createTokenVault } from '../src/inbound/tokens.mjs'
 import { createInboundBus } from '../src/inbound/bus.mjs'
 
@@ -363,6 +363,8 @@ test('sendApprovalCard：interactive 卡片 + 两按钮 value.act 同构 telegra
   const buttons = content.elements.find((element) => element.tag === 'action').actions
   assert.equal(buttons[0].value.act, `ap:allowed-once:ap:rm:1:${token}`)
   assert.equal(buttons[1].value.act, `ap:rejected:ap:rm:1:${token}`)
+  assert.equal(buttons[0].value.srcChat, 'ou_1', '按钮 value 携带来源会话（SEC-1）')
+  assert.equal(buttons[1].value.srcChat, 'ou_1')
   assert.match(content.header.title.content, /需要批准：rm/)
   await rig.inbound.stop()
 })
@@ -542,6 +544,88 @@ test('ap: 审批回调不受 v0.5 改动影响（回归）', async () => {
   assert.equal(toast.toast.type, 'success')
   assert.match(toast.toast.content, /已批准/)
   assert.equal((await outcome).decision, 'allowed-once')
+  await inbound.stop()
+})
+
+// v0.8.3 SEC-1：飞书审批卡来源会话匹配 → 通过；转发到其他会话 → toast 拒绝且不 patch 终态。
+test('card.action.trigger：SEC-1 来源会话匹配通过 / 转发到其他会话拒绝（不 patch 终态）', async () => {
+  const logger = makeLogger()
+  const vault = createTokenVault({ secret: 'k' })
+  const bus = createInboundBus({ allowUsers: ['ou_1'], vault, logger })
+  const fake = makeFakeSdk()
+  const inbound = createFeishuInbound({ config: { appId: 'a', appSecret: 's' }, bus, logger, sdkLoader: fake.loader })
+  inbound.start()
+  await tick()
+  const key = 'ap:sec1:1'
+  const token = vault.mint(key)
+  const outcome = bus.wait(key, 2000)
+
+  const value = { act: buildApprovalAction('allowed-once', key, token), srcChat: 'oc_orig' }
+  const makeEvent = (chatId, messageId) => ({
+    operator: { open_id: 'ou_1' },
+    action: { value },
+    context: { open_message_id: messageId, open_chat_id: chatId },
+  })
+
+  // 转发到与原会话不同的 chat → 拒绝，不调用 bus.decide，不 patch
+  const forwarded = fake.state.dispatcher.handlers['card.action.trigger'](makeEvent('oc_elsewhere', 'om_fwd'))
+  assert.equal(forwarded.toast.type, 'info')
+  assert.match(forwarded.toast.content, /请到原会话操作/)
+  await tick()
+  assert.equal(fake.state.patched.length, 0, '转发点击不得 patch 成已完成态')
+  assert.equal(bus.pendingCount(), 1, 'wait 未被核销，仍待裁决')
+
+  // 原会话点击 → 通过
+  const match = fake.state.dispatcher.handlers['card.action.trigger'](makeEvent('oc_orig', 'om_orig'))
+  assert.equal(match.toast.type, 'success')
+  assert.equal((await outcome).decision, 'allowed-once')
+  await tick()
+  assert.equal(fake.state.patched.length, 1, '匹配会话点击应 patch 终态')
+  assert.equal(fake.state.patched[0].messageId, 'om_orig')
+  await inbound.stop()
+})
+
+// v0.8.3 SEC-1：飞书提问卡来源会话校验——缺少 srcChat（旧卡）兼容放行，转发拒绝。
+test('aq: 卡片回调：SEC-1 来源会话匹配通过 / 转发拒绝；缺 srcChat 旧卡兼容', async () => {
+  const logger = makeLogger()
+  const vault = createTokenVault({ secret: 'k' })
+  const bus = createInboundBus({ allowUsers: ['ou_1'], vault, logger })
+  const fake = makeFakeSdk()
+  const verdicts = []
+  const questions = { decide: (p) => { verdicts.push(p); return { ok: true, message: '✅ 已作答' } } }
+  const inbound = createFeishuInbound({
+    config: { appId: 'a', appSecret: 's' },
+    bus,
+    logger,
+    sdkLoader: fake.loader,
+    questions,
+  })
+  inbound.start()
+  await tick()
+
+  const makeEvent = (value, chatId) => ({
+    operator: { open_id: 'ou_1' },
+    action: { value },
+    context: { open_message_id: 'om_q', open_chat_id: chatId },
+  })
+
+  // 缺 srcChat（升级前在途卡片）：兼容放行，进入 questions.decide
+  const legacy = fake.state.dispatcher.handlers['card.action.trigger'](
+    makeEvent({ act: buildQuestionAction('aq:abc12', '0', 'tk') }, 'oc_x'),
+  )
+  assert.equal(verdicts.length, 1, '旧卡无 srcChat → 放行进入裁决')
+
+  // 带 srcChat 但转发到其他会话 → 拒绝，不进入 questions.decide
+  const withSrc = { act: buildQuestionAction('aq:def34', '1', 'tk2'), srcChat: 'oc_orig' }
+  const forwarded = fake.state.dispatcher.handlers['card.action.trigger'](makeEvent(withSrc, 'oc_elsewhere'))
+  assert.match(forwarded.toast.content, /请到原会话操作/)
+  assert.equal(verdicts.length, 1, '转发点击不进入 questions.decide')
+
+  // 原会话点击 → 通过，且 chatId 透传 questions.decide
+  const matching = fake.state.dispatcher.handlers['card.action.trigger'](makeEvent(withSrc, 'oc_orig'))
+  assert.equal(matching.toast.type, 'success')
+  assert.equal(verdicts.length, 2)
+  assert.equal(verdicts[verdicts.length - 1].chatId, 'oc_orig', '点击会话应透传给 questions.decide')
   await inbound.stop()
 })
 

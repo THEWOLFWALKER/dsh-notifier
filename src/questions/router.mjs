@@ -16,7 +16,9 @@
 // 账本：store 键空间 'aq:'（与审批 'ap:' 隔离），行 = {
 //   question, options: [label], multiSelect, status: 'pending'|'resolved',
 //   pushedTo: [{channel, chatId, userId, messageId, kind:'aq'}], createdAt,
-//   decision?: 'answered'|'timeout'|'error', answers?: [label]（重复点击回显用）
+//   hintChannels?: string[]（SEC-2：广播过编号话术的渠道，编号降级的 intended 兜底凭据，
+//     缺省/旧行 = 不兜底从严）, decision?: 'answered'|'timeout'|'error',
+//   answers?: [label]（重复点击回显用）
 // }
 // 军规：任何异常只丢当次提问（工具返回明确失败对象），绝不弄崩宿主。
 
@@ -98,25 +100,38 @@ export function createQuestionBridge(deps) {
       store.set(key, { ...row, ...extra, status: 'resolved', decision: 'terminated', resolvedAt: Date.now() })
       return true
     },
-    /** 最近一条待决提问（编号回复降级）：精确用户 → 同渠道 → 任意渠道（提问恒广播）。 */
+    /**
+     * 最近一条待决提问（编号回复降级）。匹配优先级：
+     *  1) exact 推送过该 (channel,userId)；
+     *  2) onChannel 该 channel 推送过（他人代答）；
+     *  3) hint 该 channel 收到过本问题的编号话术（=aq 行 hintChannels 含该渠道）——
+     *     替代旧 `any` 无条件兜底（SEC-2 / C-2 / BUG-11：关死「既没送卡、又没广播编号
+     *     话术的渠道裸数字越权仲裁」的面）。无卡片渠道的合法编号作答由 hint 接住。
+     */
     latestPendingFor(channel, userId) {
       let exact = null
       let onChannel = null
-      let any = null
+      let hint = null
       for (const key of store.keys(KEY_PREFIX)) {
         const row = store.get(key)
         if (row?.status !== 'pending') continue
         const pushed = Array.isArray(row.pushedTo) ? row.pushedTo : []
-        if (any === null || row.createdAt > any.row.createdAt) any = { key, row }
         if (pushed.some((target) => target.channel === channel)) {
           if (onChannel === null || row.createdAt > onChannel.row.createdAt) onChannel = { key, row }
           if (pushed.some((target) => target.channel === channel && String(target.userId) === String(userId))) {
             if (exact === null || row.createdAt > exact.row.createdAt) exact = { key, row }
           }
         }
+        if (hint === null && isHintedChannel(row, channel)) hint = { key, row }
       }
-      return exact ?? onChannel ?? any
+      return exact ?? onChannel ?? hint
     },
+  }
+
+  /** SEC-2：该渠道是否被本问题「广播过编号话术」（=aq 行 hintChannels）。无该字段的旧行不兜底（从严，fail-closed）。 */
+  function isHintedChannel(row, channel) {
+    if (Array.isArray(row.hintChannels)) return row.hintChannels.includes(channel)
+    return false
   }
 
   /** 交互通道列表（归一 + 防御；getter 失败按空处理）。 */
@@ -180,7 +195,10 @@ export function createQuestionBridge(deps) {
         level: 'timeSensitive',
       }, { channelTypes: textTypes }).catch(() => {})
     }
-    return pushedTo
+    // SEC-2：把一号话术广播过的渠道一并返回，供 askQuestions 落账为 aq 行的 hintChannels。
+    // hintChannels 按「本应广播的 textTypes」记录（不因 notifyAll 失败而丢失）——即使编号
+    // 文案发送失败，行上仍记该渠道，编号兜底反而更稳（降级链不断，见 22-plan-sec2 E4/E5）。
+    return { pushedTo, hintChannels: textTypes }
   }
 
   /** 把送达过的卡片全部改成终态（超时/已答；editTarget 按 pushedTo 行的 kind 选卡片形态）。 */
@@ -222,7 +240,10 @@ export function createQuestionBridge(deps) {
     if (verdict.key !== qKey) return { ok: false, message: '作答被拒绝（问题不匹配）' }
     if (chatId !== undefined && chatId !== null && String(chatId) !== '') {
       const pushedTo = Array.isArray(row.pushedTo) ? row.pushedTo : []
-      if (!pushedTo.some((target) => String(target?.chatId ?? '') === String(chatId))) {
+      // v0.8.3 SEC-1：来源会话校验把通道一并纳入——only 比对 chatId 不够，跨通道
+      // 同 chatId（如不同渠道恰好同值）要视为不同来源，避免误命中。
+      const clickVia = String(via ?? '').split(':')[0]
+      if (!pushedTo.some((target) => String(target?.channel ?? '') === clickVia && String(target?.chatId ?? '') === String(chatId))) {
         return { ok: false, message: '请到原会话操作' }
       }
     }
@@ -345,9 +366,9 @@ export function createQuestionBridge(deps) {
           agentId: agentId !== null ? String(agentId) : '',
           onAbandon: () => { try { ledger.terminate(qKey) } catch { } },
         })
-        const pushedTo = await pushQuestion(qKey, token, question)
+        const { pushedTo, hintChannels } = await pushQuestion(qKey, token, question)
         const row = ledger.get(qKey)
-        if (row !== undefined) store.set(qKey, { ...row, pushedTo })
+        if (row !== undefined) store.set(qKey, { ...row, pushedTo, hintChannels })
         const startedAt = Date.now()
         escalation.start(qKey, (_key, stage) => {
           notifier.notifyAll({

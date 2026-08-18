@@ -11,6 +11,10 @@
 // 单次核销（take 即删）+ TTL + 容量上限三重防泄；重启即清（token secret 默认进程
 // 随机、TTL 10 分钟，重启失效本就是既有语义，不新增窗口）。
 //
+// v0.8.3 SEC-1：短引用条目额外携带来源会话元数据（最少 chatId），供按钮回调做
+// 「点击所在会话 vs 卡片原始会话」比对（转发拒绝）。take() 保持旧语义只返回 data；
+// 新增 peek() 非核销读取（读元数据判定后再消费，转发点击不会吃掉原卡 ref）。
+//
 // 军规：任何异常绝不抛出（按钮路径只 warn）；时间可注入（测试）。
 
 import { randomInt } from 'node:crypto'
@@ -48,8 +52,8 @@ export function createCallbackRefs({ ttlMs = DEFAULT_TTL_MS, max = DEFAULT_MAX, 
   }
 
   return {
-    /** 为完整 data 铸一枚短引用（过期项顺带清扫；容量满淘汰最旧）。 */
-    mint(data) {
+    /** 为完整 data 铸一枚短引用（过期项顺带清扫；容量满淘汰最旧）。origin 为可选的来源会话元数据（SEC-1）。 */
+    mint(data, origin = null) {
       sweep()
       if (refs.size >= cap) {
         const oldest = refs.keys().next().value
@@ -57,7 +61,11 @@ export function createCallbackRefs({ ttlMs = DEFAULT_TTL_MS, max = DEFAULT_MAX, 
       }
       let ref = randomRef()
       while (refs.has(ref)) ref = randomRef()
-      refs.set(ref, { data: String(data), expireAt: now() + ttl })
+      refs.set(ref, {
+        data: String(data),
+        expireAt: now() + ttl,
+        origin: (origin !== null && typeof origin === 'object') ? origin : null,
+      })
       return ref
     },
 
@@ -70,6 +78,18 @@ export function createCallbackRefs({ ttlMs = DEFAULT_TTL_MS, max = DEFAULT_MAX, 
       refs.delete(ref)
       if (now() > entry.expireAt) return null
       return entry.data
+    },
+
+    /**
+     * 非核销式读取（SEC-1）：命中且未过期返回条目元信息，不删除条目。
+     * 返回 { data, origin }；未命中/过期返回 null。按钮路径先 peek 判定来源
+     * 再决定是否消费，转发点击不会吃原卡 ref。
+     */
+    peek(ref) {
+      const entry = refs.get(ref)
+      if (entry === undefined) return null
+      if (now() > entry.expireAt) return null
+      return { data: entry.data, origin: entry.origin ?? null }
     },
 
     /** 当前在册数（测试/诊断用）。 */

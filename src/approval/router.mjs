@@ -168,7 +168,24 @@ export function registerApprovalHandler(deps) {
     }
   }
 
-  async function pushApproval(key, token, request, channelTypes) {
+  /**
+   * v0.8.3 SEC-1：规划本次审批的卡片目标（与推送共用同一份结果，避免 wait 的
+   * allowChats 与 pushApproval 各自解析导致的不一致）。返回 Map<channel, kept[]>。
+   */
+  function planApprovalTargets(channelTypes) {
+    const targets = new Map()
+    for (const inbound of interactive) {
+      if (channelTypes !== null && !channelTypes.includes(inbound.channel)) continue
+      // v0.7 形状守卫（计划书 §3.5）：目标进发送前按渠道校验 id 形态——TG 数字 id 混进
+      // 飞书目标位这类跨渠道串门在此拦截（warn + skip，不中断其余目标）。
+      const { kept, skipped } = guardTargets(inbound.channel, inbound.notifyTargets(), warn)
+      if (skipped.length > 0) warn(`形状守卫跳过 ${skipped.length} 个目标（${inbound.channel}）`)
+      targets.set(inbound.channel, kept)
+    }
+    return targets
+  }
+
+  async function pushApproval(key, token, request, channelTypes, targetsByChannel) {
     const title = `需要批准：${request.toolName}`
     const content = `${request.reason ?? 'agent 请求执行一个需要授权的操作'}\n\n批准将仅对本次调用生效（token 单次核销）。`
     const pushedTo = []
@@ -185,13 +202,10 @@ export function registerApprovalHandler(deps) {
         if (row !== undefined) store.set(key, { ...row, pushedTo: [...pushedTo] })
       } catch { /* 增量落账失败不致命，末尾还有一次整体落账兜底 */ }
     }
-    for (const inbound of interactive) {
-      if (channelTypes !== null && !channelTypes.includes(inbound.channel)) continue
+    for (const [channel, kept] of targetsByChannel) {
+      const inbound = interactiveByChannel.get(channel)
+      if (inbound === undefined) continue
       let anySuccess = false
-      // v0.7 形状守卫（计划书 §3.5）：目标进发送前按渠道校验 id 形态——TG 数字 id 混进
-      // 飞书目标位这类跨渠道串门在此拦截（warn + skip，不中断其余目标）。
-      const { kept, skipped } = guardTargets(inbound.channel, inbound.notifyTargets(), warn)
-      if (skipped.length > 0) warn(`形状守卫跳过 ${skipped.length} 个目标（${inbound.channel}）`)
       for (const target of kept) {
         const card = await inbound.sendApprovalCard({
           chatId: target.chatId,
@@ -202,12 +216,12 @@ export function registerApprovalHandler(deps) {
         })
         if (card !== null) {
           anySuccess = true
-          pushedTo.push({ channel: inbound.channel, chatId: target.chatId, userId: target.userId, messageId: card.messageId })
+          pushedTo.push({ channel, chatId: target.chatId, userId: target.userId, messageId: card.messageId })
           persistPushed()
         }
       }
       if (anySuccess) {
-        const name = DISPLAY_NAMES[inbound.channel] ?? inbound.channel
+        const name = DISPLAY_NAMES[channel] ?? channel
         if (inbound.capabilities?.buttons !== false) buttonChannels.push(name)
         else textChannels.push(name)
       }
@@ -256,7 +270,14 @@ export function registerApprovalHandler(deps) {
       warn(`编号回复裁决 ${pending.key} → ${decision}（user ${envelope.userId}）`)
       return true
     }
-    return false
+    // v0.8.3 E-2：已决竞态（首达采纳/超时已 settle，账本暂未翻终态）——消费 + 回执，
+    // 不把裸 '1'/'2' 漏进对话路由（对齐 questions/router.mjs:316-318 既有姿态）。
+    const inbound = interactiveByChannel.get(envelope.channel)
+    if (inbound !== undefined) {
+      void inbound.sendText(envelope.chatId, '该审批已被处理（首达采纳，此次回复无效）').catch(() => {})
+    }
+    warn(`编号回复落空 ${pending.key}（已决竞态，user ${envelope.userId}）`)
+    return true
   }
 
   const disposeMessage = bus.onMessage(handleNumberedReply)
@@ -287,12 +308,20 @@ export function registerApprovalHandler(deps) {
       // 发卡 + 广播，限速门下数秒级）再 bus.wait——窗口内用户点按钮/回复 1/2 会命中
       // already-resolved 被静默丢弃，此后永远无人能裁决 → 超时回落桌面。先注册 waiter
       // 再推卡，早到的裁决由 waiter 承接（超时计时从推卡开始，含推送耗时，语义可接受）。
+      // v0.8.3 SEC-1：wait 同时登记允许会话范围（allowChats），bus.decide 据此校验按钮来源。
+      const targetsByChannel = planApprovalTargets(channelTypes)
+      const allowChats = new Map()
+      for (const [channel, kept] of targetsByChannel) {
+        if (kept.length === 0) continue
+        allowChats.set(channel, new Set(kept.map((target) => String(target.chatId))))
+      }
       const waitOptions = {
         agentId: request?.agent?.id ?? request?.agent?.session?.id ?? null,
         onAbandon: () => { try { ledger.terminate(key) } catch { } },
+        allowChats,
       }
       const decisionPromise = mode === 'answer' ? bus.wait(key, timeoutMs, waitOptions) : null
-      const pushedTo = await pushApproval(key, token, request, channelTypes)
+      const pushedTo = await pushApproval(key, token, request, channelTypes, targetsByChannel)
       const row = ledger.get(key)
       if (row !== undefined && row.status === 'pending') {
         store.set(key, { ...row, pushedTo })

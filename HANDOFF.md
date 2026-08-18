@@ -2,7 +2,7 @@
 
 > 写给下一个 agent。本文档是完整的工作上下文快照：设计理念、军规约定、架构地图、
 > 版本脉络、审查记录、已知坑、待办清单。读完这一份即可无缝接手。
-> 交接时刻：2026-08-16，v0.7.0（身份体系）代码与文档已完成、797/797 全绿，R5 审查循环已收口（复审零 P1/P2）。
+> 交接时刻：2026-08-18，v0.8.2（远程提问 + ask_user 装配修复）代码与文档已完成、846/846 全绿。
 > 上一稳定发布位 v0.6.5 = `b2d23c0`（npm 与 GitHub 发布位 `0221d1e` 已对齐）。
 
 ---
@@ -19,7 +19,7 @@ dsh-notifier 是 DSH（一个 agent 宿主，cordis 插件体系）的统一通�
 零运行时依赖（只用 fetch + node:crypto + 原生 WebSocket）。
 
 - 语言/运行时：Node.js ESM（.mjs），无 TypeScript，无构建步骤
-- 代码量：src+test+scripts ≈ 28,800 行；43 个测试文件，797 测试
+- 代码量：src+test+scripts ≈ 28,800 行；43 个测试文件，846 测试
 - 文档：README.md / README.zh-CN.md / ADAPTER.md（渠道接入规范）/ PLUGINS.md（插件互操作）/ docs/v0.5-design.md / docs/v0.6-design.md / CHANGELOG.md（最详细的历史）
 
 ---
@@ -28,11 +28,11 @@ dsh-notifier 是 DSH（一个 agent 宿主，cordis 插件体系）的统一通�
 
 | 项 | 状态 |
 |---|---|
-| 版本 | package.json = 0.7.0，CHANGELOG 已写，admin UI 版本串（v0.7.0）、双语 README、HANDOFF 均已同步 |
-| git | v0.7.0 全部改动在工作区（identity/pairing/target-guard/commands 四新文件 + 六 adapter + admin 三件套 + 17 测试文件改动）；R5 审查循环已收口（复审零 P1/P2），待提交发版 |
-| 测试 | `npm test` = **797 pass / 0 fail**（约 110s，串行跑；v0.6.5 基线 733 → +64） |
-| 发布 | **发包前核对四处计数一致——README.md 徽章/正文、README.zh-CN.md 徽章/正文、HANDOFF.md、admin UI 版本串（src/admin/ui.mjs）——任何一处与实际不符先修再发**（v0.7 开发中 README.zh-CN.md 曾被写空 213→0 行，git 恢复后重建——文件操作后必须 wc -l 验证） |
-| 真机验证 | v0.6.1 修过 TG 真机事故（见 §5）；**v0.7 真机测试通过（2026-08-17，v0.7.0-realtest 包）**（v0.6.2~v0.6.5 的修复随 v0.7 包一并覆盖；若后续发现具体场景未覆盖，回补下方待办 3） |
+| 版本 | package.json = 0.8.2，CHANGELOG 已写，admin UI 版本串（v0.8.2）、双语 README、HANDOFF 均已同步 |
+| git | v0.8.2 已提交（89fd66b，工作区清洁）；v0.7.0 作者位 `0221d1e` |
+| 测试 | `npm test` = **846 pass / 0 fail**（node --test；v0.7.0 基线 797 → +49） |
+| 发布 | **发包前核对四处计数一致——README.md 徽章/正文、README.zh-CN.md 徽章/正文、HANDOFF.md、admin UI 版本串（src/admin/ui.mjs）——任何一处与实际不符先修再发** |
+| 真机验证 | v0.6.1 修过 TG 真机事故（见 §5）；v0.7 真机测试通过（2026-08-17，v0.7.0-realtest 包）；内部真机测试文档 TG-TEST.md（Telegram 提问链路）与 WECHAT-TEST.md（微信扫码即配对）随 code/ 保留 |
 
 ---
 
@@ -187,7 +187,7 @@ src/
 
 ```bash
 cd dsh-notifier
-npm test                    # 797 测试，约 2 分钟
+npm test                    # 846 测试，约 2 分钟
 npm run lint 2>/dev/null || node --check src/index.mjs   # 无 lint 配置的话用 node --check
 node scripts/route.mjs --help        # 路由 CLI
 node scripts/channel-login.mjs --help

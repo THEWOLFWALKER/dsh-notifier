@@ -225,6 +225,121 @@ test('裸编号消费语义：有效作答被消费（不进对话路由），�
   rig.bridge.dispose()
 })
 
+// ---------------------------------------------------------------- SEC-2 裸回复竞态收紧（latestPendingFor any→hint）
+
+test('SEC-2 关闭跨渠道抢答：feishu 卡片送达 u1，qq u2 未收到话术回裸 1 → 不消费不裁决，超时未答', async () => {
+  const rig = makeRig({
+    inbounds: [{ channel: 'feishu', card: true, targets: [{ chatId: 'oc_100', userId: 'ou_100' }] }],
+    channelTypes: ['feishu'], // 广播池只有 feishu（已送卡）→ hintChannels=[]
+  })
+  const seen = []
+  rig.bus.onMessage((envelope) => { seen.push(envelope.text); return false })
+  const pending = rig.bridge.askQuestions({ questions: [SINGLE] })
+  await sleep(30)
+  assert.equal(rig.instances[0].cards.length, 1, 'feishu 卡片已送达')
+  // qq 白名单成员 u2=42 回裸 1：qq 既未送卡也未广播编号话术 → 越权面关闭
+  rig.bus.accept({ channel: 'qq', userId: '42', chatId: '42', messageId: 'm1', text: '1' })
+  assert.deepEqual(seen, ['1'], '跨渠道裸编号不被消费，落回对话路由')
+  const row = rig.store.get(rig.store.keys('aq:')[0])
+  assert.equal(row.status, 'pending', '越权作答不落终态')
+  const result = await pending
+  assert.equal(result.answered, false, '超时未作答（不代答）')
+  assert.equal(result.results[0].answered, false)
+  rig.bridge.dispose()
+})
+
+test('SEC-2 正控：qq 收到编号话术（hintChannels 含 qq）后 qq u2 回 1 → 命中作答', async () => {
+  const rig = makeRig({
+    inbounds: [{ channel: 'feishu', card: true, targets: [{ chatId: 'oc_100', userId: 'ou_100' }] }],
+    channelTypes: ['feishu', 'qq'], // feishu 送卡，qq 未送卡 → hintChannels=['qq']
+  })
+  const pending = rig.bridge.askQuestions({ questions: [SINGLE] })
+  await sleep(30)
+  assert.equal(rig.instances[0].cards.length, 1, 'feishu 卡片已送达')
+  assert.deepEqual(rig.broadcasts[0].opts, { channelTypes: ['qq'] }, '编号话术只发 qq')
+  // qq u2=42 回 1 → hint 命中
+  rig.bus.accept({ channel: 'qq', userId: '42', chatId: '42', messageId: 'm1', text: '1' })
+  const result = await pending
+  assert.equal(result.answered, true)
+  assert.deepEqual(result.results[0].answers, ['测试环境'])
+  assert.match(result.results[0].via, /qq:reply/)
+  rig.bridge.dispose()
+})
+
+test('SEC-2 多 pending 定向隔离：telegram 回复只命中 telegram 定向的问题，feishu 问题不受影响', async () => {
+  const store = createStore(tempPath())
+  const vault = createTokenVault({ secret: 's' })
+  const bus = createInboundBus({ allowUsers: ['42', '100'], store, vault })
+  const broadcasts = []
+  const notifier = { channels: ['feishu'], notifyAll: async (msg, opts) => { broadcasts.push({ msg, opts }); return { ok: true } } }
+  const feishu = {
+    channel: 'feishu',
+    notifyTargets: () => [{ chatId: '100', userId: '100' }],
+    async sendQuestionCard(p) { return { messageId: 1 } },
+    async editResolved() {},
+    async sendText() { return true },
+  }
+  const telegram = {
+    channel: 'telegram',
+    notifyTargets: () => [{ chatId: '100', userId: '100' }],
+    async sendQuestionCard(p) { return { messageId: 1 } },
+    async editResolved() {},
+    async sendText() { return true },
+  }
+  const bridge = createQuestionBridge({ bus, vault, store, notifier, interactive: () => [feishu, telegram], config: { timeoutMs: 800, escalation: { enabled: false } } })
+  bridge.attach()
+  // 问题 A：只推 feishu（channelTypes=['feishu']）→ hintChannels=[]
+  const pendingA = bridge.askQuestions({ questions: [SINGLE] })
+  await sleep(30)
+  // 问题 B：只推 telegram（channelTypes=['telegram']）→ hintChannels=[]
+  notifier.channels = ['telegram']
+  const pendingB = bridge.askQuestions({ questions: [SINGLE] })
+  await sleep(30)
+  // telegram 白名单成员回 1 → 只命中 B（telegram 定向），A 不受影响
+  bus.accept({ channel: 'telegram', userId: '100', chatId: '100', messageId: 'm1', text: '1' })
+  const resultB = await pendingB
+  assert.equal(resultB.answered, true)
+  assert.deepEqual(resultB.results[0].answers, ['测试环境'])
+  const aRows = store.keys('aq:').map((k) => store.get(k))
+  assert.equal(aRows.filter((r) => r.status === 'pending').length, 1, 'A 未被 telegram 命中，仍 pending')
+  const resultA = await pendingA
+  assert.equal(resultA.answered, false, 'A 超时未作答')
+  bridge.dispose()
+})
+
+test('SEC-2 旧行无 hintChannels + 无 pushedTo → 编号作答拒绝（fail-closed 从严）', async () => {
+  const rig = makeRig({ inbounds: [{ channel: 'qq', card: false }], channelTypes: ['qq'] })
+  // 手工塞一条旧版在途 aq 行：无 hintChannels、无 pushedTo
+  const oldKey = 'aq:oldrow'
+  rig.store.set(oldKey, { question: '旧问题', options: ['甲', '乙'], multiSelect: false, status: 'pending', pushedTo: [], createdAt: Date.now() })
+  const seen = []
+  rig.bus.onMessage((envelope) => { seen.push(envelope.text); return false })
+  // 任一渠道回 1 → 不消费（落回对话路由），不裁决
+  rig.bus.accept({ channel: 'qq', userId: '42', chatId: '42', messageId: 'm1', text: '1' })
+  assert.deepEqual(seen, ['1'], '旧行无 hintChannels → 编号不被消费，落回对话路由')
+  assert.equal(rig.store.get(oldKey).status, 'pending', '旧行不被裁决，仍 pending')
+  rig.bridge.dispose()
+})
+
+test('SEC-2 hint 与 exact 优先级稳定：exact 行优先于 hint 行', async () => {
+  const rig = makeRig({ inbounds: [{ channel: 'telegram', card: true }], channelTypes: ['telegram'] })
+  // 行 X：telegram:u1 推送过（exact）+ hintChannels 含 telegram（hint 也成立）
+  const xKey = 'aq:x'
+  rig.store.set(xKey, { question: 'X', options: ['甲', '乙'], multiSelect: false, status: 'pending', pushedTo: [{ channel: 'telegram', chatId: '100', userId: '100', messageId: 1, kind: 'aq' }], hintChannels: ['telegram'], createdAt: Date.now() })
+  // 行 Y：仅 hintChannels 含 telegram（无推送）
+  const yKey = 'aq:y'
+  rig.store.set(yKey, { question: 'Y', options: ['甲', '乙'], multiSelect: false, status: 'pending', pushedTo: [], hintChannels: ['telegram'], createdAt: Date.now() + 1 })
+  // 为两端注册 waiter（生产路径由 askQuestions/bus.wait 注册；手工种行需等价注册才能 settle）
+  rig.bus.wait(xKey, 800, {})
+  rig.bus.wait(yKey, 800, {})
+  // telegram u1 回 1 → 命中 X（exact 优先于 hint），Y 不受影响
+  rig.bus.accept({ channel: 'telegram', userId: '100', chatId: '100', messageId: 'm1', text: '1' })
+  assert.equal(rig.store.get(xKey).status, 'resolved', 'exact 行被命中')
+  assert.equal(rig.store.get(xKey).decision, 'answered')
+  assert.equal(rig.store.get(yKey).status, 'pending', 'hint 行不被 exact 抢走')
+  rig.bridge.dispose()
+})
+
 // ---------------------------------------------------------------- 按钮路径与红线
 
 test('按钮作答：token 裁决 → 卡片终态编辑（已作答文案）+ 账本落定', async () => {
@@ -261,6 +376,25 @@ test('按钮作答：转发点击 chat 不一致 → 拒绝并保留待决，原
   assert.equal(right.ok, true)
   const result = await pending
   assert.equal(result.answered, true)
+  assert.deepEqual(result.results[0].answers, ['测试环境'])
+  rig.bridge.dispose()
+})
+
+// v0.8.3 SEC-1：来源校验把通道一并纳入——chatId 相同但通道不同视为不同来源（拒绝）。
+test('按钮作答：chatId 相同但跨通道（via 非原通道）→ 拒绝，不改判原卡', async () => {
+  const rig = makeRig()
+  const pending = rig.bridge.askQuestions({ questions: [SINGLE] })
+  await sleep(30)
+  const payload = rig.instances[0].cards[0]
+  // 卡片实际送达 telegram chat 100；伪造来自 qq 的同 chatId 100 → 拒绝
+  const crossChannel = rig.bridge.decide({ qKey: payload.qKey, optIdx: '0', token: payload.token, via: 'qq:button', userId: 'u2', chatId: '100' })
+  assert.equal(crossChannel.ok, false)
+  assert.match(crossChannel.message, /请到原会话操作/)
+  assert.equal(rig.store.get(payload.qKey).status, 'pending', '跨通道点击不落终态')
+  // 原通道 telegram 同 chatId → 通过
+  const right = rig.bridge.decide({ qKey: payload.qKey, optIdx: '0', token: payload.token, via: 'telegram', userId: '100', chatId: '100' })
+  assert.equal(right.ok, true)
+  const result = await pending
   assert.deepEqual(result.results[0].answers, ['测试环境'])
   rig.bridge.dispose()
 })

@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createHmac } from 'node:crypto'
 import { computeDingTalkSign, dingTalkTimestamp, signedUrl as dingtalkSignedUrl } from '../src/adapters/dingtalk.mjs'
-import { feishuSign, feishuTimestamp, signedUrl as feishuSignedUrl } from '../src/adapters/feishu.mjs'
+import { feishuSign, feishuTimestamp } from '../src/adapters/feishu.mjs'
 import { barkEndpoint } from '../src/adapters/bark.mjs'
 
 const SECRET = 'SEC8c9f1a2b3c4d5e6f'
@@ -33,20 +33,15 @@ test('dingtalk 时间戳为 13 位毫秒；feishu 为 10 位秒', () => {
   assert.match(feishuTimestamp(), /^\d{10}$/)
 })
 
-test('feishu 加签 = base64(HmacSHA256(secret, 秒+换行+secret))，且不 URL 编码', () => {
+test('feishu 加签 = base64(HmacSHA256(key=秒+换行+secret, data=空))，不 URL 编码（#8）', () => {
   const SECONDS = '1700000000'
   const sign = feishuSign(SECRET, SECONDS)
-  const expected = createHmac('sha256', SECRET).update(SECONDS + '\n' + SECRET, 'utf8').digest('base64')
+  // 飞书官方算法：stringToSign 是 HMAC 的 key，message 是空串，与钉钉（secret 当 key）不同。
+  // 真值用 node -e createHmac('sha256', SECRET').update(SECONDS+'\n'+SECRET).update('') 独立算出，写死防回归。
+  assert.equal(sign, 'Hkt69Qn6mNjkXHiSsldFT8wTESygypp9jaPOx4NIyRc=')
+  const expected = createHmac('sha256', `${SECONDS}\n${SECRET}`).update('').digest('base64')
   assert.equal(sign, expected)
   assert.equal(sign, decodeURIComponent(sign)) // base64 未 URL 编码：与钉钉差异点
-})
-
-test('feishu signedUrl 追加秒级 timestamp 与原始 sign', () => {
-  const webhook = 'https://open.feishu.cn/open-apis/bot/v2/hook/X'
-  const url = feishuSignedUrl(webhook, SECRET, '1700000000')
-  assert.ok(url.includes('timestamp=1700000000'))
-  assert.ok(url.includes('sign=' + feishuSign(SECRET, '1700000000')))
-  assert.equal(feishuSignedUrl(webhook, undefined, '1700000000'), webhook)
 })
 
 test('bark endpoint 组装：默认服务器 + 自定义服务器 + barkUrl 直连 + 尾斜杠清理', () => {

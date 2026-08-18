@@ -79,11 +79,26 @@ export function createTelegramInbound({ config, bus, vault, store = null, logger
   /**
    * callback_query 分发：v0.6.2 先展开短引用（r:<ref>，take 单次核销）再走既有
    * ap:/ac: 解析；旧格式完整 data（升级前在途卡片）不经注册表直落解析，双轨兼容。
+   * v0.8.3 SEC-1：短引用提升为「先 peek 元数据比对来源会话 → 一致才取核销展开」，
+   * 转发点击收到「请到原会话操作」且不消费引用（原卡仍可正常点击）。
    */
   async function handleCallbackData(query, rawData) {
     const data = String(rawData ?? '')
     const parts = data.split(':')
     if (parts[0] === 'r' && parts.length === 2) {
+      const peeked = refs.peek(parts[1])
+      if (peeked === null) {
+        await api('answerCallbackQuery', { callback_query_id: query.id, text: '该操作已处理或已过期（按钮单次有效）' }).catch(() => {})
+        return
+      }
+      // SEC-1：卡片铸 ref 时记录了发送目标 chatId；点击所在 chat 不一致 → 直接拒绝，
+      // 不消费引用、不进入既有裁决分支。
+      const clickedChat = query.message?.chat?.id
+      const originChat = peeked.origin?.chatId
+      if (clickedChat !== undefined && originChat !== null && originChat !== undefined && String(clickedChat) !== String(originChat)) {
+        await api('answerCallbackQuery', { callback_query_id: query.id, text: '请到原会话操作' }).catch(() => {})
+        return
+      }
       const expanded = refs.take(parts[1])
       if (expanded === null) {
         await api('answerCallbackQuery', { callback_query_id: query.id, text: '该操作已处理或已过期（按钮单次有效）' }).catch(() => {})
@@ -115,7 +130,7 @@ export function createTelegramInbound({ config, bus, vault, store = null, logger
         const qKey = parts.slice(1, -2).join(':')
         const optIdx = parts[parts.length - 2]
         const token = parts[parts.length - 1]
-        const verdict = questions.decide({ qKey, optIdx, token, via: 'telegram', userId: query.from?.id })
+        const verdict = questions.decide({ qKey, optIdx, token, via: 'telegram', userId: query.from?.id, chatId: query.message?.chat?.id })
         const text = verdict?.message ?? '该提问已回答或已过期'
         await api('answerCallbackQuery', { callback_query_id: query.id, text: String(text).slice(0, 200) }).catch(() => {})
         if (query.message?.chat?.id !== undefined) {
@@ -140,6 +155,7 @@ export function createTelegramInbound({ config, bus, vault, store = null, logger
           token,
           via: 'telegram',
           userId: query.from?.id,
+          chatId: query.message?.chat?.id,
         })
         const text = verdict.ok
           ? (decision === 'allowed-once' ? '✅ 已批准（单次有效）' : '❌ 已拒绝')
@@ -246,8 +262,8 @@ export function createTelegramInbound({ config, bus, vault, store = null, logger
           text: `🔐 ${title}\n\n${content}\n\n_decision: ${approvalKey}_`,
           reply_markup: {
             inline_keyboard: [[
-              { text: '✅ 批准（本次）', callback_data: `r:${refs.mint(`ap:allowed-once:${approvalKey}:${token}`)}` },
-              { text: '❌ 拒绝', callback_data: `r:${refs.mint(`ap:rejected:${approvalKey}:${token}`)}` },
+              { text: '✅ 批准（本次）', callback_data: `r:${refs.mint(`ap:allowed-once:${approvalKey}:${token}`, { chatId })}` },
+              { text: '❌ 拒绝', callback_data: `r:${refs.mint(`ap:rejected:${approvalKey}:${token}`, { chatId })}` },
             ]],
           },
         })
@@ -296,7 +312,7 @@ export function createTelegramInbound({ config, bus, vault, store = null, logger
         const rows = options
           .map((label, idx) => ({
             text: `${idx + 1}. ${String(label).slice(0, 60)}`,
-            callback_data: `r:${refs.mint(buildQuestionAction(qKey, String(idx), token))}`,
+            callback_data: `r:${refs.mint(buildQuestionAction(qKey, String(idx), token), { chatId })}`,
           }))
         if (rows.length === 0) return null
         const result = await api('sendMessage', {

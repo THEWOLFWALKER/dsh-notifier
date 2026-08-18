@@ -67,7 +67,7 @@ function receiveIdTypeOf(id) {
 }
 
 /** 组装飞书 interactive 卡片（header + 说明 + 两按钮）。 */
-function buildCard({ title, content, approvalKey, token }) {
+function buildCard({ title, content, approvalKey, token, chatId }) {
   return {
     config: { wide_screen_mode: true },
     header: {
@@ -84,13 +84,13 @@ function buildCard({ title, content, approvalKey, token }) {
             tag: 'button',
             text: { tag: 'plain_text', content: '✅ 批准（本次）' },
             type: 'primary',
-            value: { act: buildApprovalAction('allowed-once', approvalKey, token) },
+            value: { act: buildApprovalAction('allowed-once', approvalKey, token), srcChat: String(chatId ?? '') },
           },
           {
             tag: 'button',
             text: { tag: 'plain_text', content: '❌ 拒绝' },
             type: 'danger',
-            value: { act: buildApprovalAction('rejected', approvalKey, token) },
+            value: { act: buildApprovalAction('rejected', approvalKey, token), srcChat: String(chatId ?? '') },
           },
         ],
       },
@@ -138,12 +138,12 @@ function buildQuestionResolvedCard(text) {
  * v0.8 提问选项卡片（单选：每选项一个按钮，value.act = aq:<qKey>:<idx>:<token>）。
  * 多选暂无卡片形态（表单组件回调负载未实测）：caller 判 multiSelect 不发卡，编号兜底。
  */
-function buildQuestionCard({ title, content, qKey, token, options = [] }) {
+function buildQuestionCard({ title, content, qKey, token, options = [], chatId }) {
   const actions = options.map((label, idx) => ({
     tag: 'button',
     text: { tag: 'plain_text', content: `${idx + 1}. ${String(label).slice(0, 30)}` },
     type: 'default',
-    value: { act: buildQuestionAction(qKey, String(idx), token) },
+    value: { act: buildQuestionAction(qKey, String(idx), token), srcChat: String(chatId ?? '') },
   }))
   return {
     config: { wide_screen_mode: true },
@@ -289,6 +289,37 @@ export function createFeishuInbound({ config, bus, fallbackTargets = [], logger 
     }).catch(() => {})
   }
 
+  /** 从 card.action.trigger 事件里取「点击发生的会话」。真机长连接负载的会话 id 位于
+   *  data.context.open_chat_id（与 open_message_id 同层）；顶层字段兜底保留。 */
+  function clickedChatOf(data) {
+    return String(
+      data?.context?.open_chat_id
+      ?? data?.open_chat_id
+      ?? data?.chat_id
+      ?? '',
+    )
+  }
+
+  /**
+   * v0.8.3 SEC-1：来源会话校验。卡片 value 里记录了发送目标会话（srcChat）；
+   * 点击会话不一致 → 拒绝（toast 提示），不进入裁决、不 patch 终态。
+   * 老卡片无 srcChat（升级前在途）→ 显式 warn 后跳过校验（兼容，不打历史卡片）。
+   * @returns {boolean} true = 通过（可继续裁决）；false = 已拒绝
+   */
+  function sourceChatAllowed(value, data) {
+    const srcChat = String(value?.srcChat ?? '')
+    if (srcChat === '') {
+      warn('卡片回调缺少来源会话元数据（srcChat），跳过来源校验（升级前在途卡片兼容）')
+      return true
+    }
+    const clicked = clickedChatOf(data)
+    if (clicked === '') {
+      warn('卡片回调缺少点击会话（open_chat_id），跳过来源校验（事件形状异常，不误拒）')
+      return true
+    }
+    return String(clicked) === String(srcChat)
+  }
+
   function handleCardAction(data) {
     try {
       const value = data?.action?.value ?? {}
@@ -311,12 +342,16 @@ export function createFeishuInbound({ config, bus, fallbackTargets = [], logger 
       const questionAction = parseQuestionAction(raw)
       if (questionAction !== null) {
         if (questions === null) return { toast: { type: 'info', content: '未知操作' } }
+        if (!sourceChatAllowed(value, data)) {
+          return { toast: { type: 'info', content: '请到原会话操作' } }
+        }
         const verdict = questions.decide({
           qKey: questionAction.qKey,
           optIdx: questionAction.optIdx,
           token: questionAction.token,
           via: 'feishu:button',
           userId: String(data?.operator?.open_id ?? '(unknown)'),
+          chatId: clickedChatOf(data),
         })
         const text = verdict?.message ?? '该提问已回答或已过期'
         patchResolvedCard(data, buildQuestionResolvedCard(`${text}（来源：飞书用户 ${data?.operator?.open_id ?? '?'}）`))
@@ -324,12 +359,16 @@ export function createFeishuInbound({ config, bus, fallbackTargets = [], logger 
       }
       const approvalAction = parseApprovalAction(raw)
       if (approvalAction === null) return { toast: { type: 'info', content: '未知操作' } }
+      if (!sourceChatAllowed(value, data)) {
+        return { toast: { type: 'info', content: '请到原会话操作' } }
+      }
       const verdict = bus.decide({
         approvalKey: approvalAction.approvalKey,
         decision: approvalAction.decision,
         token: approvalAction.token,
         via: 'feishu:button',
         userId: String(data?.operator?.open_id ?? '(unknown)'),
+        chatId: clickedChatOf(data),
       })
       const text = verdict.ok
         ? (approvalAction.decision === 'allowed-once' ? '✅ 已批准（单次有效）' : '❌ 已拒绝')
@@ -409,7 +448,7 @@ export function createFeishuInbound({ config, bus, fallbackTargets = [], logger 
     async sendApprovalCard({ chatId, title, content, approvalKey, token }) {
       if (client === null) return null
       try {
-        const messageId = await sendInteractive(chatId, buildCard({ title, content, approvalKey, token }))
+        const messageId = await sendInteractive(chatId, buildCard({ title, content, approvalKey, token, chatId }))
         return messageId !== '' ? { messageId } : null
       } catch (error) {
         warn(`审批卡片发送失败: ${error instanceof Error ? error.message : String(error)}`)
@@ -442,7 +481,7 @@ export function createFeishuInbound({ config, bus, fallbackTargets = [], logger 
     async sendQuestionCard({ chatId, title, content, qKey, token, options = [], multiSelect = false }) {
       if (client === null || multiSelect === true) return null
       try {
-        const messageId = await sendInteractive(chatId, buildQuestionCard({ title, content, qKey, token, options }))
+        const messageId = await sendInteractive(chatId, buildQuestionCard({ title, content, qKey, token, options, chatId }))
         return messageId !== '' ? { messageId } : null
       } catch (error) {
         warn(`提问卡片发送失败: ${error instanceof Error ? error.message : String(error)}`)
