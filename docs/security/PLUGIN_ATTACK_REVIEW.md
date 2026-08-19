@@ -13,12 +13,12 @@ The highest-impact notifier defect is that a complete notification record, inclu
 
 ### dsh-notifier
 
-- `src/index.mjs:88-110` emits `deepFreeze(record)` through `ctx.emit('dsh-notifier/sent', ...)`. `deepFreeze` prevents mutation, not reading.
+- `src/index.mjs:88-110` (baseline) emitted `deepFreeze(record)` through `ctx.emit('dsh-notifier/sent', ...)`. The A1 fix now projects a metadata-only record at this cross-plugin boundary; internal ledger/admin records remain full for compatibility.
 - `src/public.mjs:134-186` exposes `push`, accepts caller-supplied `sourceName`, and permits any configured channel through `options.channel`.
 - `src/public.mjs:100-106` evicts the oldest per-source limiter after 32 names; eviction resets that source's window.
 - `src/public.mjs:188-200` exposes lifecycle methods, including `dispose`, on the ordinary returned object.
 - `src/index.mjs:896-921` exports the store, token vault, inbound constructors, routing helpers, and public facade from the package root.
-- `src/public.mjs:116-131` documents the single-channel path as not entering the ledger or `sent` event; this is an audit bypass, not merely a different result shape.
+- `src/public.mjs:116-131` documented the baseline single-channel path as not entering the ledger or `sent` event; A2 now sends directed outcomes through the same internal audit callback exactly once.
 - `docs/v0.6-design.md:220` records a real DSH spike confirming cross-plugin event visibility, complete payload transfer, and `ctx.provide('notifier', ...)` service injection.
 
 ### Official deepseek-harness cross-check
@@ -110,7 +110,7 @@ Impact: stale commands, incorrect rejection receipts, or a response being suppre
 
 These checks should run with fake adapters and disposable state only:
 
-1. Register a `dsh-notifier/sent` listener and assert that the current event contains the complete message; record the result as a confidentiality regression test before changing the contract.
+1. On the baseline commit, register a `dsh-notifier/sent` listener and assert that the event contains the complete message; after A1, assert that the event is metadata-only and frozen.
 2. Set `limitPerMinutePerSource=1`, call with more than 32 distinct labels, and assert that the current implementation sends more than one message per effective window.
 3. Call `dispose()` on a received facade and verify that later calls behave differently; this demonstrates the mutable lifecycle surface.
 4. Send a directed notification with a fake adapter and assert that the adapter is called while the ledger/sink remains empty.

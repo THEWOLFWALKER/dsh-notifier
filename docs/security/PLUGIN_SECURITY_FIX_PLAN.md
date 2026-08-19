@@ -19,15 +19,15 @@ This is the first coding slice. It is intentionally limited to event confidentia
 
 Owned files:
 
-- `src/index.mjs`: build and emit a redacted cross-plugin event record.
-- `src/notify.mjs`: invoke the existing `onSend` hook for directed sends as well as broadcasts, after the operation has a final outcome.
-- `src/public.mjs`: preserve the caller result while ensuring directed sends pass the same audit callback; do not expose raw internal records through the event path.
+- `src/index.mjs`: build the existing internal `onSend` chain unchanged, and project only the `ctx.emit('dsh-notifier/sent', ...)` branch to a redacted event record.
+- `src/notify.mjs`: invoke the existing `onSend` hook for directed sends as well as broadcasts, after the operation has a final outcome; preserve the internal record fields required by `src/ledger.mjs` and the local admin event hub.
+- `src/public.mjs`: preserve the caller result while ensuring directed sends pass the same internal audit callback; do not expose raw internal records through the cross-plugin event path.
 - `test/public.test.mjs` and `test/notify.test.mjs`: update old directed-send expectations and add adversarial coverage.
 - `PLUGINS.md` and `CHANGELOG.md`: document the breaking public event contract and security reason.
 
 Required data contract:
 
-- `dsh-notifier/sent` remains a frozen object with delivery metadata, `time`, `ok`, `delivered`, `skipped`, `failed` (with error text removed or normalized), `source`, and non-content message metadata such as `titleLength`, `contentLength`, and `hasContent`.
+- Internal ledger/admin records retain their existing normalized `message` fields for local operation and digest compatibility. `dsh-notifier/sent` alone becomes a frozen metadata-only projection with delivery metadata, `time`, `ok`, `delivered`, `skipped`, `failed` (with error text removed or normalized), `source`, and non-content message metadata such as `titleLength`, `contentLength`, and `hasContent`.
 - The event MUST NOT contain `message.title`, `message.content`, approval rationale, user text, raw adapter response text, or a reversible encoding of any of them.
 - The direct `notifier.push()` return value remains backward-compatible for the caller in this slice; only the cross-plugin event is redacted.
 - A directed public send emits exactly one audit/event record after the final outcome, with its target channel included in metadata. A broadcast emits exactly one record through the existing callback. Rate-limit and malformed outcomes keep their existing fail-closed semantics and are not duplicated.
@@ -37,9 +37,9 @@ Negative tests required before handoff:
 
 1. A listener receiving `dsh-notifier/sent` cannot find `message`, title, content, approval text, or adapter error body.
 2. Unicode and multibyte content is represented by correct code-point/byte metadata without exposing the content.
-3. Directed success, directed failure, unconfigured channel, and rate-limited calls each produce the documented single audit record.
+3. Directed success, directed failure, unconfigured channel, and rate-limited calls each produce the documented single internal audit record; ledger/admin consumers still receive the fields they require.
 4. Broadcast behavior and existing caller result deep-equality remain stable except for the documented event redaction.
-5. A throwing audit sink does not reject `push()` or suppress another sink.
+5. A throwing audit sink does not reject `push()` or suppress another sink, and the redaction projection is isolated to the cross-plugin event branch.
 
 Do not add a new configuration flag or high-risk content opt-in in this slice. The existing `public.emit` switch still disables event work entirely.
 
@@ -47,7 +47,7 @@ Do not add a new configuration flag or high-risk content opt-in in this slice. T
 
 Change `dsh-notifier/sent` to emit delivery metadata, status, lengths, and channel names. Do not include title/content, approval rationale, user text, raw adapter error bodies, or a reversible encoding of message content. Do not add a content opt-in during the maintenance cycle.
 
-Compatibility: bump the public event contract, update `PLUGINS.md`, and provide a migration note for consumers that currently read `record.message`. The notifier delivery result returned to the direct caller remains unchanged.
+Compatibility: bump the public event contract, update `PLUGINS.md`, and provide a migration note for consumers that currently read `record.message`. The notifier delivery result returned to the direct caller remains unchanged. Internal ledger/admin consumers continue receiving the prior normalized record fields.
 
 Tests: assert default redaction, digest stability, no sensitive fields in ledger/admin event payloads, and that an event listener cannot recover the original content from metadata.
 

@@ -25,6 +25,56 @@ test('notify 到未配置渠道：静默跳过 + warn，不 send', async () => {
   assert.match(warns.join(' '), /telegram.*未配置/)
 })
 
+test('notify 定向结果内部审计一次并保留 ledger/hub 兼容 record', async () => {
+  const records = []
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => ({ ok: false, status: 500, text: async () => 'SECRET adapter body' })
+  try {
+    const resolved = resolveConfig({ channels: [webhookChannel('http://x/hook')] })
+    const notifier = createNotifier({ logger: { warn() {} } }, resolved.channels, { onSend: (record) => records.push(record) })
+    const result = await notifier.notify('webhook', { title: '标题🍅', content: '机密正文' }, { source: { kind: 'plugin', name: 'test' } })
+    assert.equal(result.ok, false)
+    assert.equal(records.length, 1)
+    assert.equal(records[0].channel, 'webhook')
+    assert.deepEqual(records[0].message, { title: '标题🍅', content: '机密正文', level: undefined, group: undefined })
+    assert.equal(records[0].failed.length, 1)
+    assert.equal(records[0].failed[0].channel, 'webhook')
+    assert.match(records[0].failed[0].error, /HTTP 500/)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('notify directed unconfigured path audits exactly once', async () => {
+  const records = []
+  const notifier = createNotifier({ logger: { warn() {} } }, [], { onSend: (record) => records.push(record) })
+  const result = await notifier.notify('telegram', { title: 't', content: 'c' }, { source: { kind: 'plugin', name: 'test' } })
+  assert.equal(result.skipped, true)
+  assert.equal(records.length, 1)
+  assert.deepEqual(records[0].skipped, ['(telegram)'])
+  assert.equal(records[0].channel, 'telegram')
+})
+
+test('audit sink failure is isolated from delivery and later sinks', async () => {
+  const seen = []
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => ({}) })
+  try {
+    const resolved = resolveConfig({ channels: [webhookChannel('http://x/hook')] })
+    const notifier = createNotifier({ logger: { warn() {} } }, resolved.channels, {
+      onSend: (record) => {
+        seen.push(record)
+        throw new Error('sink failure')
+      },
+    })
+    const result = await notifier.notifyAll({ title: 't', content: 'c' })
+    assert.deepEqual(result, { ok: true, delivered: ['webhook'], skipped: [], failed: [] })
+    assert.equal(seen.length, 1)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('notify 到已配置渠道：请求体含 title/content', async () => {
   let seen
   const originalFetch = globalThis.fetch

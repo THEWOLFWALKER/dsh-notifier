@@ -12,7 +12,37 @@
 import { createRateLimiter } from './tool-register.mjs'
 
 /** 公共面版本。只在公共面 breaking 时 bump，不与包版本联动（审查 D2：消费方做能力探测，不做相等比较）。 */
-export const PUBLIC_API_VERSION = '0.6'
+export const PUBLIC_API_VERSION = '0.7'
+
+const utf8Encoder = typeof TextEncoder === 'function' ? new TextEncoder() : null
+
+/** Project an internal full audit record into the metadata-only cross-plugin event contract. */
+export function redactAuditRecord(record = {}) {
+  const message = record?.message !== null && typeof record?.message === 'object' ? record.message : {}
+  const title = typeof message.title === 'string' ? message.title : ''
+  const content = typeof message.content === 'string' ? message.content : ''
+  const failed = Array.isArray(record?.failed)
+    ? record.failed.map((entry) => ({
+        channel: typeof entry?.channel === 'string' ? entry.channel : '(unknown)',
+        error: 'delivery-failed',
+      }))
+    : []
+  const redacted = {
+    time: typeof record?.time === 'string' ? record.time : new Date().toISOString(),
+    ok: record?.ok === true,
+    delivered: Array.isArray(record?.delivered) ? [...record.delivered] : [],
+    skipped: Array.isArray(record?.skipped) ? [...record.skipped] : [],
+    failed,
+    titleLength: Array.from(title).length,
+    contentLength: Array.from(content).length,
+    titleBytes: utf8Encoder ? utf8Encoder.encode(title).length : title.length,
+    contentBytes: utf8Encoder ? utf8Encoder.encode(content).length : content.length,
+    hasContent: title !== '' || content !== '',
+  }
+  if (record?.source !== null && typeof record?.source === 'object') redacted.source = { ...record.source }
+  if (typeof record?.channel === 'string' && record.channel !== '') redacted.channel = record.channel
+  return redacted
+}
 
 /** title/content 各自的码点上限（v0.6 设计稿 §2.2：防分段风暴）。 */
 const CLAMP_CODEPOINTS = 20_000
@@ -76,10 +106,11 @@ function clampText(value, warn) {
  * @param {object|null} [options.notifier] - createNotifier 实例；null = no-op stub。
  * @param {object} [options.config] - resolved.public（enabled/limitPerMinutePerSource/emit）。
  * @param {object|null} [options.logger] - 宿主 logger（缺省静默）。
- * @param {(record: object) => void} [options.sink] - 限流拦截时的直落点（index 装配：账本 + emit）。
+ * @param {(record: object) => void} [options.onSend] - 统一审计回调（广播、定向、限流）。
+ * @param {(record: object) => void} [options.sink] - 兼容旧装配的限流直落点；仅在未提供 onSend 时使用。
  * @param {() => number} [options.now] - 时钟注入（测试用）。
  */
-export function createPublicFacade({ notifier = null, config = {}, logger = null, sink = null, now = Date.now } = {}) {
+export function createPublicFacade({ notifier = null, config = {}, logger = null, onSend = null, sink = null, now = Date.now } = {}) {
   const warn = (message) => {
     try { logger?.warn?.('[dsh-notifier]', message) } catch { /* 日志失败绝不致命 */ }
   }
@@ -88,6 +119,7 @@ export function createPublicFacade({ notifier = null, config = {}, logger = null
     : 10
   const limiters = new Map() // sourceName → limiter（anonymous 表外常驻，见 limiterOf）
   let anonymousLimiter = null
+  const audit = typeof onSend === 'function' ? onSend : sink
 
   const limiterOf = (sourceName) => {
     if (sourceName === 'anonymous') {
@@ -115,7 +147,7 @@ export function createPublicFacade({ notifier = null, config = {}, logger = null
 
   const adaptSingle = (result, source) => {
     // 单渠道路径形状适配（设计稿 §2.2 第 5 步）：channelResult → outcome 形状。
-    // 注意（§3.3 矩阵）：单渠道不进账本、不发 sent 事件——定向推送仅凭返回值知晓结果。
+    // 定向路径与广播共享内部审计回调；公共事件由 index.mjs 在 emit 边界脱敏。
     if (result?.skipped === true) {
       return { ok: false, delivered: [], skipped: [`(${result.channel ?? 'channel'})`], failed: [], source }
     }
@@ -154,17 +186,24 @@ export function createPublicFacade({ notifier = null, config = {}, logger = null
           return { ok: false, delivered: [], skipped: ['(disabled)'], failed: [], source }
         }
         if (limitPerMinute > 0 && !limiterOf(sourceName).allow()) {
-          // 静音不等于没发生：限流拦截照落账 + 照 emit（消费方能感知自己被限，设计稿 §3.3）
-          const record = {
-            time: new Date(now()).toISOString(),
-            message: { title, content, level: typeof msg.level === 'string' && LEVELS.has(msg.level) ? msg.level : undefined },
+          // 静音不等于没发生：限流拦截照走统一内部审计回调，emit 边界再脱敏。
+          const targetChannel = typeof options.channel === 'string' && options.channel.trim() !== ''
+            ? options.channel.trim()
+            : undefined
+          const outcome = {
             ok: false,
             delivered: [],
             skipped: ['(rate-limited)'],
             failed: [],
+          }
+          const record = {
+            time: new Date(now()).toISOString(),
+            message: { title, content, level: typeof msg.level === 'string' && LEVELS.has(msg.level) ? msg.level : undefined },
+            ...outcome,
             source,
           }
-          try { sink?.(record) } catch { /* sink 失败不致命 */ }
+          if (targetChannel !== undefined) record.channel = targetChannel
+          try { audit?.(record) } catch { /* audit failure never affects caller */ }
           return { ...record }
         }
         const normalized = {
@@ -174,7 +213,7 @@ export function createPublicFacade({ notifier = null, config = {}, logger = null
           group: typeof msg.group === 'string' ? msg.group : undefined,
         }
         if (typeof options.channel === 'string' && options.channel.trim() !== '') {
-          return adaptSingle(await notifier.notify(options.channel.trim(), normalized), source)
+          return adaptSingle(await notifier.notify(options.channel.trim(), normalized, { source }), source)
         }
         const outcome = await notifier.notifyAll(normalized, { source })
         return { ...outcome, source }

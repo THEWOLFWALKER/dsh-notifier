@@ -1,7 +1,7 @@
 # PLUGINS.md — 从你的插件调用 dsh-notifier
 
 > dsh-notifier v0.6 起开放两条面:**出向** `ctx.notifier` 服务注入(推送)与**入向** `dsh-notifier/sent` 事件(订阅)。
-> 本文档面向**消费方插件作者**。公共面版本:`0.6`(`ctx.notifier.version`,只在公共面 breaking 时 bump,与包版本不联动)。
+> 本文档面向**消费方插件作者**。公共面版本:`0.7`(`ctx.notifier.version`,只在公共面 breaking 时 bump,与包版本不联动)。
 
 ## 30 秒上手
 
@@ -51,7 +51,7 @@ const result = { ok: true, delivered: ['telegram'], skipped: [], failed: [], sou
 ```
 
 - `skipped` 常见值:`(malformed)` 双空 / `(disabled)` 服务关闭 / `(rate-limited)` 超额 / `(quiet)` 会话静音 / `(渠道名)` 定向未配置
-- 定向推送(`channel` 有值)走单渠道路径:**不进账本、不发 sent 事件**,结果只看返回值
+- 定向推送(`channel` 有值)走单渠道路径；与广播一样写入一次审计记录并发出一次 `sent` 事件，结果仍只看返回值
 
 ## 限流
 
@@ -61,8 +61,9 @@ const result = { ok: true, delivered: ['telegram'], skipped: [], failed: [], sou
 
 ```js
 ctx.on?.('dsh-notifier/sent', (record) => {
-  // record: { time, message: {title, content, level, group}, ok, delivered[], skipped[], failed[], source }
-  // source v0.6 仅 { kind: 'plugin', name } 一路;本插件自动推送线 v0.7 起逐步补齐
+  // record: { time, ok, delivered[], skipped[], failed[], source?, channel?,
+  //   titleLength, contentLength, titleBytes, contentBytes, hasContent }
+  // sent 事件永不包含 title/content、审批文本、用户正文或适配器错误正文。
 })
 ```
 
@@ -93,8 +94,9 @@ flush 幂等,可重复调用。
 
 ## 版本与兼容
 
-- **能力探测优先**:`typeof notifier?.push === 'function'`;不要做 `version === '0.6'` 相等比较(我们发 0.7 当天你的插件就会误报)
+- **能力探测优先**:`typeof notifier?.push === 'function'`;不要做版本相等比较
 - `notifier.version` 仅用于展示/日志
+- 0.7 起 sent 事件是 metadata-only breaking contract；旧的 `record.message` 消费方必须迁移到长度/状态字段
 - 公共面 breaking 变更才会 bump `version` 并在 CHANGELOG 置顶声明
 
 ## 完整示例(防御式配方)

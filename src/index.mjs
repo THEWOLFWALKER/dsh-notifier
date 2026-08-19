@@ -26,7 +26,7 @@ import { registerConversationRouter } from './inbound/conversation.mjs'
 // v0.5：动作闭环（通知按钮 → 内置处置动作）
 import { createActionDispatcher } from './actions.mjs'
 // v0.6：开放事件源（ctx.notifier 服务注入 + dsh-notifier/sent 事件）
-import { createPublicFacade, composeOnSend, deepFreeze } from './public.mjs'
+import { createPublicFacade, composeOnSend, deepFreeze, redactAuditRecord } from './public.mjs'
 // v0.3.2：路由引擎（双向解析链 + 会话台账，src/routing/*.mjs）
 import { createAgentRouter } from './routing/agent-router.mjs'
 import { createSessionRegistry } from './routing/session-registry.mjs'
@@ -100,7 +100,7 @@ export function apply(ctx, config = {}) {
           return
         }
         try {
-          ctx.emit('dsh-notifier/sent', deepFreeze(record))
+          ctx.emit('dsh-notifier/sent', deepFreeze(redactAuditRecord(record)))
         } catch {
           if (!emitWarned) {
             emitWarned = true
@@ -234,12 +234,7 @@ export function apply(ctx, config = {}) {
     notifier: resolved.public?.enabled !== false ? notifier : null,
     config: resolved.public,
     logger,
-    sink: (record) => {
-      try { ledger?.append?.(record) } catch { /* 限流落账失败不致命 */ }
-      if (typeof emitSend === 'function') {
-        try { emitSend(record) } catch { /* emit 失败不拖累 */ }
-      }
-    },
+    onSend,
   })
   registerNotifierService(publicFacade, disposers)
   disposers.push(() => publicFacade.dispose())

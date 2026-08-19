@@ -3,6 +3,17 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 SemVer。
 DSH 处于 developer preview，0.x 阶段的次版本号提升允许小幅破坏性变更（会在条目中标注）。
 
+## [Unreleased]
+
+### Security
+
+- `dsh-notifier/sent` 公共事件契约升级至 `0.7`：事件现在只包含送达状态、渠道、来源与标题/正文长度及 UTF-8 字节数等元数据，不再暴露 `message.title`、`message.content`、审批/用户文本或适配器错误正文；事件 payload 仍深冻结。
+- 定向 `ctx.notifier.push(..., { channel })` 现在与广播共享同一内部审计回调，在成功、失败、未配置和限流结果完成后各记录一次；直接调用方的返回值形状保持兼容。
+
+### Changed
+
+- 消费方读取 `record.message` 的 sent 事件逻辑需迁移到 `titleLength`、`contentLength`、`titleBytes`、`contentBytes`、`hasContent` 与投递状态字段。
+
 ## [0.8.5] - 2026-08-19
 
 > 交接打包批：npm 发布包文档完整性修复 + guide.md 补齐 v0.8 远程提问章节 + 仓库文件地图。

@@ -8,7 +8,7 @@ import assert from 'node:assert/strict'
 import { readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createPublicFacade, composeOnSend, deepFreeze, PUBLIC_API_VERSION } from '../src/public.mjs'
+import { createPublicFacade, composeOnSend, deepFreeze, redactAuditRecord, PUBLIC_API_VERSION } from '../src/public.mjs'
 import { createNotifier } from '../src/notify.mjs'
 import { resolveConfig } from '../src/config.mjs'
 import { apply } from '../src/index.mjs'
@@ -74,40 +74,49 @@ test('facade 广播：走 notifyAll 带 source，返回值同构 + source；reco
   const { notifier, records } = makeRig()
   const facade = createPublicFacade({ notifier, logger: { warn() {} } })
   await withFetch(true, async () => {
-    const result = await facade.push({ title: 't', content: 'c' }, { sourceName: 'dsh-email' })
+    const result = await facade.push({ title: 't', content: 'c', level: 'timeSensitive' }, { sourceName: 'dsh-email' })
     assert.equal(result.ok, true)
     assert.deepEqual(result.delivered, ['webhook'])
     assert.deepEqual(result.source, { kind: 'plugin', name: 'dsh-email' })
     assert.equal(records.length, 1)
     assert.deepEqual(records[0].source, { kind: 'plugin', name: 'dsh-email' })
     assert.deepEqual(records[0].delivered, ['webhook'])
+    assert.deepEqual(records[0].message, { title: 't', content: 'c', level: 'timeSensitive', group: undefined })
   })
 })
 
-test('facade 定向推送：走 notify 单渠道路径，返回值适配为 outcome 形状', async () => {
+test('facade 定向推送：走 notify 单渠道路径，返回值兼容且统一审计一次', async () => {
   const { notifier, records } = makeRig()
   const facade = createPublicFacade({ notifier, logger: { warn() {} } })
   await withFetch(true, async () => {
     const result = await facade.push({ title: 't', content: 'c' }, { channel: 'webhook', sourceName: 'ci' })
     assert.equal(result.ok, true)
     assert.deepEqual(result.delivered, ['webhook'])
-    // §3.3 矩阵：单渠道不进 onSend（不记账不发事件，结果仅凭返回值）
-    assert.equal(records.length, 0)
+    assert.equal(records.length, 1)
+    assert.equal('message' in records[0], true)
+    assert.equal(records[0].channel, 'webhook')
+    assert.equal(records[0].message.title, 't')
   })
 })
 
 test('facade 定向推送：skipped 与 failed 的形状适配', async () => {
-  const { notifier: okNotifier } = makeRig()
+  const { notifier: okNotifier, records } = makeRig()
   const facade = createPublicFacade({ notifier: okNotifier, logger: { warn() {} } })
   const skipped = await facade.push({ title: 't', content: 'c' }, { channel: 'telegram' }) // 未配置
   assert.equal(skipped.ok, false)
   assert.deepEqual(skipped.skipped, ['(telegram)'])
+  assert.equal(records.length, 1)
+  assert.equal(records[0].channel, 'telegram')
   await withFetch(false, async () => {
     const failed = await facade.push({ title: 't', content: 'c' }, { channel: 'webhook', sourceName: 'x' })
     assert.equal(failed.ok, false)
     assert.equal(failed.failed.length, 1)
     assert.equal(failed.failed[0].channel, 'webhook')
     assert.ok(failed.failed[0].error.length > 0)
+    assert.equal(records.length, 2)
+    assert.equal(records[1].channel, 'webhook')
+    assert.equal(records[1].failed[0].channel, 'webhook')
+    assert.match(records[1].failed[0].error, /HTTP 500/)
   })
 })
 
@@ -135,23 +144,18 @@ test('按源限流：每源独立滑动窗（A 超限不影响 B）', async () =
   })
 })
 
-test('限流拦截：返回 (rate-limited)，sink 收到完整 record（静音不等于没发生）', async () => {
-  const { notifier } = makeRig()
-  const sunk = []
-  const facade = createPublicFacade({
-    notifier,
-    config: { limitPerMinutePerSource: 1 },
-    logger: { warn() {} },
-    sink: (record) => sunk.push(record),
-  })
+test('限流拦截：返回 (rate-limited)，统一内部审计一次并保留定向目标', async () => {
+  const { notifier, records } = makeRig()
+  const facade = createPublicFacade({ notifier, config: { limitPerMinutePerSource: 1 }, logger: { warn() {} }, onSend: (record) => records.push(record) })
   await withFetch(true, async () => {
     await facade.push({ title: 'a', content: 'x' }, { sourceName: 'A' })
-    const limited = await facade.push({ title: 'a', content: 'x' }, { sourceName: 'A' })
+    const limited = await facade.push({ title: 'a', content: 'x' }, { sourceName: 'A', channel: 'webhook' })
     assert.deepEqual(limited.skipped, ['(rate-limited)'])
-    assert.equal(sunk.length, 1)
-    assert.equal(sunk[0].ok, false)
-    assert.deepEqual(sunk[0].source, { kind: 'plugin', name: 'A' })
-    assert.equal(sunk[0].message.title, 'a')
+    assert.equal(records.length, 2)
+    assert.equal(records[1].ok, false)
+    assert.deepEqual(records[1].source, { kind: 'plugin', name: 'A' })
+    assert.equal(records[1].message.title, 'a')
+    assert.equal(records[1].channel, 'webhook')
   })
 })
 
@@ -218,7 +222,7 @@ test('facade version 与 PUBLIC_API_VERSION 一致；真 notifier 时 enabled()=
   const { notifier } = makeRig()
   const facade = createPublicFacade({ notifier, logger: { warn() {} } })
   assert.equal(facade.version, PUBLIC_API_VERSION)
-  assert.equal(PUBLIC_API_VERSION, '0.6')
+  assert.equal(PUBLIC_API_VERSION, '0.7')
   assert.equal(facade.enabled(), true)
 })
 
@@ -336,19 +340,19 @@ test('composeOnSend：与旧 if/else 双实现输出逐字节等价（同 record
 
 // ---------------------------------------------------------------- deepFreeze
 
-test('deepFreeze：message 与数组逐层冻结（delivered.push 抛 TypeError）', () => {
+test('deepFreeze：metadata 与数组逐层冻结（delivered.push 抛 TypeError）', () => {
   const record = deepFreeze({
     time: 't',
-    message: { title: 'x', content: 'y' },
+    titleLength: 1,
+    contentLength: 1,
     delivered: ['webhook'],
     skipped: [],
-    failed: [{ channel: 'bark', error: 'e' }],
+    failed: [{ channel: 'bark', error: 'delivery-failed' }],
     source: { kind: 'plugin', name: 'a' },
   })
-  assert.throws(() => { record.message.title = 'hack' }, TypeError)
   assert.throws(() => { record.delivered.push('fake') }, TypeError)
   assert.throws(() => { record.failed[0].channel = 'hack' }, TypeError)
-  assert.equal(record.message.title, 'x')
+  assert.equal(record.titleLength, 1)
 })
 
 test('deepFreeze：原始值/环引用/函数防御（不炸）', () => {
@@ -360,6 +364,30 @@ test('deepFreeze：原始值/环引用/函数防御（不炸）', () => {
   assert.equal(frozen, cyclic, '环引用原值返回不炸')
   const fn = () => {}
   assert.equal(deepFreeze(fn), fn)
+})
+
+test('redactAuditRecord：冻结事件不会冻结内部 source，且 Unicode 元数据正确', () => {
+  const source = { kind: 'plugin', name: 'clone-check' }
+  const internal = {
+    time: 't',
+    message: { title: '标题🍅', content: '正文' },
+    ok: false,
+    delivered: [],
+    skipped: [],
+    failed: [{ channel: 'webhook', error: 'SECRET adapter body' }],
+    source,
+  }
+  const event = deepFreeze(redactAuditRecord(internal))
+  assert.equal(Object.isFrozen(event.source), true)
+  assert.equal(Object.isFrozen(source), false)
+  source.name = 'still-mutable'
+  assert.equal(event.source.name, 'clone-check')
+  assert.equal(event.titleLength, 3)
+  assert.equal(event.contentLength, 2)
+  assert.equal(event.titleBytes, Buffer.byteLength('标题🍅'))
+  assert.equal(event.contentBytes, Buffer.byteLength('正文'))
+  assert.deepEqual(event.failed, [{ channel: 'webhook', error: 'delivery-failed' }])
+  assert.equal(JSON.stringify(event).includes('SECRET'), false)
 })
 
 // ---------------------------------------------------------------- 装配级（apply）
@@ -377,7 +405,7 @@ test('装配：无 provide（测试桩宿主）→ 回退直接赋值 ctx.notifi
   const state = bootCtx()
   apply(state.ctx, { channels: [{ type: 'webhook', url: 'http://127.0.0.1:1/hook' }] })
   assert.equal(typeof state.ctx.notifier?.push, 'function')
-  assert.equal(state.ctx.notifier.version, '0.6')
+  assert.equal(state.ctx.notifier.version, '0.7')
 })
 
 test('装配：顶层 enabled:false → 仍提供 no-op stub（服务缺失会阻塞宿主启动），不注册工具', async () => {
@@ -405,7 +433,7 @@ test('装配：public.enabled:false → 真 notifier 在场也注入 stub（push
   assert.deepEqual(result.skipped, ['(disabled)'])
 })
 
-test('装配 + emit：push 一次 → dsh-notifier/sent 收到冻结的完整 record', async () => {
+test('装配 + emit：push 一次 → dsh-notifier/sent 收到冻结的 metadata-only record', async () => {
   const state = bootCtx({ provide: true, emit: true })
   apply(state.ctx, { channels: [{ type: 'webhook', url: 'http://127.0.0.1:1/hook' }] })
   const facade = state.provided[0].value
@@ -418,9 +446,33 @@ test('装配 + emit：push 一次 → dsh-notifier/sent 收到冻结的完整 re
     assert.equal(payload.ok, true)
     assert.deepEqual(payload.delivered, ['webhook'])
     assert.deepEqual(payload.source, { kind: 'plugin', name: 'emit-test' })
+    assert.equal('message' in payload, false)
+    assert.equal(payload.titleLength, 2)
+    assert.equal(payload.contentLength, 2)
+    assert.equal(payload.hasContent, true)
+    assert.equal('title' in payload, false)
+    assert.equal('content' in payload, false)
+    assert.equal(JSON.stringify(payload).includes('SECRET'), false)
+    assert.equal(JSON.stringify(payload).includes('error'), false)
     assert.equal(typeof payload.time, 'string')
     assert.throws(() => { payload.delivered.push('hack') }, TypeError, 'payload 深冻结')
-    assert.throws(() => { payload.message.title = 'hack' }, TypeError)
+    assert.throws(() => { payload.titleLength = 99 }, TypeError)
+  })
+})
+
+test('装配 + emit：定向成功只发一条 metadata-only 事件并保留目标渠道', async () => {
+  const state = bootCtx({ provide: true, emit: true })
+  apply(state.ctx, { channels: [{ type: 'webhook', url: 'http://127.0.0.1:1/hook' }] })
+  const facade = state.provided[0].value
+  await withFetch(true, async () => {
+    const result = await facade.push({ title: 'directed', content: 'body' }, { channel: 'webhook', sourceName: 'directed-test' })
+    assert.equal(result.ok, true)
+    assert.equal(state.emitted.length, 1)
+    const payload = state.emitted[0].payload
+    assert.equal(payload.channel, 'webhook')
+    assert.equal('message' in payload, false)
+    assert.equal(payload.titleLength, 8)
+    assert.equal(payload.contentLength, 4)
   })
 })
 
