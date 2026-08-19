@@ -2,7 +2,7 @@
 
 This is the active work queue for the next maintenance cycle. It deliberately excludes new user-facing capabilities. The goal is to make the existing 0.8.5 behavior more trustworthy, observable, testable, and easier to release.
 
-Status at `2026-08-19`: P0-1 documentation truth audit is complete for maintained handoff and release docs; P0-3 host-qualified baseline is recorded. P0-2 registry acceptance remains pending external publication/profile access. All P1/P2 items remain open.
+Status at `2026-08-19`: P0-1 documentation truth audit is in final validation after the A1/A2 security changes and package allowlist correction; P0-3 host-qualified baseline is recorded. P0-2 registry acceptance remains pending npm authentication/publication and profile access. All P1/P2 items remain open.
 
 ## Operating Rule
 
@@ -14,7 +14,7 @@ Every item follows the same loop: write a short plan, reproduce or measure the p
 
 - **P0-1 Documentation truth audit [done]**: reconcile `HANDOFF.md`, README test wording, package file counts, branch/commit references, and registry status with the current tree. Stale facts are an operational defect because they send the next maintainer down the wrong path.
 - **P0-2 0.8.5 artifact acceptance**: inspect `npm pack --dry-run --json`, then install the registry artifact in a disposable DSH profile and verify version, startup assembly, one outbound test, and one inbound command. Do not treat a `file:` install as acceptance.
-- **P0-3 Host-qualified test baseline [recorded]**: keep the 885-test contract explicit. On this Windows host, 881 pass and four desktop tests require BurntToast/PowerShell capability; validate the desktop adapter on a capable host rather than weakening its behavior.
+- **P0-3 Host-qualified test baseline [recorded]**: keep the 890-test contract explicit. On this Windows host, 886 pass and four desktop tests require BurntToast/PowerShell capability; validate the desktop adapter on a capable host rather than weakening its behavior.
 
 ### P1: High-Value Bug And Regression Coverage
 

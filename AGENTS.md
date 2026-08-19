@@ -7,6 +7,7 @@
 - `README.md` and `README.zh-CN.md` are user-facing entry points.
 - `HANDOFF.md` is the detailed engineering snapshot; do not copy it into this file.
 - `docs/KNOWLEDGE_BASE.md` is the documentation map. `docs/memory/` contains concise durable facts, not a second implementation spec.
+- Tracked `.agents/` workstreams and `docs/memory/` are the only collaboration-state authority; chat messages are not durable project state. Runtime truth remains `src/` and `test/`.
 - The npm package archive is an output. It never overrides the engineering tree.
 
 ## Hard Boundaries

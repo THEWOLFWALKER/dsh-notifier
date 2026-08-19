@@ -3,7 +3,7 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 SemVer。
 DSH 处于 developer preview，0.x 阶段的次版本号提升允许小幅破坏性变更（会在条目中标注）。
 
-## [Unreleased]
+## [0.8.5] - 2026-08-19
 
 ### Security
 
@@ -14,10 +14,8 @@ DSH 处于 developer preview，0.x 阶段的次版本号提升允许小幅破坏
 
 - 消费方读取 `record.message` 的 sent 事件逻辑需迁移到 `titleLength`、`contentLength`、`titleBytes`、`contentBytes`、`hasContent` 与投递状态字段。
 
-## [0.8.5] - 2026-08-19
-
 > 交接打包批：npm 发布包文档完整性修复 + guide.md 补齐 v0.8 远程提问章节 + 仓库文件地图。
-> 纯文档与打包配置改动，零运行时行为变化，测试计数 885 不变。
+> 本版同时包含插件事件脱敏与定向发送审计统一；当前 Windows 主机 886/890 通过，4 个桌面测试需 BurntToast/PowerShell 能力。
 
 ### 修复：npm 发布包文档完整性（README 引用死链）
 
@@ -32,11 +30,11 @@ DSH 处于 developer preview，0.x 阶段的次版本号提升允许小幅破坏
 ### 交接
 
 - HANDOFF.md：交接快照刷新至 0.8.5；新增 §1.5 仓库文件地图（发布包内容 vs 工程仓库文件，逐目录归属）；待办清单勾销 guide.md 缺口项。
-- 仓库卫生：`node_modules`（947 文件）与 `package-lock.json` 系 v0.7.1（`59e954e`）整目录误提交（`.gitignore` 写了但先于 ignore 落库的文件不受约束），本版 `git rm --cached` 出库——实证零依赖成立（移走两者后 885/885 仍全绿），`@deepseek-ai/cordis` 4.0.1 也在公共 npm，新克隆无需特殊处理。仓库体积 42MB → 2.4MB（zip 5.3MB → 1.2MB）。
+- 仓库卫生：`node_modules`（947 文件）与 `package-lock.json` 系 v0.7.1（`59e954e`）整目录误提交（`.gitignore` 写了但先于 ignore 落库的文件不受约束），本版 `git rm --cached` 出库——实证零依赖成立（移走两者后完整测试仍全绿），`@deepseek-ai/cordis` 4.0.1 也在公共 npm，新克隆无需特殊处理。仓库体积 42MB → 2.4MB（zip 5.3MB → 1.2MB）。
 
 ### 测试
 
-- 无代码行为改动；`npm test` 885/885 通过（0.8.4 基线不变）。
+- `npm test`：890 项契约；当前 Windows 主机 886 通过，4 个桌面能力测试因环境缺失失败。
 
 ## [0.8.4] - 2026-08-18
 
@@ -74,7 +72,7 @@ DSH 处于 developer preview，0.x 阶段的次版本号提升允许小幅破坏
 ### 测试
 
 - 新增用例覆盖：动作卡来源校验三态（命中/越界/历史卡兼容放行）、TG/飞书点击会话透传、提问 allowChats 与 onChannel 收紧、WxPusher uid 形态与公网 fail-closed、孤儿清扫联动（`test/actions.test.mjs`、`test/inbound.telegram.test.mjs`、`test/inbound.feishu.test.mjs`、`test/inbound.wxpusher.test.mjs`、`test/questions.test.mjs`、`test/wiring.route.test.mjs`、`test/approval.test.mjs`、`test/inbound.test.mjs`）。
-- `npm test`：885/885 通过（862 基线 + 23 新增）。
+- `npm test`：历史版本记录为 885/885 通过（862 基线 + 23 新增）。
 
 ## [0.8.3] - 2026-08-18
 

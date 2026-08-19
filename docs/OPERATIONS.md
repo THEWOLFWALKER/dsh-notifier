@@ -9,7 +9,7 @@ node scripts/gen-channel-matrix.mjs --check
 node --check src/index.mjs
 ```
 
-On Windows without the BurntToast PowerShell module, the full suite is expected to report four failures in `test/desktop.test.mjs`; treat this as a desktop capability gap and validate that adapter on a host with BurntToast installed. The remaining `881` tests must pass for the current `885`-test contract.
+On Windows without the BurntToast PowerShell module, the full suite is expected to report four failures in `test/desktop.test.mjs`; treat this as a desktop capability gap and validate that adapter on a host with BurntToast installed. The remaining `886` tests must pass for the current `890`-test contract.
 
 The project has no install step for runtime tests. Optional packages are needed only for the corresponding real inbound flows: Feishu SDK, QQ connector, or QR terminal rendering.
 

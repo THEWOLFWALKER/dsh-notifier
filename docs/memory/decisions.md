@@ -12,6 +12,10 @@ Version, changelog heading, admin UI version, documented test count, and npm fil
 
 Agents share one working tree but reserve scope with one file per workstream under `.agents/workstreams/`. The parent agent integrates narrow commits after checking the current diff; agents must not reset or checkout other agents' work.
 
+## Collaboration Authority
+
+Tracked `.agents/` workstreams and `docs/memory/` are the authority for collaboration status, ownership, and durable decisions. Chat is a request channel, never a durable source of project state. Runtime truth remains `src/` and `test/`; package truth remains `package.json`.
+
 ## Security Defaults
 
 Remote approval and remote questions fail closed. Timeout, malformed input, invalid token, wrong source chat, or any exception returns control to the desktop and never invents an answer.

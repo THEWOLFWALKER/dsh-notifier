@@ -1,6 +1,6 @@
 # Agent Coordination
 
-This directory contains coordination metadata only. It is not imported by the plugin and must never contain credentials or runtime state.
+This directory contains the tracked authority for active collaboration metadata. Together with `docs/memory/`, it records durable coordination facts; chat messages are never a source of project state. It is not imported by the plugin and must never contain credentials or runtime state.
 
 ## Workstream Protocol
 

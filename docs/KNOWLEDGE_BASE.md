@@ -4,10 +4,10 @@ This is the navigation page for humans and agents. It deliberately points to one
 
 ## Current Baseline
 
-- Canonical engineering baseline: Git commit `3fc3f24`, package version `0.8.5`.
-- Baseline branch created for this handoff: `codex/knowledge-baseline`.
+- Canonical engineering baseline: Git commit `3fc3f24`; the active security-hardening branch is `codex/plugin-security-hardening`, package version `0.8.5`.
+- Canonical collaboration repository: `https://github.com/THEWOLFWALKER/dsh-notifier` (`origin`). The local and remote `main` histories are unrelated; integration must use a reviewed branch or explicit user-directed migration, never an implicit merge/force push.
 - Runtime: Node.js ESM, Node `>=22`, no build step, no production dependencies.
-- Test contract: `885` total tests. The `2026-08-19` Windows run passed `881`; the four failures are the platform-dependent desktop adapter tests when BurntToast is unavailable. Release documentation retains `885` as the full contract count.
+- Test contract: `890` total tests. The `2026-08-19` Windows run passed `886`; the four failures are the platform-dependent desktop adapter tests when BurntToast is unavailable. Release documentation retains `890` as the full contract count.
 - The attached npm archive is a release artifact. The engineering archive is the source authority.
 
 ## Read Order
@@ -49,5 +49,6 @@ The product, UX, planning, review-loop, and DSH GUI consistency contract is main
 ## Authority Rules
 
 - If docs and source disagree, inspect the source and tests, then update the stale document in the same change.
+- For collaboration status and decisions, `.agents/` and `docs/memory/` are authoritative; chat is only a request channel. Runtime behavior is still authoritative only in `src/` and `test/`.
 - If the engineering archive and npm archive disagree, keep the engineering tree as truth and record the artifact mismatch in `docs/memory/project-state.md`.
 - If two agents produce competing edits, preserve both diffs until the parent agent resolves them; never silently reset or checkout another agent's work.
