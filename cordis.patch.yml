@@ -1,0 +1,14 @@
+# dsh-notifier bundle patch: inserts the plugin row into the profile roster.
+# Install with `dsh plugin --profile <name> add file:/path/to/dsh-notifier`;
+# the patch layer is applied through the loader on boot.
+#
+# 空配置随插件附带：channels 为空时插件只订阅不动作（绝不弄崩启动），
+# 在 profile 的 cordis.patch.yml 里覆盖本行 config.channels 即可配置渠道。
+- insert:
+    - id: dsh-notifier
+      name: 'dsh-notifier'
+      config:
+        enabled: true
+        debounceMs: 10000
+        summaryMaxChars: 500
+        channels: []

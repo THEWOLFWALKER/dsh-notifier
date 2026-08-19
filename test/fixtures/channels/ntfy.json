@@ -1,0 +1,18 @@
+{
+  "type": "ntfy",
+  "validConfig": { "server": "https://ntfy.example.com", "topic": "dsh-alerts", "auth": "Bearer tk_123" },
+  "invalidConfig": { "server": "https://ntfy.example.com" },
+  "message": { "title": "需要批准", "content": "rm -rf /tmp/x 需要授权", "level": "timeSensitive" },
+  "expectedRequests": [
+    {
+      "url": "https://ntfy.example.com",
+      "method": "POST",
+      "headers": { "authorization": "Bearer tk_123" },
+      "bodyJson": { "topic": "dsh-alerts", "title": "需要批准", "message": "rm -rf /tmp/x 需要授权", "priority": 5 }
+    }
+  ],
+  "successResponses": [{ "status": 200, "body": "{\"id\":\"m1\",\"topic\":\"dsh-alerts\"}" }],
+  "failResponse": { "status": 404, "body": "{\"code\":40401,\"http\":404,\"error\":\"topic not found\"}" },
+  "errorMatch": "404|topic not found",
+  "secretFields": ["auth"]
+}

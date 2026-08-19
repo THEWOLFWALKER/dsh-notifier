@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  test:
+    # 三平台矩阵：插件零原生模块/零系统命令，兼容面 = Node ≥22 的平台矩阵
+    # （对齐并覆盖 DSH 宿主可能在的 macOS / Windows / Linux）。
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]  # headless windows cannot run desktop toast (dropped 08-18)
+        node-version: [22]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+      - run: node --version
+      # 零运行时依赖：无需 npm install，直接跑 node:test
+      # 显式钉到 test/ 下两种命名：默认发现 glob（test-*）会误吞 scripts/test-channel.mjs
+      # （node --test 自 v21 起原生支持 glob 模式，Windows 上不经 shell 展开也能匹配）
+      - name: Run tests
+        run: node --test "test/*.test.mjs" "test/*.spec.mjs"
+      - name: Verify zero runtime dependencies
+        shell: bash # if [ -f ... ] 是 bash 语法，Windows runner 默认 pwsh 需显式指定
+        run: |
+          if [ -f package-lock.json ]; then npm ls --prod --all; fi
+          node -e "const p=require('./package.json'); const deps=Object.keys(p.dependencies??{}); if(deps.length>0){console.error('发现运行时依赖:',deps);process.exit(1)} console.log('OK: 零运行时依赖')"
+      - name: Regenerate channel matrix (check README drift)
+        run: node scripts/gen-channel-matrix.mjs --check

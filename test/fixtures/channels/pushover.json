@@ -1,0 +1,23 @@
+{
+  "type": "pushover",
+  "validConfig": { "token": "po-app-token", "user": "po-user-key" },
+  "invalidConfig": { "token": "po-app-token" },
+  "message": { "title": "需要批准", "content": "rm -rf /tmp/x 需要授权", "level": "timeSensitive" },
+  "expectedRequests": [
+    {
+      "url": "https://api.pushover.net/1/messages.json",
+      "method": "POST",
+      "bodyForm": {
+        "token": "po-app-token",
+        "user": "po-user-key",
+        "title": "需要批准",
+        "message": "rm -rf /tmp/x 需要授权",
+        "sound": "siren"
+      }
+    }
+  ],
+  "successResponses": [{ "status": 200, "body": "{\"status\":1,\"request\":\"r1\"}" }],
+  "failResponse": { "status": 200, "body": "{\"status\":0,\"errors\":[\"user identifier is not a valid user key\"]}" },
+  "errorMatch": "user key",
+  "secretFields": ["token", "user"]
+}

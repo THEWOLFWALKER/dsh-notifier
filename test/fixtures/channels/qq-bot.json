@@ -1,0 +1,26 @@
+{
+  "type": "qq-bot",
+  "validConfig": { "appId": "app-001", "appSecret": "secret-001", "groupId": "og_group_001" },
+  "invalidConfig": { "appId": "app-001" },
+  "message": { "title": "构建完成", "content": "全部用例通过", "level": "active" },
+  "expectedRequests": [
+    {
+      "url": "https://bots.qq.com/app/getAppAccessToken",
+      "method": "POST",
+      "bodyJson": { "appId": "app-001", "clientSecret": "secret-001" }
+    },
+    {
+      "url": "https://api.sgroup.qq.com/v2/groups/og_group_001/messages",
+      "method": "POST",
+      "headers": { "authorization": "QQBot TOKEN1" },
+      "bodyJson": { "content": "构建完成\n全部用例通过", "msg_type": 0, "msg_seq": 1 }
+    }
+  ],
+  "successResponses": [
+    { "status": 200, "body": "{\"access_token\":\"TOKEN1\",\"expires_in\":7200}" },
+    { "status": 200, "body": "{\"id\":\"msg-1\",\"timestamp\":1}" }
+  ],
+  "failResponse": { "status": 200, "body": "{\"code\":\"BABC0622\",\"message\":\"权限不足，未开启群主动消息\"}" },
+  "errorMatch": "主动消息|权限",
+  "secretFields": ["appId", "appSecret"]
+}

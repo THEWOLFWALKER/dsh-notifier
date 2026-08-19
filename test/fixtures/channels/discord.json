@@ -1,0 +1,17 @@
+{
+  "type": "discord",
+  "validConfig": { "webhook": "https://discord.com/api/webhooks/123456/abcdef" },
+  "invalidConfig": {},
+  "message": { "title": "构建完成", "content": "全部用例通过", "level": "active" },
+  "expectedRequests": [
+    {
+      "url": "https://discord.com/api/webhooks/123456/abcdef",
+      "method": "POST",
+      "bodyJson": { "content": "构建完成\n全部用例通过" }
+    }
+  ],
+  "successResponses": [{ "status": 204, "body": "" }],
+  "failResponse": { "status": 404, "body": "Unknown Webhook" },
+  "errorMatch": "404|HTTP",
+  "secretFields": ["webhook"]
+}

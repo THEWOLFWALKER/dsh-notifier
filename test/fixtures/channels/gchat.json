@@ -1,0 +1,17 @@
+{
+  "type": "gchat",
+  "validConfig": { "webhook": "https://chat.googleapis.com/v1/spaces/AAAA/messages?key=KEY" },
+  "invalidConfig": {},
+  "message": { "title": "构建完成", "content": "全部用例通过", "level": "active" },
+  "expectedRequests": [
+    {
+      "url": "https://chat.googleapis.com/v1/spaces/AAAA/messages?key=KEY",
+      "method": "POST",
+      "bodyJson": { "text": "构建完成\n全部用例通过" }
+    }
+  ],
+  "successResponses": [{ "status": 200, "body": "{\"space\":{\"name\":\"spaces/AAAA\"}}" }],
+  "failResponse": { "status": 403, "body": "PERMISSION_DENIED" },
+  "errorMatch": "403|HTTP",
+  "secretFields": ["webhook"]
+}

@@ -1,0 +1,17 @@
+{
+  "type": "xizhi",
+  "validConfig": { "key": "xz-key-001" },
+  "invalidConfig": {},
+  "message": { "title": "构建完成", "content": "全部用例通过", "level": "active" },
+  "expectedRequests": [
+    {
+      "url": "https://xizhi.qqoq.net/xz-key-001.send",
+      "method": "POST",
+      "bodyJson": { "title": "构建完成", "content": "全部用例通过" }
+    }
+  ],
+  "successResponses": [{ "status": 200, "body": "{\"code\":200,\"msg\":\"ok\"}" }],
+  "failResponse": { "status": 200, "body": "{\"code\":401,\"msg\":\"key 无效\"}" },
+  "errorMatch": "key 无效|401",
+  "secretFields": ["key"]
+}

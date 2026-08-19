@@ -1,0 +1,18 @@
+{
+  "type": "onebot",
+  "validConfig": { "baseUrl": "http://127.0.0.1:3000", "userId": "10001", "accessToken": "ob-token" },
+  "invalidConfig": { "baseUrl": "http://127.0.0.1:3000" },
+  "message": { "title": "构建完成", "content": "全部用例通过", "level": "active" },
+  "expectedRequests": [
+    {
+      "url": "http://127.0.0.1:3000/send_msg",
+      "method": "POST",
+      "headers": { "authorization": "Bearer ob-token" },
+      "bodyJson": { "message_type": "private", "message": [ { "type": "text", "data": { "text": "构建完成\n全部用例通过" } } ], "user_id": 10001 }
+    }
+  ],
+  "successResponses": [{ "status": 200, "body": "{\"status\":\"ok\",\"retcode\":0,\"data\":{\"message_id\":1}}" }],
+  "failResponse": { "status": 200, "body": "{\"status\":\"failed\",\"retcode\":1404,\"wording\":\"send_msg 未实现\"}" },
+  "errorMatch": "1404|未实现",
+  "secretFields": ["accessToken"]
+}

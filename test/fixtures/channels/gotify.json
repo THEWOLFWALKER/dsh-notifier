@@ -1,0 +1,18 @@
+{
+  "type": "gotify",
+  "validConfig": { "server": "https://gotify.example.com", "appToken": "Apptoken001" },
+  "invalidConfig": { "server": "https://gotify.example.com" },
+  "message": { "title": "需要批准", "content": "rm -rf /tmp/x 需要授权", "level": "timeSensitive" },
+  "expectedRequests": [
+    {
+      "url": "https://gotify.example.com/message",
+      "method": "POST",
+      "headers": { "x-gotify-key": "Apptoken001" },
+      "bodyJson": { "title": "需要批准", "message": "rm -rf /tmp/x 需要授权", "priority": 8 }
+    }
+  ],
+  "successResponses": [{ "status": 200, "body": "{\"id\":1,\"priority\":8}" }],
+  "failResponse": { "status": 401, "body": "{\"error\":\"unauthorized\"}" },
+  "errorMatch": "401|HTTP",
+  "secretFields": ["appToken"]
+}

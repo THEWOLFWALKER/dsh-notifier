@@ -1,0 +1,113 @@
+{
+  "name": "dsh-notifier",
+  "version": "0.8.5",
+  "description": "DSH 统一通知推送插件：一个 notify() API 打天下 + 多渠道 adapter；远程审批/远程会话支持 telegram/feishu/qq/wxpusher/wechat/dingtalk 六通道双向回传；移动指挥中心（长任务心跳 / 疑似卡住提醒 / 通知按钮停止任务）；开放事件源（其他插件经 notifier 服务推送 + dsh-notifier/sent 事件订阅）；QQ/钉钉/飞书官方扫码授权；本机 Web 管理台（凭证/路由/扫码授权网页可管，移动端适配）。零运行时依赖（只用 fetch + node:crypto + 原生 WebSocket）。",
+  "type": "module",
+  "main": "src/index.mjs",
+  "exports": {
+    ".": "./src/index.mjs",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "test",
+    "scripts",
+    "cordis.patch.yml",
+    "CHANGELOG.md",
+    "PLUGINS.md",
+    "THIRD_PARTY_NOTICES.md",
+    "docs/guide.md",
+    "docs/upgrade-guide.md",
+    "docs/upgrade-guide.en.md"
+  ],
+  "scripts": {
+    "test": "node --test \"test/*.test.mjs\" \"test/*.spec.mjs\""
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1"
+  },
+  "optionalDependencies": {
+    "@larksuiteoapi/node-sdk": "^1.61.1",
+    "@tencent-connect/qqbot-connector": "^1.2.0",
+    "qrcode-terminal": "^0.12.0"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/THEWOLFWALKER/dsh-notifier.git"
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "plugin",
+    "notify",
+    "notification",
+    "dingtalk",
+    "feishu",
+    "wxpusher",
+    "pushplus",
+    "serverchan",
+    "bark",
+    "telegram",
+    "webhook",
+    "qq-bot",
+    "weixin",
+    "ilink",
+    "qr-login",
+    "remote-approval"
+  ],
+  "dshWorkshop": {
+    "schema": "omdsh-workshop-package/v1",
+    "type": "plugin",
+    "integration": {
+      "protocol": "harness-cordis",
+      "artifact": "cordis.patch.yml"
+    },
+    "install": {
+      "mode": "guided",
+      "adapter": "third-party",
+      "failurePolicy": "manual",
+      "touchesCurrentBeforeActivation": false
+    },
+    "lifecycle": {
+      "activation": "immediate",
+      "dispose": "supported"
+    },
+    "permissions": [
+      "harness:tool",
+      "harness:event",
+      "network:outbound",
+      "network:listen",
+      "file:read",
+      "file:write",
+      "subprocess:exec",
+      "shell:none",
+      "credentials:write"
+    ],
+    "compatibility": {
+      "dshVersions": [
+        "0.1.0-rc.6"
+      ]
+    },
+    "capability": {
+      "id": "notify",
+      "kind": "tool",
+      "invocation": "invoke the model-facing notify tool with a message and an optional target channel through the DSH ToolRuntime",
+      "expected": "the message is delivered to the configured channel (e.g. Telegram) and a structured result is returned; an unreachable or unconfigured channel returns a structured skipped/failed result without blocking the turn"
+    },
+    "evidence": {
+      "install": null,
+      "failureIsolation": null,
+      "hotReload": null,
+      "remove": null
+    }
+  }
+}
