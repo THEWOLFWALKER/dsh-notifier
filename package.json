@@ -21,7 +21,11 @@
     "docs/upgrade-guide.en.md"
   ],
   "scripts": {
-    "test": "node --test \"test/*.test.mjs\" \"test/*.spec.mjs\""
+    "test": "node --test \"test/*.test.mjs\" \"test/*.spec.mjs\"",
+    "verify:release": "node scripts/verify-release.mjs"
+  },
+  "dshQuality": {
+    "testCount": 885
   },
   "dsh": {
     "bundle": {
