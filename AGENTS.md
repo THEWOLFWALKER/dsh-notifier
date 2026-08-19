@@ -22,6 +22,16 @@
 - Behavior changes require focused tests, a full `npm test`, and a CHANGELOG entry with the review/security reason when applicable.
 - Real HTTP shape, payload length, callback limits, and long-running connections require real-device or protocol-level validation; mocked fetch alone is insufficient.
 
+## Product And Engineering Principles
+
+- Start from the user's job and first-principles failure modes; prioritize a reliable, understandable workflow over feature count.
+- Favor mature, composable capabilities and progressive disclosure. Keep the interface simple, calm, responsive, accessible, and friendly; expose complexity only when the user needs it.
+- Every task begins with a written plan covering scope, affected files, risks, and validation. Do not make unplanned edits, speculative abstractions, or roadmap work disguised as cleanup.
+- Use the mandatory loop: plan -> implement -> adversarial review -> revise -> focused tests -> full validation. A change is not complete until review findings are fixed or explicitly recorded.
+- Preserve maintainable boundaries: prefer existing contracts and local patterns, keep modules cohesive, and choose the smallest durable design that leaves a clear path for future growth.
+- Any sub-agent console or admin GUI must inherit the existing DSH visual language and interaction patterns from `src/admin/ui.mjs`; do not introduce a separate product style or competing navigation model.
+- Long-term plans describe staged outcomes and decision points, not speculative features. Implement only the smallest slice that proves user value and keeps later options open.
+
 ## Working Tree And Branches
 
 - Start every task with `git status --short --branch` and `git log --oneline -5`.

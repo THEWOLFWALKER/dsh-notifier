@@ -15,3 +15,15 @@ Agents share one working tree but reserve scope with one file per workstream und
 ## Security Defaults
 
 Remote approval and remote questions fail closed. Timeout, malformed input, invalid token, wrong source chat, or any exception returns control to the desktop and never invents an answer.
+
+## User-Centered Product Direction
+
+Feature decisions start from the user's task and first-principles failure modes. Prefer mature, composable functionality, progressive disclosure, clear status, reversible actions, and actionable errors. Do not trade maintainability or safety for superficial feature breadth.
+
+## Plan And Review Loop
+
+Every change requires a written plan and follows `plan -> implement -> adversarial review -> revise -> validate`. Long-term work is staged around evidence and decision points; speculative infrastructure is deferred until a concrete user need justifies it.
+
+## DSH Visual Consistency
+
+The sub-agent console and admin GUI are part of the DSH product surface. Their visual tokens, density, navigation, responsive behavior, and interaction patterns must remain aligned with `src/admin/ui.mjs`; a parallel visual language is not acceptable.

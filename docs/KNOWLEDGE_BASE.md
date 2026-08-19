@@ -33,6 +33,8 @@ This is the navigation page for humans and agents. It deliberately points to one
 | `HANDOFF.md` | Detailed successor context | Historical rationale and full engineering snapshot |
 | `.agents/workstreams/` | Parallel agents | Temporary scope reservations and handoff notes |
 
+The product, UX, planning, review-loop, and DSH GUI consistency contract is maintained in `docs/architecture.md` and summarized as agent-enforced rules in `AGENTS.md`.
+
 ## Capability Summary
 
 - Outbound: 27 adapters through `createNotifier()`; level routing is `timeSensitive`, `active`, or `passive`.

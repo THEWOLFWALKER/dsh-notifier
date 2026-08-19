@@ -1,5 +1,13 @@
 # Architecture
 
+## Product And UX Contract
+
+The system is designed around the user's task, not around an internal feature inventory. A new capability should reduce user effort, make state and failure understandable, and remain safe under interruption or partial availability. Prefer progressive disclosure, sensible defaults, explicit status, reversible actions, and actionable errors. Rich functionality is welcome when it composes cleanly with existing flows; complexity that cannot be explained or maintained is a design defect.
+
+All implementation work follows a written plan and an adversarial review loop: plan the smallest useful slice, implement it, challenge assumptions and failure paths, revise the code, then validate focused behavior and the full contract. Long-range roadmap items stay staged and evidence-driven; do not build speculative infrastructure ahead of a demonstrated need.
+
+The sub-agent console and any admin-facing GUI are part of DSH, not a separate product. They must reuse the visual tokens, density, navigation, feedback states, responsive behavior, and interaction grammar already established in `src/admin/ui.mjs`. New screens may add domain-specific information architecture, but they must not create a competing visual language or decorative dashboard style.
+
 ## Runtime Shape
 
 `src/index.mjs` is the Cordis plugin assembly root. It resolves configuration, creates the shared state store, overlays admin-managed credentials when enabled, builds the notifier, and then wires optional services. Disposal is collected and executed in reverse assembly order.
