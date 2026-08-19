@@ -10,12 +10,12 @@ Snapshot date: 2026-08-19.
 - Engineering archive: source authority. Attached npm archive: release artifact only.
 - Artifact observation: the two archives share source/tests/package metadata; `CHANGELOG.md` is the only common-file difference.
 - Workspace policy: no `node_modules/`, `package-lock.json`, credentials, state files, or generated logs in Git.
-- Release status at this snapshot: npm registry has released through `0.8.4`; `0.8.5` is available but npm authentication and final package review remain required. GitHub `origin/main` has unrelated history, so only the active branch may be pushed without an explicit migration decision.
+- Release status at this snapshot: npm registry has released through `0.8.4`; `0.8.5` is the locally validated candidate and has not been published. npm authentication and the disposable-profile acceptance gate remain required. GitHub `origin/main` has unrelated history; the reviewed branch is pushed and no mainline migration was performed.
 
 ## Validation Evidence
 
 - `npm test`: `886 pass`, `4 fail`, `890 total`; failures are limited to `test/desktop.test.mjs` and are an environment capability gap, not a source assertion regression.
-- `node scripts/verify-release.mjs`: pending after the package file allowlist and 890-test documentation correction.
+- `node scripts/verify-release.mjs`: passed after the package file allowlist and 890-test documentation correction.
 
 ## Current Maintenance Direction
 
@@ -24,4 +24,4 @@ Snapshot date: 2026-08-19.
 
 ## Next Gate
 
-Run the full tests and `node scripts/verify-release.mjs`, inspect `npm pack --dry-run --json`, push the reviewed branch, then perform disposable-profile registry validation before publishing. Update this file with the actual registry version and final commit after that gate.
+Next release gate: authenticate npm, re-run the full validation and `npm pack --dry-run --json`, perform disposable-profile registry validation, then publish only after an explicit release decision. The 2026-08-19 evening session intentionally did not publish npm.
