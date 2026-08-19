@@ -6,3 +6,4 @@
 - `state.json` is shared by the running host and CLI tools. Direct manual edits or bypassing store setters can reintroduce lost updates and stale route reads.
 - Version drift can happen through stale `file:` installs or hand-copied `node_modules/dsh-notifier`; use registry installation for acceptance.
 - The current release artifact has a known non-runtime `CHANGELOG.md` difference from the engineering archive; resolve or document it before publishing.
+- Historical handoff/test-note documents can retain old versions, commit ids, package counts, or green-test claims; treat documentation drift as an operational defect and reconcile it before delegating work.

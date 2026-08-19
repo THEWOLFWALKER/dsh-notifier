@@ -37,7 +37,7 @@ const documentedCounts = [
   one(readmeZh, /tests-(\d+)-brightgreen/, 'README.zh-CN.md badge'),
   one(readme, /test\/\s+(\d+) tests/, 'README.md test text'),
   one(readmeZh, /test\/\s+(\d+) 个测试/, 'README.zh-CN.md test text'),
-  one(handoff, /\|\s*测试\s*\|\s*`npm test`\s*=\s*\*\*(\d+) pass/, 'HANDOFF test row'),
+  one(handoff, /\|\s*测试\s*\|[^\n]*`npm test`[^\n]*\*\*(\d+) tests?/, 'HANDOFF test row'),
 ]
 for (const [index, count] of documentedCounts.entries()) {
   check(count === String(qualityCount), `documented test count #${index + 1} is ${count}, expected ${qualityCount}`)

@@ -17,8 +17,9 @@ This is the navigation page for humans and agents. It deliberately points to one
 3. `README.zh-CN.md` or `README.md` for user-visible capabilities and configuration.
 4. `docs/architecture.md` for the stable module/data-flow map.
 5. `docs/OPERATIONS.md` for start-up, state, admin, and release smoke checks.
-6. `HANDOFF.md` for detailed historical rationale, review findings, and known traps.
-7. `CHANGELOG.md` for chronological changes; it is not a substitute for current rules.
+6. `docs/TECHNICAL_DEBT.md` for the active no-new-features maintenance queue.
+7. `HANDOFF.md` for detailed historical rationale, review findings, and known traps.
+8. `CHANGELOG.md` for chronological changes; it is not a substitute for current rules.
 
 ## Audience Map
 

@@ -2,7 +2,7 @@
 
 > 写给下一个 agent。本文档是完整的工作上下文快照：设计理念、军规约定、架构地图、
 > 版本脉络、审查记录、已知坑、待办清单。读完这一份即可无缝接手。
-> 交接时刻：2026-08-19，v0.8.5（交接打包批：npm 发布包文档完整性 + guide.md 远程提问章节 + 仓库文件地图）885/885 全绿，npm 发布位 0.8.4（0.8.5 待发布）。
+> 交接时刻：2026-08-19，v0.8.5。当前维护周期停止新增功能，优先清理技术债、排除 bug、补齐真实协议验证。测试契约为 885 个；当前 Windows 主机 881 通过、4 个桌面通知用例因 BurntToast/PowerShell 能力缺失失败，非桌面用例通过。registry 发布状态需独立核验。
 > 本文上一快照位 v0.8.2（2026-08-18）；v0.8.3/v0.8.4 为安全修复版，0.8.4 的 CHANGELOG 条目由接手 agent 于 2026-08-19 回补（发版时遗漏）。
 > 上一稳定发布位 v0.6.5 = `b2d23c0`（npm 与 GitHub 发布位 `0221d1e` 已对齐）。
 
@@ -29,16 +29,16 @@ dsh-notifier 是 DSH（一个 agent 宿主，cordis 插件体系）的统一通�
 
 | 项 | 状态 |
 |---|---|
-| 版本 | package.json = 0.8.5（CHANGELOG 已写、admin UI 版本串 v0.8.5、双语 README、HANDOFF 均已同步）；npm 发布位 = 0.8.4，**0.8.5 待发布** |
-| git | v0.8.5 已提交（`d7867f9` 打包批 + `e6c40a4` node_modules 出库）；npm 位 0.8.4 = `38e08e5`；v0.7.0 作者位 `0221d1e` |
-| 测试 | `npm test` = **885 pass / 0 fail**（node --test；v0.8.2 位 846 → v0.8.3 +16 → v0.8.4 +23 → 0.8.5 纯文档零增） |
+| 版本 | package.json = 0.8.5；CHANGELOG、admin UI、双语 README 和发布守卫已同步；registry 状态待独立核验 |
+| git | 当前分支 `codex/knowledge-baseline`；基线 `3fc3f24`，知识库 `50db0c4`，产品原则 `9aced27` |
+| 测试 | `npm test` 契约 = **885 tests**（当前 Windows 主机 **881 pass / 4 个桌面能力限制失败**；非桌面通过） |
 | 发布 | **发包前核对四处计数一致——README.md 徽章/正文、README.zh-CN.md 徽章/正文、HANDOFF.md、admin UI 版本串（src/admin/ui.mjs）——任何一处与实际不符先修再发** |
 | 真机验证 | v0.6.1 修过 TG 真机事故（见 §5）；v0.7 真机测试通过（2026-08-17，v0.7.0-realtest 包）；内部真机测试文档 TG-TEST.md（Telegram 提问链路）与 WECHAT-TEST.md（微信扫码即配对）随 code/ 保留 |
 
 ### 1.5 仓库文件地图（发布文件 vs 工程文件，0.8.5 立）
 
 **规则一句话：README（双语）里链接到的文件必须随 npm 包分发；给装包用户的文档进 `files` 数组，给贡献者的留仓库。**
-`npm pack --dry-run` 可随时验证（0.8.5 起 = 143 个文件）；npm 自动包含 `README*`（含 zh-CN）、`LICENSE`、`package.json`。
+`npm pack --dry-run` 可随时验证（当前清单 = 144 个文件）；npm 自动包含 `README*`（含 zh-CN）、`LICENSE`、`package.json`。
 
 **npm 发布包内**（package.json `files` + 自动包含）：
 
@@ -63,7 +63,7 @@ dsh-notifier 是 DSH（一个 agent 宿主，cordis 插件体系）的统一通�
 | `docs/screenshots/`（612K） | README 截图；npm 页面相对路径图片本就不渲染，白占包体 |
 | `.github/` · `.gitignore` · `package-lock.json`（untracked） | CI 与仓库卫生 |
 
-> **node_modules 不入库**（0.8.5 清理）：v0.7.1 曾把 947 个文件的 node_modules 误提交进 git（`.gitignore` 拦不住已跟踪文件），0.8.5 已 `git rm --cached` 出库并实证零依赖（移走后 885/885 全绿）。新克隆直接 `npm test` 即可，无需 `npm install`；要跑真机 inbound（飞书 WS / QQ connector 等可选包）才需要装 optionalDependencies。
+> **node_modules 不入库**：v0.7.1 曾把 947 个文件的 node_modules 误提交进 git，当前基线已清理并保持零运行时依赖。新克隆无需 `npm install` 即可运行非可选依赖测试；要跑真机 inbound（飞书 WS / QQ connector 等）才需要安装对应 optionalDependencies。
 
 > 新增文档时先问「给谁看」：装包用户 → `docs/` + `files` 数组 + README 链接；贡献者/内部 → 仓库即可，但要登记进本表。
 
@@ -209,7 +209,7 @@ src/
 
 ---
 
-## 7. 待办清单（下一个 agent 的行动项，按优先级）
+## 7. 待办清单（当前维护周期：只清理技术债和 bug）
 
 1. ~~发布 v0.6.4~~、~~第三轮 review（R4-1/R4-2/R4-3）~~、~~v0.6.5 发布~~：均已完成（见 CHANGELOG 0.6.5 条目）。
 2. ~~v0.7 身份体系~~：已发版（`0221d1e`），真机测试通过（2026-08-17）。
@@ -218,10 +218,12 @@ src/
    **新装机空 allowUsers 引导态**（stderr bootstrap 码 → IM 里 /pair → 成为 owner 全链路）、
    TG 绑定 id 在飞书发消息被拒并收到拒绝回执（复合键）。
 4. ~~v0.8 文档同步~~：~~README 双语/HANDOFF 的 ask_user 覆盖~~ + ~~guide.md 远程提问章节~~ + ~~npm 发布包文档完整性~~——2026-08-19 全部补齐（提交 `f559658` + 0.8.5 交接打包批；发布包文件边界规则见 §1.5）。
-5. **发布 v0.8.5**：代码与文档已就绪（纯文档/打包配置批，885 全绿），走正常发版流程（按 §1「发布」行核对四处计数 → `npm publish`）。
-6. **可选优化**（审查中提过但未做）：`act:*` 待决动作记录的 TTL 清扫已有（24h），
-   但 callback-refs 注册表容量 256 偏保守，高峰期可能 FIFO 挤掉在途引用——真机观察到再调。
-   后续评估项：YAML allowUsers 移除（v0.7 已 deprecated 为首次导入）。
+5. **P0：完成 0.8.5 registry artifact 验收**：按 `docs/TECHNICAL_DEBT.md` 的 disposable-profile 流程验证安装、重启、版本、出站和入站。
+6. **P1：补齐真实协议验证**：优先 Telegram callback 长度/markdown、provider payload limits、回调体大小和长连接生命周期；mock 通过不等于完成。
+7. **P1：做错误可见性与并发状态压力审查**：覆盖防御性 catch、SDK 重连/销毁、state.json 锁与收敛读写。
+8. **P2：证据驱动处理结构性债务**：callback-refs 256 容量、YAML `allowUsers` 迁移尾巴、可选 SDK 版本矩阵。没有现场证据不改容量或移除兼容路径。
+
+完整清单和完成标准见 `docs/TECHNICAL_DEBT.md`。
 
 ---
 
