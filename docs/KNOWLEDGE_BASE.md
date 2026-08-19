@@ -20,6 +20,7 @@ This is the navigation page for humans and agents. It deliberately points to one
 6. `docs/TECHNICAL_DEBT.md` for the active no-new-features maintenance queue.
 7. `HANDOFF.md` for detailed historical rationale, review findings, and known traps.
 8. `CHANGELOG.md` for chronological changes; it is not a substitute for current rules.
+9. `docs/security/PLUGIN_ATTACK_REVIEW.md` and `docs/security/PLUGIN_SECURITY_FIX_PLAN.md` for the hostile-plugin threat model and staged remediation ownership.
 
 ## Audience Map
 
@@ -43,6 +44,7 @@ The product, UX, planning, review-loop, and DSH GUI consistency contract is main
 - Trust stack: identity bindings, pairing codes, HMAC token vault, callback references, inbound bus deduplication, source-chat checks, and first-arrival settlement.
 - Agent integration: `notify`, `notify_test`, optional `ask_user`, public `ctx.notifier` facade, and `dsh-notifier/sent` events.
 - Operations: JSON state store with key-level merge, cross-process lock, convergence reads, JSONL ledger, local admin API/UI, SSE event stream, route CLI, and channel login/test CLIs.
+- Security posture: installed DSH plugins share the host process and must currently be treated as trusted code; notifier-specific leakage, audit, identity, and resource-bound fixes are tracked separately from DSH host isolation requirements.
 
 ## Authority Rules
 
