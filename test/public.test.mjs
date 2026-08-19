@@ -390,6 +390,22 @@ test('redactAuditRecord：冻结事件不会冻结内部 source，且 Unicode �
   assert.equal(JSON.stringify(event).includes('SECRET'), false)
 })
 
+test('redactAuditRecord：只投影 source 标量字段，不泄露或冻结嵌套内部数据', () => {
+  const source = { kind: 'plugin', name: 'safe-name', nested: { secret: 'SECRET' } }
+  const event = deepFreeze(redactAuditRecord({
+    time: 't',
+    message: { title: 'title', content: 'content' },
+    ok: true,
+    delivered: [],
+    skipped: [],
+    failed: [],
+    source,
+  }))
+  assert.deepEqual(event.source, { kind: 'plugin', name: 'safe-name' })
+  assert.equal(JSON.stringify(event).includes('SECRET'), false)
+  assert.equal(Object.isFrozen(source.nested), false)
+})
+
 // ---------------------------------------------------------------- 装配级（apply）
 
 test('装配：宿主有 provide → ctx.provide("notifier", facade) 注册服务（spike 配方）', async () => {

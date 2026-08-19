@@ -39,7 +39,12 @@ export function redactAuditRecord(record = {}) {
     contentBytes: utf8Encoder ? utf8Encoder.encode(content).length : content.length,
     hasContent: title !== '' || content !== '',
   }
-  if (record?.source !== null && typeof record?.source === 'object') redacted.source = { ...record.source }
+  if (record?.source !== null && typeof record?.source === 'object') {
+    const source = {}
+    if (typeof record.source.kind === 'string') source.kind = record.source.kind
+    if (typeof record.source.name === 'string') source.name = record.source.name
+    if (Object.keys(source).length > 0) redacted.source = source
+  }
   if (typeof record?.channel === 'string' && record.channel !== '') redacted.channel = record.channel
   return redacted
 }
