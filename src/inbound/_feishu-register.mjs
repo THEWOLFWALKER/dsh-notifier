@@ -1,7 +1,7 @@
 // dsh-notifier inbound/_feishu-register.mjs
 // 飞书官方扫码一键创建自建应用（v0.3.1）：@larksuiteoapi/node-sdk ≥1.61.1 内置的 registerApp。
-// 流程：registerApp({ onQrCode, addons, createOnly }) → SDK 内部轮询授权状态机
-//   → onQrCode 推二维码 URL（CLI 渲染终端二维码）→ 用户扫码确认
+// 流程：registerApp({ onQRCodeReady, addons, createOnly }) → SDK 内部轮询授权状态机
+//   → onQRCodeReady 推二维码 URL（CLI 渲染终端二维码）→ 用户扫码确认
 //   → resolve { status, client_id, client_secret, user_info?: { open_id } }
 //   → 状态机：user_denied → denied（账号无建应用权限/点了拒绝）；expired → expired（二维码过期）；
 //     凭证齐全 → 落 state store 'feishu:account'（含 at 时间戳），openId 一并带回给 CLI（白名单提示）。
@@ -87,20 +87,46 @@ export async function feishuRegister({ store, onQr, timeoutMs = 480000, logger, 
     let outcome
     try {
       outcome = await registerApp({
-        onQrCode: (url) => emitQr(url),
-        // 最小权限集（与 feishu-bot.mjs 长连接收发能力一一对应，申请多了过不了企业管理员审）：
-        //   preset: false —— 不安装官方「全家桶」预设权限组，只申请下面三个 im 只读权限；
-        //   im:message —— 读取单聊消息（私聊入站）；
-        //   im:message.group_at_msg:readonly —— 读取群 @ 消息（群聊入站，无值权限形态传空串）；
-        //   im:chat —— 读取群基础信息（群聊回执/卡片推送定位会话用）。
+        // 新版 SDK registerApp 的回调名是 onQRCodeReady（接收 { url, expireIn }），
+        // 旧的 onQrCode 会让 SDK 拿到 undefined 回调并抛 "onQRCodeReady is not a function"。
+        onQRCodeReady: (info) => emitQr(info?.url),
+        // 最小权限集（与 feishu-bot.mjs 长连接收发能力一一对应，申请多了过不了企业管理员审）。
+        // 新版 @larksuiteoapi/node-sdk 的 normalizeAddons 只接受 preset/scopes/events/callbacks
+        // （见 SDK es/index.js normalizeAddons），旧的 resources 名值映射会抛
+        // "addons.resources is not allowed" 导致扫码建应用失败，故改用 scopes/events/callbacks。
+        //   preset: false —— 不安装官方「全家桶」预设权限组，只申请下面声明的 im 权限；
+        //   scopes.tenant:
+        //     im:message                              —— 读取消息（基础）
+        //     im:message.p2p_msg:readonly             —— 读取用户发给机器人的单聊消息（私聊入站）
+        //     im:message.group_at_msg:readonly        —— 读取群组中用户@机器人消息（群聊入站）
+        //     im:message.group_msg.include_bot:read   —— 读取群组中用户和机器人发送的消息
+        //     im:message.group_at_msg.include_bot:readonly —— 读取群组中其他机器人和用户@当前机器人的消息
+        //     im:message.group_msg                    —— 读取群组中所有消息（敏感）
+        //     im:chat                                 —— 读取群基础信息（群聊回执/卡片推送定位会话用）
+        //     im:message:send_as_bot                  —— 以机器人身份发送消息（出站/回执）
+        //   events.items.tenant: im.message.receive_v1 —— 长连接订阅文本消息（私聊/群聊入站）
+        //   callbacks.items:     card.action.trigger     —— 长连接订阅卡片按钮回调（审批/停止）
+        //   注：扫码确认页仍可手动增补权限；addons 只需结构合法即可放行扫码。
         addons: {
           preset: false,
-          resources: {
-            im: {
-              'im:message': 'readonly',
-              'im:message.group_at_msg:readonly': '',
-              'im:chat': 'readonly',
-            },
+          scopes: {
+            tenant: [
+              'im:message',
+              'im:message.p2p_msg:readonly',
+              'im:message.group_at_msg:readonly',
+              'im:message.group_msg.include_bot:read',
+              'im:message.group_at_msg.include_bot:readonly',
+              'im:message.group_msg',
+              'im:chat',
+              'im:message:send_as_bot',
+            ],
+            user: [],
+          },
+          events: {
+            items: { tenant: ['im.message.receive_v1'] },
+          },
+          callbacks: {
+            items: ['card.action.trigger'],
           },
         },
         createOnly: true, // 只创建自建应用，不动扫码账号已有应用

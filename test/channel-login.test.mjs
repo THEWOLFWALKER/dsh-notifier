@@ -72,7 +72,10 @@ function makeFakeSdk({
     state.called += 1
     state.options.push(options)
     if (hang) return new Promise(() => {})
-    if (typeof options?.onQrCode === 'function') options.onQrCode('https://open.feishu.cn/qr/xyz')
+    // 真实 SDK 回调名 onQRCodeReady（接收 { url, expireIn }），旧 onQrCode 已被弃用
+    if (typeof options?.onQRCodeReady === 'function') {
+      options.onQRCodeReady({ url: 'https://open.feishu.cn/qr/xyz', expireIn: 600 })
+    }
     return outcome
   }
   const mod = shape === 'named'
@@ -167,24 +170,37 @@ test('qqScan：onQr 收到二维码 URL（onQrCode → onQr 透传），onQr 抛
 test('feishuRegister：成功 → ok + appId + openId + feishu:account 落盘含 at + addons 最小权限集', async () => {
   const store = makeStore()
   const fake = makeFakeSdk()
-  const result = await feishuRegister({ store, sdkLoader: fake.loader, onQr: () => {} })
+  const gotQr = []
+  const result = await feishuRegister({ store, sdkLoader: fake.loader, onQr: (url) => gotQr.push(url) })
   assert.equal(result.status, 'ok')
   assert.equal(result.appId, 'cli_a1b2c3')
   assert.equal(result.openId, 'ou_scanner')
+  assert.deepEqual(gotQr, ['https://open.feishu.cn/qr/xyz'], 'onQRCodeReady({url}) → onQr(url) 透传')
   const account = store.get('feishu:account')
   assert.equal(account.appId, 'cli_a1b2c3')
   assert.equal(account.appSecret, 'fs-secret')
   assert.equal(typeof account.at, 'number')
-  // 调用形态：onQrCode 回调 + 最小权限 addons（preset:false 不装全家桶）+ createOnly
+  // 调用形态：onQRCodeReady 回调 + 最小权限 addons（preset:false 不装全家桶）+ createOnly
   const options = fake.state.options[0]
-  assert.equal(typeof options.onQrCode, 'function')
+  assert.equal(typeof options.onQRCodeReady, 'function')
   assert.equal(options.createOnly, true)
   assert.equal(options.addons.preset, false)
-  assert.deepEqual(options.addons.resources.im, {
-    'im:message': 'readonly',
-    'im:message.group_at_msg:readonly': '',
-    'im:chat': 'readonly',
+  // 新版 SDK normalizeAddons 白名单 preset/scopes/events/callbacks，已弃用旧 resources 名值映射。
+  assert.deepEqual(options.addons.scopes, {
+    tenant: [
+      'im:message',
+      'im:message.p2p_msg:readonly',
+      'im:message.group_at_msg:readonly',
+      'im:message.group_msg.include_bot:read',
+      'im:message.group_at_msg.include_bot:readonly',
+      'im:message.group_msg',
+      'im:chat',
+      'im:message:send_as_bot',
+    ],
+    user: [],
   })
+  assert.deepEqual(options.addons.events, { items: { tenant: ['im.message.receive_v1'] } })
+  assert.deepEqual(options.addons.callbacks, { items: ['card.action.trigger'] })
 })
 
 test('feishuRegister：缺包（loader reject Cannot find package）→ missing-sdk + 安装指引', async () => {
