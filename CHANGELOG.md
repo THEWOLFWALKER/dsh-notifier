@@ -3,6 +3,45 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 SemVer。
 DSH 处于 developer preview，0.x 阶段的次版本号提升允许小幅破坏性变更（会在条目中标注）。
 
+## [0.8.5] - 2026-08-23
+
+### 修复：ask_user 编号回复在出站/入站异名与纯入站通道失效（issue #11）
+
+- `src/questions/router.mjs`：`pushQuestion` 计算 `hintChannels` 时，把「该问题目标用户已绑定、卡片未送达」的交互入站通道一并计入（如 `qq`/`wechat`），编号话术经入站 `sendText` 送达纯入站通道（wechat iLink 无出站文本可走）；已由出站文本送达的通道（同名 type 或别名对 `qq-bot↔qq`）只补通道名不重发，避免同号双发。修复 QQ 官方机器人（`qq-bot` 出站 ↔ `qq` 入站异名）与微信 iLink（inbound-only）场景下 `ask_user` 编号回复完全失效、并落入 conversation 路由污染对话的问题。
+- 安全约束不变：只加目标用户已绑定（`notifyTargets()` 三级解析非空）的通道，话术确实送达才入 `hintChannels`，维持 SEC-2 fail-closed——没收到话术的渠道/用户裸编号仍拒绝并 warn。
+
+### 测试
+
+- `test/questions.test.mjs` 新增 3 用例：QQ 异名通道编号回复命中且不双发、iLink 纯入站编号话术经 sendText 送达后命中、未绑定目标用户通道不补入 hintChannels（fail-closed 回归）。
+- `npm test`：888/888 通过（885 基线 + 3 新增）。
+
+### Chore
+
+- `src/admin/ui.mjs`：版本串 v0.8.5。
+
+## [0.8.4] - 2026-08-18
+
+### 修复：审批状态组键清扫 + 崩溃残留兜底（S-1/S-2）
+
+- `src/index.mjs`：`aq:`/`ap:`/`act:` 键族增加清扫归宿，`observe` 模式下有意永驻的 `ap:` pending 用守卫区分，崩溃残留的孤儿 pending 走 fail-closed（不再被裸编号回复误命中）。
+- `src/approval/router.mjs`：pending 匹配对旧行/残留行为改为 fail-closed，防崩溃后孤儿状态越权。
+- 状态组修复对应 `24-plan-stategroup.md`。
+
+### 修复：question 编号回复 allowChats + onChannel 收紧（AUTH-1 / SEC-5/6）
+
+- `src/questions/router.mjs`：`bus.wait` 补注册 allowChats（对齐 approval），`latestPendingFor` 的 onChannel 分支从「同渠道任意绑定用户」收紧为「同渠道同 userId」，堵住同频道用户代答他人提问的越权面（架构审查 AUTH-1 / SEC-5 / SEC-6）。
+
+### 修复：动作卡来源会话加固 + WxPusher 回调加固（F-08 / INJ-1）
+
+- `src/actions.mjs`：动作卡（`ac:`）登记来源会话元数据 `srcChats`（channel+chatId），`dispatch` 据此校验点击来源，转发点击动作卡一律拒绝（架构审查 F-08）。
+- `src/event-listener.mjs`、`src/inbound/feishu-bot.mjs`、`src/inbound/telegram-bot.mjs`：动作卡嵌入来源会话，点击会话透传校验。
+- `src/inbound/wxpusher-callback.mjs`：WxPusher 回调无签名 → uid 白名单（128 上限）+ 订阅只进待确认队列（不直接当已绑定）+ 公网无 `allowedIps` 时 fail-closed（架构审查 INJ-1）。
+
+### Chore
+
+- `src/admin/ui.mjs`：版本串 v0.8.4。
+- CI：去掉 windows 编译矩阵（缩为 linux/macos 主干）。
+
 ## [0.8.3] - 2026-08-18
 
 ### 修复：提问编号回复竞态收紧（SEC-2，questions 侧 any→hint）

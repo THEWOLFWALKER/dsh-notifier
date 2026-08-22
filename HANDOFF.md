@@ -2,7 +2,7 @@
 
 > 写给下一个 agent。本文档是完整的工作上下文快照：设计理念、军规约定、架构地图、
 > 版本脉络、审查记录、已知坑、待办清单。读完这一份即可无缝接手。
-> 交接时刻：2026-08-18，v0.8.2（远程提问 + ask_user 装配修复）代码与文档已完成、846/846 全绿。
+> 交接时刻：2026-08-23，v0.8.5（issue #11：ask_user 编号回复在 qq-bot 异名 / wechat iLink 纯入站通道失效）代码与文档已完成、888 全绿。
 > 上一稳定发布位 v0.6.5 = `b2d23c0`（npm 与 GitHub 发布位 `0221d1e` 已对齐）。
 
 ---
@@ -28,9 +28,9 @@ dsh-notifier 是 DSH（一个 agent 宿主，cordis 插件体系）的统一通�
 
 | 项 | 状态 |
 |---|---|
-| 版本 | package.json = 0.8.2，CHANGELOG 已写，admin UI 版本串（v0.8.2）、双语 README、HANDOFF 均已同步 |
-| git | v0.8.2 已提交（89fd66b，工作区清洁）；v0.7.0 作者位 `0221d1e` |
-| 测试 | `npm test` = **846 pass / 0 fail**（node --test；v0.7.0 基线 797 → +49） |
+| 版本 | package.json = 0.8.5，CHANGELOG 已写（含 0.8.2/0.8.3/0.8.4/0.8.5），admin UI 版本串（v0.8.5）、双语 README、HANDOFF 均已同步 |
+| git | v0.8.5 已提交（463989e fix issue #11 + 发布 chore）；上一稳定发布位 v0.8.4 = `762194f` |
+| 测试 | `npm test` = **888 pass / 0 fail**（node --test；v0.8.4 基线 885 → +3） |
 | 发布 | **发包前核对四处计数一致——README.md 徽章/正文、README.zh-CN.md 徽章/正文、HANDOFF.md、admin UI 版本串（src/admin/ui.mjs）——任何一处与实际不符先修再发** |
 | 真机验证 | v0.6.1 修过 TG 真机事故（见 §5）；v0.7 真机测试通过（2026-08-17，v0.7.0-realtest 包）；内部真机测试文档 TG-TEST.md（Telegram 提问链路）与 WECHAT-TEST.md（微信扫码即配对）随 code/ 保留 |
 

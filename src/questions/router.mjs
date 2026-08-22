@@ -39,6 +39,20 @@ const DISPLAY_NAMES = {
   dingtalk: '钉钉',
 }
 
+// issue #11：出站文本渠道 type 与交互入站 channel 命名不一致的别名对。
+// 出站 qq-bot（adapter type）与入站 qq（inbound channel）是同一 QQ 机器人，只是
+// 出站/入站命名不同。编号话术「是否已由出站文本送达该入站通道用户」据此判定，
+// 避免同号双发（qq-bot 已发编号话术时，qq 入站不再重发一遍）。
+const OUTBOUND_TO_INBOUND_ALIAS = {
+  'qq-bot': 'qq',
+}
+
+/** issue #11：该入站通道的编号话术是否已由出站文本送达（同名出站 type 或别名对如 qq-bot↔qq）。 */
+function isCoveredByOutbound(inboundChannel, textTypes) {
+  if (textTypes.includes(inboundChannel)) return true
+  return textTypes.some((type) => OUTBOUND_TO_INBOUND_ALIAS[type] === inboundChannel)
+}
+
 // 升级链默认节奏（与审批一致：30s / 60s 各再提醒一轮）
 const DEFAULT_ESCALATION_STAGES = [
   { afterMs: 30_000, level: 'timeSensitive', note: '提问仍在等待作答' },
@@ -158,6 +172,9 @@ export function createQuestionBridge(deps) {
     const isMulti = question.multiSelect === true
     const pushedTo = []
     const deliveredTypes = new Set() // 卡片已送达的通道类型：这些渠道不再重复教编号
+    // issue #11：卡片未送达、但该问题目标用户已绑定此交互入站通道（kept 非空）的条目。
+    // 这些通道的编号回复必须能命中（qq-bot 出站 ↔ qq 入站异名、wechat iLink 纯入站无出站都靠它）。
+    const hintedInbound = []
     const persistPushed = () => {
       try {
         const row = ledger.get(qKey)
@@ -191,6 +208,12 @@ export function createQuestionBridge(deps) {
           persistPushed()
         }
       }
+      // issue #11：卡片未送达 + 目标用户已绑定 → 记录为待补编号话术的入站通道
+      // （sendText 送达 + 通道名补进 hintChannels）。只记 kept 非空的绑定通道，
+      // 未绑定用户的通道不进（SEC-2 fail-closed）。
+      if (kept.length > 0 && !deliveredTypes.has(inbound.channel)) {
+        hintedInbound.push({ channel: inbound.channel, targets: kept, inbound })
+      }
     }
     // 编号文案只发卡片未送达的渠道（P4 文字路径兜底）：卡片已到手的用户不再收
     // 一条冗余的「回复编号」广播——选项卡是主交互，编号是无卡片/投递失败时的降级。
@@ -203,10 +226,26 @@ export function createQuestionBridge(deps) {
         level: 'timeSensitive',
       }, { channelTypes: textTypes }).catch(() => {})
     }
-    // SEC-2：把一号话术广播过的渠道一并返回，供 askQuestions 落账为 aq 行的 hintChannels。
-    // hintChannels 按「本应广播的 textTypes」记录（不因 notifyAll 失败而丢失）——即使编号
-    // 文案发送失败，行上仍记该渠道，编号兜底反而更稳（降级链不断，见 22-plan-sec2 E4/E5）。
-    return { pushedTo, hintChannels: textTypes }
+    // issue #11：把「目标用户已绑定、卡片未送达」的交互入站通道补进编号话术覆盖范围。
+    // 编号话术经入站 sendText 送达（纯入站通道如 wechat iLink 没有出站文本可走）；
+    // 已由出站文本送达的通道（同名 type，或别名对如 qq-bot↔qq）只补通道名不重发，
+    // 避免同号双发。只加目标用户已绑定的通道、话术确实送达才入 hintChannels——
+    // 保持 SEC-2 fail-closed（没收到话术的渠道/用户裸编号仍拒绝）。
+    const hintText = `${title}\n${content}\n\n${numberedHint(options, isMulti)}`
+    const hintedChannels = []
+    for (const entry of hintedInbound) {
+      hintedChannels.push(entry.channel)
+      if (!isCoveredByOutbound(entry.channel, textTypes)) {
+        for (const target of entry.targets) {
+          void entry.inbound.sendText(target.chatId, hintText)
+        }
+      }
+    }
+    // SEC-2：把编号话术送达过的渠道（出站 textTypes + 入站 hintedChannels）一并返回，
+    // 供 askQuestions 落账为 aq 行的 hintChannels。按「本应送达的渠道」记录（不因
+    // notifyAll/sendText 失败而丢失）——即使编号文案发送失败，行上仍记该渠道，
+    // 编号兜底反而更稳（降级链不断，见 22-plan-sec2 E4/E5）。
+    return { pushedTo, hintChannels: [...new Set([...textTypes, ...hintedChannels])] }
   }
 
   /** 把送达过的卡片全部改成终态（超时/已答；editTarget 按 pushedTo 行的 kind 选卡片形态）。 */

@@ -340,6 +340,75 @@ test('SEC-2 hint 与 exact 优先级稳定：exact 行优先于 hint 行', async
   rig.bridge.dispose()
 })
 
+// ---------------------------------------------------------------- issue #11 出站/入站异名 + 纯入站通道编号作答
+
+test('issue #11 QQ：qq-bot 出站 ↔ qq 入站异名 → hintChannels 含 qq，qq 编号回复命中且不双发', async () => {
+  // 出站只有 qq-bot（文本）→ 编号话术经出站 qq-bot 送达；入站 qq 无卡片能力。
+  // 修复前 hintChannels=['qq-bot']，qq 入站回复编号命中不了 → timeout + 对话污染。
+  const rig = makeRig({ inbounds: [{ channel: 'qq', card: false, targets: [{ chatId: 'qquser42', userId: '42' }] }], channelTypes: ['qq-bot'] })
+  const seen = []
+  rig.bus.onMessage((envelope) => { seen.push(envelope.text); return false })
+  const pending = rig.bridge.askQuestions({ questions: [SINGLE] })
+  await sleep(30)
+  assert.equal(rig.instances[0].cards.length, 0, 'qq 无卡片能力')
+  assert.equal(rig.broadcasts.length, 1, '编号话术经出站 qq-bot 广播')
+  assert.deepEqual(rig.broadcasts[0].opts, { channelTypes: ['qq-bot'] })
+  const row = rig.store.get(rig.store.keys('aq:')[0])
+  assert.deepEqual([...row.hintChannels].sort(), ['qq', 'qq-bot'], 'hintChannels 同时含出站 qq-bot 与入站 qq')
+  assert.equal(rig.instances[0].texts.length, 0, '编号话术已由出站 qq-bot 送达，不入站 sendText 双发')
+  // qq 用户 42 回复编号 → hint 命中（异名通道回复生效）
+  rig.bus.accept({ channel: 'qq', userId: '42', chatId: 'qquser42', messageId: 'm1', text: '1' })
+  const result = await pending
+  assert.equal(result.answered, true)
+  assert.deepEqual(result.results[0].answers, ['测试环境'])
+  assert.match(result.results[0].via, /qq:reply/)
+  assert.equal(seen.length, 0, '编号作答被消费，不进对话路由（防污染）')
+  rig.bridge.dispose()
+})
+
+test('issue #11 微信 iLink 纯入站：hintChannels 含 wechat 且编号话术经 sendText 送达，wechat 回复命中', async () => {
+  // wechat iLink 是 inbound-only（无对应出站 type、无 sendQuestionCard）。
+  // 修复前编号话术永不送达、hintChannels 永不含 wechat → 编号作答完全失效。
+  const rig = makeRig({ inbounds: [{ channel: 'wechat', card: false, targets: [{ chatId: 'wxuser42', userId: '42' }] }], channelTypes: ['telegram'] })
+  const pending = rig.bridge.askQuestions({ questions: [SINGLE] })
+  await sleep(30)
+  assert.equal(rig.instances[0].cards.length, 0, 'wechat 无卡片能力')
+  assert.deepEqual(rig.broadcasts[0].opts, { channelTypes: ['telegram'] }, '出站广播照常只发 telegram')
+  const row = rig.store.get(rig.store.keys('aq:')[0])
+  assert.deepEqual([...row.hintChannels].sort(), ['telegram', 'wechat'], 'hintChannels 含纯入站 wechat')
+  assert.equal(rig.instances[0].texts.length, 1, '纯入站通道经 sendText 收到编号话术')
+  assert.match(rig.instances[0].texts[0].text, /回复编号/, '编号话术在场')
+  // wechat 用户回 1 → hint 命中
+  rig.bus.accept({ channel: 'wechat', userId: '42', chatId: 'wxuser42', messageId: 'm1', text: '1' })
+  const result = await pending
+  assert.equal(result.answered, true)
+  assert.deepEqual(result.results[0].answers, ['测试环境'])
+  assert.match(result.results[0].via, /wechat:reply/)
+  rig.bridge.dispose()
+})
+
+test('issue #11 fail-closed：未绑定目标用户的入站通道不补入 hintChannels，裸编号仍拒绝', async () => {
+  // qq 目标用户 42（绑定）；feishu 无绑定目标（notifyTargets 空）→ feishu 不进 hintChannels。
+  const rig = makeRig({
+    inbounds: [
+      { channel: 'qq', card: false, targets: [{ chatId: 'qquser42', userId: '42' }] },
+      { channel: 'feishu', card: false, targets: [] },
+    ],
+    channelTypes: ['qq-bot'],
+  })
+  const seen = []
+  rig.bus.onMessage((envelope) => { seen.push(envelope.text); return false })
+  const pending = rig.bridge.askQuestions({ questions: [SINGLE] })
+  await sleep(30)
+  const row = rig.store.get(rig.store.keys('aq:')[0])
+  assert.deepEqual([...row.hintChannels].sort(), ['qq', 'qq-bot'], 'feishu 无绑定目标不入 hintChannels')
+  // feishu 白名单用户 100 回 1 → 不命中（feishu 未收到话术），落回对话路由
+  rig.bus.accept({ channel: 'feishu', userId: '100', chatId: 'oc_100', messageId: 'm1', text: '1' })
+  assert.deepEqual(seen, ['1'], '无关通道裸编号不被消费')
+  assert.equal(row.status, 'pending', '无关通道作答不落终态')
+  rig.bridge.dispose()
+})
+
 // ---------------------------------------------------------------- 按钮路径与红线
 
 test('按钮作答：token 裁决 → 卡片终态编辑（已作答文案）+ 账本落定', async () => {
