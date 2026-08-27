@@ -15,7 +15,7 @@ import { createActionDispatcher } from '../src/actions.mjs'
  * 伪造 @larksuiteoapi/node-sdk：记录 Client/WSClient 全部交互。
  * wsClient.start() 捕获 eventDispatcher，测试用 handlers['im.message.receive_v1'] 直接投喂事件。
  */
-function makeFakeSdk({ failStart = false, failCreate = 0, bareWs = false } = {}) {
+function makeFakeSdk({ failStart = false, failCreate = 0, bareWs = false, failPatch = 0 } = {}) {
   const state = {
     loadCount: 0,
     clientOptions: [],
@@ -41,6 +41,7 @@ function makeFakeSdk({ failStart = false, failCreate = 0, bareWs = false } = {})
               return { code: 0, msg: 'ok', data: { message_id: `om_${state.sent.length}` } }
             },
             async patch({ path, data }) {
+              if (state.patched.length < failPatch) throw new Error('mock patch down')
               state.patched.push({ messageId: path.message_id, content: data.content })
               return { code: 0, msg: 'ok' }
             },
@@ -110,7 +111,7 @@ function makeRig({ allowUsers = ['ou_1'], config = {}, sdkOptions = {}, fallback
   const bus = createInboundBus({ allowUsers, logger })
   const fake = makeFakeSdk(sdkOptions)
   const inbound = createFeishuInbound({
-    config: { appId: 'cli_a', appSecret: 's', allowUsers: config.allowUsers, domain: config.domain },
+    config: { appId: 'cli_a', appSecret: 's', allowUsers: config.allowUsers, domain: config.domain, accountId: config.accountId },
     bus,
     fallbackTargets,
     logger,
@@ -282,11 +283,13 @@ test('card.action.trigger：批准按钮 → bus.decide(token 核销) + toast + 
 
   const key = 'ap:rm:1'
   const token = vault.mint(key)
-  const outcome = bus.wait(key, 2000)
+  // CRACK-002：fail-closed 后 wait 必须登记 allowChats（对齐生产装配 approval/questions router）
+  const outcome = bus.wait(key, 2000, { allowChats: new Map([['feishu', new Set(['oc_1'])]]) })
   const toast = fake.state.dispatcher.handlers['card.action.trigger']({
     operator: { open_id: 'ou_1' },
     open_message_id: 'om_card1',
     action: { value: { act: buildApprovalAction('allowed-once', key, token) } },
+    context: { open_chat_id: 'oc_1' },
   })
   assert.equal(toast.toast.type, 'success')
   assert.equal((await outcome).decision, 'allowed-once')
@@ -309,9 +312,10 @@ test('card.action.trigger：重复点击同一审批 → already-resolved toast�
 
   const key = 'ap:x:1'
   const token = vault.mint(key)
-  const outcome = bus.wait(key, 2000)
+  const outcome = bus.wait(key, 2000, { allowChats: new Map([['feishu', new Set(['oc_2'])]]) })
   const fire = () => fake.state.dispatcher.handlers['card.action.trigger']({
     operator: { open_id: 'ou_1' },
+    context: { open_chat_id: 'oc_2' },
     action: { value: { act: buildApprovalAction('rejected', key, token) } },
   })
   const first = fire()
@@ -319,6 +323,46 @@ test('card.action.trigger：重复点击同一审批 → already-resolved toast�
   assert.equal(first.toast.type, 'success')
   assert.match(second.toast.content, /已处理或已过期/)
   assert.equal((await outcome).decision, 'rejected', '首达采纳')
+  await inbound.stop()
+})
+
+test('v0.8.7 卡片回调：approval/question 载荷把稳定 eventId 传进 Control Core（缺 eventId 会被 missing_eventId 拒绝）', async () => {
+  const logger = makeLogger()
+  const vault = createTokenVault({ secret: 'k' })
+  const bus = createInboundBus({ allowUsers: ['ou_1'], vault, logger })
+  const fake = makeFakeSdk()
+  const received = []
+  const control = { handle: (input) => { received.push(input); return { status: 'accepted' } } }
+  const inbound = createFeishuInbound({
+    config: { appId: 'a', appSecret: 's' }, bus, logger, sdkLoader: fake.loader,
+    control, questions: { decide: () => ({ ok: false }) },
+  })
+  inbound.start()
+  await tick()
+
+  const key = 'ap:rm:1'
+  const token = vault.mint(key)
+  const approveAct = buildApprovalAction('allowed-once', key, token)
+  fake.state.dispatcher.handlers['card.action.trigger']({
+    operator: { open_id: 'ou_1' },
+    open_message_id: 'om_card1',
+    context: { open_chat_id: 'oc_1' },
+    action: { value: { act: approveAct, srcChat: 'oc_1' } },
+  })
+  const qKey = 'aq:q1'
+  const qToken = vault.mint(qKey)
+  const aqAct = buildQuestionAction(qKey, '0', qToken)
+  fake.state.dispatcher.handlers['card.action.trigger']({
+    operator: { open_id: 'ou_1' },
+    open_message_id: 'om_card2',
+    context: { open_chat_id: 'oc_1' },
+    action: { value: { act: aqAct, srcChat: 'oc_1' } },
+  })
+  assert.equal(received.length, 2)
+  assert.equal(received[0].command, 'approval')
+  assert.equal(received[0].eventId, `feishu:om_card1:ou_1:${approveAct}`)
+  assert.equal(received[1].command, 'question-answer')
+  assert.equal(received[1].eventId, `feishu:om_card2:ou_1:${aqAct}`)
   await inbound.stop()
 })
 
@@ -537,11 +581,12 @@ test('ap: 审批回调不受 v0.5 改动影响（回归）', async () => {
   await tick()
   const key = 'ap:rm:1'
   const token = vault.mint(key)
-  const outcome = bus.wait(key, 2000)
+  const outcome = bus.wait(key, 2000, { allowChats: new Map([['feishu', new Set(['oc_3'])]]) })
   const toast = fake.state.dispatcher.handlers['card.action.trigger']({
     operator: { open_id: 'ou_1' },
     open_message_id: 'om_7',
     action: { value: { act: buildApprovalAction('allowed-once', key, token) } },
+    context: { open_chat_id: 'oc_3' },
   })
   assert.equal(toast.toast.type, 'success')
   assert.match(toast.toast.content, /已批准/)
@@ -560,7 +605,7 @@ test('card.action.trigger：SEC-1 来源会话匹配通过 / 转发到其他会�
   await tick()
   const key = 'ap:sec1:1'
   const token = vault.mint(key)
-  const outcome = bus.wait(key, 2000)
+  const outcome = bus.wait(key, 2000, { allowChats: new Map([['feishu', new Set(['oc_orig'])]]) })
 
   const value = { act: buildApprovalAction('allowed-once', key, token), srcChat: 'oc_orig' }
   const makeEvent = (chatId, messageId) => ({
@@ -684,6 +729,116 @@ test('aq: 卡片回调：SEC-1 来源会话匹配通过 / 转发拒绝；缺 src
   await inbound.stop()
 })
 
+// ------------------------------------------------ C1（P1-4）飞书来源比对缺数据 fail-closed
+
+// srcChat 在场而点击会话读不到（负载缺 open_chat_id/顶层兜底也缺）：旧实现 warn 后放行，
+// 等于「缺关键信息即绕过来源校验」。现在必须拒绝，且不裁决、不 patch、不核销 wait。
+test('C1 飞书来源比对：srcChat 在场但缺点击会话 → fail-closed 拒绝，不 patch 不核销 wait', async () => {
+  const logger = makeLogger()
+  const vault = createTokenVault({ secret: 'k' })
+  const bus = createInboundBus({ allowUsers: ['ou_1'], vault, logger })
+  const fake = makeFakeSdk()
+  const inbound = createFeishuInbound({ config: { appId: 'a', appSecret: 's' }, bus, logger, sdkLoader: fake.loader })
+  inbound.start()
+  await tick()
+  const key = 'ap:c1:1'
+  const token = vault.mint(key)
+  const outcome = bus.wait(key, 2000, { allowChats: new Map([['feishu', new Set(['oc_orig'])]]) })
+  const value = { act: buildApprovalAction('allowed-once', key, token), srcChat: 'oc_orig' }
+
+  // context 整块缺失（顶层 open_chat_id/chat_id 也无）→ clickedChatOf 得空串
+  const missing = fake.state.dispatcher.handlers['card.action.trigger']({
+    operator: { open_id: 'ou_1' },
+    action: { value },
+  })
+  assert.equal(missing.toast.type, 'info')
+  assert.match(missing.toast.content, /请到原会话操作/, '缺点击会话必须拒绝')
+  await tick()
+  assert.equal(fake.state.patched.length, 0, '拒绝不得 patch 终态')
+  assert.equal(bus.pendingCount(), 1, 'wait 未被核销，仍待裁决')
+  assert.ok(logger.lines.some((line) => /缺少点击会话/.test(line)), `拒绝必须 warn（实际：${logger.lines.join(' | ')}）`)
+
+  // open_chat_id 为空串（形状在但值空）→ 同样拒绝
+  const empty = fake.state.dispatcher.handlers['card.action.trigger']({
+    operator: { open_id: 'ou_1' },
+    action: { value },
+    context: { open_message_id: 'om_e', open_chat_id: '' },
+  })
+  assert.match(empty.toast.content, /请到原会话操作/, '空串点击会话必须拒绝')
+  assert.equal(bus.pendingCount(), 1)
+
+  // 原会话点击仍可裁决（宪法 #6：拒绝不锁死）
+  const ok = fake.state.dispatcher.handlers['card.action.trigger']({
+    operator: { open_id: 'ou_1' },
+    action: { value },
+    context: { open_message_id: 'om_ok', open_chat_id: 'oc_orig' },
+  })
+  assert.equal(ok.toast.type, 'success')
+  assert.equal((await outcome).decision, 'allowed-once')
+  await inbound.stop()
+})
+
+// sourceChatAllowed 由 ac:/aq:/ap: 三个分支共用 —— 平行面也必须 fail-closed（装配回归）。
+test('C1 飞书来源比对：ac:/aq: 平行面缺点击会话同样不执行、不作答', async () => {
+  const logger = makeLogger()
+  const vault = createTokenVault({ secret: 'k' })
+  const bus = createInboundBus({ allowUsers: ['ou_1'], vault, logger })
+  const fake = makeFakeSdk()
+  const dispatched = []
+  const verdicts = []
+  const inbound = createFeishuInbound({
+    config: { appId: 'a', appSecret: 's' },
+    bus,
+    logger,
+    sdkLoader: fake.loader,
+    actions: { dispatch: (p) => { dispatched.push(p); return { ok: true, message: '✅' } } },
+    questions: { decide: (p) => { verdicts.push(p); return { ok: true, message: '✅ 已作答' } } },
+  })
+  inbound.start()
+  await tick()
+
+  const acEvent = { operator: { open_id: 'ou_1' }, action: { value: { act: 'ac:turn/cancel:tk', srcChat: 'oc_orig' } } }
+  const acToast = fake.state.dispatcher.handlers['card.action.trigger'](acEvent)
+  assert.match(acToast.toast.content, /请到原会话操作/)
+  assert.equal(dispatched.length, 0, 'ac: 缺点击会话不得执行动作')
+
+  const aqEvent = { operator: { open_id: 'ou_1' }, action: { value: { act: buildQuestionAction('aq:c1', '0', 'tk'), srcChat: 'oc_orig' } } }
+  const aqToast = fake.state.dispatcher.handlers['card.action.trigger'](aqEvent)
+  assert.match(aqToast.toast.content, /请到原会话操作/)
+  assert.equal(verdicts.length, 0, 'aq: 缺点击会话不得作答')
+
+  await tick()
+  assert.equal(fake.state.patched.length, 0, '两条拒绝都不得 patch 终态')
+  await inbound.stop()
+})
+
+// 旧卡兼容半边（PLAN §C1(b) 显式保留）：srcChat 缺失 → 仍兼容放行，不被本次收紧牵连。
+test('C1 飞书来源比对：srcChat 缺失（旧卡）→ 维持兼容放行 + warn', async () => {
+  const logger = makeLogger()
+  const vault = createTokenVault({ secret: 'k' })
+  const bus = createInboundBus({ allowUsers: ['ou_1'], vault, logger })
+  const fake = makeFakeSdk()
+  const verdicts = []
+  const inbound = createFeishuInbound({
+    config: { appId: 'a', appSecret: 's' },
+    bus,
+    logger,
+    sdkLoader: fake.loader,
+    questions: { decide: (p) => { verdicts.push(p); return { ok: true, message: '✅ 已作答' } } },
+  })
+  inbound.start()
+  await tick()
+  // 无 srcChat 且无点击会话（最坏形状）：升级前在途卡片仍放行（窗口由卡片自然淘汰封顶）
+  const legacy = fake.state.dispatcher.handlers['card.action.trigger']({
+    operator: { open_id: 'ou_1' },
+    action: { value: { act: buildQuestionAction('aq:legacy', '0', 'tk') } },
+  })
+  assert.equal(legacy.toast.type, 'success', '旧卡无 srcChat → 兼容放行')
+  assert.equal(verdicts.length, 1)
+  assert.ok(logger.lines.some((line) => /缺少来源会话元数据/.test(line)), `兼容放行必须 warn（实际：${logger.lines.join(' | ')}）`)
+  await inbound.stop()
+})
+
 // ---------------------------------------------------------------- v0.7.3 GitHub issue 回归
 
 // issue #1/#4/#6：SDK 1.46+ 的 WSClient.start() 内部调 this.logger.info/debug/error，
@@ -721,12 +876,12 @@ test('卡片终态 patch：messageId 读 data.context.open_message_id（#6），
   await tick()
   const key = 'ap:ctx:1'
   const token = vault.mint(key)
-  bus.wait(key, 2000)
+  bus.wait(key, 2000, { allowChats: new Map([['feishu', new Set(['oc_ctx'])]]) })
   const toast = fake.state.dispatcher.handlers['card.action.trigger']({
     // 真机实测负载形状：顶层 keys 只有 schema/event_id/…/operator/action/host/context
     operator: { open_id: 'ou_1' },
     action: { value: { act: buildApprovalAction('allowed-once', key, token) } },
-    context: { open_message_id: 'om_ctx_1' },
+    context: { open_message_id: 'om_ctx_1', open_chat_id: 'oc_ctx' },
   })
   assert.equal(toast.toast.type, 'success')
   await tick()
@@ -750,3 +905,124 @@ test('stop()：SDK 无 close/stop 时 terminate 底层 ws 实例（#4），不�
   assert.equal(fake.state.closed, false, 'bare WS 原型上根本没有 close（形态校验）')
   await inbound.stop() // 幂等
 })
+
+// ---------------------------------------------------------------- Stage-6（task-09）对抗
+
+test('Stage-6 入站 envelope：accountId 注入每条规范化消息（config.accountId，非事件）', async () => {
+  const rig = makeRig({ config: { accountId: 'acct_fs' } })
+  const accepted = []
+  rig.bus.onMessage((envelope) => accepted.push(envelope))
+  rig.inbound.start()
+  await tick()
+  rig.fake.state.dispatcher.handlers['im.message.receive_v1']({
+    sender: { sender_id: { open_id: 'ou_1' } },
+    message: { message_id: 'om_s6', chat_id: 'oc_g', message_type: 'text', content: JSON.stringify({ text: 'hi' }) },
+  })
+  assert.equal(accepted.length, 1)
+  assert.equal(accepted[0].accountId, 'acct_fs', '消息 envelope 必须带稳定 accountId')
+  assert.equal(accepted[0].channel, 'feishu')
+  await rig.inbound.stop()
+})
+
+test('Stage-6 生命周期：starting→connected；SDK 缺失→unavailable；WS 握手失败→error；stop→stopped', async () => {
+  // 正常启动成功
+  const ok = makeRig()
+  assert.equal(ok.inbound.clientState(), 'idle')
+  ok.inbound.start()
+  assert.equal(ok.inbound.clientState(), 'starting')
+  await tick()
+  assert.equal(ok.inbound.clientState(), 'connected')
+  await ok.inbound.stop()
+  assert.equal(ok.inbound.clientState(), 'stopped')
+
+  // SDL 缺失 → unavailable（伪造 resolve 错误）
+  const del = createFeishuInbound({
+    config: { appId: 'a', appSecret: 's' }, bus: createInboundBus({ allowUsers: ['ou_1'] }), logger: makeLogger(),
+    sdkLoader: async () => { const e = new Error("Cannot find package '@larksuiteoapi/node-sdk'"); throw e },
+  })
+  del.start()
+  await tick()
+  assert.equal(del.clientState(), 'unavailable', 'SDK 缺失必须报告 unavailable 而非 error')
+
+  // WS 握手失败 → error
+  const err = makeRig({ sdkOptions: { failStart: true } })
+  err.inbound.start()
+  await tick()
+  assert.equal(err.inbound.clientState(), 'error', '握手失败必须报告 error')
+  await err.inbound.stop()
+})
+
+test('Stage-6 群聊敏感控制降级：审批不发群消息，动作通知仍可纯文本', async () => {
+  const rig = makeRig()
+  rig.inbound.start()
+  await tick()
+  // 审批卡到群
+  const ap = await rig.inbound.sendApprovalCard({ chatId: 'oc_group1', title: '需要批准', content: '敏感审批', approvalKey: 'ap:x:1', token: 'tk' })
+  assert.equal(ap.downgraded, true, '群聊审批须标记降级')
+  assert.equal(ap.messageId, '', '群聊审批降级不得伪造消息送达证据')
+  assert.equal(rig.fake.state.sent.length, 0, '个人模式敏感审批不得泄漏到群聊')
+  // 动作卡到群
+  const ac = await rig.inbound.sendActionCard({ chatId: 'oc_group2', title: '操作', content: 'c', actions: [{ label: '⏹ 停止', data: 'ac:x:y' }] })
+  assert.equal(ac.downgraded, true)
+  assert.equal(rig.fake.state.sent[0].msgType, 'text', '普通动作通知仍可降级为文本')
+  // 提问卡到群 → 直接拦截（不发任何消息）
+  const q = await rig.inbound.sendQuestionCard({ chatId: 'oc_group3', title: '提问', content: 'q', qKey: 'aq:1', token: 'tk', options: ['是', '否'] })
+  assert.equal(q, null, '提问按钮绝不放给整群')
+  assert.equal(rig.fake.state.sent.length, 1, '提问卡群发不产生任何消息')
+  await rig.inbound.stop()
+})
+
+test('Stage-6 群聊敏感编号兜底：提问文本在群聊被抑制，普通文本仍可发送', async () => {
+  const rig = makeRig()
+  rig.inbound.start()
+  await tick()
+  assert.equal(await rig.inbound.sendText('oc_group-q', '提问：是否继续？\n1. 是\n2. 否\n（回复编号）'), false)
+  assert.equal(rig.fake.state.sent.length, 0, '提问编号兜底不得泄漏到群聊')
+  assert.equal(await rig.inbound.sendText('oc_group-q', '任务仍在运行'), true, '普通状态文本仍可发群聊')
+  assert.equal(rig.fake.state.sent.length, 1)
+  await rig.inbound.stop()
+})
+
+test('Stage-6 群聊降级不影响私聊：ou_* 仍发完整 interactive 审批卡', async () => {
+  const rig = makeRig()
+  rig.inbound.start()
+  await tick()
+  const card = await rig.inbound.sendApprovalCard({ chatId: 'ou_1', title: '需要批准', content: 'c', approvalKey: 'ap:p1', token: 'tk' })
+  assert.deepEqual(card, { messageId: 'om_1' })
+  assert.equal(rig.fake.state.sent[0].msgType, 'interactive', '私聊必须仍发卡片')
+  await rig.inbound.stop()
+})
+
+test('Stage-6 patch 失败：卡片回调补发「恰好一条」文本兜底（不静默、不重复、不抛）', async () => {
+  const logger = makeLogger()
+  const vault = createTokenVault({ secret: 'k' })
+  const bus = createInboundBus({ allowUsers: ['ou_1'], vault, logger })
+  const fake = makeFakeSdk({ failPatch: 1 })
+  const inbound = createFeishuInbound({ config: { appId: 'a', appSecret: 's' }, bus, logger, sdkLoader: fake.loader })
+  inbound.start()
+  await tick()
+  const key = 'ap:pf:1'
+  const token = vault.mint(key)
+  const outcome = bus.wait(key, 2000, { allowChats: new Map([['feishu', new Set(['oc_pf'])]]) })
+  const toast = fake.state.dispatcher.handlers['card.action.trigger']({
+    operator: { open_id: 'ou_1' },
+    action: { value: { act: buildApprovalAction('allowed-once', key, token) } },
+    context: { open_message_id: 'om_pf', open_chat_id: 'oc_pf' },
+  })
+  assert.equal(toast.toast.type, 'success')
+  assert.equal((await outcome).decision, 'allowed-once', '裁决本身不受 patch 失败影响')
+  await tick()
+  // patch 失败（failPatch=1，全失败）→ 恰发一条文本兜底到点击会话
+  const texts = rigTexts(fake.state.sent)
+  assert.equal(texts.length, 1, 'patch 失败必须恰好补发一条文本，绝不重复')
+  assert.equal(texts[0].receiveId, 'oc_pf', '兜底发到点击会话')
+  assert.match(texts[0].body, /已批准/)
+  await inbound.stop()
+})
+
+function rigTexts(sent) {
+  return sent.filter((s) => s.msgType === 'text').map((s) => ({
+    receiveId: s.receiveId,
+    body: JSON.parse(s.content).text ?? '',
+  }))
+}

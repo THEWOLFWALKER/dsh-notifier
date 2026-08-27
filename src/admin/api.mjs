@@ -22,6 +22,11 @@
 import { appendFileSync, chmodSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { CHANNEL_TYPES, channelFieldsOf } from '../config.mjs'
+import {
+  CONTROL_OVERLAY_MAX_MEMBERS,
+  CONTROL_OVERLAY_MAX_STRING,
+  isGlobalControlValue,
+} from '../control/session-arbiter.mjs'
 
 /**
  * 入站通道全集（与 inbound 装配一一对应；出站全集 = config.mjs 的 CHANNEL_TYPES）。
@@ -85,8 +90,37 @@ function deepCopyPlain(value) {
 }
 
 /**
+ * 会话控制覆盖层的**安全脱敏摘要**（getSessions 行 / patchSessionControl 返回值用）。
+ * 只暴露 mode / approvalOwnerOnly / ownerConfigured / approvalMembersCount——绝不回显任何
+ * 原始 owner、成员 channel/accountId/userId 标识（credential/identifier 零泄漏；token 与完整
+ * 身份从不进入任何 API 响应）。覆盖层缺失或损坏时返回 undefined（行内省略该键）。
+ * @param {unknown} control - route:sessions[id].control 原始值。
+ * @returns {{mode?: string, approvalOwnerOnly?: boolean, ownerConfigured?: boolean,
+ *   approvalMembersCount?: number} | undefined}
+ */
+function controlSummary(control) {
+  const raw = plainObjectOf(control)
+  if (raw === null || Object.keys(raw).length === 0) return undefined
+  const summary = {}
+  if (raw.mode === 'team' || raw.mode === 'personal') summary.mode = raw.mode
+  if (typeof raw.approvalOwnerOnly === 'boolean') summary.approvalOwnerOnly = raw.approvalOwnerOnly
+  if (typeof raw.owner === 'string' && raw.owner !== '') summary.ownerConfigured = true
+  if (Array.isArray(raw.approvalMembers)) summary.approvalMembersCount = raw.approvalMembers.length
+  return Object.keys(summary).length > 0 ? summary : undefined
+}
+
+/**
  * v0.7 成员复合键 "<channel>:<userId>" 解析（管理台路由用）。
  * userId 内含冒号也容忍（只按第一个冒号切）；渠道必须属六入站通道，userId 非空且 ≤128。
+ *
+ * C3 审查（v0.8.7）：这里**故意不拒**含冒号的 userId。C3 的纵深防御设在「写入面」
+ * （identity.addBinding/addPending + wxpusher UID_PATTERN 已 fail-closed，新的冒号
+ * 身份再也进不来），而本函数只服务四条**读改删**路由（PUT 改角色 / DELETE 删成员 /
+ * confirm / dismiss）。若在此一并拒收，C3 之前落盘的存量冒号绑定行（旧 wxpusher
+ * UID_PATTERN 放行冒号 → addBinding 直落 `wxpusher:UID:EVIL`）仍会照常准入放行，却
+ * 再也无法经管理台降级或删除——等于把一条越权身份永久钉死在白名单里（违反宪法 #7
+ * 「fail-open 要有度」的反面：过度收紧反而锁死唯一清理入口）。confirm 路径不构成
+ * 提权面：confirmPending 末端仍走 addBinding，冒号 userId 在那里被拒。
  * @returns {{ channel: string, userId: string, raw: string } | null} 非法形状返回 null
  */
 const MEMBER_KEY_HINT = '成员键形状：<channel>:<userId>（channel ∈ telegram/feishu/qq/wxpusher/wechat/dingtalk）'
@@ -143,6 +177,7 @@ const INBOUND_FIELDS = {
   },
   wxpusher: {
     appToken: { required: true, desc: 'WxPusher 应用 APP_TOKEN（回调鉴权即凭证）' },
+    accountId: { required: false, desc: '本地账号标识（多账号/多应用时建议填写；不要填 APP_TOKEN）' },
   },
   wechat: {},
   dingtalk: {
@@ -258,19 +293,25 @@ function describeBadChannelValue(key, value) {
  *   缺失时成员查询按空表降级、成员写方法抛 501（能力不可用）
  * @param {object} [options.pairing] - v0.7 配对码状态机实例（src/inbound/pairing.mjs）；
  *   缺失时配对码查询按空表降级、铸造/撤销抛 501
+ * @param {object} [options.questions] - 问题桥（src/questions/router.mjs 的 createQuestionBridge
+ *   返回面）带 `adminPending()`/`adminSettle()` facade；缺省时待决查询按空表降级、
+ *   结算抛 501（能力不可用）
+ * @param {object} [options.control] - Control Core（src/control/entry.mjs createControlEntry）；
+ *   结算必须经其唯一裁决；缺省 + questions 存在视为未接线 → 结算 fail-closed 501，绝不直通
  * @param {() => boolean} [options.guidedProbe] - v0.7 引导态探针（与 bus.isGuided 同口径：
  *   绑定表空 + allowUsers 空）；缺省按非引导态展示
  * @param {string} [options.stateDir] - 审计文件目录（缺省回落 './state'；测试注入临时目录）
  * @param {object} [options.logger] - cordis logger（warn 用）；缺省静默
  * @returns {object} API 实例：overview/getBindings/putBindings/getSessions/patchSession/
  *   getChannels/putChannel/testChannel/scanChannel/getMembers/putMember/deleteMember/
- *   confirmPendingMember/dismissPendingMember/mintPairingCode/revokePairingCode/getAudit
+ *   confirmPendingMember/dismissPendingMember/mintPairingCode/revokePairingCode/getAudit/
+ *   getPendingQuestions/settleQuestion
  *   （appendAudit 为内部函数不外露）
  */
 export function createAdminApi(options = {}) {
   const {
     router, registry, store, notifier, channelsEnabled, outboundConfigs, channelTest, scanHandlers,
-    identity, pairing, guidedProbe = null, stateDir, logger,
+    identity, pairing, guidedProbe = null, stateDir, logger, questions = null, control = null,
   } = options ?? {}
 
   const warn = (message) => {
@@ -394,13 +435,15 @@ export function createAdminApi(options = {}) {
   // getAudit()/getBindings()（与 CLI/HTTP 层走完全相同的读取路径）。
   const api = {
     /**
-     * Dashboard 总览：通道健康矩阵（出站 + 入站全量行）+ 会话计数 + agent 路由键数 + 最近审计。
+     * Dashboard 总览：通道健康矩阵（出站 + 入站全量行）+ 会话计数 + agent 路由键数 +
+     *   成员计数（引导态）+ 最近审计。
      * @returns {{ channels: Array<{type: string, direction: 'outbound'|'inbound',
      *   configured: boolean, enabled: boolean}>,
      *   sessions: { active: number, total: number }, agents: { keys: number },
+     *   members: { total: number, owners: number, guided: boolean },
      *   audit: Array<{time: string, action: string, detail: object}> }}
      *   sessions.total = route:sessions 表条目数（含已 dispose 未回收）；active = registry
-     *   判活跃数；audit = 最近 20 条新在前。
+     *   判活跃数；members.guided = 无成员即引导态；audit = 最近 20 条新在前。
      */
     overview() {
       const sessionIds = Object.keys(readTable(KEY_SESSIONS))
@@ -410,10 +453,23 @@ export function createAdminApi(options = {}) {
       }
       let agentKeys = 0
       try { agentKeys = typeof router?.listAgentKeys === 'function' ? router.listAgentKeys().length : 0 } catch { agentKeys = 0 }
+      // 成员计数（identity 未装配时回落 0 / guided=true，与成员页引导态口径一致）
+      let memberTotal = 0
+      let memberOwners = 0
+      let guided = true
+      try {
+        if (identity !== null && typeof identity.list === 'function') {
+          const all = identity.list()
+          memberTotal = all.length
+          memberOwners = all.filter((r) => r?.role === 'owner').length
+          guided = memberTotal === 0
+        }
+      } catch { /* 读失败按引导态处理，不影响总览 */ }
       return {
         channels: channelRows(),
         sessions: { active, total: sessionIds.length },
         agents: { keys: agentKeys },
+        members: { total: memberTotal, owners: memberOwners, guided },
         audit: api.getAudit().slice(0, 20),
       }
     },
@@ -598,6 +654,8 @@ export function createAdminApi(options = {}) {
         if (rec.disposedAt !== undefined) row.disposedAt = rec.disposedAt
         if (rec.outbound !== undefined) row.outbound = deepCopyPlain(rec.outbound)
         if (rec.inbound !== undefined) row.inbound = deepCopyPlain(rec.inbound)
+        const ctrl = controlSummary(rec.control)
+        if (ctrl !== undefined) row.control = ctrl // Stage 4 安全脱敏覆盖层摘要（绝无原始标识符）
         rows.push(row)
       }
       rows.sort((a, b) => (a.active === b.active
@@ -655,6 +713,119 @@ export function createAdminApi(options = {}) {
       appendAudit('patchSession', { id, diff: normalized })
       const outbound = plainObjectOf(plainObjectOf(readTable(KEY_SESSIONS)[id])?.outbound)
       return { id, outbound: outbound === null ? undefined : deepCopyPlain(outbound) }
+    },
+
+    /**
+     * 写会话控制覆盖层（Stage 4：持久化已评审的 owner / approvalOwnerOnly / approvalMembers）。
+     * 字段级 diff（与 patchSession 同语义）：出现且值为 null 的字段删除（回落 basePolicy），
+     * 出现且非空写入，未出现不动；覆盖层清空即整键移除。
+     *
+     * 校验（失败抛 ApiError(422)，零写入）：未知字段、保留键、以及**任何来源字段**
+     * （channel/accountId/userId/chatId/sessionId/policyVersion/expiresAt/revoked）一律拒绝——
+     * 授权来源只能来自会话真实来源（fail-closed，admin 载荷绝不能铸造 channel/account/user/chat）；
+     * mode 仅 team/personal；owner 非空字符串、≤128、非通配/全局；approvalOwnerOnly 布尔；
+     * approvalMembers 数组 ≤64、每项 { channel, accountId, userId } 全非空≤128 非通配且无未知键。
+     * 会话从未建档 → 404；存储写入失败 → 500。返回脱敏摘要（绝无原始标识符）。
+     *
+     * @param {string} id - 会话 id（=== agent.id）。
+     * @param {{ mode?: string|null, owner?: string|null, approvalOwnerOnly?: boolean|null,
+     *            approvalMembers?: Array<object>|null }} diff - 见字段级语义。
+     * @returns {{ id: string, control?: object }} control = 写后覆盖层的安全脱敏摘要（清空为 undefined）。
+     * @throws {ApiError} 422 入参校验失败；404 会话从未建档；500 存储写入失败。
+     */
+    patchSessionControl(id, diff) {
+      if (typeof id !== 'string' || id.trim() === '') throw new ApiError(422, '会话 id 必须是非空字符串')
+      if (plainObjectOf(diff) === null) {
+        throw new ApiError(422, '请求体必须是对象（{ mode?, owner?, approvalOwnerOnly?, approvalMembers? }）')
+      }
+      const SOURCE_FIELDS = ['channel', 'accountId', 'userId', 'chatId', 'sessionId', 'policyVersion', 'expiresAt', 'revoked']
+      const OVERLAY_FIELDS = ['mode', 'owner', 'approvalOwnerOnly', 'approvalMembers']
+      const normalized = {}
+      for (const key of Object.keys(diff)) {
+        const value = diff[key]
+        if (key === 'mode') {
+          if (value !== null && value !== 'team' && value !== 'personal') {
+            throw new ApiError(422, 'mode 只能是 "team" 或 "personal"（或 null 清除）')
+          }
+          normalized.mode = value === null ? null : value
+        } else if (key === 'owner') {
+          if (value === null) {
+            normalized.owner = null
+          } else {
+            if (typeof value !== 'string' || value.trim() === '') {
+              throw new ApiError(422, 'owner 必须是非空字符串或 null')
+            }
+            const owner = value.trim()
+            if (owner.length > CONTROL_OVERLAY_MAX_STRING) {
+              throw new ApiError(422, `owner 超过 ${CONTROL_OVERLAY_MAX_STRING} 字符上限`)
+            }
+            if (isGlobalControlValue(owner)) throw new ApiError(422, 'owner 不可为通配/全局占位')
+            normalized.owner = owner
+          }
+        } else if (key === 'approvalOwnerOnly') {
+          if (value !== null && typeof value !== 'boolean') {
+            throw new ApiError(422, 'approvalOwnerOnly 必须是布尔值或 null')
+          }
+          normalized.approvalOwnerOnly = value === null ? null : value
+        } else if (key === 'approvalMembers') {
+          if (value === null) {
+            normalized.approvalMembers = null
+          } else {
+            if (!Array.isArray(value)) throw new ApiError(422, 'approvalMembers 必须是数组或 null')
+            if (value.length > CONTROL_OVERLAY_MAX_MEMBERS) {
+              throw new ApiError(422, `approvalMembers 超过 ${CONTROL_OVERLAY_MAX_MEMBERS} 项上限`)
+            }
+            const members = []
+            for (const entry of value) {
+              const obj = plainObjectOf(entry)
+              if (obj === null) {
+                throw new ApiError(422, 'approvalMembers 每项必须是对象 { channel, accountId, userId }')
+              }
+              for (const k of Object.keys(obj)) {
+                if (k !== 'channel' && k !== 'accountId' && k !== 'userId') {
+                  throw new ApiError(422, `approvalMembers 每项只允许 channel/accountId/userId，收到 "${k}"`)
+                }
+              }
+              const triple = {}
+              for (const k of ['channel', 'accountId', 'userId']) {
+                const v = typeof obj[k] === 'string' ? obj[k].trim() : ''
+                if (v === '') throw new ApiError(422, `approvalMembers 每项的 "${k}" 必须是非空字符串`)
+                if (v.length > CONTROL_OVERLAY_MAX_STRING) {
+                  throw new ApiError(422, `approvalMembers 每项 "${k}" 超过 ${CONTROL_OVERLAY_MAX_STRING} 字符上限`)
+                }
+                if (isGlobalControlValue(v)) {
+                  throw new ApiError(422, `approvalMembers 每项 "${k}" 不可为通配/全局占位`)
+                }
+                triple[k] = v
+              }
+              members.push(triple)
+            }
+            normalized.approvalMembers = members
+          }
+        } else if (DANGEROUS_KEYS.has(key)) {
+          throw new ApiError(422, `保留键 "${key}" 不可写入（${[...DANGEROUS_KEYS].join('/')}）`)
+        } else if (SOURCE_FIELDS.includes(key)) {
+          throw new ApiError(422, `"${key}" 是会话来源字段，不可经管理台设置——授权来源只能来自会话真实来源（fail-closed）`)
+        } else {
+          throw new ApiError(422, `未知字段 "${key}"（可用：${OVERLAY_FIELDS.join('/')}）`)
+        }
+      }
+      if (Object.keys(normalized).length === 0) {
+        throw new ApiError(422, '至少提供 mode/owner/approvalOwnerOnly/approvalMembers 之一')
+      }
+
+      // 从未建档判定：store 无记录且 registry 无记录（同 patchSession 口径）
+      const stored = plainObjectOf(readTable(KEY_SESSIONS)[id])
+      if (stored === null && registrySessionOf(id) === undefined) {
+        throw new ApiError(404, `会话 "${id}" 不存在`)
+      }
+
+      if (!callSetter(router?.setSessionControl, id, normalized)) {
+        throw new ApiError(500, '会话控制覆盖写入存储失败')
+      }
+      appendAudit('setSessionControl', { id, diff: controlSummary(normalized) })
+      const control = plainObjectOf(plainObjectOf(readTable(KEY_SESSIONS)[id])?.control)
+      return { id, control: controlSummary(control) }
     },
 
     /**
@@ -1004,6 +1175,82 @@ export function createAdminApi(options = {}) {
      */
     appendAudit(action, detail) {
       appendAudit(String(action ?? 'unknown'), detail)
+    },
+
+    // ---------- 路线图阶段 2A：远程提问管理台裁决（2026-08-26）----------
+    /**
+     * 读「当前待处理远程问题」脱敏快照（只读，query 永不抛、按空表降级）。
+     * 单条仅含 { ref, question, options, multiSelect, status, agent(掩码), source(掩码),
+     * createdAt, expiresAt }——绝无 token / 凭证 / 完整聊天或 agent 标识 / 作答隐私；
+     * 查询本身是安全的，故不要求 owner 证明；结算（settleQuestion）才需 owner/admin 证明。
+     * @returns {Array<object>}
+     */
+    getPendingQuestions() {
+      if (questions === null || typeof questions.adminPending !== 'function') return []
+      try { return questions.adminPending() } catch { return [] }
+    },
+
+    /**
+     * 管理台提交远程提问裁决（choose/reject，2026-08-26）。只对当前待决问题生效，且
+     * 结算一律经 Control Core 唯一裁决（授权/首达采纳/单次结算全在桥 + 控制核心内承接），
+     * 本层只做参数校验 + owner/admin 本地证明 + 委托 + 审计 + 安全错误映射，绝不复制
+     * ledger 结算或直写状态。
+     * owner/admin 本地证明：需 identity 已装配且至少一个 owner 绑定（否则无法证明操作者是
+     * 授权管理员 → fail-closed 501/403）；任何内部异常不产生任何变更。
+     * @throws {ApiError} 422 参数非法；404 未知问题/无目标；410 过期；403 未授权/无 owner；
+     *   409 重复提交或手机先答（already-handled）；501 能力缺失/未接线
+     * @returns {{ ref: string, action: string, settled: boolean, alreadyHandled: boolean, message: string, optionLabels: string[] }}
+     */
+    settleQuestion(body = {}) {
+      const ref = String(body?.ref ?? '').trim()
+      const action = String(body?.action ?? '').trim().toLowerCase()
+      if (ref === '' || (action !== 'choose' && action !== 'reject')) {
+        throw new ApiError(422, '必须提供 ref 与 action（choose|reject）')
+      }
+      // owner/admin 本地证明：无身份层 / 无任何 owner → 无法证明操作者是授权管理员 → fail-closed
+      if (identity === null || typeof identity?.ownerCount !== 'function') {
+        throw new ApiError(501, '身份层未装配，无法证明管理员操作者身份')
+      }
+      let ownerCount = 0
+      try { ownerCount = identity.ownerCount() } catch { ownerCount = 0 }
+      if (ownerCount < 1) throw new ApiError(403, '当前没有已绑定 owner，无法证明本地管理员身份')
+      if (questions === null || typeof questions?.adminSettle !== 'function') {
+        throw new ApiError(501, '问题桥未装配，无法结算远程提问')
+      }
+      if (control === null || typeof control?.handle !== 'function') {
+        throw new ApiError(501, 'Control Core 未接线，结算入口不可用（fail-closed）')
+      }
+      let result
+      try {
+        result = questions.adminSettle({
+          ref,
+          action,
+          options: Array.isArray(body?.options) ? body.options : [],
+        })
+      } catch {
+        throw new ApiError(500, '结算时发生内部错误，未执行任何变更')
+      }
+      if (result === null || typeof result !== 'object') {
+        throw new ApiError(409, '结算未生效（内部状态不可解释）')
+      }
+      const auditDetail = { ref, action, handled: result.handled === true }
+      appendAudit('settleQuestion',
+        result.ok === true
+          ? { ...auditDetail, settled: true }
+          : { ...auditDetail, settled: false, reason: String(result.reason ?? 'unknown') })
+      // 安全错误映射（桥内已 fail-closed；本层只挑状态码，不让 token/完整标识符进响应）
+      if (result.ok === true) {
+        return { ref, action, settled: true, alreadyHandled: false, message: String(result.message ?? '已裁决'), optionLabels: result.optionLabels ?? [] }
+      }
+      if (result.handled === true) throw new ApiError(409, String(result.message ?? '该问题已被裁决（首达采纳），本次未生效'))
+      if (result.reason === 'expired') throw new ApiError(410, String(result.message ?? '该问题已过期'))
+      if (result.reason === 'unknown_question') throw new ApiError(404, String(result.message ?? '未找到该待决问题'))
+      if (result.reason === 'no_target') throw new ApiError(404, String(result.message ?? '该问题没有可用的来源目标'))
+      if (result.reason === 'invalid_action' || result.reason === 'invalid_option') throw new ApiError(422, String(result.message ?? '非法选项/动作'))
+      if (result.reason === 'unauthorized') throw new ApiError(403, String(result.message ?? '无权限结算该问题'))
+      if (result.reason === 'not_available') throw new ApiError(501, String(result.message ?? '结算当前不可用'))
+      // 兜底：任何未枚举失败都按未生效处理（fail-closed，绝不假报成功）
+      throw new ApiError(409, String(result.message ?? '结算未生效（未知原因）'))
     },
   }
   return api

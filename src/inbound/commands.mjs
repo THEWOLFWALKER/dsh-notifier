@@ -70,7 +70,7 @@ export function isPrivateChat(envelope) {
  * @param {ReturnType<typeof import('./identity.mjs').createIdentity>} options.identity
  * @param {ReturnType<typeof import('./pairing.mjs').createPairing>} options.pairing
  * @param {object} [options.logger]
- * @param {() => void} [options.onBootstrapRemint] - 引导码过期重铸回调（index 注 stderr 展示）
+ * @param {() => void} [options.onBootstrapRemint] - 引导码过期重铸回调（index 注：写 0600 码文件）
  */
 export function createCommandHandler(options = {}) {
   const identity = options.identity
@@ -80,18 +80,32 @@ export function createCommandHandler(options = {}) {
     try { console.error('[dsh-notifier/commands]', message) } catch { /* 控制台不可用不致命 */ }
   }
 
-  /** 引导码过期后按需重铸（引导态自愈：用户 10 分钟后才来也不必重启宿主）。 */
+  /** 引导码过期后按需重铸（引导态自愈：用户 10 分钟后才来也不必重启宿主）。
+   *  v0.8.7 (A4)：节流 10 分钟 + mint 失败不假断言 + 回调异常不静默。 */
+  let lastBootstrapMint = 0
+
   function ensureBootstrap() {
     if (pairing.hasActiveBootstrap()) return null
+    const now = Date.now()
+    if (lastBootstrapMint > 0 && now - lastBootstrapMint < 10 * 60 * 1000) {
+      warn('引导码重铸被节流（上次重铸不足 10 分钟），跳过')
+      return null
+    }
     const minted = pairing.mint({ origin: 'bootstrap', mintedBy: 'system:guided' })
-    try { options.onBootstrapRemint?.(minted) } catch { /* 回调异常不致命 */ }
-    warn('引导态无在铸引导码，已重铸一枚（stderr 已展示）')
+    if (!minted.ok) {
+      warn(`引导码重铸失败: ${minted.reason ?? 'unknown'}（管理台可补铸）`)
+      return null
+    }
+    lastBootstrapMint = now
+    try { options.onBootstrapRemint?.(minted) } catch (e) {
+      warn(`onBootstrapRemint 回调异常: ${e?.message ?? ''}（码已铸，引导码文件可能未写入，请检查管理台）`)
+    }
     return minted
   }
 
   const whoamiText = (envelope, bound) => {
     const head = `你的${getChannelName(envelope.channel)}身份：${envelope.userId}`
-    if (!bound) return `${head}\n尚未绑定。发送 /pair <配对码> 完成绑定；配对码请联系管理员，或在宿主启动日志中查看引导码。`
+    if (!bound) return `${head}\n尚未绑定。发送 /pair <配对码> 完成绑定；配对码请联系管理员，或查看本机引导码文件。`
     const record = identity.list(envelope.channel).find((item) => String(item.userId) === String(envelope.userId))
     const label = record !== undefined && record.label !== '' ? `（${record.label}）` : ''
     return `${head}\n已绑定${label}，角色：${record?.role ?? 'member'}。/help 查看会话命令。`
@@ -100,7 +114,7 @@ export function createCommandHandler(options = {}) {
   const guidedHelp = `引导模式：白名单为空，仅注册命令可用。
   /pair <配对码> [备注] — 绑定你的身份（首位绑定者成为 owner）
   /whoami — 查看你的渠道身份
-配对码位置：宿主启动日志（stderr）或管理台「成员」页。其余消息在完成绑定前不受理。`
+配对码位置：本机引导码文件或管理台「成员」页。其余消息在完成绑定前不受理。`
 
   const memberHelp = `身份命令：
   /whoami — 查看你的绑定身份
@@ -110,7 +124,7 @@ export function createCommandHandler(options = {}) {
   /** /pair 受理：私聊判定 → 码面核销 → 绑定。 */
   function handlePair(envelope, args) {
     if (args.length === 0) {
-      return '用法：/pair <配对码> [备注]\n配对码由管理员在管理台生成（10 分钟内有效）；首次部署的引导码见宿主启动日志。'
+      return '用法：/pair <配对码> [备注]\n配对码由管理员在管理台生成（10 分钟内有效）；首次部署的引导码见本机引导码文件。'
     }
     if (!isPrivateChat(envelope)) {
       // 群里发码 = 把码亮给全群：拒答并引导私聊（不消费码）
@@ -125,12 +139,18 @@ export function createCommandHandler(options = {}) {
     }
     const verdict = pairing.redeem(code, { channel: envelope.channel, userId: envelope.userId, label })
     if (!verdict.ok) {
-      // 引导态自愈：bootstrap 过期且无在铸码 → 重铸一枚（stderr 已再展示），提示取新码
+      // 引导态自愈：bootstrap 过期且无在铸码 → 重铸一枚（新码写 0600 码文件），提示取新码
       if (verdict.reason === 'expired' && identity.isEmpty()) {
+        // 已有在铸引导码（如上一次提交刚触发过重铸）：让用户去取现码，别谎报「重铸失败」
+        if (pairing.hasActiveBootstrap()) {
+          return '配对码已过期。当前已有在铸引导码，请管理员查看本机引导码文件或管理台获取新码后重试。'
+        }
         const reminted = ensureBootstrap()
         if (reminted !== null) {
-          return '配对码已过期。已重铸一枚引导码，请从宿主启动日志（stderr）获取新码后重试。'
+          return '配对码已过期。已重铸一枚引导码，请管理员查看本机引导码文件或管理台获取新码后重试。'
         }
+        // 重铸未发生（节流窗内 / mint 失败）：明说状态，不静默吞成通用过期回执
+        return '配对码已过期。引导码重铸失败或节流中，请稍后再试或使用管理台铸码。'
       }
       const reasons = {
         'invalid-code': '配对码无效（核对后重试；连续错 5 次将临时锁定）。',

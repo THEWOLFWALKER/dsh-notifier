@@ -83,6 +83,7 @@ const FIELD_HINTS = {
   },
   wxpusher: {
     appToken: { required: true, secret: true, desc: 'WxPusher 应用 APP_TOKEN（wxpusher.zjiecode.com）' },
+    accountId: { required: false, secret: false, desc: '本地账号标识（多账号/多应用时建议填写；不要填 APP_TOKEN）' },
     uids: { required: false, secret: true, desc: '接收者 UID 数组，如 ["UID_xxx"]（与 topicIds 至少一项）' },
     topicIds: { required: false, secret: false, desc: '主题 ID 数组（群发用）' },
   },
@@ -343,7 +344,20 @@ export function resolveConfig(config = {}) {
     limitPerMinutePerSource: Number.isFinite(publicLimit) && publicLimit >= 0 ? Math.trunc(publicLimit) : 10,
     emit: rawPublic.emit !== false,
   }
-
+  // Optional facade-instance budgets.  Omit absent keys to preserve the
+  // historical resolved shape; createPublicFacade supplies finite defaults.
+  for (const [key, fallback] of [
+    ['maxCalls', 10_000],
+    ['maxBytes', 10 * 1024 * 1024],
+    ['maxConcurrent', 16],
+    ['maxQueue', 64],
+  ]) {
+    if (!Object.prototype.hasOwnProperty.call(rawPublic, key)) continue
+    const value = Number(rawPublic[key])
+    publicBlock[key] = Number.isFinite(value) && value >= 0
+      ? Math.trunc(value)
+      : fallback
+  }
   return {
     enabled,
     debounceMs,

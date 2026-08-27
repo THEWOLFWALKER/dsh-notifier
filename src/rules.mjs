@@ -23,14 +23,17 @@ function toStringList(value) {
  * 编译单个关键词条目为匹配函数。
  * - regex: true → 按 RegExp source 编译；非法正则降级为字面量匹配（宁可漏拦不炸启动）。
  * - 大小写：字面量统一 toLowerCase 比较；regex 用 'i' flag（caseSensitive 时都不做）。
+ * - 非法正则的降级由 regexFallbacks 上报（P1-2：语义从「正则」变「子串」是静默变化，
+ *   模块自身纯函数无日志，由调用方决定如何可见化）。
  */
-function compileEntry(entry, { regex, caseSensitive }) {
+function compileEntry(entry, { regex, caseSensitive }, fallbacks) {
   if (regex) {
     try {
       const flags = caseSensitive ? '' : 'i'
       const pattern = new RegExp(entry, flags)
       return (text) => pattern.test(text)
     } catch {
+      if (Array.isArray(fallbacks)) fallbacks.push(entry)
       return (text) => containsLiteral(text, entry, caseSensitive)
     }
   }
@@ -58,8 +61,10 @@ export function createKeywordFilter(rawKeywords) {
   const regex = raw.regex === true
   const caseSensitive = raw.caseSensitive === true
 
-  const includeMatchers = include.map((entry) => compileEntry(entry, { regex, caseSensitive }))
-  const excludeMatchers = exclude.map((entry) => compileEntry(entry, { regex, caseSensitive }))
+  // P1-2 错误可见性：regex 模式下编译失败的条目在此登记（纯数据上报，模块不落日志）
+  const regexFallbacks = []
+  const includeMatchers = include.map((entry) => compileEntry(entry, { regex, caseSensitive }, regexFallbacks))
+  const excludeMatchers = exclude.map((entry) => compileEntry(entry, { regex, caseSensitive }, regexFallbacks))
 
   const test = (text) => why(text) === undefined
   const why = (text) => {
@@ -75,14 +80,20 @@ export function createKeywordFilter(rawKeywords) {
     }
     return undefined
   }
-  return { test, why }
+  return { test, why, regexFallbacks }
 }
 
 /**
  * 创建空闲宽限窗队列：任务延迟 seconds 秒执行，期间用户活动（activity()）即全部取消。
  * 「turn 结束后等 N 秒，人在键盘就不打扰」：调度的是打扰（推送），取消的是打扰，不是任务。
+ * v0.8.7 P1-7（宪法#4 状态必须有界）：pending 以 sessionId 为键，条目靠自己的定时器到点
+ * 自清——但 `graceSeconds` 可配且无上限（config.mjs:280 只钳下限 0），配成小时级 + 会话
+ * 高频轮换时可无界堆积（每条还挂一个活定时器）。补 maxKeys 上限：新 key 撑破上限时
+ * **立即触发最旧一条**（提前送达，绝不静默丢弃——宪法#3），并通报调用方。
  * @param {object} [options]
  * @param {number} [options.seconds=0] - 宽限秒数；0 = 不等待（调度即执行）。
+ * @param {number} [options.maxKeys=256] - 在途 key 上限（会话并发量的三个数量级余量）。
+ * @param {(key: string, pendingCount: number) => void} [options.onOverflow] - 提前触发通报（异常被吞）。
  * @param {() => number} [options.now] - 可注入时钟（测试用）。
  * @param {Function} [options.setTimeoutFn] - 可注入定时器（测试用）。
  * @param {Function} [options.clearTimeoutFn] - 可注入定时器（测试用）。
@@ -91,6 +102,8 @@ export function createGraceQueue(options = {}) {
   const seconds = Math.max(0, Number(options.seconds) || 0)
   const setTimeoutFn = options.setTimeoutFn ?? globalThis.setTimeout?.bind(globalThis)
   const clearTimeoutFn = options.clearTimeoutFn ?? globalThis.clearTimeout?.bind(globalThis)
+  const cap = Math.max(1, Math.trunc(Number(options.maxKeys)) || 256)
+  const onOverflow = typeof options.onOverflow === 'function' ? options.onOverflow : null
   const pending = new Map() // key -> { task, timer }
   const fire = (key) => {
     const entry = pending.get(key)
@@ -112,6 +125,18 @@ export function createGraceQueue(options = {}) {
       if (seconds <= 0 || setTimeoutFn === undefined) {
         task()
         return
+      }
+      // 腾位（有界）：溢出即提前触发最旧待发打扰，不静默丢
+      while (pending.size + 1 > cap) {
+        const oldest = pending.keys().next().value
+        if (oldest === undefined) break
+        if (onOverflow !== null) {
+          try { onOverflow(oldest, pending.size) } catch { /* 通报失败不致命 */ }
+        }
+        const entry = pending.get(oldest)
+        pending.delete(oldest)
+        try { clearTimeoutFn(entry.timer) } catch { /* 同上 */ }
+        try { entry.task() } catch { /* 任务异常绝不外抛（与 fire 路径同语义） */ }
       }
       pending.set(key, { task, timer: setTimeoutFn(() => fire(key), seconds * 1000) })
     },

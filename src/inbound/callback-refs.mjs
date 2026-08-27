@@ -29,7 +29,7 @@ const DEFAULT_MAX = 256 // 每卡 2 ref → 128 张在途卡片，远超真实�
  * 创建短引用注册表。
  * @param {object} [options]
  * @param {number} [options.ttlMs=900000] - ref 有效期（默认 15 分钟）
- * @param {number} [options.max=256] - 容量上限（FIFO 淘汰最旧）
+ * @param {number} [options.max=256] - 容量上限（满时拒绝新引用，不驱逐仍存活引用）
  * @param {() => number} [options.now] - 时钟注入（测试）
  */
 export function createCallbackRefs({ ttlMs = DEFAULT_TTL_MS, max = DEFAULT_MAX, now = Date.now } = {}) {
@@ -52,13 +52,10 @@ export function createCallbackRefs({ ttlMs = DEFAULT_TTL_MS, max = DEFAULT_MAX, 
   }
 
   return {
-    /** 为完整 data 铸一枚短引用（过期项顺带清扫；容量满淘汰最旧）。origin 为可选的来源会话元数据（SEC-1）。 */
+    /** 为完整 data 铸一枚短引用（过期项顺带清扫；容量满拒绝，避免驱逐仍存活按钮）。origin 为可选的来源会话元数据（SEC-1）。 */
     mint(data, origin = null) {
       sweep()
-      if (refs.size >= cap) {
-        const oldest = refs.keys().next().value
-        refs.delete(oldest)
-      }
+      if (refs.size >= cap) return null
       let ref = randomRef()
       while (refs.has(ref)) ref = randomRef()
       refs.set(ref, {

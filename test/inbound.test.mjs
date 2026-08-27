@@ -3,7 +3,7 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync, readFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createStore, defaultStateDir } from '../src/inbound/store.mjs'
@@ -41,14 +41,21 @@ test('store：损坏 JSON 启动回退空态；save 自愈转存现场并重建�
   writeFileSync(path, '{oops not json', 'utf8')
   const store = createStore(path)
   assert.equal(store.size(), 0) // boot 仍 fail-open（无记忆好过误清空）
+  // P1-2（2026-08-20）：boot 损坏不再静默清零——对齐 v0.6.5 save 路径的取证惯例，
+  // 现场以 copy（非 rename，不打扰他进程）转存 .corrupt.<ts>，fail-open 语义不变。
+  let backups = readdirSync(dir).filter((name) => name.startsWith('state.json.corrupt.'))
+  assert.equal(backups.length, 1, 'boot 损坏立即取证一份副本（copy 不动原文件）')
+  assert.equal(readFileSync(join(dir, backups[0]), 'utf8'), '{oops not json', 'boot 取证副本内容 = 损坏现场')
   store.set('k', 'v') // 不抛错，内存态继续可用
   assert.equal(store.get('k'), 'v')
-  // v0.6.5 自愈：现场转存 .corrupt.<ts>（取证保留），写路径以内存全量重建——
+  // v0.6.5 自愈：save 现场转存 .corrupt.<ts>（取证保留），写路径以内存全量重建——
   // 中止语义会让 dirty 无限积压、CLI↔宿主共享永久断裂（v0.6.4 审查遗留问题）
   assert.equal(readFileSync(path, 'utf8'), '{"k":"v"}') // 重建后立即可读
-  const backups = readdirSync(dir).filter((name) => name.startsWith('state.json.corrupt.'))
-  assert.equal(backups.length, 1) // 原始损坏现场留了副本
-  assert.equal(readFileSync(join(dir, backups[0]), 'utf8'), '{oops not json')
+  backups = readdirSync(dir).filter((name) => name.startsWith('state.json.corrupt.'))
+  assert.equal(backups.length, 2, 'boot 取证 1 份 + save 自愈转存 1 份（同一损坏现场双取证，时间戳不同）')
+  for (const backup of backups) {
+    assert.equal(readFileSync(join(dir, backup), 'utf8'), '{oops not json')
+  }
   // 自愈后新实例（重启模拟）读到重建内容——半截 JSON 本就解析不出任何键，重建零丢失
   const healed = createStore(path)
   assert.equal(healed.get('k'), 'v')
@@ -58,6 +65,44 @@ test('store：损坏 JSON 启动回退空态；save 自愈转存现场并重建�
   const recovered = createStore(path)
   assert.equal(recovered.get('k2'), 'v2')
   assert.equal(recovered.get('repaired'), true)
+})
+
+test('P1-2 store：boot 损坏取证副本不得破坏并发写者（copy 而非 rename，原文件保持原位）', () => {
+  const { path, dir } = tempStorePath()
+  writeFileSync(path, '{"half":"written-but-trunc', 'utf8')
+  const before = statSync(path).mtimeMs
+  const store = createStore(path)
+  assert.equal(store.size(), 0, 'fail-open 空态起步')
+  assert.ok(existsSync(path), '原文件仍在原位（boot 只取证 copy，不把文件抽走——他进程持有句柄不受影响）')
+  assert.equal(readFileSync(path, 'utf8'), '{"half":"written-but-trunc', '原文件内容未被 boot 改动')
+  const backups = readdirSync(dir).filter((name) => name.startsWith('state.json.corrupt.'))
+  assert.equal(backups.length, 1)
+  assert.equal(readFileSync(join(dir, backups[0]), 'utf8'), '{"half":"written-but-trunc')
+  assert.ok(statSync(path).mtimeMs === before, 'copy 不更新原文件 mtime（读收敛的 mtime 基线不受扰动）')
+  // 后续 save 自愈照常工作（与既有 v0.6.5 语义衔接）
+  store.set('k', 'v')
+  assert.equal(readFileSync(path, 'utf8'), '{"k":"v"}')
+})
+
+test('P1-2 store：读失败（非损坏）boot 仍静默 fail-open，不产生取证副本', () => {
+  const { path, dir } = tempStorePath()
+  // 目录同名冲突：readFileSync 抛 EISDIR——是「读不了」不是「内容损坏」，不触发取证
+  mkdirSync(path, { recursive: true })
+  const store = createStore(path)
+  assert.equal(store.size(), 0)
+  const backups = readdirSync(dir).filter((name) => name.startsWith('state.json.corrupt.'))
+  assert.equal(backups.length, 0, '读失败不产生 .corrupt 副本（与解析失败区分，避免噪音取证）')
+})
+
+test('P1-2 store：空文件视作空态静默起步，不告警不取证（无记忆可丢失）', () => {
+  const { path, dir } = tempStorePath()
+  writeFileSync(path, '', 'utf8')
+  const store = createStore(path)
+  assert.equal(store.size(), 0)
+  const backups = readdirSync(dir).filter((name) => name.startsWith('state.json.corrupt.'))
+  assert.equal(backups.length, 0, '空文件无取证价值（外部 touch/首写中断），不算损坏')
+  store.set('k', 'v')
+  assert.equal(readFileSync(path, 'utf8'), '{"k":"v"}', '后续 save 正常落盘')
 })
 
 test('store：跨进程写锁——陈锁（持锁进程已死）当次回收，锁序恢复（v0.6.4 R2-P1-2 / v0.6.5 R4-1-P2-1）', () => {
@@ -75,13 +120,85 @@ test('store：跨进程写锁——陈锁（持锁进程已死）当次回收，
   assert.equal(existsSync(lockPath), false)
 })
 
+test('P1-3 store：属主已死的新鲜锁（kill -9 残留）当场回收，不再白等两轮降级裸写', () => {
+  const { path } = tempStorePath()
+  const store = createStore(path)
+  store.set('k', 'v')
+  // 模拟持锁进程 kill -9：锁残留、mtime 新鲜（<10s 陈旧线），但属主 pid 已不存在。
+  // 探测宽限期 500ms——先把 mtime 拨回 600ms 前越过宽限，内容仍是「pid:random」格式。
+  const lockPath = `${path}.lock`
+  writeFileSync(lockPath, '999999999:deadbeef', 'utf8')
+  const aged = new Date(Date.now() - 600)
+  utimesSync(lockPath, aged, aged)
+  const start = Date.now()
+  store.set('k2', 'v2')
+  assert.ok(Date.now() - start < 300, `死锁当场回收，不降级等待（实际 ${Date.now() - start}ms）`)
+  assert.equal(store.get('k2'), 'v2')
+  assert.equal(existsSync(lockPath), false, '回收后正常写入并清理锁文件')
+})
+
+test('P1-3 store：属主存活的新鲜锁绝不误抢——探测到存活进程仍走双轮降级', () => {
+  const { path } = tempStorePath()
+  const store = createStore(path)
+  store.set('k', 'v')
+  // 锁内容指向真实存活的 pid（本进程），mtime 越过探测宽限——必须判活，不能提前抢
+  const lockPath = `${path}.lock`
+  writeFileSync(lockPath, `${process.pid}:alive`, 'utf8')
+  const aged = new Date(Date.now() - 600)
+  utimesSync(lockPath, aged, aged)
+  const start = Date.now()
+  store.set('k2', 'v2')
+  assert.ok(Date.now() - start >= 300, `活锁照常双轮等待后降级（实际 ${Date.now() - start}ms）`)
+  assert.equal(store.get('k2'), 'v2', '降级强写保底可用性')
+  // 属主校验：内容不是自己 → 绝不误删他人锁
+  assert.equal(readFileSync(lockPath, 'utf8'), `${process.pid}:alive`)
+})
+
+test('P1-3 store：探测宽限期内（<500ms）的未知新鲜锁不做死亡推断，维持原语义', () => {
+  const { path } = tempStorePath()
+  const store = createStore(path)
+  store.set('k', 'v')
+  // 死 pid 但锁龄在宽限期内：防「刚创建即读」与 pid 复用竞态，不当场回收。
+  // mtime 拨到未来 60s：ageMs 恒为负 → 探测分支（age>500ms 才可能触发）结构性不可达，
+  // 不再依赖「自旋耗时 < 500ms」这一平台性假设（Windows Atomics.wait 粒度粗，会跨过
+  // 宽限后在死 pid 上触发死亡探测而误删——挡的是平台时间抖动，不挡判定语义）。
+  const lockPath = `${path}.lock`
+  writeFileSync(lockPath, '999999999:fresh', 'utf8')
+  const future = new Date(Date.now() + 60_000)
+  utimesSync(lockPath, future, future)
+  const start = Date.now()
+  store.set('k2', 'v2')
+  assert.ok(Date.now() - start >= 300, `宽限期内照常等待降级（实际 ${Date.now() - start}ms）`)
+  assert.equal(store.get('k2'), 'v2')
+  assert.equal(existsSync(lockPath), true, '宽限期内不误删外来锁')
+})
+
+test('P1-3 store：畸形/外来锁内容（无 pid 章）不做死亡推断，维持 10s mtime 判据', () => {
+  const { path } = tempStorePath()
+  const store = createStore(path)
+  store.set('k', 'v')
+  const lockPath = `${path}.lock`
+  writeFileSync(lockPath, 'garbage-without-pid-stamp', 'utf8')
+  const aged = new Date(Date.now() - 600)
+  utimesSync(lockPath, aged, aged)
+  const start = Date.now()
+  store.set('k2', 'v2')
+  assert.ok(Date.now() - start >= 300, `不可解析锁照常等待降级（实际 ${Date.now() - start}ms）`)
+  assert.equal(store.get('k2'), 'v2')
+  assert.equal(readFileSync(lockPath, 'utf8'), 'garbage-without-pid-stamp', '外来锁内容不被触碰')
+})
+
 test('store：跨进程写锁——新鲜锁占位时两轮等待后降级强写，他人锁绝不误删（v0.6.5 R4-1-P2-2 双轮等待）', () => {
   const { path } = tempStorePath()
   const store = createStore(path)
   store.set('k', 'v')
-  // 模拟他进程持锁进行中：锁新鲜（<10s，持锁者大概率活着）
+  // 模拟他进程持锁进行中：锁新鲜（<10s，持锁者大概率活着）。
+  // mtime 拨到未来 60s：ageMs 恒为负，走「不可判定陈旧」的原语义分支，两轮等待后降级；
+  // 平台无关（死 pid 在 Windows 上探测可能触发误删，锁龄钉死为新鲜即结构性绕开）。
   const lockPath = `${path}.lock`
   writeFileSync(lockPath, '1:alive', 'utf8')
+  const future = new Date(Date.now() + 60_000)
+  utimesSync(lockPath, future, future)
   const start = Date.now()
   store.set('k2', 'v2') // 等满两轮自旋（≈480ms）后降级无锁写入（保底不丢可用性）
   assert.ok(Date.now() - start >= 300, `确实等待了锁（实际 ${Date.now() - start}ms）`)
@@ -271,13 +388,14 @@ test('bus：onMessage 退订后不再收到消息', () => {
   assert.equal(seen.length, 1)
 })
 
-test('bus：wait + decide（带合法 token）→ 决议送达等待者', async () => {
+test('bus：wait + decide（带合法 token，原会话点击）→ 决议送达等待者（CRACK-002 D-1 回归）', async () => {
   const vault = createTokenVault({ secret: 'k' })
   const bus = createInboundBus({ allowUsers: ['42'], vault })
-  const waiting = bus.wait('ap:rm:1', 5000)
+  const waiting = bus.wait('ap:rm:1', 5000, { allowChats: new Map([['telegram', new Set(['100'])]]) })
   assert.equal(bus.pendingCount(), 1)
   const token = vault.mint('ap:rm:1')
-  const verdict = bus.decide({ approvalKey: 'ap:rm:1', decision: 'allowed-once', token, via: 'telegram', userId: 42 })
+  // telegram 真机点击 chatId 是数字——钉死 String() 归一化
+  const verdict = bus.decide({ approvalKey: 'ap:rm:1', decision: 'allowed-once', token, via: 'telegram', userId: 42, chatId: 100 })
   assert.deepEqual(verdict, { ok: true })
   assert.deepEqual(await waiting, { decision: 'allowed-once', via: 'telegram', userId: '42' })
   assert.equal(bus.pendingCount(), 0)
@@ -313,15 +431,15 @@ test('bus：非法 decision 值被拒', () => {
 test('bus：首达采纳——同一审批的第二次裁决返回 already-resolved', async () => {
   const vault = createTokenVault({ secret: 'k' })
   const bus = createInboundBus({ allowUsers: ['42'], vault })
-  const waiting = bus.wait('ap:rm:1', 5000)
+  const waiting = bus.wait('ap:rm:1', 5000, { allowChats: new Map([['telegram', new Set(['100'])]]) })
   const token = vault.mint('ap:rm:1')
-  assert.equal(bus.decide({ approvalKey: 'ap:rm:1', decision: 'rejected', token }).ok, true)
-  // 同一枚 token 重放（按钮双击 / 消息重投）
+  assert.equal(bus.decide({ approvalKey: 'ap:rm:1', decision: 'rejected', token, via: 'telegram', userId: 42, chatId: '100' }).ok, true)
+  // 同一枚 token 重放（按钮双击 / 消息重投）——waiter 已核销摘除，走 settle 的 already-resolved
   assert.deepEqual(
     bus.decide({ approvalKey: 'ap:rm:1', decision: 'allowed-once', token }),
     { ok: false, reason: 'already-resolved' },
   )
-  assert.deepEqual(await waiting, { decision: 'rejected', via: 'unknown', userId: '(unknown)' })
+  assert.deepEqual(await waiting, { decision: 'rejected', via: 'telegram', userId: '42' })
 })
 
 test('bus：无等待者时裁决 → already-resolved（绝不凭空生效）', () => {
@@ -332,6 +450,88 @@ test('bus：无等待者时裁决 → already-resolved（绝不凭空生效）',
     bus.decide({ approvalKey: 'ap:gone:1', decision: 'allowed-once', token }),
     { ok: false, reason: 'already-resolved' },
   )
+})
+
+// ---------------------------------------------------------------- CRACK-002：decide 来源校验 fail-closed
+// 原语义：allowChats=null 或缺 chatId 时整段跳过来源校验直达 settle（无授权也放行）。
+// 新语义：有源证据才算有效按钮路径，缺一即拒绝且不核销 wait（28-plan §CRACK-002 边界 D-1~D-6）。
+
+test('bus：D-4 wait 缺省 allowChats=null → 按钮裁决 fail-closed 拒绝、不核销、必 warn', async () => {
+  const warns = []
+  const vault = createTokenVault({ secret: 'k' })
+  const bus = createInboundBus({ allowUsers: ['42'], vault, logger: { warn: (...parts) => warns.push(parts.join(' ')) } })
+  const waiting = bus.wait('ap:d4:1', 5000)
+  const token = vault.mint('ap:d4:1')
+  assert.deepEqual(
+    bus.decide({ approvalKey: 'ap:d4:1', decision: 'allowed-once', token, via: 'telegram', userId: 42, chatId: '100' }),
+    { ok: false, reason: 'source-chat-mismatch', message: '请到原会话操作' },
+  )
+  assert.equal(bus.pendingCount(), 1, 'fail-closed 拒绝不核销 wait（合法路径仍可裁决）')
+  assert.ok(warns.some((line) => line.includes('来源校验失败') && line.includes('ap:d4:1')), '拒绝必须留痕（静默即事故）')
+  bus.dispose()
+  assert.equal(await waiting, null, 'wait 未被按钮裁决 settle（dispose 以 null 收场证明仍挂在途）')
+})
+
+test('bus：D-4/D-6 联动——fail-closed 拒绝后 decideTrusted（编号回复降级）仍可裁决同一审批', () => {
+  const vault = createTokenVault({ secret: 'k' })
+  const bus = createInboundBus({ allowUsers: ['42'], vault })
+  bus.wait('ap:d46:1', 5000)
+  const token = vault.mint('ap:d46:1')
+  assert.equal(bus.decide({ approvalKey: 'ap:d46:1', decision: 'allowed-once', token, via: 'telegram', userId: 42, chatId: '100' }).ok, false)
+  // 降级链永不断：按钮路径被拒不锁死审批，编号回复（归属校验另走 CRACK-003）照常 settle
+  assert.deepEqual(
+    bus.decideTrusted({ approvalKey: 'ap:d46:1', decision: 'rejected', via: 'telegram:reply', userId: '42' }),
+    { ok: true },
+  )
+})
+
+test('bus：D-5 有 allowChats 但缺点击会话（未传 / 空串）→ 拒绝且不核销', () => {
+  const warns = []
+  const vault = createTokenVault({ secret: 'k' })
+  const bus = createInboundBus({ allowUsers: ['42'], vault, logger: { warn: (...parts) => warns.push(parts.join(' ')) } })
+  bus.wait('ap:d5:1', 5000, { allowChats: new Map([['telegram', new Set(['100'])]]) })
+  const token = vault.mint('ap:d5:1')
+  assert.deepEqual(
+    bus.decide({ approvalKey: 'ap:d5:1', decision: 'allowed-once', token, via: 'telegram', userId: 42 }),
+    { ok: false, reason: 'source-chat-mismatch', message: '请到原会话操作' },
+  )
+  // 空串同属「缺数据」：不放行
+  assert.deepEqual(
+    bus.decide({ approvalKey: 'ap:d5:1', decision: 'allowed-once', token, via: 'telegram', userId: 42, chatId: '' }),
+    { ok: false, reason: 'source-chat-mismatch', message: '请到原会话操作' },
+  )
+  assert.equal(bus.pendingCount(), 1, '缺会话拒绝两次均不核销')
+  assert.equal(warns.filter((line) => line.includes('来源校验失败')).length, 2, '每次拒绝都留痕')
+})
+
+test('bus：D-2/D-8 回归——错误会话 / 错误渠道点击 → source-chat-mismatch（无 message，与缺证据形状区分）', () => {
+  const vault = createTokenVault({ secret: 'k' })
+  const bus = createInboundBus({ allowUsers: ['42'], vault })
+  bus.wait('ap:d2:1', 5000, { allowChats: new Map([['telegram', new Set(['100'])]]) })
+  const token = vault.mint('ap:d2:1')
+  // 转发到非目标会话（SEC-1 已修行为保持）
+  assert.deepEqual(
+    bus.decide({ approvalKey: 'ap:d2:1', decision: 'allowed-once', token, via: 'telegram:button', userId: 42, chatId: '999' }),
+    { ok: false, reason: 'source-chat-mismatch' },
+  )
+  // 渠道不在 allowChats（跨渠道重放点击）
+  assert.deepEqual(
+    bus.decide({ approvalKey: 'ap:d2:1', decision: 'allowed-once', token, via: 'qq:button', userId: 'u2', chatId: '100' }),
+    { ok: false, reason: 'source-chat-mismatch' },
+  )
+  assert.equal(bus.pendingCount(), 1, '范围外点击不核销 wait')
+})
+
+test('bus：D-3 回归——空 allowChats Map（空目标）→ 任意点击均拒（AUTH-1 不放行 wildcard 保持）', () => {
+  const vault = createTokenVault({ secret: 'k' })
+  const bus = createInboundBus({ allowUsers: ['42'], vault })
+  bus.wait('ap:d3:1', 5000, { allowChats: new Map() })
+  const token = vault.mint('ap:d3:1')
+  assert.deepEqual(
+    bus.decide({ approvalKey: 'ap:d3:1', decision: 'allowed-once', token, via: 'telegram', userId: 42, chatId: '100' }),
+    { ok: false, reason: 'source-chat-mismatch' },
+  )
+  assert.equal(bus.pendingCount(), 1)
 })
 
 test('bus：wait 超时 → resolve(null)（静默永不批准）', async () => {

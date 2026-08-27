@@ -1,0 +1,9 @@
+{
+  "id": "C2C-IMAGE-FIXTURE-001",
+  "author": { "user_openid": "C2C_USER_FIXTURE_001" },
+  "timestamp": "2026-08-24T08:00:00.000Z",
+  "msg_type": 1,
+  "src_type": 1,
+  "content": "",
+  "extra": "[{\"type\":1,\"image\":{\"url\":\"https://example.invalid/qq-c2c/fixture-001.png\",\"width\":800,\"height\":600}}]"
+}

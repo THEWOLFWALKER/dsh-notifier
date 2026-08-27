@@ -16,9 +16,15 @@ import { ADAPTERS, normalizeMessage, maskChannelConfig } from '../src/config.mjs
 import { NotifyError } from '../src/adapters/_shared.mjs'
 
 const fixturesDir = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'channels')
+// 只取「渠道契约测试形状」的 fixture：倒数第二章节固定要求 type + validConfig + 等实现字段。
+// test/fixtures/channels/ 同目录还存放 protocol-preflight 的纯协议证据片段（无 type / 无
+// validConfig，见 docs/protocol-preflight/README.md「Fixture 约定」）——它们不是契约 fixture，
+// 必须跳过，否则「契约: undefined」泄进参数化套件。
 const fixtures = readdirSync(fixturesDir)
   .filter((name) => name.endsWith('.json'))
   .map((name) => JSON.parse(readFileSync(join(fixturesDir, name), 'utf8')))
+  .filter((fixture) => typeof fixture?.type === 'string' && fixture.type !== ''
+    && fixture?.validConfig !== undefined && fixture?.message !== undefined)
 
 /** 造一个按队列出队的 fetch mock：记录每次调用，按序返回 Response。 */
 function mockFetch(responses) {

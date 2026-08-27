@@ -1,4 +1,5 @@
 // dsh-notifier inbound/_contract.mjs
+import { capabilitiesOf } from './capability-matrix.mjs'
 // 入站通道公共契约（v0.3.0 阶段 0）：让 approval router / conversation router
 // 不感知具体通道——所有 inbound 实例经 normalizeInbound() 归一为同一形状。
 // telegram 是 v0.2.0 旧形状（notifyChatIds + editResolved(chatId, messageId, text)），
@@ -19,8 +20,11 @@
 //     async editResolved(target, text),                   // target = 账本 pushedTo 行
 //     async sendText(chatId, text) -> boolean,            // 命令回执
 //   }
-// 入站方向统一走 bus.accept(envelope)；按钮回调统一走 bus.decide({ approvalKey,
-// decision, token, via, userId })，回调负载格式用本文件的 buildApprovalAction 生成、
+// 入站方向统一走 bus.accept(envelope)；按钮回调由 approval/questions router 送入
+// Control Core（无 Control Core 的旧装配才回落 bus.decide），回调负载格式用本文件的
+// buildApprovalAction 生成、parseApprovalAction 解析（与 telegram callback_data 同构）。
+// text/image/file 统一消息结构见 message.mjs：文字信封（{text}）原样兼容，结构化
+// 附件（kind/image/file）由协议证据确认后的适配器产出——当前无证据不接线（批 5）。
 // parseApprovalAction 解析（与 telegram callback_data 完全同构，复用同一套 token 核销）。
 
 export const APPROVAL_ACTION_PREFIX = 'ap'
@@ -102,8 +106,8 @@ export function parseQuestionAction(data) {
  * 判定规则（确定性，不做 arity 探测）：有 notifyTargets = 新契约；只有 notifyChatIds =
  * telegram 旧契约。两个形状都保证：sendApprovalCard 异常归一为 null、editTarget /
  * sendText 异常吞掉（回执尽力而为，绝不向上抛）。
- * capabilities.buttons（默认 true）：该通道审批卡片是否带可点按钮。无按钮通道
- * （如 QQ 官方机器人）靠「回复 1 批准 / 2 拒绝」降级，广播文案据此区分。
+ * capabilities.buttons：该通道审批卡片是否带可点按钮。缺省时从 capability-matrix
+ * 的渠道事实表推导，未知渠道 fail-closed；显式 raw.capabilities.buttons 可收窄能力。
  * @param {object} raw - inbound 实例（新旧契约均可）
  * @param {string} [fallbackChannel] - 实例未自带 channel 字段时的兜底名
  * @returns {null | {
@@ -121,9 +125,13 @@ export function normalizeInbound(raw, fallbackChannel = '') {
   const channel = typeof raw.channel === 'string' && raw.channel !== ''
     ? raw.channel
     : (legacy ? 'telegram' : fallbackChannel)
-  const buttons = raw.capabilities?.buttons !== false
+  const matrixCaps = capabilitiesOf(channel)
+  const buttons = typeof raw.capabilities?.buttons === 'boolean'
+    ? raw.capabilities.buttons
+    : matrixCaps.buttons
   return {
     channel,
+    ...(raw.accountId === undefined ? {} : { accountId: typeof raw.accountId === 'string' ? raw.accountId : String(raw.accountId ?? '') }),
     raw,
     capabilities: { buttons },
     notifyTargets() {

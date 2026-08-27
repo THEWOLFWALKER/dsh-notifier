@@ -22,7 +22,7 @@ const DEFAULT_PORT = 8103
 // 身份/路由判定——约束形态降低伪造/路径穿插/资源膨胀面。允许字母数字 + 常用分隔符，
 // 拒绝空白、控制字符、路径分隔（`/`）、引号等注入载体；超长（>128，与身份层一致）拒收。
 const UID_MAX_LEN = 128
-const UID_PATTERN = /^[A-Za-z0-9_.:\-]+$/
+const UID_PATTERN = /^[A-Za-z0-9_.\-]+$/
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1'])
 
 function isValidWxUid(uid) {
@@ -65,6 +65,8 @@ export function resolveWxpusherInboundConfig(raw, { randomPath } = {}) {
     ok: true,
     config: {
       appToken,
+      // v0.8.7 账号来源：稳定本地标识（显式配置优先），绝不取自回调事件字段——缺省回落见 createWxpusherInbound。
+      accountId: String(cfg.accountId ?? '').trim(),
       webhookPath: webhookPath.startsWith('/') ? webhookPath : `/${webhookPath}`,
       host: String(cfg.host ?? '').trim() || '127.0.0.1',
       port: Math.min(65535, Math.max(0, Number.isFinite(portRaw) ? portRaw : DEFAULT_PORT)),
@@ -93,6 +95,10 @@ export function createWxpusherInbound(options = {}) {
   const fetchImpl = options.fetchImpl ?? globalThis.fetch?.bind(globalThis)
   const startServer = options.serverStarter ?? startHttpCallback
   const allowedIps = Array.isArray(config.allowedIps) ? config.allowedIps.map(String) : []
+  // v0.8.7 账号来源绑定：稳定本地标识（config.accountId 显式配置优先，缺省字面量 'default'，
+  // 与 telegram 通道的缺省语义一致）。绝不从回调事件字段（data.appId 是对端自报）取号——
+  // accountId 会进入 source 校验/审计回执，必须可验证且非凭证。
+  const resolvedAccountId = String(config?.accountId ?? '').trim() || 'default'
 
   const warn = (message) => {
     try { logger?.warn?.('[dsh-notifier/inbound:wxpusher]', message) } catch { /* 日志失败绝不致命 */ }
@@ -151,8 +157,11 @@ export function createWxpusherInbound(options = {}) {
         // v0.7：accept 返回值消费——拒绝/命令回执不再已读不回。
         // v0.8.4 INJ-1：授权门槛仍由 bus 身份/白名单裁决——只有已确认绑定的 uid 能到达
         // 业务扇出，app_subscribe 学习到的待确认 uid 不在此列，天然无裁决能力。
+        // v0.8.7：envelope 携带本地 accountId（config.accountId/'default'），供 Control Core
+        // 来源绑定精确校验——从不使用回调自报的 data.appId。
         const result = bus.accept({
           channel: 'wxpusher',
+          accountId: resolvedAccountId,
           userId: uid,
           chatId: uid,
           messageId: `cmd:${uid}:${time}:${hash6(text)}`,
@@ -220,6 +229,7 @@ export function createWxpusherInbound(options = {}) {
 
   return {
     channel: 'wxpusher',
+    accountId: resolvedAccountId,
     capabilities: { buttons: false },
 
     /** 启动回调服务器（幂等）。 */

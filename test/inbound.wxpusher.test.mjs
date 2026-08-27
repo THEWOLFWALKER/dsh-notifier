@@ -49,6 +49,7 @@ function makeRig({ allowUsers = ['UID_1'], config = {}, pushOptions = {} } = {})
       port: 0, // 随机端口（真实 server）
       notifyUids: config.notifyUids ?? [],
       allowedIps: config.allowedIps ?? [],
+      ...(config.accountId === undefined ? {} : { accountId: config.accountId }),
     },
     bus,
     store,
@@ -154,6 +155,30 @@ test('send_up_cmd：剥 #{appId} 前缀 → bus envelope；白名单外 uid 拒�
   await post(rig, { action: 'send_up_cmd', data: { uid: 'UID_EVIL', appId: 'AT_app', time: '1', content: 'hi' } })
   assert.equal(accepted.length, 1)
   await rig.inbound.stop()
+})
+
+test('send_up_cmd：本地 accountId 注入 envelop（config.accountId 优先；缺省字面量 default；回调自报 appId 一律忽略）', async () => {
+  const accepted = []
+  const rig = makeRig({ config: { accountId: 'my-wx-app', notifyUids: ['UID_1'] } })
+  rig.bus.onMessage((envelope) => accepted.push(envelope))
+  rig.inbound.start()
+  await tick()
+  // 载荷自带 appId 是对端自报：accountId 必须仍来自本地配置（my-wx-app），绝不落入 EVIL_*。
+  await post(rig, { action: 'send_up_cmd', data: { uid: 'UID_1', appId: 'EVIL_SELF_REPORT', time: '9', content: 'hi' } })
+  assert.equal(accepted.length, 1)
+  assert.equal(accepted[0].accountId, 'my-wx-app')
+  assert.equal(rig.inbound.accountId, 'my-wx-app')
+  await rig.inbound.stop()
+
+  const acceptedDefault = []
+  const rig2 = makeRig({ config: { notifyUids: [] } })
+  rig2.bus.onMessage((envelope) => acceptedDefault.push(envelope))
+  rig2.inbound.start()
+  await tick()
+  await post(rig2, { action: 'send_up_cmd', data: { uid: 'UID_1', appId: 'EVIL_SELF_REPORT', time: '10', content: 'hi' } })
+  assert.equal(acceptedDefault[0].accountId, 'default', '未显式配置 accountId → 稳定字面量 default')
+  assert.equal(rig2.inbound.accountId, 'default')
+  await rig2.inbound.stop()
 })
 
 test('send_up_cmd：无前缀纯文本直通；不一致 appId 也按 #xxx 形态剥', async () => {
@@ -297,6 +322,27 @@ test('INJ-1 send_up_cmd：非法 uid 形态（空白/控制字符/路径穿插/�
 
   // 合法 uid 仍可入站（正控）
   await post(rig, { action: 'send_up_cmd', data: { uid: 'UID_1', time: '3', content: 'hi' } })
+  assert.equal(accepted.length, 1)
+  await rig.inbound.stop()
+})
+
+test('INJ-1 uid 形态：含冒号 uid 被 wxpusher 形态校验拒绝（防复合键截断/覆盖他人绑定）', async () => {
+  const rig = makeRig()
+  const accepted = []
+  rig.bus.onMessage((envelope) => accepted.push(envelope))
+  rig.inbound.start()
+  await tick()
+
+  // send_up_cmd 含冒号 uid → 拒绝
+  await post(rig, { action: 'send_up_cmd', data: { uid: 'UID:EVIL', time: '1', content: 'hi' } })
+  // app_subscribe 含冒号 uid → 同样拒绝（不进入待确认/学习队列）
+  await post(rig, { action: 'app_subscribe', data: { uid: 'UID:EVIL', extra: 'x' } })
+  assert.equal(accepted.length, 0, '含冒号 uid 不得进入 bus')
+  assert.equal(rig.store.get('wxpusher:bind:UID:EVIL'), undefined, '含冒号 uid 不进学习表')
+  assert.ok(rig.lines.some((line) => /非法 uid/.test(line)), `应显式 warn 非法 uid（实际：${rig.lines.join(' | ')}）`)
+
+  // 无冒号 uid 仍正常入站（兼容）
+  await post(rig, { action: 'send_up_cmd', data: { uid: 'UID_1', time: '2', content: 'hi' } })
   assert.equal(accepted.length, 1)
   await rig.inbound.stop()
 })

@@ -1,0 +1,20 @@
+{
+  "source": {
+    "url": "https://github.com/openclaw/openclaw",
+    "title": "OpenClaw repository (community evidence)",
+    "queried": "2026-08-27",
+    "evidence": "Community implementation cross-check only; official iLink schema unavailable"
+  },
+  "qr_status": { "status": "confirmed", "ilink_user_id": "wx_user_REDACTED", "bot_token": "TOKEN_REDACTED", "baseurl": "https://ilinkai.weixin.qq.com" },
+  "inbound": {
+    "from_user_id": "wx_user_REDACTED",
+    "message_id": "msg_REDACTED",
+    "context_token": "ctx_REDACTED",
+    "item_list": [{ "type": 1, "text_item": { "text": "你好" } }]
+  },
+  "outbound": {
+    "endpoint": "ilink/bot/sendmessage",
+    "msg": { "from_user_id": "", "to_user_id": "wx_user_REDACTED", "client_id": "client_REDACTED", "message_type": 2, "message_state": 2, "item_list": [{ "type": 1, "text_item": { "text": "收到" } }] }
+  },
+  "notes": ["All identifiers/tokens are redacted", "Protocol facts remain declared pending official/device evidence"]
+}

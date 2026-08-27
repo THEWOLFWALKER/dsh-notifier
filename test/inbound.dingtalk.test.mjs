@@ -271,6 +271,7 @@ test('入站消息：data 二次 parse → bus.accept 形状（channel/userId/ch
   assert.equal(accepted.length, 1)
   assert.deepEqual(accepted[0], {
     channel: 'dingtalk',
+    accountId: 'APP_KEY',
     userId: 'staff_1',
     chatId: 'cid_1',
     chatType: '1',
@@ -303,7 +304,7 @@ test('ack 回帧：{ code:200, headers:{contentType,requestId}, messageId, data:
   })
 })
 
-test('非 text msgtype（如 picture）：静默忽略不入 bus，ack 照回', async () => {
+test('Issue #14：钉钉 picture 缺 URL 仍静默拒绝，ack 照回', async () => {
   const rig = makeRig()
   const accepted = []
   rig.bus.onMessage((envelope) => accepted.push(envelope))
@@ -311,6 +312,38 @@ test('非 text msgtype（如 picture）：静默忽略不入 bus，ack 照回', 
   const ws = pushMessage({ msgId: 'msg_pic', msgtype: 'picture', text: undefined })
   assert.equal(accepted.length, 0)
   assert.ok(ws.sent.some((frame) => frame.data === 'ack'))
+})
+
+test('Issue #14：钉钉混合 text + picture 保留文本和安全图片附件', async () => {
+  const rig = makeRig()
+  const accepted = []
+  rig.bus.onMessage((envelope) => accepted.push(envelope))
+  await driveConnected(rig)
+  pushMessage({
+    msgId: 'msg_mixed_image',
+    text: { content: '请看附件' },
+    picture: { downloadUrl: 'https://media.example.test/dingtalk.png', width: 1280, height: 720, ignored: 'x' },
+  })
+  assert.equal(accepted.length, 1)
+  assert.equal(accepted[0].text, '请看附件')
+  assert.deepEqual(accepted[0].image, { url: 'https://media.example.test/dingtalk.png', width: 1280, height: 720 })
+  assert.equal(accepted[0].ignored, undefined)
+})
+
+test('Issue #14：钉钉图片重放和不受信任 sender 仍走原有去重/白名单', async () => {
+  const rig = makeRig()
+  const accepted = []
+  rig.bus.onMessage((envelope) => accepted.push(envelope))
+  await driveConnected(rig)
+  pushMessage({ msgId: 'msg_picture_replay', msgtype: 'picture', text: undefined, picture: { url: 'https://media.example.test/dt.png' } })
+  pushMessage({ msgId: 'msg_picture_replay', msgtype: 'picture', text: undefined, picture: { url: 'https://media.example.test/dt.png' } })
+  pushMessage({
+    msgId: 'msg_picture_untrusted', msgtype: 'picture', text: undefined, senderStaffId: 'staff_untrusted',
+    picture: { url: 'https://media.example.test/dt.png' },
+  })
+  assert.equal(accepted.length, 1)
+  assert.equal(accepted[0].kind, 'image')
+  assert.equal(accepted[0].messageId, 'dt:msg_picture_replay')
 })
 
 test('robotCode 学习：首条入站消息落 store（dingtalk:robot-code），后续推送携带', async () => {
@@ -323,6 +356,127 @@ test('robotCode 学习：首条入站消息落 store（dingtalk:robot-code），
   assert.ok(batch, '应走 batchSend')
   assert.match(batch.url, /robot_code=RC_9/)
   assert.equal(batch.body[0].chatbotId, 'RC_9')
+})
+
+// ---------------------------------------------------------------- 有界内存表（v0.8.7 P1-7，宪法#4）
+
+const MSG_DEDUP_MAX = 1024 // 与 dingtalk-stream.mjs 的常量对齐（改源码上限须同步本值）
+const CHAT_STATE_MAX = 1024
+
+test('去重表有界：60s 窗口内涌入 1025 个全新 msgId → 淘汰最旧且 warn 出声，窗口内去重仍生效', async () => {
+  const rig = makeRig()
+  const accepted = []
+  rig.bus.onMessage((envelope) => accepted.push(envelope))
+  await driveConnected(rig)
+  // 全部落在 60s 重推窗口内：无一条过窗 ⇒ 惰性清扫一条都清不掉，只能靠硬上限收敛
+  for (let i = 0; i < MSG_DEDUP_MAX + 1; i += 1) pushMessage({ msgId: `flood_${i}` })
+  assert.equal(accepted.length, MSG_DEDUP_MAX + 1, '1025 条新消息全部投递')
+  assert.ok(
+    rig.lines.some((line) => line.includes('去重表达上限')),
+    '淘汰必须可见（宪法#3 静默即事故）',
+  )
+  // 最旧 msgId 已被淘汰：重推被当成新消息（bus 侧 fifo 上限 512 也早已忘记它）
+  pushMessage({ msgId: 'flood_0' })
+  assert.equal(accepted.length, MSG_DEDUP_MAX + 2, '被淘汰的 msgId 重推不再被吸收（证明淘汰真发生）')
+  // 最新 msgId 仍在表内：60s 重推吸收语义没被上限砍掉
+  pushMessage({ msgId: `flood_${MSG_DEDUP_MAX}` })
+  assert.equal(accepted.length, MSG_DEDUP_MAX + 2, '窗口内最新 msgId 重推仍被吸收')
+})
+
+test('去重表有界：过窗条目优先由惰性清扫回收（不动用淘汰，去重语义零损耗）', async () => {
+  const rig = makeRig()
+  const accepted = []
+  rig.bus.onMessage((envelope) => accepted.push(envelope))
+  await driveConnected(rig)
+  const realNow = Date.now
+  try {
+    let base = realNow()
+    Date.now = () => base
+    for (let i = 0; i < MSG_DEDUP_MAX; i += 1) pushMessage({ msgId: `old_${i}` })
+    base += 60000 // 全表越过 MSG_DEDUP_WINDOW_MS
+    pushMessage({ msgId: 'fresh_1' }) // size>1024 未触达，先不清扫
+    for (let i = 0; i < 2; i += 1) pushMessage({ msgId: `fresh_pad_${i}` })
+  } finally {
+    Date.now = realNow
+  }
+  assert.ok(
+    !rig.lines.some((line) => line.includes('去重表达上限')),
+    '过窗条目走惰性清扫即可容纳新条目，不该触发淘汰告警',
+  )
+  assert.equal(accepted.length, MSG_DEDUP_MAX + 3)
+})
+
+test('sessionWebhooks 有界：第 1025 个会话挤掉最旧 → 该会话回复回落 batchSend 主动推送', async () => {
+  const rig = makeRig()
+  await driveConnected(rig)
+  for (let i = 0; i < CHAT_STATE_MAX + 1; i += 1) {
+    pushMessage({
+      msgId: `wh_${i}`,
+      conversationId: `chat_${i}`,
+      senderStaffId: 'staff_1',
+      sessionWebhook: `${WEBHOOK_URL}?session=chat_${i}`,
+    })
+  }
+  assert.ok(
+    rig.lines.some((line) => line.includes('会话状态表达上限')),
+    'sessionWebhook 淘汰必须 warn（受影响会话回复语义降级，不可静默）',
+  )
+  // 最旧会话：webhook 已被淘汰 ⇒ 走主动推送兜底（功能不丢，仅路径降级）
+  assert.equal(await rig.inbound.sendText('chat_0', '最旧'), true)
+  assert.ok(
+    !rig.calls.some((entry) => entry.url.includes('session=chat_0')),
+    '被淘汰会话不得再命中 sessionWebhook',
+  )
+  assert.ok(rig.calls.some((entry) => entry.url.startsWith(BATCH_URL)), '应回落 batchSend')
+  // 最新会话：webhook 仍在，被动回复照旧
+  assert.equal(await rig.inbound.sendText(`chat_${CHAT_STATE_MAX}`, '最新'), true)
+  assert.ok(
+    rig.calls.some((entry) => entry.url.includes(`session=chat_${CHAT_STATE_MAX}`)),
+    '未被淘汰的会话仍走被动回复',
+  )
+})
+
+test('chatSenders 有界：被淘汰会话的主动推送 staffId 回落 chatId；未淘汰仍用学到的发言人', async () => {
+  const rig = makeRig()
+  await driveConnected(rig)
+  for (let i = 0; i < CHAT_STATE_MAX + 1; i += 1) {
+    pushMessage({
+      msgId: `cs_${i}`,
+      conversationId: `chat_${i}`,
+      senderStaffId: 'staff_1',
+      sessionWebhookExpiredTime: Date.now() - 1000, // 全部过期 ⇒ 一律走 batchSend，直接观测 staffId
+    })
+  }
+  assert.equal(await rig.inbound.sendText('chat_0', '最旧'), true)
+  const oldest = rig.calls.filter((entry) => entry.url.startsWith(BATCH_URL)).at(-1)
+  assert.equal(oldest.body[0].staffId, 'chat_0', '发言人被淘汰后回落「chatId 当 staffId」既有路径')
+  assert.equal(await rig.inbound.sendText(`chat_${CHAT_STATE_MAX}`, '最新'), true)
+  const newest = rig.calls.filter((entry) => entry.url.startsWith(BATCH_URL)).at(-1)
+  assert.equal(newest.body[0].staffId, 'staff_1', '未淘汰会话仍用学到的最近发言人')
+})
+
+test('sessionWebhooks LRU：活跃会话（中途再发消息）不因「首次学习早」被淘汰', async () => {
+  const rig = makeRig()
+  await driveConnected(rig)
+  const learn = (chatId, seq) => pushMessage({
+    msgId: `lru_${seq}`,
+    conversationId: chatId,
+    sessionWebhook: `${WEBHOOK_URL}?session=${chatId}`,
+  })
+  learn('chat_hot', 'hot1') // 最早学习
+  for (let i = 1; i < CHAT_STATE_MAX; i += 1) learn(`chat_${i}`, i) // 表正好填满 1024
+  learn('chat_hot', 'hot2') // 活跃触摸：刷新新鲜度，移到最新端
+  learn('chat_last', 'last') // 撑破上限 ⇒ 淘汰最旧
+  assert.equal(await rig.inbound.sendText('chat_hot', '热键'), true)
+  assert.ok(
+    rig.calls.some((entry) => entry.url.includes('session=chat_hot')),
+    '被触摸过的活跃会话必须存活（首次学习早不是淘汰理由）',
+  )
+  assert.equal(await rig.inbound.sendText('chat_1', '最旧'), true)
+  assert.ok(
+    !rig.calls.some((entry) => entry.url.includes('session=chat_1')),
+    '淘汰的是未被触摸的最旧会话',
+  )
 })
 
 // ---------------------------------------------------------------- 回复与推送

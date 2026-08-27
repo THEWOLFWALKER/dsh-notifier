@@ -14,7 +14,7 @@ import { sendSegmented } from './inbound/segment.mjs'
  * @param {object} [options.routing] - routing 配置原值（resolveRouting 解析）；未配置时广播全部渠道（基线行为）。
  * @param {object} [options.retry] - 重试覆盖（{ enabled?, attempts?, backoffMs? }）；仅配置 routing 后生效。
  * @param {object} [options.segment] - 出站分段（{ enabled?, maxCodepoints? }）；默认开、1200 码点。
- * @param {(record: object) => void} [options.onSend] - 每次广播结束的回调（通知账本用，阶段 6）。
+ * @param {(record: object) => void} [options.onSend] - 每次发送结束的回调（通知账本/事件用）。
  * @returns { notify, notifyAll, flush, channelCount }
  */
 export function createNotifier(ctx, channels, options = {}) {
@@ -26,6 +26,14 @@ export function createNotifier(ctx, channels, options = {}) {
   const segment = (options.segment !== null && typeof options.segment === 'object')
     ? options.segment
     : { enabled: true, maxCodepoints: 1200 }
+
+  const audit = (message, outcome, extra = {}) => {
+    if (typeof options.onSend !== 'function') return
+    const record = { time: extra.time ?? new Date().toISOString(), message, ...outcome }
+    if (extra.source !== null && typeof extra.source === 'object') record.source = extra.source
+    if (typeof extra.channel === 'string' && extra.channel !== '') record.channel = extra.channel
+    try { options.onSend(record) } catch { /* audit failure never affects delivery */ }
+  }
 
   /** 包装单渠道发送：分段开启且超预算时切段顺序送达，任一段失败即整体失败。 */
   const sendOne = (type, config, msg) => {
@@ -61,22 +69,28 @@ export function createNotifier(ctx, channels, options = {}) {
   }
 
   /** 单渠道推送：未配置/未知渠道静默跳过 + warn 提示；已配置渠道失败返回 failed 结果（不抛出，供工具渲染中文反馈）。 */
-  async function notify(channel, msg) {
+  async function notify(channel, msg, sendOptions = {}) {
     const type = typeof channel === 'string' ? channel.trim() : ''
     const normalized = normalizeMessage(msg)
     const entry = channels.find((item) => item.type === type)
     if (entry === undefined) {
       warn(`渠道 "${type || '(空)'}" 未配置，已跳过推送（可用类型：${Object.keys(ADAPTERS).join('/')}）`)
-      return channelResult(type || '(空)', 'skipped')
+      const result = channelResult(type || '(空)', 'skipped')
+      audit(normalized, { ok: false, delivered: [], skipped: [`(${result.channel})`], failed: [] }, { source: sendOptions?.source, channel: result.channel })
+      return result
     }
     return track((async () => {
       try {
         await sendOne(type, entry.config, normalized)
-        return channelResult(type, 'sent')
+        const result = channelResult(type, 'sent')
+        audit(normalized, { ok: true, delivered: [type], skipped: [], failed: [] }, { source: sendOptions?.source, channel: type })
+        return result
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error)
         warn(`渠道 "${type}" 推送失败: ${reason}`)
-        return channelResult(type, 'failed', error)
+        const result = channelResult(type, 'failed', error)
+        audit(normalized, { ok: false, delivered: [], skipped: [], failed: [{ channel: type, error: reason }] }, { source: sendOptions?.source, channel: type })
+        return result
       }
     })())
   }
@@ -101,9 +115,7 @@ export function createNotifier(ctx, channels, options = {}) {
     if (quiet) {
       // 静音不等于没发生：账本照记（delivered 空、skipped 标记），方便晨报反映被静音的流量
       const quietOutcome = { ok: true, delivered: [], skipped: ['(quiet)'], failed: [] }
-      if (typeof options.onSend === 'function') {
-        try { options.onSend({ time: new Date().toISOString(), message: normalized, ...quietOutcome, ...sourceExtra }) } catch { /* 账本失败绝不影响 */ }
-      }
+      audit(normalized, quietOutcome, { source: sourceExtra.source })
       return quietOutcome
     }
     if (channels.length === 0) {
@@ -122,9 +134,7 @@ export function createNotifier(ctx, channels, options = {}) {
         : '路由矩阵（routing 配置）未命中任何已启用渠道'
       warn(`notifyAll 目标为空：${hint}（可用渠道：${channels.map((entry) => entry.type).join('/') || '无'}）`)
       const emptyOutcome = { ok: true, delivered: [], skipped: ['(no-targets)'], failed: [] }
-      if (typeof options.onSend === 'function') {
-        try { options.onSend({ time: new Date().toISOString(), message: normalized, ...emptyOutcome, ...sourceExtra }) } catch { /* 账本失败绝不影响推送 */ }
-      }
+      audit(normalized, emptyOutcome, { source: sourceExtra.source })
       return emptyOutcome
     }
     const delivered = []
@@ -153,9 +163,7 @@ export function createNotifier(ctx, channels, options = {}) {
       skipped,
       failed,
     }
-    if (typeof options.onSend === 'function') {
-      try { options.onSend({ time: new Date().toISOString(), message: normalized, ...outcome, ...sourceExtra }) } catch { /* 账本失败绝不影响推送 */ }
-    }
+    audit(normalized, outcome, { source: sourceExtra.source })
     return outcome
   }
 

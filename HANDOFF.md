@@ -1,209 +1,57 @@
-# dsh-notifier 交接文档（HANDOFF）
+# dsh-notifier 当前交接快照
 
-> 写给下一个 agent。本文档是完整的工作上下文快照：设计理念、军规约定、架构地图、
-> 版本脉络、审查记录、已知坑、待办清单。读完这一份即可无缝接手。
-> 交接时刻：2026-08-23，v0.8.5（issue #11：ask_user 编号回复在 qq-bot 异名 / wechat iLink 纯入站通道失效）代码与文档已完成、888 全绿。
-> 上一稳定发布位 v0.6.5 = `b2d23c0`（npm 与 GitHub 发布位 `0221d1e` 已对齐）。
+更新时间：2026-08-27。当前发布候选线是 `codex/stage5-wechat-ilink-hardening`，包版本字段为 `0.9.0`。最新完整测试为 `1352`（1351 pass + 1 skip）；历史 npm `0.8.6` 契约为 909。
 
----
+| 测试 | `npm test`：**1352 tests**（1351 pass + 1 skip，v0.9.0 发布候选） |
 
-## 0. 一句话
+## 下一位开发者从这里开始
 
-dsh-notifier 是 DSH（一个 agent 宿主，cordis 插件体系）的统一通知推送插件：
-一个 `notify()` API 出多个渠道（telegram/feishu/qq/wxpusher/wechat/dingtalk/bark/...27 = 12 专属 adapter + 15 spec 渠道），
-外加**远程审批**（agent 请求危险操作时推卡片到手机，点按钮/回复 1/2 远程裁决）、
-**远程会话**（手机上回复消息 inject 进 agent 会话）、**移动指挥中心**（长任务心跳/疑似卡住提醒/停止任务按钮）、
-**开放事件源**（其他插件经 notifier 服务推送 + 订阅 `dsh-notifier/sent` 事件）、
-**身份体系**（配对码准入/复合键绑定/运行时成员管理，v0.7）、
-**本机 Web 管理台**（凭证/路由/成员/扫码授权，移动端适配）。
-零运行时依赖（只用 fetch + node:crypto + 原生 WebSocket）。
+1. 项目地图见 [docs/KNOWLEDGE_BASE.md](docs/KNOWLEDGE_BASE.md)。
+2. 用户操作从 [docs/guide.md](docs/guide.md) 开始；运维和发布冒烟见 [docs/OPERATIONS.md](docs/OPERATIONS.md)。
+3. 稳定模块和数据流见 [docs/architecture.md](docs/architecture.md)，渠道边界见 [docs/compatibility-matrix.md](docs/compatibility-matrix.md)。
+4. 版本/发布规则见 [docs/VERSIONING.md](docs/VERSIONING.md)；升级步骤见双语升级指南。
 
-- 语言/运行时：Node.js ESM（.mjs），无 TypeScript，无构建步骤
-- 代码量：src+test+scripts ≈ 28,800 行；43 个测试文件，846 测试
-- 文档：README.md / README.zh-CN.md / ADAPTER.md（渠道接入规范）/ PLUGINS.md（插件互操作）/ docs/v0.5-design.md / docs/v0.6-design.md / CHANGELOG.md（最详细的历史）
+## 产品与架构现状
 
----
+- Node.js ESM（Node `>=22`），无生产依赖、无构建步骤；27 个出站渠道由统一 adapter/spec 层装配。
+- 入站控制通道为 Telegram、Feishu、QQ Bot、WxPusher、WeChat iLink、DingTalk。通知、审批、会话输入和 `ask_user` 共享状态、路由、账本与 Control Core。
+- 身份是 `(channel, userId)` 绑定；涉及账号/聊天时继续精确匹配 `(channel, accountId, userId, chatId)`。未绑定、来源冲突、未知 `chatType`、缺关键来源字段均默认拒绝。
+- Web 管理台是唯一控制台，且只监听 `127.0.0.1`、使用 Bearer token。个人模式首屏引导配置通道、配对成员、测试发送；会话/绑定等高级项按需展开。YAML 是高级/自动化入口，不是第二套控制台。
+- Web/admin 已有脱敏问题列表及 choose/reject 结算（`/api/questions`、`/api/questions/:ref/settle`），结算始终经过 Control Core。桌面 `ask_user` 没有安全宿主接口，因此不得声称 desktop 可结算或已有双端共享；超时/失败必须交还桌面，绝不代答。
 
-## 1. 当前状态（交接时刻）
+## 已完成范围（代码/契约证据）
 
-| 项 | 状态 |
-|---|---|
-| 版本 | package.json = 0.8.5，CHANGELOG 已写（含 0.8.2/0.8.3/0.8.4/0.8.5），admin UI 版本串（v0.8.5）、双语 README、HANDOFF 均已同步 |
-| git | v0.8.5 已提交（463989e fix issue #11 + 发布 chore）；上一稳定发布位 v0.8.4 = `762194f` |
-| 测试 | `npm test` = **888 pass / 0 fail**（node --test；v0.8.4 基线 885 → +3） |
-| 发布 | **发包前核对四处计数一致——README.md 徽章/正文、README.zh-CN.md 徽章/正文、HANDOFF.md、admin UI 版本串（src/admin/ui.mjs）——任何一处与实际不符先修再发** |
-| 真机验证 | v0.6.1 修过 TG 真机事故（见 §5）；v0.7 真机测试通过（2026-08-17，v0.7.0-realtest 包）；内部真机测试文档 TG-TEST.md（Telegram 提问链路）与 WECHAT-TEST.md（微信扫码即配对）随 code/ 保留 |
+- Control Core/session arbiter 已覆盖 token 单次核销、来源/会话/聊天精确绑定、首达采纳、竞态与失效 fail-closed；团队审批成员为有界精确三元组。
+- Session control overlay 已经由 registry、router 和 loopback admin 持久化并做字段/来源隔离、记录级合并、拷贝读取和持久化失败传播；管理台只返回脱敏摘要。
+- Telegram/Feishu provider facade、QQ C2C 按钮与 GROUP 文本 fallback、WeChat iLink/DingTalk 图片 envelope、WxPusher 本地 `accountId`、回调容量和插件 facade 边界均已契约测试。
+- 已移除将 channel 名伪作 accountId 的兜底；Telegram/Feishu 直接按钮回调带 provider eventId；问题编号回复的账号透传和成功回执已修正。
+- 管理台个人模式首屏、加载/空态/错误/禁用/窄屏/破坏性确认状态已覆盖 focused tests。所有通知渠道故障应隔离，不得阻塞启动或其他渠道。
 
----
+## 不可越过的安全红线
 
-## 2. 设计理念（不可违背的红线）
+- 入站默认拒绝；身份和回调必须绑定原始 channel/account/user/chat。token 有时限且单次使用，错误来源、异常、超时、畸形输入都回到桌面。
+- Control Core 是审批与提问的唯一授权/结算边界；管理台不能直写答案或账本。`notifyAll().delivered` 只能说明渠道级结果，不能证明具体聊天送达。
+- 凭证、token、完整用户/聊天/agent 标识不得出现在日志、API 响应、脱敏快照或 DOM。状态写入必须保留无关 key，并通过现有 store 锁与合并语义。
+- `ctx.notifier` 预算、冻结 facade、回调容量和限流只是支持路径上的约束；同进程插件仍是受信边界，不宣称 OS 隔离。内部构造器只从 `dsh-notifier/internal` 暴露。
 
-这些是项目的宪法。任何改动先对照这一节，历次 review 的第一检查项就是它们：
+## 明确残余与验证缺口
 
-### 2.1 安全红线（审批链）
+- 所有当前证据主要是 mock/contract/seam tests。未完成真实 Telegram/Feishu/QQ/DingTalk/iLink/WxPusher 设备 payload、按钮 ACK、重连、媒体/文件限制和长连接验证；`declared` 能力不得写成正式支持。
+- 未完成 DSH 宿主真实事件/桌面 toast（BurntToast/PowerShell）验证；桌面 `ask_user` 没有安全宿主接口。管理台真实浏览器操作、宿主重启读取 overlay、真实 provider 回调仍待做。
+- npm registry 接受/干净 disposable profile 安装仍是发布门；工程树与 npm archive 若不一致，以工程树为准并记录差异。多 WxPusher 应用必须配置不同本地 `accountId`，否则共享 `default` 命名空间。
 
-1. **静默永不批准**：超时/无响应/解析失败/任何异常 → `return next()` 交还桌面决定。
-   宁可用户重新点一次，绝不替用户批准。所有 fail 路径的语义都是「回落桌面」。
-2. **一次点击只授权一次操作**：token 单次核销（vault verify 即失效）+ 审批账本状态机
-   （首达采纳，二次裁决返回 `already-resolved`）。双保险。
-3. **A listener never throws**：所有事件处理器/消息处理器/装配段全 try/catch 包裹。
-   插件绝不能弄崩宿主。装配段还要**逐通道隔离**（一条通道炸了 warn 并跳过，其余照常——v0.6.1 真机事故的教训）。
-4. **白名单默认全拒**：`allowUsers` 为空 → 任何入站消息都被拒绝。授权显式、非隐式。
-5. **token 时效**：10min TTL，HMAC 签名；`tokenSecret` 默认进程随机（重启后旧卡全废）。
+## 发布前步骤
 
-### 2.2 工程军规（写代码时的约定）
-
-1. **零运行时依赖**：只用 fetch / node:crypto / 原生 WebSocket / node:*。optionalDependencies 仅 @larksuiteoapi/node-sdk（飞书 WS，懒加载，没装给中文指引后静默降级）。
-2. **错误双写 stderr**：宿主 logger 在 web profile 下不落 stdout，告警必须同时 `console.error`（v0.6.1 真机事故：出站正常+inbound 全死+零可见，排查数轮）。见 `bus.mjs` 的 `warn()`。
-3. **fail 的方向**：读失败 → 回退默认/内存态；写失败 → 保留 dirty 下次再试 + warn 一次（不刷屏）；**损坏的 state 文件绝不覆写**（v0.6.4：save 撞上解析失败 = 中止，只有启动 load 才 fail-open 到空——无记忆好过误清空）。
-4. **状态文件权限 0600**：state.json / 账本 / 审计都含凭证或上下文（共享主机不可他账号可读）。
-5. **每个「审查发现」的修复都要写进 CHANGELOG 并注明审查编号**（如 R2-P1-2），修复处代码注释同样标注。这是项目的可追溯性文化。
-6. **测试是行为契约**：行为变更必须同步改测试并在 CHANGELOG 说明为什么改（例：v0.6.4 损坏文件测试从「fail-open 覆写」改成「写入中止保护现场」）。
-7. **注释风格**：中文，先说「为什么」再说「是什么」，版本号+审查编号标注来源。文件头是模块职责总述。照着现有文件写就对了。
-
-### 2.3 并发模型（v0.6.3/v0.6.4 的核心主题）
-
-`state.json` 被**多进程**同写：运行中宿主 + CLI（route/channel-login/wechat-login）。三层防御：
-
-1. **键级合并**（v0.6.3）：每个 store 实例只落自己动过的键（dirty set），写时重读磁盘合并——不互相抹键。
-2. **跨进程写锁**（v0.6.4）：`save()` 全程持 `<file>.lock`（`openSync 'wx'` 抢占；mtime>10s 视为陈锁可清；有界自旋 60×4ms；超时强写降级+warn）。堵 last-writer-wins 整文件丢写。
-3. **读收敛**（v0.6.4）：`get()/keys()` 节流 stat（≥500ms 一次），mtime 变了就重载合并（dirty 键内存优先）——CLI 写 route:* 对运行中宿主秒级可见。
-
----
-
-## 3. 架构地图
-
-```
-src/
-├── index.mjs            # 装配总入口（apply）：装配顺序是刻意的，见注释
-├── config.mjs           # 配置解析与默认值
-├── notify.mjs           # 出站核心：notify()/notifyAll()，分段、限流、重试
-├── routing.mjs          # level → 渠道语义矩阵（active/passive/timeSensitive）
-├── rules.mjs            # 通知规则（事件 → 是否/如何通知）
-├── ledger.mjs           # 通知账本（append-only + prune）
-├── event-listener.mjs   # 宿主事件 → 通知（含 turn 心跳/卡住检测）
-├── health.mjs           # 渠道健康/熔断
-├── actions.mjs          # v0.5 动作分发器（ac: 回调 → turn/cancel 等，白名单动作面）
-├── public.mjs           # v0.6 开放服务面（其他插件 push + dsh-notifier/sent 事件）
-├── tool-register.mjs    # notify 工具注册给 agent
-├── adapters/            # 出站渠道（_engine 共享引擎；spec-channels.mjs 一个文件吃 15 个 JSON 规范渠道）
-├── inbound/             # 入站（双向通道核心）
-│   ├── bus.mjs          # 入站总线：白名单+去重+审批 waiter+消息扇出（消费语义：true=停止扇出）
-│   ├── store.mjs        # state.json 持久化（§2.3 并发三层防御都在这）
-│   ├── tokens.mjs       # token vault（mint/verify，HMAC）
-│   ├── callback-refs.mjs# v0.6.2 短引用注册表（TG callback_data 64B 限制）
-│   ├── identity.mjs     # v0.7 身份绑定层（复合键绑定表/角色/待确认/迁移）
-│   ├── pairing.mjs      # v0.7 配对码状态机（六态/SHA-256/暴力锁出/bootstrap）
-│   ├── commands.mjs     # v0.7 注册命令（/help /whoami /pair /unpair）
-│   ├── target-guard.mjs # v0.7 目标解析三级优先 + 渠道形状守卫
-│   ├── conversation.mjs # 远程会话（入站消息 → agent 会话 inject）
-│   ├── telegram-bot.mjs / feishu-bot.mjs / qq-gw.mjs / wechat-ilink.mjs /
-│   │   dingtalk-stream.mjs / wxpusher-callback.mjs   # 各通道长连接/轮询实现
-│   └── _contract.mjs    # 渠道统一契约（normalizeInbound：新旧形状归一）
-├── approval/
-│   ├── router.mjs       # 审批瀑布流处理器（§2.1 红线的主要承载者）
-│   └── escalation.mjs   # 30s/60s 升级提醒链
-├── routing/             # v0.3.2 路由引擎（与 routing.mjs 互补不冲突）
-│   ├── agent-router.mjs # agent/会话 ↔ 渠道 双向解析链（route:agents/sessions）
-│   └── session-registry.mjs # agent 生命周期 → route:sessions 台账
-├── admin/               # v0.3.3 Web 管理台（server/api/ui/scan/events，SSE）
-├── status/turn-tracker.mjs # 任务状态跟踪（心跳源）
-└── client/desktop-sound.mjs # 桌面端提示音
+```text
+npm test
+node scripts/verify-release.mjs
+node scripts/gen-channel-matrix.mjs --check
+node --check src/index.mjs
+npm pack --dry-run --json
 ```
 
-**装配顺序要点**（index.mjs，改动前先读注释）：notifier → publicFacade/服务注册 → sweep 定时器 → router/registry → event-listener（惰性 getter 拿 actions/interactive）→ 白名单块（vault→bus→actions→逐通道 inbound，每通道独立 try）→ 审批注册。dispose 链全程收集（disposers 数组，卸载逆序语义）。
+确认干净工作树、版本/测试数与 [docs/VERSIONING.md](docs/VERSIONING.md) 一致后，在 disposable DSH profile 安装 registry artifact，验证启动装配、一次出站测试和一次入站命令，再发布对应版本。
 
----
+## 当前提交入口
 
-## 4. 版本脉络（为什么会有这些版本）
-
-| 版本 | 主题 | 一句话 |
-|---|---|---|
-| v0.5 | 动作闭环 | 「停止任务」按钮（ac: 动作）+ turn 追踪 + 心跳/卡住提醒 |
-| v0.6.0 | 开放事件源 | notifier 服务注入 + `dsh-notifier/sent` 事件（其他插件可推送/订阅） |
-| v0.6.1 | 真机事故#1 | inbound 装配可诊断性：错误双写 stderr + 逐通道装配隔离（web profile 下零可见的教训） |
-| v0.6.2 | 真机事故#2 | TG `callback_data` 64B 硬限 → BUTTON_DATA_INVALID 400。短引用注册表（`r:<8字符>`，单次核销+TTL 15min+FIFO 256） |
-| v0.6.3 | 首轮三路审查修复 | 11 项：审批 waiter 预注册竞态 / state 键级合并防互抹 / state 定期瘦身 / 空目标可见化 / 分段部分送达不整条重试 / 编号回复收紧到送达渠道 / 账本审计 0600 等 |
-| v0.6.4 | 二轮审查修复 | 6 项：跨进程写锁 / 损坏中止 / 读收敛 / 编号回复 intended 兜底（堵「卡片发送失败但广播教回复 1」死路）/ pushedTo 增量落账 / counter 随机起点 + bus.dispose() + dedup 清扫线联动 |
-| v0.6.5 | 三轮审查修复 | 20+ 项：ntfy 中文标题/chanify 路径两个 mock 盲区真机必炸 P1、onebot CQ 注入、锁 owner 校验、损坏自愈、putChannel 白名单、SSE 上限、审计轮转 |
-| v0.7.0 | 身份体系 | 「谁是家里人」从 YAML 字符串升为运行时对象：配对码六态（SHA-256 落盘+暴力锁出）、复合键绑定（修跨渠道串扰）、引导态启动（空白名单不再死路）、拒绝回执、注册命令 /pair /unpair、管理台成员页、目标解析三级优先+形状守卫。11 项 UX 审查全闭环，733→797（R5 审查修复后） |
-
-详见 CHANGELOG.md——每条都写了根因和审查编号，是理解「这个项目怕什么」的最好材料。
-
----
-
-## 5. 已知的坑与教训（下一个 agent 必读）
-
-1. **mock 盲区是本项目最大的质量风险**。三次真机事故全是 mock 测不出的：
-   - v0.6.1：mock fetch 不走 cordis 装配，装配段同步抛错被宿主吃掉零可见；
-   - v0.6.2：mock fetch 不校验 TG callback_data 64B 长度；
-   - v0.6.3 期间发现：mock 不解析 TG legacy markdown，未配对 `_*` 必 400，卡片静默降级纯文本。
-   → 结论：**涉及真实 HTTP 形状/长度/解析语义的改动，单测过绿≠没问题，必须真机复验。**
-2. **unref 教训（v0.6.4 当场翻车）**：给 `bus.wait` 的超时定时器加 `unref()` 后，
-   所有「await 超时 resolve」的测试全炸（事件循环只剩 unref 定时器时直接退出）。
-   生产语义也不对：在途审批不该因进程恰好空闲而蒸发。**停机清理由 dispose() 承担，定时器保持 ref。**
-   已回退，教训留在 bus.mjs 注释里。
-3. **改函数签名必须全文搜调用点**：v0.6.4 开发中途 `pushApproval` 加了第 4 参 `channelTypes`
-   但调用点没传，`undefined.includes` 抛错被 handler 的 try/catch 吞掉（"A listener never throws"
-   的副作用：**吞错的保护壳会让断线静默化**）→ 整轮推卡夭折，22 测试红。安全壳下的调用链
-   断线要靠测试兜底，这正是 718 测试存在的意义。
-4. **counterStart 随机化**（v0.6.4）：审批 key `ap:<callId>:<n>` 的 n 起点生产随机
-   （防重启后同 callId 撞 key + 旧 token 复现核销路径），**测试必须传 `counterStart: 0`**
-   保住确定性断言（approval.test.mjs 的 rig 已加，新测试记得）。
-5. **审批不受 quiet 影响**：静音审批 = 审批永远超时回落桌面，违背「沉默永不批准」的可预期性。
-6. **审批是全局广播的**（除非 v0.3.2 分流命中）：编号回复匹配优先级 = 送达精确(user) > 送达同渠道 > intended 渠道 > 拒绝。跨渠道裸 1/2 一律拒绝（v0.6.3 收紧，v0.6.4 加 intended 兜底，演进逻辑见 router.mjs 注释）。
-
----
-
-## 6. 审查记录（多轮 review 的组织方式）
-
-用户的工作模式是「开发 → 打包发版 → 多轮 review → 修复 → 再发版」：
-
-- **第一轮（v0.6.3 修复来源）**：三路并行审查（R1 出站核心 / R2 inbound+审批 / R3 装配+admin+v0.6），
-  产出编号问题清单（R1-P2-1 这种格式 = 轮次-优先级-序号），11 项 P1/P2 全修。
-- **第二轮（v0.6.4 修复来源）**：修复质量复核 + 并发/边界专项，6 项（R2-P1-2 跨进程锁、
-  R2-P2-2 损坏中止、R2-P2-3 读收敛、R1-P2-1 intended 兜底、R1-P1-1 增量落账、R2-P2-4/5 counter+dispose）。
-- **审查方法**（下一个 agent 可复用）：按模块分域并行开 2~3 个 review 子代理，
-  每个只给一个域的文件清单+红线清单，要求产出「编号+优先级+根因+建议修法」，
-  主 agent 汇总去重后逐项修复，每项修复跑全量回归。
-
----
-
-## 7. 待办清单（下一个 agent 的行动项，按优先级）
-
-1. ~~发布 v0.6.4~~、~~第三轮 review（R4-1/R4-2/R4-3）~~、~~v0.6.5 发布~~：均已完成（见 CHANGELOG 0.6.5 条目）。
-2. **v0.7 身份体系**：代码+测试+文档全部落地（identity.mjs/pairing.mjs/commands.mjs/target-guard.mjs 四新文件；UX 审查 11 项全闭环；R5 三路审查 P1×6 P2×9 P3×21 修复 + 复审 R5b 零 P1/P2；797 全绿；**真机测试通过 2026-08-17**）。剩余：提交发版 v0.7.0（发布前按上方「发布」行核对四处计数）。
-3. ~~真机复验 v0.6.2~v0.7~~：**已通过（2026-08-17）**。重点场景备忘（若后续发现未覆盖再回补）——TG 审批按钮点击（callback ref 展开链）、
-   CLI 改路由后宿主不重启秒级生效（读收敛）、两进程同时写 state.json（锁）、
-   **新装机空 allowUsers 引导态**（stderr bootstrap 码 → IM 里 /pair → 成为 owner 全链路）、
-   TG 绑定 id 在飞书发消息被拒并收到拒绝回执（复合键）。
-4. **可选优化**（审查中提过但未做）：`act:*` 待决动作记录的 TTL 清扫已有（24h），
-   但 callback-refs 注册表容量 256 偏保守，高峰期可能 FIFO 挤掉在途引用——真机观察到再调。
-   v0.8 评估项：YAML allowUsers 移除（v0.7 已 deprecated 为首次导入）。
-
----
-
-## 8. 快速上手
-
-```bash
-cd dsh-notifier
-npm test                    # 846 测试，约 2 分钟
-npm run lint 2>/dev/null || node --check src/index.mjs   # 无 lint 配置的话用 node --check
-node scripts/route.mjs --help        # 路由 CLI
-node scripts/channel-login.mjs --help
-node scripts/test-channel.mjs        # 渠道连通测试
-```
-
-- 数据目录：`$DSH_HOME/dsh-notifier/state.json`（回退 `~/.dsh/dsh-notifier/`）
-- 管理台：配置 admin.enabled 后本机 Web（见 README）
-- 完整文档入口：README.zh-CN.md → docs/v0.5-design.md → docs/v0.6-design.md → CHANGELOG.md
-
----
-
-## 9. 给下一个 agent 的话
-
-这个项目的品味在于：**每一条红线都来自一次真实事故，每一条注释都解释为什么**。
-接手后请保持三件事：改动前先读目标文件的文件头注释；修复必须带测试和 CHANGELOG 条目；
-对「吞错的保护壳」保持警惕——它让断线静默，只有测试能兜住。
-
-祝顺利。🐾
+继续开发前以源码和测试为准；当前长期方向仍是个人模式优先的跨 IM control-plane 路线图，详见 [docs/architecture-roadmap.md](docs/architecture-roadmap.md)。

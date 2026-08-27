@@ -124,6 +124,60 @@ test('identity：绑定记录读盘防御——坏形状整条丢弃、坏字段
   assert.equal(identity.list().find((r) => r.userId === 'bad-role').role, 'member')
 })
 
+test('identity：addBinding 拒绝 userId 含冒号（纵深防御，防复合键截断）', () => {
+  const { store } = tempStore()
+  const warns = []
+  const identity = createIdentity({ store, logger: { warn: (...args) => warns.push(args.join(' ')), info: () => {} } })
+  const rejected = identity.addBinding({ channel: 'telegram', userId: 'a:b' })
+  assert.equal(rejected.ok, false)
+  assert.equal(rejected.reason, 'invalid-user')
+  assert.ok(warns.some((w) => /含冒号/.test(w)), `应显式 warn 含冒号绑定（实际：${warns.join(' | ')}）`)
+  assert.equal(identity.allows('telegram', 'a'), false, '截断前半不得命中')
+  assert.equal(identity.allows('telegram', 'a:b'), false, '冒号 uid 整段不得准入')
+  // 无冒号仍正常
+  assert.equal(identity.addBinding({ channel: 'telegram', userId: 'ok' }).ok, true)
+})
+
+test('identity：normalizeBinding 用 indexOf 切分，与 admin parseMemberKey 对齐（冒号 userId 不被截断）', () => {
+  const { store } = tempStore()
+  // 显式字段正确 + key 含冒号：应完整保留 userId
+  store.set('inbound:bindings', {
+    'telegram:foo:bar': { channel: 'telegram', userId: 'foo:bar', role: 'owner', pairedAt: 1, origin: 'paired' },
+    // 字段缺失时依赖 fallbackKey 解析：indexOf 只切第一个冒号
+    'wxpusher:UID_1:extra': { role: 'member', pairedAt: 2, origin: 'paired' },
+  })
+  const identity = createIdentity({ store, logger: quiet })
+  assert.equal(identity.size(), 2)
+  const explicit = identity.list().find((r) => r.userId === 'foo:bar')
+  assert.ok(explicit, '显式字段的冒号 userId 应被完整保留')
+  assert.equal(explicit.channel, 'telegram')
+  const fallback = identity.list().find((r) => r.userId === 'UID_1:extra')
+  assert.ok(fallback, `fallbackKey 应取第一个冒号后整段（实际：${fallback?.userId}）`)
+  assert.equal(fallback.channel, 'wxpusher')
+  assert.equal(identity.allows('wxpusher', 'UID_1:extra'), true)
+})
+
+test('identity：readPending 剔除含冒号的存量待确认键（旧版投毒行清扫，且不复活为绑定）', () => {
+  // REVIEW-ABC BUG-5：src/inbound/identity.mjs readPending 的 `userId.includes(':')`
+  // 过滤此前无测试——删掉它全套仍绿（恒绿摆设）。旧版 wxpusher UID_PATTERN 放行冒号，
+  // app_subscribe 可把 `wxpusher:UID:EVIL` 写进待确认表；若读盘仍认这类键，管理台待确认
+  // 列表会展示一条截断/歧义身份，点「确认」即触碰越权路径。
+  const { store } = tempStore()
+  const warns = []
+  store.set('inbound:pending', {
+    'wxpusher:UID:EVIL': { channel: 'wxpusher', userId: 'UID:EVIL', origin: 'learned', at: Date.now(), extra: {} },
+    'wxpusher:UID_OK': { channel: 'wxpusher', userId: 'UID_OK', origin: 'learned', at: Date.now(), extra: {} },
+  })
+  const identity = createIdentity({ store, logger: { warn: (...args) => warns.push(args.join(' ')), info: () => {} } })
+  assert.deepEqual(identity.listPending().map((r) => r.userId), ['UID_OK'], '含冒号待确认键不得读出')
+  assert.deepEqual(Object.keys(store.get('inbound:pending', {})), ['wxpusher:UID_OK'], '坏键顺带清扫落盘')
+  assert.ok(warns.some((w) => /清扫/.test(w)), `清扫必须可见，不得静默（实际：${warns.join(' | ')}）`)
+  // 不得经 confirm 复活成绑定
+  assert.equal(identity.confirmPending('wxpusher', 'UID:EVIL').ok, false)
+  assert.equal(identity.allows('wxpusher', 'UID:EVIL'), false)
+  assert.equal(identity.size(), 0)
+})
+
 test('identity：待确认绑定 add/confirm/dismiss 生命周期', () => {
   const { store } = tempStore()
   const identity = createIdentity({ store, logger: quiet })
@@ -428,4 +482,131 @@ test('pairing：终态条目 24h 后写路径清扫（防 state 无限膨胀）'
   const table = store.get('inbound:pairing', {})
   assert.equal(table[Object.keys(table).find((k) => k.startsWith(old.id))], undefined,
     'redeemed 超 24h 被清扫')
+})
+
+// ————————————————— v0.8.7 B1：过期码锁出 + 引导码重铸节流 —————————————————
+// 漏洞原状（BYPASS-BOOT）：redeem 对 expired 码不记 recordFailure（直接 return），
+// 过期码可无限次触发 ensureBootstrap 重铸；配合旧的 stderr 印码面 = 泵码 144 枚/天。
+// 修法双保险：expired 计入失败计数（5 次锁出 10min）+ ensureBootstrap 节流 10min。
+
+test('B1-4 过期码计入失败计数：连提 5 次过期码 → locked-out（BYPASS-BOOT 泵码堵死）', () => {
+  const { store } = tempStore()
+  const pairing = createPairing({ store, logger: quiet })
+  const stale = pairing.mint({ origin: 'bootstrap', mintedBy: 'system:boot', ttlMs: 1 })
+  const later = Date.now() + 5000 // 码已过期
+  // 前 4 次：过期回执，尚未触阈
+  for (let i = 0; i < 4; i += 1) {
+    assert.equal(pairing.redeem(stale.code, { channel: 'telegram', userId: '42', now: later }).reason, 'expired',
+      `第 ${i + 1} 次应仍是 expired`)
+  }
+  // 第 5 次：触发锁出，reason 换成 locked-out（commands 的 expired 分支因此不再命中 → 不重铸）
+  assert.equal(pairing.redeem(stale.code, { channel: 'telegram', userId: '42', now: later }).reason, 'locked-out',
+    '第 5 次过期码提交必须触发锁出（否则可无限泵码）')
+  assert.equal(pairing.isLockedOut('telegram', '42', later), true)
+  // 锁出期内：连有效码也进不来（锁出优先，与 invalid-code 锁出同口径）
+  const fresh = pairing.mint({ origin: 'admin', mintedBy: 'boss', now: later })
+  assert.equal(pairing.redeem(fresh.code, { channel: 'telegram', userId: '42', now: later }).reason, 'locked-out')
+  // 越过锁出期：恢复受理（注意 fresh 自身 10 分钟 TTL 此时也过期了，另铸一枚测恢复）
+  const unlocked = later + 11 * 60 * 1000
+  assert.equal(pairing.isLockedOut('telegram', '42', unlocked), false, '10 分钟后解锁')
+  const afterUnlock = pairing.mint({ origin: 'admin', mintedBy: 'boss', now: unlocked })
+  assert.equal(pairing.redeem(afterUnlock.code, { channel: 'telegram', userId: '42', now: unlocked }).ok, true,
+    '解锁后合法用户可正常配对（宪法#6 用户失误不永久锁死）')
+})
+
+test('B1-4b 过期码锁出边界：第 4 次仍受理、恰好第 5 次翻锁（上下边界各钉一次）', () => {
+  const { store } = tempStore()
+  const pairing = createPairing({ store, logger: quiet })
+  const stale = pairing.mint({ origin: 'bootstrap', mintedBy: 'system:boot', ttlMs: 1 })
+  const later = Date.now() + 5000
+  for (let i = 0; i < 3; i += 1) pairing.redeem(stale.code, { channel: 'qq', userId: 'q1', now: later })
+  assert.equal(pairing.isLockedOut('qq', 'q1', later), false, '3 次后不该锁（阈值是 5）')
+  assert.equal(pairing.redeem(stale.code, { channel: 'qq', userId: 'q1', now: later }).reason, 'expired', '第 4 次仍是 expired')
+  assert.equal(pairing.isLockedOut('qq', 'q1', later), false, '4 次后仍不该锁（下边界）')
+  assert.equal(pairing.redeem(stale.code, { channel: 'qq', userId: 'q1', now: later }).reason, 'locked-out', '第 5 次翻锁（上边界）')
+})
+
+test('B1-5 过期码锁出按 (channel,userId) 隔离：一个用户被锁不牵连他人', () => {
+  const { store } = tempStore()
+  const pairing = createPairing({ store, logger: quiet })
+  const stale = pairing.mint({ origin: 'bootstrap', mintedBy: 'system:boot', ttlMs: 1 })
+  const later = Date.now() + 5000
+  for (let i = 0; i < 5; i += 1) pairing.redeem(stale.code, { channel: 'telegram', userId: '42', now: later })
+  assert.equal(pairing.isLockedOut('telegram', '42', later), true, '前置：42 已锁')
+  // 同渠道另一 userId：不受牵连
+  assert.equal(pairing.isLockedOut('telegram', '43', later), false)
+  // 同 userId 另一渠道：复合键隔离（身份是 (channel,userId) 不是全局用户串）
+  assert.equal(pairing.isLockedOut('qq', '42', later), false)
+  const fresh = pairing.mint({ origin: 'admin', mintedBy: 'boss', now: later })
+  assert.equal(pairing.redeem(fresh.code, { channel: 'telegram', userId: '43', now: later }).ok, true,
+    '无辜用户照常可配对')
+})
+
+test('B1-6 引导码重铸节流：过期码首提重铸一枚，紧随的第二次被节流（不再泵码）', () => {
+  const { bus, pairing, identity } = makeRig()
+  // ttlMs: 0 而非 1 —— 本例经 bus.accept 走真实钟（无 now 注入），ttlMs:1 时 mint 与
+  // redeem 常落同一毫秒（实测 ~95%），码根本没过期，expired 分支不命中，断言前提失效
+  // （全量跑更快时才暴露成偶发红）。0 让 expiresAt === mintedAt，sweep 的 now >= expiresAt
+  // 必定成立 → 确定性过期。
+  const stale = pairing.mint({ origin: 'bootstrap', mintedBy: 'system:boot', ttlMs: 0 })
+  assert.equal(identity.isEmpty(), true, '前置：引导态（绑定表空）')
+  // 第一次提交过期码：命中 expired 分支 → ensureBootstrap 重铸一枚
+  const first = bus.accept(env({ text: `/pair ${stale.code}`, userId: '7' }))
+  assert.match(first.reply, /已重铸一枚引导码/, `首提应重铸（实际：${first.reply}）`)
+  assert.match(first.reply, /本机引导码文件|管理台/, '新文案指向文件/管理台')
+  assert.ok(!/stderr|启动日志/.test(first.reply), '不得再指引用户翻 stderr')
+  assert.equal(pairing.hasActiveBootstrap(), true, '重铸的码在铸')
+  // 撤掉在铸码模拟「又过期了」，同 10 分钟窗口内第二次触发 → 必须被节流
+  const active = pairing.listActive().find((e) => e.origin === 'bootstrap')
+  pairing.revoke(active.id, { by: 'test' })
+  assert.equal(pairing.hasActiveBootstrap(), false, '前置：无在铸引导码')
+  const second = bus.accept(env({ text: `/pair ${stale.code}`, userId: '8' }))
+  assert.match(second.reply, /重铸失败或节流中/, `10 分钟内第二次必须被节流（实际：${second.reply}）`)
+  assert.equal(pairing.hasActiveBootstrap(), false, '节流生效：没有铸出新码')
+})
+
+test('B1-6b 引导码重铸回调异常不静默：onBootstrapRemint 抛错时 warn 出声且码仍有效', () => {
+  const { store } = tempStore()
+  const identity = createIdentity({ store, logger: quiet })
+  const pairing = createPairing({ store, logger: quiet })
+  const warns = []
+  const bus = createInboundBus({
+    identity,
+    pairing,
+    store,
+    logger: { warn: (...args) => warns.push(args.join(' ')), info: () => {} },
+    onBootstrapRemint: () => { throw new Error('文件系统炸了') },
+  })
+  const stale = pairing.mint({ origin: 'bootstrap', mintedBy: 'system:boot', ttlMs: 0 })
+  const result = bus.accept(env({ text: `/pair ${stale.code}`, userId: '9' }))
+  assert.match(result.reply, /已重铸一枚引导码/, '回调炸了不影响重铸结论')
+  assert.equal(pairing.hasActiveBootstrap(), true, '码确实铸出来了')
+  assert.ok(warns.some((w) => /onBootstrapRemint 回调异常/.test(w)),
+    `回调异常必须可见，不能空 catch 吞掉（实际 warn：${warns.join(' | ')}）`)
+  for (const line of warns) {
+    assert.ok(!/\b[A-Z2-9]{8}\b/.test(line), `回调异常告警不得带码面：${line}`)
+  }
+})
+
+test('B1-4c 单次过期码提交仍返回 expired（不因 B2 改动破坏既有回执语义）', () => {
+  const { store } = tempStore()
+  const pairing = createPairing({ store, logger: quiet })
+  const stale = pairing.mint({ origin: 'admin', mintedBy: 'boss', ttlMs: 1 })
+  assert.equal(pairing.redeem(stale.code, { channel: 'telegram', userId: '42', now: Date.now() + 5000 }).reason,
+    'expired', '首次过期提交的用户可见语义不变（宪法#6 用户失误不锁死）')
+})
+
+test('B1-6c 过期码但已有在铸引导码：回执指路取现码，不谎报「重铸失败」（诚实指引）', () => {
+  const { bus, pairing } = makeRig()
+  // 用 admin origin 的过期码（bootstrap 重铸会 revoke 同族旧码，reason 就不是 expired 了）
+  // ttlMs: 0 —— 同 B1-6/B1-6b：本例经 bus.accept 走真实钟，ttlMs:1 会让 mint/redeem
+  // 落同一毫秒而码未过期（实测 ~93%），expired 分支不命中即断言前提失效
+  const stale = pairing.mint({ origin: 'admin', mintedBy: 'boss', ttlMs: 0 })
+  // 在铸引导码（模拟管理台刚补铸 / 上一次提交已触发重铸）
+  pairing.mint({ origin: 'bootstrap', mintedBy: 'admin:web' })
+  assert.equal(pairing.hasActiveBootstrap(), true, '前置：有在铸引导码')
+  const result = bus.accept(env({ text: `/pair ${stale.code}`, userId: '11' }))
+  assert.match(result.reply, /已有在铸引导码/, `应指路取现码（实际：${result.reply}）`)
+  assert.ok(!/重铸失败或节流中/.test(result.reply), '有现码时不得谎报重铸失败')
+  assert.ok(!/stderr|启动日志/.test(result.reply), '不得指引 stderr')
 })

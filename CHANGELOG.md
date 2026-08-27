@@ -1,46 +1,402 @@
 # Changelog
 
+## [0.9.0] - 2026-08-27
+
+- 2026-08-27 v0.9.0 release candidate：汇总维护、Control Core 安全收口、六条入站通道契约、个人模式管理台和文档整理；`npm test` 为 1352（1351 pass + 1 skip），版本/测试计数已统一到本候选发布线。
+
+- 2026-08-27 收尾修复：管理台远程提问结算改为传递对象给统一 `api()` 序列化（修复预序列化导致 POST 双重 JSON 编码、服务端丢失 action/options 的真实缺陷），并改用属性匹配查找按钮，恶意/畸形 ref 不再触发 CSS selector 异常。WxPusher 管理台出入站字段新增可选非敏感 `accountId`，支持多应用来源绑定且明确不得填写 APP_TOKEN；YAML/store 显式值覆盖关系保持不变。补充 focused 回归测试；无版本、协议或真机验证声明变更。
+
+- 2026-08-27 final maintenance rerun: admin pairing-code revocation now requires explicit confirmation before issuing the destructive DELETE. Focused admin UI coverage is 33/33 after the settlement/accountId compatibility checks; full `npm test` is 1352 total (1351 pass + 1 skip). No version or provider-support claims changed.
+
+- 2026-08-27 compatibility closure: retained YAML `inbound.allowUsers` as a documented one-shot `inbound:migrated` migration (no silent re-seeding after runtime deletions), added an optional Feishu/QQ SDK seam and lifecycle matrix, and documented the WxPusher multi-account residual when multiple apps omit explicit local `accountId`. Evidence is contract/seam tests only; no provider, tenant, or real-device support claim is added.
+
+- 2026-08-27 public facade A3/A4 hardening: `sourceName` is trimmed, length-limited, and control-character safe; each notifier instance now enforces finite call/UTF-8-byte/concurrency/queue budgets shared across facade wrappers, with busy/budget denials isolated to the current call. The consumer facade is deeply contract-stable and frozen (`version`, `enabled`, `push`, `flush` only); teardown is private and registered through the host lifecycle. Focused coverage exercises label rotation, Unicode byte limits, queue saturation, disposal races, and strict mutation failure. No package version change; provider/device validation remains out of scope.
+- 2026-08-27 inbound callback capacity now fails closed when the bounded reference table is full instead of evicting live buttons; Telegram card builders degrade to text/fallback when references cannot be minted. The package root export is narrowed to `{ name, inject, apply }`; constructors remain available only through the explicit `dsh-notifier/internal` path for local tooling/tests. No OS isolation is implied; same-process hostile plugins remain a host trust-boundary risk.
+- 2026-08-27 协议预审落地之后的渠道适配安全收尾（`docs/protocol-preflight/` 为事实边界，不改协议猜测；全部 mock/contract 证据，无真机验证）。聚焦 + 全量测试通过：**npm test = 1346（1345 pass + 1 skip）**，`verify-release`（909）/`gen-channel-matrix --check`（27 渠道）/`node --check src/index.mjs`/`git diff --check` 全绿。修掉的 7 个失败为 HEAD 预存（phase-1 源码硬化后的测试断线），本次一并修复：
+  - **wxpusher 入站注入本地 accountId（`src/inbound/wxpusher-callback.mjs`）**：六个交互通道里唯一 format envelope 不带本地 accountId 的通道——修复前 WxPusher 的审批/提问编号回复自来源绑定硬化（`79ebf70`）后全部 fail-closed（消费但永不裁决，远程审批/提问形同虚设），且会话路由把 channel 名当账号。修复：`resolveWxpusherInboundConfig` 接受可选 `accountId`，`createWxpusherInbound` 缺省字面量 `'default'`（与 telegram 回退语义一致），envelope 与通道实例都携带该本地标识；绝不从回调自报的 `data.appId` 取号。
+  - **移除全部「把 channel 当 accountId」兜底（`src/inbound/conversation.mjs`、`src/control/entry.mjs`、`src/actions.mjs`）**：会话路由 `route()` 的 `accountId: String(envelope.accountId ?? envelope.channel ?? '')` 与 `pendingMeta` 的 `accountId ?? channel` 都改为缺省即缺失，由 `normalizeControlEvent` 以 `missing_accountId` fail-closed 拒绝；`actions.dispatch` 此前把传输层传入的本地 accountId 丢掉（telegram/feishu ac: 回调入 Control Core 的载荷没账号），现原样转发（缺失传空串 fail-closed）。
+  - **telegram/飞书直接按钮回调把提供方真实 eventId 传入 Control Core（`src/inbound/telegram-bot.mjs`、`src/inbound/feishu-bot.mjs`）**：修复前 `ap:`/`aq:` 直接回调的 `control.handle` 不带 `eventId`，而 approval/question spec 的 `buildEvent` 直取 `input.eventId` → `normalizeControlEvent` 以 `missing_eventId` 拒绝——仅当你以 mock 断言「不进入裁决」时光绿，真机/接线后按钮全部失效。telegram 用官方 `callback_query.id`；飞书用 `context.open_message_id + operator.open_id + act` 合成稳定 eventId（同卡片重复投递去重、不同动作/操作者互不抢占）。
+  - **questions 编号回复真实缺陷（`src/questions/router.mjs`）**：① 缺 chatId 的 fail-closed 分支此前丢失 `envelope.accountId`，pushedTo/hintTargets 带账号时 `accountMatches` 恒 false → 已绑定用户的裸编号不被消费（泄露进对话路由）；现在把 accountId 一并传给 `latestPendingFor`。② 编号作答成功回执原读不存在的 `verdict.answers`（Control Core 回执是通用形状）→ 出现「✅ 已作答：」空标签；改为从已结算账本行回读 `answers`。
+  - **测试契约对齐（生产恒接线 Control Core）**：`test/approval.test.mjs`、`test/approval-phase2-hardening.test.mjs` 的 rig 缺省接线 `createControlEntry()`；`test/questions.test.mjs` 两处独立 bridge 补 control、hintTargets 断言补本地 accountId；`test/questions-admin-settlement.test.mjs` 手机晚到回执放宽为 accepted/desktop_fallback（首达采纳由账本保证，状态不再被误记）；`test/contract.spec.mjs` 只跑「契约测试形状」的 fixture——`docs/protocol-preflight/` 的纯协议证据片段（`feishu.json`/`telegram.json`/`wechat-ilink.json`/`qq-bot-protocol.json`，无 `type`）与契约 fixture 同目录，须跳过。
+  - 能力边界不变：微信 iLink 图片/文件 `declared`、飞书签名/加密/文件/CardKit `declared`、Telegram 文件 `declared`、QQ 群按钮保持文本 fallback；真实设备/宿主协议验证仍待做，不标注 `real-device-verified`。
+- 2026-08-27 phases 1-6 hardening tests: added 60 comprehensive integration tests across 6 phases covering overlay→Control Core wiring, PR #12 remaining hardening, cross-process session writes, channel fail-closed behaviors, personal UX admin API, and security/structural bounds. npm test = 1329 (1328 pass + 1 skip). All verification scripts green.
+- 2026-08-26 question P1 安全收口：admin settle 路径 `accountId` 不再用 `channel` 兜底（`src/questions/router.mjs` L611 `String(target.accountId ?? target.channel ?? '')` → `String(target.accountId ?? '')`）。修复前，若 `pushedTo` 目标无 `accountId`（测试 rig 缺失），admin settle 会用 `channel` 名冒充 `accountId` 传入 Control Core，违反硬性要求"不得把 channel 当作 accountId 的兜底值"。虽非安全漏洞（`buildEvent` 用真实 `pushedTo` accountId），但违反最小权限原则。同步修复 `test/questions-admin-settlement.test.mjs` 和 `test/admin-questions.test.mjs` 的测试 rig——入站适配器必须携带 `accountId` 以匹配生产行为。聚焦 + 全量测试通过。
+- 2026-08-26 session 并发写入修复（阶段 5 P2）：`setSessionOutbound` 和 `setSessionControl`（`src/routing/agent-router.mjs`）现在在写回前 re-read 最新整表，将本次 diff 合并到最新记录上写回，防止多个 session 并发更新时最后写入者覆盖 sibling 字段。新增 3 个并发回归测试验证：session A 更新后 session B 不覆盖 A 的 outbound/control，outbound 与 control 分别更新不互相覆盖。聚焦 + 全量测试通过。
+- 2026-08-26 team policy persistence adversarial review (Stage 4, round): fixed three defects in the session control overlay persisted at `route:sessions[<sessionId>].control`.
+  - **Split-writer repair (P1-1)**: the registry's whole-cache `persist()` used to write its in-memory `route:sessions` table verbatim, while `agent-router.setSessionControl` reads/rewrites the whole persisted table. A lifecycle write (ensure/touch/markDisposed/reactive) could therefore erase a freshly admin-set control — and could drop unrelated/cross-session records the registry's stale cache never contained. `persist()` now does a record-level re-read/merge: re-read the store's current table fresh as the base, delete sweep tombstones from base, then merge each in-memory record onto its disk record (`{ ...base[id], ...record }`) so disk-only subkeys (like the router-owned `control`) survive and router-created sessions the registry never cached are preserved; malformed `control` is canonicalized/removed on the way out. Swept deletions ride a `removedIds` tombstone set cleared only on a successful persist. Cross-component regression tests added (real router + real registry on one store): lifecycle `touch`/`ensureSession` after `setSessionControl` no longer erase the control, a router-created session survives a registry persist, a fresh-registry restart reads the persisted control, and a swept expired-disposed session is actually removed from the persisted store (tombstone beats the fresh base).
+  - **Durable write propagation (P1-2)**: `store.save()`/`set()` silently swallowed disk failures and signaled nothing; `router.safeSet` treated non-throw as success, so `PATCH /api/sessions/:id/control` returned 200 while the write was lost on restart. `store.save()` now returns a `durable` boolean (true only after the durable rename completes; false on disk-failure and on corrupt-rename abort), and `store.set()` returns it. `router.safeSet` treats an explicit `false` as failure while still treating legacy `undefined` as success (backward compatible); the admin already maps a non-true setter to `ApiError(500)`. New `test/store.test.mjs` exercises the real `createStore` save-failure path (parent path is a regular file) asserting `set` returns `false` (and `true` on a writable path); a new admin-api test wires a real failing `createStore` + real router and asserts `patchSessionControl` throws `ApiError(500)`.
+  - **Copy-on-read (P2)**: registry public record returns were shallow copies, letting a caller mutate the nested `control.approvalMembers` array in registry internal state; a `recordCopy` helper deep-copies `control`/`outbound`/`inbound` subkeys for all public returns, and two existing tests were corrected off the mock-store's reference aliasing onto the durable value-semantics the real `createStore` always had.
+  - Validation is `1230` tests (`1229` pass + `1` skip); package/version unchanged at `0.8.6`. Known residual (documented, not expanded): the router read-modify-write path still reads-fresh-then-writes whole, and outbound dual-path clobber remains pre-existing/out-of-scope.
+- 2026-08-26 team policy control overlay persistence (Stage 4): the reviewed session control policy (`owner` / `approvalOwnerOnly` / `approvalMembers`) is now persisted as a durable, session-addressable bounded overlay at `route:sessions[<sessionId>].control` through the existing session registry and loopback admin API. A single pure `normalizeControlOverlay` in `src/control/session-arbiter.mjs` is the sole definition of a valid overlay (only the four approved fields; source fields `channel/accountId/userId/chatId/sessionId/policyVersion/expiresAt/revoked` are dropped on read and rejected on write so an admin/store edit can never manufacture the source an authorization compares against — fail-closed). `src/routing/session-registry.mjs` gains defensive `getControl`/`setControl`/`clearControl` (copy-on-read, normalize-before-write, corrupted overlay treated as absent, unrelated keys preserved, persist failure degrades to memory). `src/routing/agent-router.mjs` gains `setSessionControl(sessionId, patch)` mirroring `setSessionOutbound` (field-level diff with null = delete key, canonicalized via `normalizeControlOverlay`, returns a boolean for a clean storage-failure 500). The Bearer-gated loopback admin surface adds `PATCH /api/sessions/:id/control` and a safe redacted `control` summary on `GET /api/sessions` (mode / approvalOwnerOnly / ownerConfigured / approvalMembersCount — never raw identifiers). Strict validation (unknown/source/reserved fields 422, shape/bounds/global 422, null-clear, missing session 404, storage failure 500); personal defaults stay safe because the overlay never carries `converse`/`groupChatControl`. Constraint-mandated persistence/API-only slice — the overlay is NOT yet wired into `createControlEntry` authorization; the exact next hook is documented in the workstream. Focused tests added across the arbiter/registry/router/admin-api/server suites. Validation `1223` tests (`1222` pass + `1` skip); package/version unchanged at `0.8.6`.
+- 2026-08-26 team policy source-binding conflict-consistency + legacy-envelope repair (adversarial review, round 4): the prior entry's `sourceOf` preferred `rowMeta`, so a stale or tampered `pending.control`/`pending.controlMeta` could override a conflicting canonical base-policy channel/account, and authorizing commands still risked the event manufacturing the policy source. `createControlEntry` now treats every present source authority — `basePolicy`, each of `pending.control`/`pending.controlMeta`, and the pending top-level — as a consistency constraint: for `approval`/`question-answer` any disagreement among them (or with the event) fails closed (`source_mismatch_*`), and the merged-policy source binding uses the true original source, never event-supplied values, unless an adapter `spec.authorize` proves the target (a `pushedTo` exact match). Non-authorizing `stop`/`steer`/`ordinary-message` keep an explicit legacy envelope binding (deterministic `pendingMeta` sessionId/key, event channel/account/user/chat) so legacy action/conversation rows with no source metadata still settle; `approval`/`question-answer` never use event fallback. Focused regression tests added (`test/session-arbiter.test.mjs`, `test/control-entry.integration.test.mjs`): a nested controlMeta spoof over a bound base policy is rejected, aligned sources still accept, and action callbacks from Telegram/Feishu still settle through the shared entry. Validation is `1205` tests (`1204` pass + `1` skip); package/version unchanged at `0.8.6`.
+- 2026-08-26 team policy owner source-binding repair (adversarial review, round 2): `createControlEntry`'s merged policy (re)assigned `channel`/`accountId`/`userId`/`sessionId`/`chatId` from the incoming event, so when a pending row omits `accountId` (or `channel`) — or the policy carries an owner without a bound conversation — an `approvalOwnerOnly=true` / team owner event from the wrong account or channel could be accepted because the event manufactured the very policy source the arbiter authorizes against. The entry now binds the event to the true original source (`rowMeta` → pending top-level → base policy) for `channel`/`accountId`/`chatId`/`sessionId`/`userId`, rejecting any mismatch; `owner` is never event-supplied (it comes only from the original policy/pending), and when owner/team-member settlement is in play but no genuine conversation source exists at all, it fails closed (`source_mismatch_channel`) instead of trusting event values. Legacy non-authorizing paths (action `stop`, conversation steering) that genuinely carry no source metadata keep their adapter-envelope binding; `sessionId`/`chatId` stay exact; ownership/membership never grants `steer`/`ordinary-message`. Focused regression tests added (`test/session-arbiter.test.mjs`, `test/control-entry.integration.test.mjs`). Validation remains `1204` tests (`1203` pass + `1` skip); package/version unchanged at `0.8.6`.
+- 2026-08-26 team policy contract repair (exact-source binding, adversarial review): `canSettleApproval` previously let `approvalOwnerOnly=true` and the team owner-exemption accept an event carrying the owner `userId` from the wrong channel or account. Both paths now also require the event's `(channel, accountId)` to match the normalized policy channel/accountId in addition to the owner `userId`; listed non-owner members are still authorized only by their exact normalized `(channel,accountId,userId)` triple; `sessionId`/`chatId` remain exact. The same rule applies through the exported `canSettleApproval` and `canAcceptCommand`/Control Core path, and ownership/membership never grants `steer`/`ordinary-message`. Focused adversarial tests added (`test/session-arbiter.test.mjs`, `test/control-entry.integration.test.mjs`). Validation remains `1200` tests (`1199` pass + `1` skip); package/version unchanged at `0.8.6`.
+- 2026-08-26 maintenance sync: development line is at `887b71f` (stage 2A Web/admin `ask_user` settlement plus reconciled handoff facts; runtime implementation is `ce46edc`). Validation is `1194` tests (`1193` pass + `1` skip); package/version remains the published `0.8.6` (`909` release contract), with no new release or real-device/host-protocol verification. QQ C2C buttons, GROUP text fallback, and the admin choose/reject path are contract-tested; missing `chatType` or unknown source metadata fail closed. Desktop still has no settlement entry, so dual-end sharing is not claimed.
+- 2026-08-26 team policy contract: provider-neutral team-mode approval scope is now explicit and bounded. `src/control/session-arbiter.mjs` normalizes an optional `approvalMembers` list (trim, drop malformed/wildcard/global/empty entries, dedup exact triples, cap 64, never wildcard/unbounded/nested) and exposes a pure `canSettleApproval(policy,event)` decision helper wired into `canAcceptCommand`/Control Core only — applying to both `approval` and `question-answer`, never granting `steer`/`ordinary-message`. `approvalOwnerOnly=true` still allows only `policy.owner`; `mode='team'` with a non-empty list requires the exact `(channel,accountId,userId)` triple unless the event is the owner; personal / team-without-list keep the existing exact source binding. `src/control/entry.mjs` now forwards the normalized policy snapshot to the settle callback (`onSettle(event, policy)`), so callbacks never reason over unnormalized policy data and stales/mismatches are rejected before settling. No IM transport, UI, admin, approval/question core, or release version changed; personal defaults and `conversation` remain separate opt-ins. Contract-tested only (`test/session-arbiter.test.mjs`, `test/control-entry.integration.test.mjs`); no real-device/provider assertion. Validation `1200` tests (`1199` pass + `1` skip); package/version unchanged at `0.8.6`.
+- PR #12 modular rework: QQ interaction callbacks now use the shared approval/question Control Core with explicit source binding and text fallback. QQ group targets remain non-actionable to avoid cross-member disclosure. `approval.parallel` remains disabled by default and is explicit opt-in only; wait rejection is fail-closed. Real QQ protocol/device verification is still pending.
+
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 SemVer。
 DSH 处于 developer preview，0.x 阶段的次版本号提升允许小幅破坏性变更（会在条目中标注）。
 
-## [0.8.5] - 2026-08-23
+## [Unreleased]
 
-### 修复：ask_user 编号回复在出站/入站异名与纯入站通道失效（issue #11）
+### 新增：宿主事件根上下文订阅与可观测性（Issue #16，2026-08-26）
+
+- 新增 `src/host-events.mjs`：DSH/Cordis 宿主事件订阅的兼容边界。宿主按注册上下文限定事件监听作用域，插件挂在 scoped 子上下文时，宿主事件订阅会经功能探测回落到文档化的 Cordis 根上下文（`ctx.root`，自引用校验；非 Cordis 的 root 服务一律拒绝）。
+- 回落是订阅局部的，不使用 `global: true`，不改变宿主过滤语义；会话/agent 生命周期、错误与 dispose 订阅已切换到该边界。
+- 载荷归一仅接受文档化元组 `(session, event)` 与显式 envelope 兜底，agent 生命周期载荷按 `{ agent }` 归一、legacy 直传作为兼容；畸形载荷 fail-closed 拒绝。
+- 注册与处理均逐订阅 try/catch 闭环，诊断为有界快照（仅事件计数与 context/scope 状态，不含会话内容、标识符或凭证）；`ask_user` 仍由 `questions.enabled` 独立注册，本批不改变 interaction/desktop/provider 行为。
+- 新增 focused host/event/index 测试。DSH 0.1.1-rc.2 运行态仍须真实宿主/协议验证，Issue #16 只能标记 code/contract hardened，不关闭、不提 real-device 证据。
+
+### 新增：本地管理台远程提问裁决入口（路线图阶段 2A，2026-08-26）
+
+- 管理台新增「待处理远程提问」面板：`GET /api/questions` 返回脱敏只读快照（不可逆 12 位 sha256 ref、掩码 agent/chat/user 短段、选项文本、创建/过期时间、状态），绝不返回 token/凭证/完整聊天/agent 标识/答案隐私。
+- 受保护结算 `POST /api/questions/:ref/settle`：`choose`（采用具体选项）与 `reject`（驳回复用既有 `aq-skip` 语义交还桌面、绝不编造答案），一律经 Control Core 的 `question-answer` 注册 spec 走既有授权（配对/source/policy/首达采纳）与单次结算语义——本端点不复制 ledger 结算、不写状态、不留直通后门；个人模式默认仅本地 owner/admin。
+- 竞态/单次结算：admin 先答 → 手机晚到 already-handled；手机先答 → admin 返回 handled；答辩失败/重复提交/非法选项不产生二次结算。
+- fail-closed：缺 owner 证明 / 过期 / 未知 ref / 非法 action/option / Control Core 未接线 → 安全错误（501/403/410/404/409/422/not_available），绝不直通结算、绝不落账本。
+- 前端 `src/admin/ui.mjs` 面板为纯字符串渲染、逐字段 `esc()` 转义，token/完整标识绝不进 DOM；无新增前端依赖、无第二控制台。
+- 新增 focused API / 结算竞态 / UI 行为测试。真实宿主/设备验证不做，标志为 code/contract-tested（代码 + 契约测试），Issue #16 不关闭。
+
+### 新增：入站图片信封归一与有界下载（Issue #14，2026-08-26）
+
+- `src/inbound/message.mjs` 定义 text/image/file 统一入站模型；未知结构 fail-closed 返回 `null`，绝不把「非文本」伪装成 text 漏进会话路由。
+- `normalizeImageUrl` 仅接受显式 HTTP(S)、剔除凭证段、URL 长度有界；`normalizeImageAttachment` 只保留 url/width/height 已知字段，超限或畸形返回 `null`。
+- `downloadInboundImage` 为可选图片下载原语：AbortSignal 超时、`redirect: 'error'`、content-length 与实读字节上界 5 MiB、content-type 限 `image/*`，从不落盘二进制，失败 fail-closed 返回 `null`；结果不持久化。
+- QQ C2C `extra`（字符串化/已解析媒体段）、iLink item_list、钉钉 picture/image URL 已接线到归一模型并契约测试；图片下载失败不阻断文字/控制路径。
+- QQ C2C 图片解析 `parseQQImageMessage` 按 fixture 契约接线，真实字段形状仍无真机样本核验，能力状态 contract-tested/declared，不标记 `real-device-verified` 或正式支持。
+
+### 新增：飞书与 Telegram provider facades（批次 5，2026-08-26）
+
+- 新增 `src/channels/feishu/` 与 `src/channels/telegram/` 独立 provider 入口；旧 inbound 模块继续作为兼容实现，控制语义仍统一复用 Control Core / session arbiter。
+- 两个 provider 暴露来源绑定的回调归一化、生命周期入口和能力证据；未知/缺失 `chatId` 或 `userId` 的回调不会进入控制路径。
+- 飞书富文本卡片、更新、按钮回调、群聊来源校验与 WebSocket 生命周期标记为 `contract-tested`；Telegram 命令、inline buttons、消息编辑、4096 UTF-16 文本护栏、重连和文本兜底沿用既有契约。
+- 文件发送仅保留显式 `fileAdapter` 接口，能力状态为 `declared`；没有真实平台/设备验证，不标记 `real-device-verified`，不宣称正式支持。
+
+### 新增：微信 iLink 单账号 QR-first provider slice（批次 4，2026-08-26）
+
+- 新增 `src/channels/wechat-ilink/` provider 边界；旧 `src/inbound/wechat-ilink.mjs` 保留兼容入口，应用装配已切换到新边界。
+- 轮询游标、context_token 和连接状态按 `accountId` 命名空间隔离；游标有界，并在整批消息交给 Control Core 后才推进，断线可重连且由现有 bus 去重避免重复控制命令。
+- QR 过期返回明确重新扫码状态；未知协议字段不进入控制信封；图片消息保留结构化 envelope，图片下载失败不阻断文字/控制路径。
+- 图片收发仅提供可选 media bridge，证据状态为 `declared`；没有真实设备/协议验证，不宣称正式支持或 `real-device-verified`。
+
+### 改进：管理台首次配置路径（Task 04，2026-08-26）
+
+- 首屏新增「未配置 → 已配对 → 测试通知 → 正常运行」进度状态，并明确本地管理台入口由启动日志提供实际 URL/端口。
+- 默认进入个人模式；绑定矩阵和会话等高级控制需显式打开，降低首次配置认知负担。
+- 通道空状态改为字段配置指引；测试成功/失败均显示下一步或重试原因，YAML 保留为高级入口。
+- 不改变 loopback 绑定、Bearer 鉴权、渠道传输或凭证脱敏；真实设备布局与浏览器兼容性仍需后续手工复验。
+
+### 新增：Session 控制策略与命令仲裁契约（规划批次 3，2026-08-25）
+
+- 新增 `src/control/session-arbiter.mjs`：个人模式安全默认值、精确来源绑定、策略版本/撤销/过期、固定命令优先级与一次性事件收敛。
+- 该层不接入具体 IM，不包含 QQ 按钮、提问卡片或 `approval.parallel`；真实平台验证仍未宣称完成。
+
+### Control Core Step 1：提问编号回复按 chat 隔离（CC-1，2026-08-25）
+
+- 提问编号兜底证据改为逐目标 `hintTargets`（`channel + userId + chatId`）；精确 chat 才能裁决。
+- 同渠道同用户的错误 chat 会消费消息并提示回原会话，不改变提问状态；缺少 `chatId`、跨渠道、旧 `hintChannels` 行、部分/失败送达均 fail-closed。
+- `notifyAll().delivered` 只有渠道级证据，不再被推导为具体 chat 的送达，也不再将新行写入 `hintChannels` 作为授权凭据。
+- 事实校准：旧版本条目中的 `hintChannels` 仅描述历史实现；当前实现只接受 `hintTargets` 的逐目标 `(channel,userId,chatId)` 送达证据，旧行按 fail-closed 处理。
+- 新增正确/错误 chat、缺 chatId、用户隔离、部分送达、旧行、重复与僵尸 pending 回归测试。真实渠道仍需协议级验证具体 chat 送达形状。
+
+### 维护批 6-C：提问升级提醒渠道分流（MNT-6-C，2026-08-25）
+
+- 修复 `questions/router.mjs` 的升级提醒遗漏渠道过滤：提醒现在复用本题首次推送实际覆盖的出站渠道，不再无条件广播到全局渠道池。
+- 入站渠道（例如 `qq`）通过能力矩阵映射到出站别名（`qq-bot`）后再过滤；未知或未配置的目标从提醒集合剔除，保持 fail-closed。
+- 新增回归测试，验证提醒显式携带覆盖渠道并保留 `qq`/`qq-bot` 别名契约。
+- 终态卡片编辑继续由 `normalizeInbound.editTarget()` 逐目标吞错，单目标失败不会中断其他目标；本批不重复实现第二层保护。
+- 返工：升级提醒不再使用按渠道的 `notifyAll`，改为按本题实际 `pushedTo`/兜底目标逐 chat 发送；两个并发提问实例即使使用同一 IM 渠道也不会互相收到升级提醒。
+- 纯入站编号兜底现在只在至少一个目标 `sendText` 成功后登记该渠道的 `hintChannels`；发送失败不再留下可被裸编号命中的虚假证据。
+- 出站编号兜底现在检查 `notifyAll()` 的 `delivered` 结果；空目标、静音、失败或异常都不登记 `hintChannels`，并新增回归测试。
+- 残余风险：编号证据仍是渠道级，尚未绑定原始 `chatId`；当前提问桥未注入 session 路由器，无法在本维护批安全推导更窄的出站范围。该 P1 已登记到维护 workstream 与 `docs/memory/risks.md`，后续统一 Control Core/session scope 时处理。
+
+### 维护批 6-A：Issue #10 Dashboard 首屏引导 UX 返工（MNT-6，2026-08-25）
+
+Issue #10 的「首次使用三步引导卡」草案经过主管审查，按以下审查项返工：**完成条件收紧、localStorage 全 try/catch、删除未经证明的承诺、补齐 overview.members 契约 + 引导行为测试 + 移动端静态断言**。不改安全边界、不新增配置写接口、不碰 QQ interaction transport。
+
+- **步骤 1 完成条件 = configured && enabled**（审查项 1）：原实现把「仅配置未启用」也判为完成，但通道未连起来时通知根本发不出去，等于假绿灯。改为 `anyOutEnabled`（出站通道里 configured 且 enabled 的至少一个）才算步骤 1 完成、才算引导卡自动隐藏的条件之一。
+- **localStorage 全部 try/catch**（审查项 2）：`onboard_dismissed` 的 `getItem` 与 `setItem` 均用 `try { window.localStorage.xxx } catch (e) {}` 包裹，与既有 `getToken`/`setToken`/通知页偏好同口径。隐私/受限环境（Safari 无痕模式 / Firefox 隐私模式 / iframe 沙箱）下 localStorage 抛 SecurityError/QuotaExceededError 不再击穿 UI——读失败按「未隐藏」降级，写失败不影响本次页面内隐藏。
+- **删除未经证明的承诺**（审查项 3）：去掉「2 分钟」「1 分钟」「终身有效」「扫码必然自动配对」「审批一定发卡片」等无法在维护批内验证的断言；文案改为描述真实可用路径（「挑一个…填凭证点测试发送，手机收到就通了」「扫码授权通道通常会自动登记」「按提示回复编号或点按钮」）。guide.md 同步修订。
+- **`overview().members` 补契约 + 聚焦测试**（审查项 4）：`overview()` 返回 `members: { total, owners, guided }`，与 `getMembers()`/成员页引导态同口径。identity 未装配 / `identity.list()` 抛异常时按 `{ total:0, owners:0, guided:true }` 降级，绝不击穿总览。新增 4 例聚焦测试：正常装配 / identity 未注入 / identity.list 抛异常 / 空成员表 guided。旧 overview 无 members 字段时 UI 侧按 0 / 占位符 `–` 降级，不崩。
+- **引导卡行为契约测试**（审查项 5）：`test/admin-ui-behavior.test.mjs` 新增 8 例——无通道无成员显示 / 仅配置未启用不算完成 / 配置且启用才完成并隐藏 / localStorage 读异常不崩 / localStorage 写静态契约（每处访问都在 try/catch 内）/ 步骤按钮 data-tab 指向真实存在的标签页 / 移动端窄屏静态断言（viewport meta + ≤768px 媒体查询 + flex-wrap + 44px 触控目标）/ 旧 overview 无 members 字段不崩。
+- **安全的通道配置写入闭环已存在**（审查项 6）：盘点结论：admin API/UI 已有完整的通道凭证写入闭环——`putChannel` 键白名单 + 值形态上限 + 字段级合并（保留未知键不抹）+ `maskSecrets` 敏感值深脱敏不回显 + `testChannel` 连通性自检 + 审计 append-only。引导卡只是 UX 入口，不新增任何配置写能力，因此无需临时造危险接口，也无需本批做 schema 向导。
+- **文档同步**（审查项 7）：启动日志已明确 `http://127.0.0.1:<port>` 与 token 来源三态（explicit/reused/generated，明文绝不重打）；README 功能表与配置表已覆盖 admin.enabled/port；guide.md 已含完整的「打开控制台 → token 来源 → admin 未启用怎么办」三步说明；本批只同步引导卡相关文案，不另开新文档。
+- 验证：全量 `node --test test/*.test.mjs test/*.spec.mjs` = **1104** 契约（1103 通过 + 1 win32 skip，基线 1060 + 4 成员 overview + 8 引导 UX + 其他装配/批间增量）；`verify-release.mjs` / `gen-channel-matrix --check` / 全量 `node --check` 通过。
+
+### 维护批 6-B：Issue #15 QQ RESUME/ACK 回归测试（MNT-6-B，2026-08-25）
+
+QQ 网关心跳 ACK 丢失与 RESUME 恢复路径是批 2 引入的关键韧性机制（连续丢 2 拍才判死重连），但此前只有 2 个聚焦测试（单拍丢失 + maxMissedAcks 阈值可配），缺 RESUME 行为契约、迟到 ACK 边界、stop 清理完整性的回归钉。本批只加测试、不改生产代码。
+
+- **ACK 连丢 → RESUME 携带原 session_id 与 seq**：连续 ACK 丢失触发判死重连后，新连接必须发 op6 RESUME 而非 op2 IDENTIFY，并携带上一会话的 `session_id` 和最后事件序号——确保事件不丢。
+- **迟到 ACK 不取消重连、不污染新会话**：阈值触发后才到达的 op11 ACK 不能回滚已决策的重连；新连接起搏前心跳计数从零复位（`awaitingAck=false` / `missedAcks=0`），不得继承旧会话的未确认状态。
+- **stop() 清理完整性**：断线后重连定时器已调度时 stop，`reconnectTimer` 必须被清除（stop 后推进时间不产生新连接）；stop 幂等；restart 能完成完整握手（IDENTIFY 或 RESUME）并输出就绪日志。
+- **stop 期间 dispose 顺序**：心跳等待 ACK 途中 stop 不得抛异常；stop 后推进时间无心跳/重连副作用（`heartbeatTimer` + `reconnectTimer` 都清理干净）。
+- 新增 4 例，全部 mock fetch/WebSocket，零生产代码改动。
+- 真机/协议缺口：QQ 网关是否每拍必回 op11 ACK、RESUME 失败是否正确返回 op9 INVALID_SESSION、静默断连（无 close 帧）下 2 拍阈值是否可靠触发——均需真机或协议级验证，已记入 `docs/memory/risks.md`。
+- 验证：全量 `node --test test/*.test.mjs test/*.spec.mjs` = **1108** 契约（1107 通过 + 1 win32 skip，基线 1104 + 4 新增）；`verify-release.mjs` / `gen-channel-matrix --check` / 全量 `node --check` 通过。
+
+### 维护批 5：入站 text/image/file 统一消息结构（MNT-5，2026-08-24）
+
+六通道适配器当前只产文字信封（`{ channel, userId, chatId, messageId, text }`），非文本消息要么静默丢弃（telegram），要么拼成 `[不支持的消息类型：x]` 占位文本（feishu）。本批补上内容模型的正规层：一座归一结构与一条 QQ 单聊图片解析**接口**，**全网不接线**（无协议证据不启用解析——QQ 官方机器人 C2C 媒体事件真实字段形状无真机样本）。
+
+- **`src/inbound/message.mjs` 统一消息结构**：`INBOUND_KINDS`（text/image/file）+ `normalizeInboundMessage`。文字兼容——既有 `{ text }` 信封（含 channel/userId 等透传字段）原样归一为 `{ kind:'text', text, … }`，bus.accept / conversation router 消费面零改动；结构化 image/file 要求附件对象含有效 url，缺失一律 null（fail-closed）。text 与附件同载时按 text 归一（附件路径待证据，绝不旁路）。
+- **QQ 单聊图片解析接口 `parseQQImageMessage`**：按「文档描述的常见实现」（`d.extra` 为 JSON 字符串/预解析数组，段 `type === 'image' | 1` 且 `image.url` 非空）解析 C2C 事件负载，返回 `{ kind:'image', image:{ url, width?, height? } }`；无 extra / 无图片段 / 段缺 url / extra 畸形一律 null。**不接线**——qq-gw.mjs 及其余适配器均不 import；附带 `parseExtraSegments` 供未来网关预解析复用。
+- **fixture**：`test/fixtures/qq-c2c-image.json`（C2C 图片事件样本，文档假设形状），作真机校验时的对照样本；测试同时覆盖拒绝矩阵（空段/非图片段/缺 url/畸形 extra/非对象）与预解析数组直通。新增 8 例。
+- 验证：全量 `node --test test/*.test.mjs test/*.spec.mjs` = **1060** 契约（1059 通过 + 1 win32 skip，基线 1052 + 8 新增）；`verify-release.mjs` / `gen-channel-matrix --check` / 全量 `node --check` 通过。
+
+### 维护批 4：Interaction Core 统一交互状态账本（MNT-4，2026-08-24）
+
+三条交互链（动作 actions / 审批 approval / 提问 questions）各自内联实现了一遍几乎相同的账本状态机（`add` 覆写式 pending+createdAt、`resolve` 有行即翻终态、`terminate` 仅 pending→terminated 的 C2/P1-5 僵尸守卫）。本次把状态机收敛为一份共享核心 `src/interaction/ledger.mjs` 的 `createInteractionLedger`，迁移顺序按维护计划定的 actions → approval → questions，每阶段全量契约零降、独立提交。
+
+- **核心语义对齐（迁移时逐条核对，行为零变）**：`add` 总是覆写 pending+createdAt（旧行/僵尸行按「非 pending」判非待决，fail-closed）；`resolve` 无前态检查（approval/questions 既有语义；actions 的「首达采纳 → 执行 → 终局」多步落地也靠它）；`terminate` 仅待决可翻、已决/缺失返回 false（防 onAbandon 已决行二次改写）；过期不设独立 status（token TTL + decision `'timeout'` 表达，与三条链现状一致）；`resolve`/`terminate` 的 extra 只并入旁注字段，不能覆盖 status/decision/resolvedAt。
+- **state key 格式保留**：键空间 `act:`/`ap:`/`aq:` 不动；决策字段名由各链声明——actions 传 `decisionField: 'outcome'`（保住 `act:` 行历史形状），approval/questions 用默认 `'decision'`。对外接口（`createActionDispatcher` / `registerApprovalHandler` / `createQuestionBridge`）签名未改。
+- **各链 `latestPendingFor` 归属启发式有意留链内**：approval（exact/onChannel/intended + liveWaiters 僵尸过滤）与 questions（exact/onChannel/hint + hintChannels 广播凭据）的匹配语义差异过大，强行抽进核心会引入行为漂移。核心只暴露 `statuses/add/get/isPending/resolve/terminate/scanKeys` 六个原子操作，各链用 `{ ...core, latestPendingFor }` 合成同一 ledger 面，其余调用点零改动。未加 approval.parallel（计划明确非目标）。
+- 提交拆分：阶段 1（核心模块 + 6 例单测 + actions 迁移）、阶段 2（approval 迁移）、阶段 3（questions 迁移 + 本文档）。actions 的 `markSource`/`unmarkSource`（srcChats 旁注字段原地微调）与两条链的 pushedTo 增量落账不是账本生命周期操作，保留直接 store 访问。
+- 验证：全量 `node --test test/*.test.mjs test/*.spec.mjs` = **1052** 契约（1051 通过 + 1 win32 skip，基线 1046 + 6 新增）；`verify-release.mjs` / `gen-channel-matrix --check` / 全量 `node --check` 通过。
+
+### 维护批 3：降低 index.mjs 装配复杂度（MNT-3，2026-08-24）
+
+`src/index.mjs` 的 `apply()` 从 885 行散装收束到分段装配，按「先移动代码不改变行为、每阶段补装配测试」分三阶段，每阶段独立提交、四扇门全过（行为零变的契约锚 = 既有 apply() 级测试 + 各阶段新增模块边界测试）。块的具体职责与内联注释随原样搬入各模块，`apply()` 只留组装调用与晚绑定。
+
+- **阶段 1（`f307950`）**：出站凭证 state overlay + 连通性测试 `testRawConfigOf` 抽为 `src/assembly/outbound.mjs` 的 `composeOutboundChannels`/`accountOf`。admin 关闭时 `channels` **数组引用同一性**逐字节保持（原 apply 语义）；`accountOf` 改 (store, key) 双参，7 处调用点同步。新增模块测试 7 例（防御读取/透传引用/合并优先级/双域永不过 overlay/按类型去重）。
+- **阶段 2（`9fd6341`）**：admin token 三路决策（显式/复用/首启生成）+ `verifyToken` 抽为 `src/assembly/admin-token.mjs` 的 `resolveAdminToken`。state 只存 SHA-256 哈希、明文不落盘的既有红线原样随模块走；`verifyToken` 先比长度再 `timingSafeEqual`。新增模块测试 4 例（三路/损坏哈希/恒时安全面/store.get 抛错容忍）；`node:crypto` 移入模块，index.mjs 不再直接依赖。
+- **阶段 3（`deda003`）**：六通道入站 resolve/启用信号（allowUsers / tg 便捷回退链 / approvalWanted / feishu-qq-dingtalk-wxpusher-wechat 的 wanted+resolved）抽为 `src/assembly/inbound-signals.mjs` 的 `resolveInboundSignals`。tg 回退次序（显式 > 出站渠道 > store 账号）、admin 关闭零执行语义逐字节保持；wxpusher 密径首铸落盘是这处唯一受控副作用；wechat 仅出 wanted/raw 信号，resolve 仍在 apply 的 guided 装配块晚绑定。新增模块测试 8 例；不再被引用的 4 个 `resolveXxxInboundConfig` 与 `resolveEnvRefs` 导入清理。
+- 后续候选（身份/配对/迁移/引导、「已启通道」装配段）耦合面过宽（约 10 个出入值 + 审计 late-bound 回闭），继续抽的漂移风险高于精简收益，按「不要一次性重写」留待维护计划更深的批次或发版轮单独处理。
+- 验证：apply() 体 885 → **737 行**（-17%）；全量 `node --test test/*.test.mjs test/*.spec.mjs` = **1046** 契约（1045 通过 + 1 win32 skip，基线 1027 + 7 + 4 + 8）；`verify-release.mjs` / `gen-channel-matrix --check` / 全量 `node --check` 通过。
+
+### 维护批 2：QQ 心跳 ACK 连续丢失计数重连（MNT-2，2026-08-24）
+
+`src/inbound/qq-gw.mjs` 心跳判死逻辑：原「任一拍未 ACK，下一拍即主动断开重连」对单次网络抖动/网关瞬时滞留过激——QQ 心跳间隔按 30s 级计，一拍没回应就断开重连等于让一次抖动杀掉会话。改为**连续丢失计数**：连续 `maxMissedAcks` 拍未确认才判死重连。
+
+- 默认阈值 **2**（可经构造器选项 `maxMissedAcks` 覆盖，1..10 语义，合法值 `>=1` 取整后钳上限 10，**0/NaN/负数回落默认 2**——顺带修掉 `Number(0)||2` 把显式 0 变相改成 1 的坑）。单拍丢失只 warn 出「已连续丢失 1/2（下一拍仍无 ACK 才断线重连）」；ACK 到达即清零计数（抖动恢复不算数）；连丢满阈值才 cleanupSocket + 退避重连。
+- `stop()` 定时器回收已就位，新增用例钉死「断线已调度重连但未执行时 stop → `clearTimeout(reconnectTimer)` 撤销，绝不新建连接」（`stopRequested` 布尔 + clearTimeout 双保险）。
+- 测试用 node:test `t.mock.timers` 确定性推进心跳节奏（不再靠真实 50ms 间隔数拍），新增 4 例、替换 1 例：连丢 2 拍判死重连 / 单拍丢失 ACK 恢复不清零不重连 / 阈值 1 保留旧语义 + 0 回落默认 2 / stop 清理未决重连定时器。
+- 未真机验证 QQ（按计划不声称「真实 QQ 已验证」）；协议行为（op10/op11、RESUME）保持原样。
+- 验证：全量 `node --test test/*.test.mjs test/*.spec.mjs` = **1027** 契约（1026 通过 + 1 win32 skip）；`verify-release.mjs` / `gen-channel-matrix --check` / 全量 `node --check` 通过。
+
+### 维护批 1：管理台初始化与 token 流程（MNT-1，2026-08-24）
+
+修理管理台前端鉴权三处缺陷（对应 `test/admin-ui-behavior.test.mjs` 9 例 + `test/admin-wiring.test.mjs` 就绪日志 3 例）。**不改变任何安全边界**：token 仍只存 SHA-256 哈希、明文不落盘不重发、管理台仍只绑 127.0.0.1。
+
+- **单飞询问门（① 叠窗）**：原 `api()` 缺 token 时各自 `window.prompt()`——首访 `loadAll` 并行 5 个 api 一次弹 5 个叠加窗。改为 `acquireToken()` 单飞门（`authGate`）：并发调用共享同一次询问，一次 resolve 的结果各自复用。
+- **成功后才持久化（② 刷新必重输）**：原 prompt 输入的 token 从不 `setToken()`，刷新必重输；且 `clickToken` 手动输入与 api 自动询问两条路行为分裂。新增 `adoptToken(t)`——只在**成功响应（非 401）**后才落 localStorage；SSE 连接成功同样落库。错 token/code 永不在本地残留。
+- **401 单次重登录（③ 风暴刷窗）**：原并发 401 各自沿调用链递归重询，N 个 401 弹 N 次窗，错 token 可死循环。改为 `reloginGate()` 单飞重登录门：一次询问 + 新 token 恰好重试一次；`autoReloginUsed` 门在每个成功响应后由 `markAuthOk()` 重新武装，失败后解除武装不再自动弹窗；`authGen` 世代计数使「用旧 token 发出的迟到 401」判为过期请求直接拒绝，绝不触发第二轮弹窗。SSE 的 401 与 api 共用同一把门（`handleStream401`）。
+- **启动日志明确 token 获取方式（唯一新增 info 文案）**：`Web 管理台已就绪: http://127.0.0.1:<端口>` 就绪行按三态补充 token 来源——`explicit`（YAML admin.token）、`reused`（沿用首启打印旧值）、`generated`（已打印到上方日志，仅此一次）——重启后不再迷茫「token 从哪来」，也绝不重发明文。
+- 验证：全量 `node --test test/*.test.mjs test/*.spec.mjs` = **1024** 契约（1023 通过 + 1 win32 跳过，基线 1012 + 12 新增）；`verify-release.mjs` / `gen-channel-matrix --check` / 全量 `node --check` 通过。UI 行为测试用 node:vm 真执行内联 `<script>`（剥离末尾 `init()` 自启），非复制粘贴断言。
+
+### 维护：测试平台自适应（Windows 主机基线稳定，2026-08-24 mnt）
+
+维护计划 batch-0：修 Windows 主机 8 个平台性测试失败。**纯测试维护，未改任何生产代码、未动安全边界**；POSIX/Linux 断言全部保留原强度。
+
+- **desktop send 协议测试钉死平台（4 例）**：`send*` 家族是 send 协议语义测试，原跑宿主原生平台——win32 下 `send()` 会先起一个 BurntToast 能力探测子进程，破坏「单 spawn + 一次 close」假设导致挂死 10s。文件内本有 `withPlatform` helper（注明「三平台 CI runner 行为必须一致」），现把 4 个协议例包进 `withPlatform('linux')`；win32 探测行为由既有专属测试覆盖，语义不减。
+- **store 锁新鲜锁定死 age<宽限（2 例）**：`P1-3 探测宽限期内` 与 `跨进程写锁双轮等待` 原依赖「自旋总耗时 < 500ms 宽限」——Windows `Atomics.wait` 粒度粗，两轮自旋跨过 500ms 后在死 pid 上触发死亡探测误删测试锚锁。改为把锁 mtime 拨到未来 60s（ageMs 恒负），结构性锁定「新鲜锁不做死亡推断」分支，平台无关；`属主已死的新鲜锁当场回收`（L123）与 `属主存活不误抢`（L140）仍用真实年龄交叉覆盖探测边界。
+- **B1-1 码文件 0600 位只在 POSIX 断言**：win32 的 Node stat 不反映 Unix 权限位（写后仍报 666，实际边界是用户目录 ACL），仅把「精确 0600」断言收窄到非 win32；存在性/单行内容/warn 含路径/码面无泄漏断言全平台保留。
+- **B1-1c symlink 攻击面按能力跳过**：win32 非管理员/非开发者模式主机 `symlinkSync` EPERM，测试无法铺前置；加能力探测，不具备即 `skip`（node:test 计 skipped，不占失败）。支持 symlink 的平台依旧全量断言写穿防护。
+- **B1-1 warn 路径匹配归一化分隔符**：Windows 上生产 warn 的路径是「目录反斜杠 + 文件名斜杠」混合分隔符，逐字节 `w.includes(codePath)` 误判；归一化 `\`→`/` 后语义比对。
+- 验证：本机（win32, Node v22）全量 = 1012 契约、1011 通过 + 1 跳过（B1-1c 能力缺失）、0 失败；Linux 主机预期 1012/1012（B1-1c 运行且过）。
+
+### 审查修复：批次 A+B+C 独立 review 修掉 6 个缺陷（REVIEW-ABC，2026-08-24）
+
+由非实现者身份的独立审查员按 `.agents/workstreams/crack-fix-plan/task-review-abc.md` 复审已落地的批次 A（`013ec48`）、B-1（`8e6739c`）、B-键族4（`f3fce85`）与工作区的 C1/C2/C3，报告见同目录 `REVIEW-ABC.md`。**发现 6 个缺陷、全部修完、0 遗留**；其中 3 个是「注释宣称了但测试不咬人」的恒绿摆设，1 个是致命语法错，1 个是过度收紧引入的新缺陷，1 个是装配缝。
+
+- **致命：`src/inbound/identity.mjs` 多一个右花括号（BUG-1）**。C3 改动在 `readPending()` 的 for 循环后遗留一层 `}`，`return` 落在函数体外 → `node --check` 直接报 `SyntaxError: Illegal return statement`。该文件是 `src/index.mjs` 的静态 import，语法错等于**整个插件 import 即崩**（身份层、审批归属闸、管理台成员页全线不可用）。交接摘要 `SHORT-C3.md` 却声称 `node --check` OK / 1004 全绿 —— 说明该摘要写于错误引入之前、工作区实际状态从未复验，是宪法 #8 的典型漏网形态。已删除多余括号，并对全部改动文件 + `src/index.mjs` 重跑 `node --check`。
+- **过度收紧反锁死清理入口（BUG-3，行为回退）**：C3 曾在 `src/admin/api.mjs` 的 `parseMemberKey` 增加「userId 含 `:` 即拒收」。但该函数只服务四条**读改删**路由（`PUT` 改角色 / `DELETE` 删成员 / `confirm` / `dismiss`），而 C3 之前落盘的存量冒号绑定行（旧 wxpusher `UID_PATTERN` 放行冒号 → `wxpusher:UID:EVIL` 直落，实测 `ok:true` 且升级后 `identity.allows()` 仍为 `true`）**仍照常准入**，却再也无法经管理台降级或删除 —— 等于把一条可能越权的 owner 身份永久钉死在白名单里，是宪法 #7「fail-open 要有度」的反面。已撤回该行拒收、恢复「只按第一个冒号切」的容忍语义，并在函数注释写明**为何故意不在此拒**：C3 的纵深防御设在**写入面**（`addBinding` / `addPending` + wxpusher `UID_PATTERN` 均已 fail-closed，新的冒号身份进不来），读改删面必须保留补救能力；`confirm` 不构成提权面（`confirmPending` 末端仍走 `addBinding`，冒号 userId 在那里被拒，实测 `ok:false`）。
+- **三处恒绿摆设补上守卫（源码判据正确，只补测试）**：① CRACK-001 的注释宣称「异常形状 `srcChats`（数组等）一律 fail-closed」，把 `graceSourceAllowed` 的形状判据整条短路成 `if (false)` 后 `test/actions.test.mjs` 25 例**全绿**（BUG-4）—— 风险实体是数组形状 `srcChats` 过不了严校验分支的 plain-object 判定、若又能吃宽限窗则窗内任意会话可点；② `readPending` 的冒号过滤删掉后 `identity` + `admin-members` 54 例全绿（BUG-5）—— 旧版 `app_subscribe` 可把 `wxpusher:UID:EVIL` 写进待确认表，读盘仍认这类键则管理台会展示歧义身份、点「确认」即触碰越权路径；③ 顺手把 `src/actions.mjs` 该分支的判据与注释对齐（异常形状不再借道 `undefined/null` 分支的宽限窗）。
+- **装配缝：删掉 `src/index.mjs` 两处 `identity` 传参，1011 例仍全绿（BUG-6）**。CRACK-003（审批编号回复归属闸）与 CRACK-004（提问 hint 兜底归属闸）的生效完全依赖 `index.mjs` 把 `identity` 传进 `registerApprovalHandler` 与 `createQuestionBridge`，而两处 `isAuthorizedDecider*` 都是 `if (!identity) return false` —— identity 缺失时**静默 fail-closed**：owner 代决能力整条消失、零告警、零测试可见，真机表现为「owner 回复 1 被拒『此审批不是发给你的』」而 mock 全绿。根因是所有函数级用例都自己显式传 `identity`，天然测不到装配缝。已补装配级用例走真实 `apply()` 并对两个装配点做源码级钉死（行为级要跑通 owner 代决需真卡片往返，属真机门；而这条缝的失效模式恰恰是「静默不报错」）。该用例自审时还发现初版断言失败会跳过 `cleanup()`、`apply()` 起的 wxpusher HTTP 句柄悬空把测试文件从 0.35s 吊到 120s（node:test 超时），已改 `try/finally`，变异下现在 391ms 快速见红。
+- **测试自身的墙钟竞态（BUG-2）**：`test/identity.test.mjs` 三例过期码用例用 `pairing.mint({ ttlMs: 1 })` 后立刻走 `bus.accept`（该路径不注入 `now`，用真实钟），`expiresAt = mintedAt + 1` 在同毫秒内完成时码**尚未过期** → 断言前提被静默破坏，全量偶发红（`B1-6b` 实际收到「配对成功」而非「已重铸一枚引导码」）。3000 次采样实测：`ttlMs:1` 有 2867/3000（~95%）概率码仍有效，`ttlMs:0` 为 0/3000（确定性过期）。三处改 `ttlMs: 0` 并就地写明「为何是 0 不是 1」防改回；其余 `ttlMs:1` 用例都显式注入 `now: Date.now() + 5000`，不受墙钟影响，故意不动。`test/identity.test.mjs` 连跑 40 轮全绿。
+- 测试：+5（`actions` 异常形状 `srcChats` 四态在宽限窗内一律 fail-closed；`admin-members` 存量冒号行仍可降级/删除 + confirm 冒号键不得落成绑定；`identity` `readPending` 冒号键清扫且不复活为绑定；`wiring.route` 装配完整性）+ 3 处去竞态。测试契约 1007 → **1012**。
+- 计数订正：`REVIEW-ABC.md` 把本轮记作「1006 → 1012（+6）」，但其自身改动清单只列出 5 条新用例；2026-08-24 在 `f3fce85` worktree 与当前工作区上逐文件实测复核为 **994（B-k4 基线）+ C1 7 + C2 3 + C3 3 = 1007 → 1012（+5）**，以本行为准。
+- 验证：`node --test test/*.test.mjs test/*.spec.mjs` = 1012/1012，连跑 3 轮一致；`verify-release.mjs`（v0.8.6，documented tests=909）/ `gen-channel-matrix --check`（27 渠道）/ 全量 `node --check` 通过；9 次变异验证中 7 次立即见红、2 次存活即上述 BUG-4/BUG-5，补测后复验全部见红。
+- **未闭环（登记不遮掩）**：真机门仍未过（C1/C2/B1 的真实回调形状与飞书 `open_chat_id` 字段位置只有 mock 覆盖，按 `06-retest-checklist.md` 过真机后再发版）；四处版本串与测试计数仍停在 v0.8.6 / 909（发版轮动作，本分支未发版）；`src/inbound/_shared` 侧 `createDedupLedger` 的 `!== undefined` 判空转与 `_bounded` 已修正的写法不一致但当前不可达，按宪法 #1 不把重构混进修复轮，已登记技术债。
+
+### 安全修复：复合键 `<channel>:<userId>` 冒号截断（批次 C3 / INJ-1 延伸，2026-08-24）
+
+依据 `.agents/workstreams/crack-fix-plan/PLAN.md §批次C C3`。身份复合键是 `<channel>:<userId>` 的字符串拼接，而三处解析各写各的：wxpusher UID 形态校验**放行冒号**、`identity` 读盘用 `split(':')` 取前两段、管理台 `parseMemberKey` 用 `indexOf(':')` 只切第一个冒号。攻击者构造 `UID:EVIL` 一类 uid 即可让身份层把冒号后内容**截断丢弃**，落成 `wxpusher:UID` 覆盖他人绑定或降级 owner —— 同一份数据在两个模块里是两个身份，正是复合键设计的固有裂缝。
+
+- **写入面 fail-closed（`src/inbound/identity.mjs`）**：`addBinding` 与 `addPending` 对含 `:` 的 userId 一律拒绝并 warn（warn 只截前 32 字符，不整串回显）。这是本条的主防线 —— 新的冒号身份再也进不来。
+- **解析对齐（`src/inbound/identity.mjs`）**：`normalizeBinding` 与 `readPending` 改用 `indexOf(':')` 切分（`colon > 0` 才认，与管理台 `parseMemberKey` 同语义），含冒号的 userId 不再被截断成另一个人；`readPending` 另把存量含冒号的坏键**读盘即剔除**（旧版 `app_subscribe` 可能写入），并随统一写回一并清扫落盘，清扫必 warn（宪法 #3）。
+- **wxpusher 形态收紧（`src/inbound/wxpusher-callback.mjs`）**：`UID_PATTERN` 去掉 `:` → `/^[A-Za-z0-9_.\-]+$/`，冒号 uid 在入站最外层即被拒并 warn。
+- **读改删面故意保持容忍**：管理台 `parseMemberKey` 不拒冒号 —— 理由与实证见上方 REVIEW-ABC BUG-3 条目（否则存量越权行无法清理）。
+- 测试：+3（`identity`：`addBinding` 拒绝冒号 userId 并 warn、`normalizeBinding` 用 `indexOf` 切分不截断；`wxpusher`：`INJ-1` 含冒号 uid 被形态校验拒绝并 warn）。测试契约 1004 → 1007。
+- 变异验证：`addBinding` 冒号拒收、`normalizeBinding` 的 `split`、wxpusher `UID_PATTERN` 三处还原均立即见红。
+- 注：`SHORT-C3.md` 记载的「1004/1004 pass、`node --check` OK」写于 BUG-1 语法错引入之前，与当时工作区实际状态不符；该摘要已就地标注更正。
+
+### 修复：审批桥僵尸 `pending` 账本行吞掉编号回复（批次 C2 / P1-5，2026-08-24）
+
+依据 `.agents/workstreams/crack-fix-plan/PLAN.md §批次C C2`。审批的「单次核销」此前只靠进程内 `entry.settled`；进程崩溃、重启或 `ledger.resolve` 写盘失败会在账本里留下 `status='pending'` 但**已无对应 waiter** 的僵尸行。`latestPendingFor` 迭代 `ap:` 前缀时会命中这些行 → 后续编号回复被僵尸行吸走、真实待决审批反而无人裁决，用户还收到「该审批已被处理」的误导回执（宪法 #5「账本先落终态」在崩溃缝隙下的残留形态）。
+
+- `src/approval/router.mjs`：新增进程内 `liveWaiters` Set，仅在 `bus.wait(key)` 真的创建/复用 waiter 时登记（`mode === 'observe'` 不注册 waiter，天然不参与编号回复匹配 —— 与 observe「只旁观」语义一致）。`latestPendingFor` 的筛选条件从 `row?.status !== 'pending'` 加严为 `|| !liveWaiters.has(key)`，无存活 waiter 的僵尸行不参与匹配，消息落回对话路由而非被吞。
+- **清扫归宿（宪法 #4）**：`decisionPromise.then(ok, err)` 双回调删 key —— `bus.wait` 的 promise 在四条路径（超时 null / settle 裁决 / abandon / dispose）全部会 settle，故每个 key 都有归宿；`dispose` 时清空整个 Set。审查复核确认无泄漏、无 settle 竞态。
+- **E-2 已决竞态语义保持不变**：`settle` 后微任务尚未执行的窗口内，waiter 仍被视为存活 → `decideTrusted` 返回 `already-resolved` 后照旧走「该审批已被处理」消费路径（v0.8.3 E-2 的 4 例既有用例全绿）。
+- 未动 `store.mjs` / `bus.mjs`；不新增 store 键族（`liveWaiters` 是纯内存集合，随实例生命周期消亡）。
+- 测试：+3（僵尸 pending 行不参与编号回复匹配、消息落回对话路由；编号回复优先命中存活 waiter 并忽略更晚的僵尸行；崩溃恢复后持久化僵尸行不吞编号回复）。测试契约 1001 → 1004。
+- 变异验证：还原 `liveWaiters` 闸门即见红。
+- **真机验收未过（宪法 #8）**：证据来自 mock 与临时 `state.json`；真机需观测一次真实 kill -9 后重启、旧卡编号回复与新审批并存时的裁决走向。
+
+### 安全修复：TG/飞书按钮来源比对「缺点击会话即放行」改为 fail-closed（批次 C1 / P1-4，2026-08-24）
+
+依据 `.agents/workstreams/crack-fix-plan/PLAN.md §批次C C1`（宪法 #7「fail-open 要有度——守卫不能对缺关键信息时静默放行」）。SEC-1/F-08 建立的「点击会话 vs 卡片原始会话」比对，两个通道都在**点击侧元数据缺失**时放行 —— 攻击面等价于「把缺数据的回调形状造出来即绕过来源校验」，而这条正是既有测试全没覆盖的缝（转发拒绝用例一律用正常形状构造，mock 假定形状 ≠ 真实异常负载，宪法 #8）。
+
+- **Telegram（`src/inbound/telegram-bot.mjs`）**：旧判据 `clickedChat !== undefined && originChat 非空 && 不相等` 是三项合取，`query.message?.chat?.id` 读不到（消息被删、事件形状异常、非 message 承载的回调）会把整式短路成 `false` → 直接放行裁决。现在拆成三级：`origin.chatId` 缺失（升级前在途卡片，本仓库所有 mint 点都带 chatId）→ warn 后兼容放行，窗口由 ref TTL 15min 天然封顶；`origin` 在场而点击会话读不到 → **拒绝**且不 `take()` 引用（原卡在 TTL 内仍可正常点，宪法 #6 不锁死）；两者在场且不相等 → 拒绝。判据用显式 `undefined`/`null` 比较而非真值 —— `chatId === 0` 是合法会话，`!clickedChat` 会把真实点击误判成缺数据（正控测试钉死）。**行为变化**：缺点击会话的回调由「静默放行裁决」变为回执「请到原会话操作」。
+- **飞书（`src/inbound/feishu-bot.mjs` `sourceChatAllowed`）**：`clicked === ''`（负载缺 `context.open_chat_id` 且顶层兜底也缺，或值为空串）由 warn + `return true` 改为 `return false`。三个调用点（`ac:`/`aq:`/`ap:`）本就把 `false` 转成 toast「请到原会话操作」，不裁决、不 patch 终态、不核销 `wait`，所以收紧无需改调用点 —— 但此前只有审批分支有覆盖，本轮补上 `ac`/`aq` 平行面测试，防装配回归悄悄绕过。`srcChat === ''` 的旧卡兼容半边按 PLAN §C1(b) 显式保留不动。
+- **拒绝路径全部 warn 出声（宪法 #3）**：两个通道的「缺数据拒绝」与「会话不一致拒绝」都补日志（TG mismatch 此前静默）；warn 只带 chatId/srcChat（非凭证，既有 warn 已带 userId）。
+- 测试：+7（TG 4 例：缺 `message` 整块 → 拒绝且原会话仍可裁决、缺 `chat.id` → 拒绝、`chatId === 0` 正控放行、`origin` 缺 chatId 的旧卡兼容放行且 warn；飞书 3 例：缺 `context` → 拒绝且不 patch 不核销 wait + `open_chat_id` 空串 → 拒绝 + 原会话仍可裁决、`ac`/`aq` 平行面缺点击会话不执行不作答、`srcChat` 缺失旧卡维持兼容）。测试契约 994 → 1001。
+- 变异验证（证明测试真的咬人）：TG 缺数据分支还原放行 → 2 红；TG 判据改 `!clickedChat` → 1 红（`chatId === 0` 正控咬住）；飞书 `clicked === ''` 还原 `return true` → 2 红。每次变异后以 `git diff --stat` 确认逐字节还原。
+- **真机验收未过（宪法 #8）**：证据全来自 mock fetch 与 fake SDK。真机需观测：TG 卡片消息被删除后回调的真实形状（`message` 是否真会缺）、飞书长连接负载是否恒带 `context.open_chat_id`（若某些卡片类型不带，收紧会误拒真实点击 —— 这是本条最主要的回滚触发条件）。已记入 `docs/memory/risks.md`。
+
+### 修复：入站内存学习表与 `wechat:ctx:` 键族全部收上界（批次 B-键族4 / P1-7，2026-08-24）
+
+依据 `.agents/workstreams/crack-fix-plan/PLAN.md §批次B B4` 与 `PLAN-B-k4-fin.md`（宪法 #4「状态必须有界」）。这些表以 chatId/uid 为键**只增不减**——键的数量由外部（群数量、陌生人来消息）决定，长跑进程或被灌水时内存/`state.json` 单调膨胀，是 F-8 写放大与内存 DoS 的底座。
+
+- **新增 `src/inbound/_bounded.mjs`（零依赖工具）**：`setBounded(map, key, value, max, onEvict)` 写超上限即从最旧一端淘汰（`Map` 迭代序 = 插入序），写已存在的键先 `delete` 再 `set` = **LRU 触摸**，活跃会话不会因「首次学习早」被误淘汰；`while` 而非 `if` 让上限调小/历史遗留的超量也能一次收敛。`createThrottledWarn(warn, { intervalMs, now })` 把淘汰这类高频降级的告警按 60s 窗节流，窗内累计次数随下次告警一并报出——既不静默（宪法 #3）也不刷屏。既有先例（`bus.mjs` 的 fifo/replyThrottle、`callback-refs.mjs` 的 `DEFAULT_MAX`、`turn-tracker` 的 `MAX_TRACKED`）收成一处，避免各通道抄歪。
+- **钉钉（`src/inbound/dingtalk-stream.mjs`）**：`sessionWebhooks` / `chatSenders` 加 1024 上限（真实企业几十个会话，三个数量级余量）。淘汰安全 —— 前者缺失回落 `batchSend` 主动推送，后者缺失回落「chatId 当 staffId」，两条都是既有路径。`seenMsgIds` 的惰性窗口清扫此前**只在 `size > 1024` 时触发**，60s 内涌入上万条新 msgId（群灌水）时无一条过窗、表继续无界涨；现在补硬上限淘汰最旧（最旧条目离过窗最近，窗口内去重语义不变）。
+- **QQ（`src/inbound/qq-gw.mjs`）**：`targetKinds` / `msgSeqs` 同加 1024 上限。淘汰安全 —— 前者缺失回落 `notifyGroups` 配置判定单聊/群（配置里声明过的群即使学习记录被淘汰仍按群投递），后者缺失从 1 重新递增（`msg_seq` 只需在同一 `msg_id` 下不重复）。
+- **微信 iLink（`src/inbound/wechat-ilink.mjs`）**：`wechat:ctx:<uid>` 此前每个发过消息的 uid 永久占一条 `state` 键、唯一归宿是 `sessionExpired` 全清；现在键族收 256 个 uid 上限，超限按**首见顺序**淘汰最旧（`Object` 键序 = 插入序，跨重启保序），存量超量在下一次写入时一并收敛。淘汰安全：ctx 只是「发送时回显最新 `context_token`」的缓存，缺失走既有「不带 token 发 → -14/伪装 -2 → 剥 token 重试」路径。`store` 无 `keys()` 的精简实现走**显式 fail-open**（跳过淘汰但照常写入，宁可无界也不丢功能），该降级路径由测试钉死不静默。
+- **D-7 廉价半边（`context_token` 形状校验）**：`context_token` 由对端消息携带，陌生人可塞任意长/带控制字符的串进 `state`（膨胀 + 污染日志与后续 JSON 载荷）。现在 >512 字符或含空白/控制字符一律拒收并 warn，**本条消息其余处理照常入站**（宪法 #6 不因一个字段失误吞掉消息）。
+- **防抖表与宽限窗（`src/event-listener.mjs` / `src/rules.mjs`）——行为变化**：`createTrailingDebounce` 与 `createGraceQueue` 的在途表以 sessionId 为键、靠各自定时器到点自清，但 `debounceMs`/`graceSeconds` 可配且**无上限**（`config.mjs` 只钳下限 0），配成分钟/小时级 + 会话高频轮换时两表可无界堆积（每条还挂一个活定时器）。现在各加 256 个 key 上限，**溢出时立即触发最旧一条**并 warn。行为变化仅限「本该再等窗口末尾/宽限期的那一条被提前推送」——绝不静默丢弃通知（宪法 #3）；装配处两个 `onOverflow` 都接 `warn`。
+- **同轮自审修掉三个自引入/既存缺陷**：① `_bounded.mjs` 的空转护栏原写作「最旧键 `=== undefined` 即 break」，键本身为 `undefined` 时会被当成空表、淘汰停摆而表越过上限——改判迭代器的 `done`；② 钉钉去重表的清扫阈值 `>` 在有了硬上限后**永不成立**（`setBounded` 保证写后 `size <= max`），惰性清扫成死代码、稳态高流量主机每条新消息都走「淘汰 + 告警」白丢去重记录还刷日志——改为 `>=`，表满先清过窗条目、清不出空位才淘汰；③ `createTrailingDebounce.flush()` 只 `timers.clear()` 却不 `clearTimeout`，卸载后最多 256 个已挂起定时器留在事件循环里，`debounceMs` 配长时进程要等整个窗口才退出（本仓库测试套件因此被吊住约 60s，修复后全量耗时 121s → 68s）——与 `grace.flush()` 对齐逐个清除。
+- 测试：+54（`test/bounded.test.mjs` 新建 22 例：LRU 触摸/淘汰回调/回调抛错不致命/cap 正常与上下边界与越界五态/`Infinity` 与 `0` 的宽容语义/存量收敛/3000 条压测/`undefined` 键；钉钉 +5、QQ +4、微信 +7、`grace` +8、`debounce` +8 含两条装配级 300 会话零丢失与定时器泄漏钉死）。测试契约 940 → 994（本条原记作「956 → 1010」，绝对数偏高 16；2026-08-24 在 `f3fce85^` 与 `f3fce85` 上实测复核为 940 → 994，+54 增量不变，以本行为准）。
+- 变异验证（证明测试真的咬人）：短路 `setBounded` 淘汰 → 19 例红；短路 `grace` 腾位 → 6 例红；短路 `debounce` 腾位 → 4 例红；`wechat:ctx` 淘汰置空 → 4 例红；去重阈值改回 `>` → 1 例红；`flush` 去掉 `clearTimeout` → 1 例红。每次变异后均以 `git diff` 确认逐字节还原。
+- **真机验收未过（宪法 #8）**：全部结论来自 mock fetch/WebSocket 与临时 `state.json`。真机需观测：钉钉 60s 内 >1024 条消息的去重与告警节流、QQ >1024 个目标的接口选择回落、微信真实 `context_token` 的长度与字符集分布（512 上限是否误伤）、防抖/宽限窗溢出提前推送的用户体感。已记入 `docs/memory/risks.md`。
+
+### 安全修复：引导码文件交付 + 过期码泵码堵死 + 文案不再指引 stderr（批次 B-1，2026-08-23）
+
+依据 `.agents/workstreams/crack-fix-plan/PLAN-B1.md`（solution2.md 推荐方案 A + B2 + B4）。三条缺陷同属一条泄露链：引导码明文进持久化日志 + 过期码可无限重铸 + 文案把用户往日志里引。
+
+- **LEAK-2 引导码明文进日志（高危）**：`showBootstrap`（`src/index.mjs`）原先经 `warn()` 双写（宿主 logger + stderr）把 owner 级配对码码面打进持久化日志（journald/Loki/ELK），任何能读日志的账号即可拿到首绑凭证。现在码面写 `<stateDir>/bootstrap-paircode.txt`（`mode 0600`，写前先 `unlinkSync` 防 symlink 写穿），stderr/logger **只印路径与有效时长，绝无码面**；写失败不回退印码面，只 warn 指引管理台铸码（宪法 #3 不静默、不泄漏二者兼顾）。
+- **码面不留残渣**：新增 `clearBootstrapCodeFile()`，挂 `pairing.onAudit` —— bootstrap 码进 `redeem`/`expire`/`revoke` 任一终态即删码文件（含 re-mint 先 revoke 后 mint 的替换时序）；非引导态启动（`allowUsers` 已配或绑定表非空）顺手清掉上一轮残留文件，码面不过夜。同时移除 `bootstrapCode` 变量，码面不再驻留内存。
+- **BYPASS-BOOT 过期码泵码（行为变化）**：`src/inbound/pairing.mjs` 的 `redeem` 对 expired 码原先直接 return、**不记失败计数**，过期码可无限次触发 `ensureBootstrap` 重铸（24h 内约 144 枚，旧实现每枚都进 stderr）。现在过期码提交同样计入 `recordFailure`，滑窗 5 次后锁出 10 分钟并返回 `locked-out`；`commands.mjs` 的 expired 重铸分支因 reason 已变而不再命中，锁出态不重铸。**行为变化**：连续第 5 次提交过期码的回执由「配对码已过期」变为「尝试次数过多，已临时锁定 10 分钟」；单次过期提交的语义不变（宪法 #6 用户失误不锁死）。
+- **重铸节流 + 回调不静默**：`ensureBootstrap`（`src/inbound/commands.mjs`）新增同进程 10 分钟节流窗与 `minted.ok` 校验，不再对失败的 mint 假断言「已重铸」；`onBootstrapRemint` 回调异常原为空 catch 吞掉，现在 warn 出声（码已铸但文件可能未写入，指引查管理台）。节流/失败时 `/pair` 回执明确告知「重铸失败或节流中」，不静默吞掉（宪法 #6 停留在「等待再试」）。
+- **文案（B4）**：5 处不再指引用户去翻 stderr/宿主启动日志，改指「本机引导码文件」与管理台 —— `whoamiText` 未绑定提示、`guidedHelp` 配对码位置、`/pair` 无参用法、expired 重铸成功回执、expired 节流回执。同步改口径的用户文档：`docs/guide.md` 引导码段落、README/README.zh-CN 身份体系条目（双语并行）。
+- **自审补漏（本轮 review 发现，PLAN 未列）**：`ensureBootstrap` 在「已有在铸引导码」时也返回 `null`，若与节流共用同一句回执会谎报「重铸失败或节流中」——正是 B4 要治的 MISLEAD 类。现在该分支单独回执「当前已有在铸引导码，请取现码」；另修 `writeBootstrapCodeFile` 的 `error.message` 对非 Error 抛出物会得到 `undefined`（统一走 `instanceof Error` 三元，与文件内既有惯例一致），并去掉未使用的 `expiresAt` 形参。
+- 保留 `【引导配对码】` 前缀（既有 `test/admin-wiring.test.mjs` 断言不破）；不新增 store 键族，无新增运行时依赖（`node:fs` 内置）。
+- 测试：+13（引导码文件 mode 0600/单行码面、码面零泄漏正负控双钉、写失败不回退印码面、symlink 不被写穿、非引导态启动清陈旧文件、管理台撤销经真 HTTP 面触发删文件且 API 响应无码面、过期码 5 次锁出、锁出上下边界第 4/第 5 次、复合键隔离不牵连他人、重铸节流、回调异常 warn 出声、有在铸码时不谎报重铸失败、单次过期回执语义不变）；测试契约 927 → 940。
+- 未收口的残差已登记技术债：admin UI 与 `bus.mjs` whoami 文案仍引 stderr、README/`docs/guide.md` 仍写「终端日志里打引导码」、跨进程节流不共享。
+
+### 安全修复：越权裁决族四条 P0 全部改 fail-closed（批次 A / CRACK-001~004，2026-08-23）
+
+依据 `~/dsh-notifier-handoff/27-crack.md` 破解轮与 `.agents/workstreams/crack-fix-plan/PLAN.md §批次A`（commit `013ec48`，契约 909 → 927；本条目于 2026-08-24 neat 轮回补 —— 提交时遗漏 CHANGELOG，违反军规 2.2#5「每个审查发现的修复都要写进 CHANGELOG 并注明审查编号」，登记为文档同步缺陷）。四条同属一族：**来源/归属证据不足时旧实现选择放行**，攻击者只要把证据缺掉就能越权裁决他人的审批、动作与提问。
+
+- **CRACK-001 动作卡缺来源元数据即兼容放行（`src/actions.mjs`）**：F-08 建立的 `ac:` 来源校验对 `srcChats === undefined` 的历史卡 warn 后放行 —— 该放行**无时限**，等于永久免检卡，转发 ⏹ 卡即可取消他人任务。现在收成 `LEGACY_SOURCE_GRACE_MS = 10min` 的升级迁移宽限窗（上界对齐 `tokens.mjs` 的 token TTL：升级瞬间在途的旧卡本就只剩 ≤10min 生命期），窗外一律拒绝；放行与拒绝**两条路径都 warn**（宪法 #3）。
+- **CRACK-002 `bus.decide` 的 `allowChats=null` 时来源校验整段跳过（`src/inbound/bus.mjs`）**：旧判据是「注册了范围**且**带了 chatId 才校验」的合取，缺任一侧整段短路 → SEC-1 的按钮来源校验被绕过。现在改为「有源证据才算有效按钮路径」：缺点击会话或缺来源范围一律拒绝并 warn，**不核销 wait**（合法原会话仍可裁决，宪法 #6）；无 waiter 的重放/已决路径不进本分支，保留 `settle` 的 `already-resolved` 语义。
+- **CRACK-003 编号回复无归属校验（`src/approval/router.mjs`）**：`decideTrusted` 路径不过 token，任何白名单 member 回复 `1` 即可裁决同渠道任意待决审批。`latestPendingFor` 现在给命中结果带 `evidence`（`exact` | `onChannel` | `intended`）：`exact`（卡片发本人）直接放行，`onChannel`/`intended`（他人卡片或广播兜底）**仅该渠道绑定的 owner 可代决**，拒绝时回执「此审批不是发给你的(无权裁决)」并 warn。`identity` 缺失或 `list()` 抛异常一律 `return false`（fail-closed）。
+- **CRACK-004 提问 hint 兜底跨渠道越权作答（`src/questions/router.mjs`）**：同构改造 —— `evidence` 为 `exact`/`onChannel`（questions 侧两者都已是同 user 命中，见 SEC-5/6）放行，`hint`（广播编号话术兜底）仅 owner 可代答，拒绝时消费裸编号 + 回执「此提问不是你作答的（无权回答）」，**问题保持待决**、原提问者仍可作答（宪法 #6 不锁死）。
+- **装配**：`src/index.mjs` 把 `identity` 传进 `registerApprovalHandler` 与 `createQuestionBridge` —— 两处归属闸的生效完全依赖这两行，缺失即静默 fail-closed（该装配缝后由 REVIEW-ABC BUG-6 补上装配级守卫）。
+- 测试：+18（`actions` / `approval` / `approval.multi` / `inbound` / `questions` / `inbound.feishu` 六个文件）。测试契约 909 → 927。
+- 残差已登记 `~/dsh-notifier-handoff/20-techdebt.md`：CRACK-001-R1（畸形 `srcChats` 形态，后由 REVIEW-ABC BUG-4 补测试钉死）、CRACK-001-R2（`createdAt` 在未来时宽限窗无上界，同进程可信写入方不可达）。
+
+## [0.8.6] - 2026-08-23
+
+> 覆盖公共镜像 `THEWOLFWALKER/dsh-notifier` 已发布的 `v0.8.5`，并额外包含 PR #9 飞书扫码 SDK 适配与 P1-1/P1-2/P1-3 技术债修复。
+
+### 修复：P1-3 跨进程状态压力——崩溃残留锁的 10 秒降级写窗口（2026-08-23）
+
+- P1-3 状态压力审查（一次性多进程 harness，证据见 `.agents/workstreams/p1-3-state-stress.md`）：6 写者不相交键并发（360 键零丢失）、4 写者高碰撞（1800 次抢锁零丢失）、mtime 读收敛（CLI 写入 ~3ms 内对宿主可见）、损坏自愈（同实例中途外部写坏 → 双取证 + 内存全量重建，凭证键存活）、SIGKILL 风暴后文件始终可解析——键级合并、锁属主校验、自愈路径全部按设计工作。
+- **确认缺陷**：陈锁判据只有「锁 mtime >10s」一条。持锁进程 kill -9/断电/OOM 崩溃后，残留的新鲜锁最长 **10s 内不被判回收**——窗口内每个进程的每次 `save()` 都白等两轮 ~480ms 再**降级无锁写入**（丢写保护失效，正是 v0.6.3 键级合并要防的整文件丢写形态；实测两进程在幽灵锁下双双降级）。
+- `src/inbound/store.mjs`：新增死亡探测——利用 v0.6.5 属主落章 `pid:random` 格式，锁龄超 500ms 宽限期（防「刚创建即读」与 pid 复用竞态）后 `process.kill(pid, 0)` 探测，ESRCH=确死当场回收；存活/EPERM/畸形内容一律维持旧行为。三个回收点（进入前/自旋内每 8 拍/双轮间隙）统一走 `recoverableLock()`。
+- 方向保守：pid 被无关新进程复用只会让恢复退回原 10s mtime 判据，绝不提前抢活锁；外来格式锁内容永不触碰。
+- 测试：+4（死属主新鲜锁当场回收不降级、活属主照常双轮降级且不误删、宽限期内不推断、畸形内容维持 mtime 判据）；测试契约 902 → 906，四处计数引用同步。
+
+### 修复：ask_user 编号回复在出站/入站异名与纯入站通道失效（issue #11，2026-08-23 自公共镜像接力合入）
 
 - `src/questions/router.mjs`：`pushQuestion` 计算 `hintChannels` 时，把「该问题目标用户已绑定、卡片未送达」的交互入站通道一并计入（如 `qq`/`wechat`），编号话术经入站 `sendText` 送达纯入站通道（wechat iLink 无出站文本可走）；已由出站文本送达的通道（同名 type 或别名对 `qq-bot↔qq`）只补通道名不重发，避免同号双发。修复 QQ 官方机器人（`qq-bot` 出站 ↔ `qq` 入站异名）与微信 iLink（inbound-only）场景下 `ask_user` 编号回复完全失效、并落入 conversation 路由污染对话的问题。
 - 安全约束不变：只加目标用户已绑定（`notifyTargets()` 三级解析非空）的通道，话术确实送达才入 `hintChannels`，维持 SEC-2 fail-closed——没收到话术的渠道/用户裸编号仍拒绝并 warn。
+- 测试：`test/questions.test.mjs` 新增 3 用例（QQ 异名命中且不双发、iLink 纯入站 sendText 送达后命中、未绑定目标通道不补入 hintChannels）。镜像侧 885→888；本仓库契约以 Unreleased 计数为准。
+
+### 修复：飞书扫码一键建应用适配新版 SDK 协议（PR #9，2026-08-23 自公共镜像接力合入）
+
+- `src/inbound/_feishu-register.mjs`：@larksuiteoapi/node-sdk ≥1.73 的 `registerApp` 回调名从 `onQrCode` 变更为 `onQRCodeReady`（接收 `{ url, expireIn }`），旧名会让 SDK 抛 "onQRCodeReady is not a function"；`addons` 从已弃用的 `resources` 名值映射改为 `normalizeAddons` 白名单协议（`preset/scopes/events/callbacks`），旧结构会抛 "addons.resources is not allowed" 导致扫码建应用失败。
+- `scopes.tenant` 扩展为与 feishu-bot 长连接收发能力一一对应的权限集（p2p/群 @/群消息只读 + `im:message:send_as_bot` 出站）；`events` 订阅 `im.message.receive_v1`，`callbacks` 订阅 `card.action.trigger`（审批/停止按钮回调）。
+- `test/channel-login.test.mjs`：fake SDK 与断言同步新协议（onQRCodeReady `{url}` → onQr 透传、scopes/events/callbacks 结构）。
+
+### 修复：P1-2 错误可见性——三处静默故障路径补告警（2026-08-20）
+
+- 审计范围：全量扫描 src/ 的 356 个 catch 块（141 有日志可见 / 139 有注释的刻意静默 / 7 前端 UI / 61 无注释静默逐个核实）。`_shared.mjs` 5 处为误报（catch 后分类重抛）；`ledger.mjs` 静默是文档化设计军规（账本失败绝不影响推送）；tokens/verifyToken 等 fail-closed 静默为安全正确行为——均不动。
+- `src/approval/router.mjs`：审批分流的路由引擎异常原先静默回落全局广播（同函数的空集回落自 v0.6.5 起就有 warn，异常路径却零日志）。现在异常同样 warn（含引擎报错原因）；fail-safe 广播投递语义不变。
+- `src/inbound/store.mjs`：启动时 state 文件损坏原先静默清零——绑定表/待审批/扫码凭证全部丢失且零日志。现在对齐 v0.6.5 save 路径的取证惯例：现场以 **copy**（非 rename——boot 时他进程可能持有该文件）转存 `.corrupt.<ts>` + 告警；空文件视作空态静默起步（无记忆可丢失，不算损坏）；读失败（权限/占用）与解析失败区分，前者维持静默；取证 copy 有 8MB 体积护栏（异常巨物只告警不复制，避免占满磁盘）。fail-open 语义不变。
+- `src/rules.mjs` + `src/event-listener.mjs`：`keywords.regex` 非法正则原先静默降级字面量子串匹配——语义从「正则命中」变「子串包含」，include 规则可能永不命中（通知静默停止）。降级行为保留（宁可漏拦不炸启动），但 `createKeywordFilter` 新增 `regexFallbacks` 纯数据上报（模块保持零 IO），event-listener 装配时非空即 warn 列出降级条目。
+- 测试：+5（审批异常分流告警、boot 取证不破坏并发写者、读失败不取证、空文件不告警、regexFallbacks 条件暴露）+3 处既有断言语义更新（boot 取证副本 1→2 等）；测试契约 897 → 902。
+- review 过程：三轮对抗性 review（攻击者/资源耗尽、跨切面回归、全量 diff 重读），修正 2 个自引入缺陷：取证 copy 无体积护栏（巨物翻倍占盘）、空文件误判损坏（噪音告警）。
+
+### 修复：Telegram 卡片文本超长护栏（P1-1 协议盲区，2026-08-20）
+
+- 背景：TG `sendMessage` 的 text 硬限 4096 字符，超限必 400 `message is too long`。审批 `reason` / 提问 `context` / 动作卡 `content` 上游均无长度上限（public 层各 20000 码点），长文案会让按钮卡在所有会话全军覆没——卡片 catch 后只 warn 一行并返回 null，静默退化为纯编号回复。这是与 v0.6.2 `BUTTON_DATA_INVALID`、v0.6.3 legacy markdown 同类的 mock 盲区（mock fetch 不校验协议形状，单测测不出）。
+- `src/inbound/telegram-bot.mjs`：新增 `clampTelegramText()` 护栏，`sendApprovalCard` / `sendActionCard` / `sendQuestionCard` 三个卡片路径的 text 统一钳制。计数按 **UTF-16 码元**执行（对抗性 review 修正：TG 底层 UTF-16 存储，astral 字符 1 码点 = 2 码元——只按码点数截到 4096 的全 emoji 文本实际 8192 码元，真机仍会 400）；切口回退到码点边界，绝不劈开 surrogate pair；截断处追加可见标记 `…（内容过长，已截断）`。限内文本零改动直通。
+- `test/inbound.telegram.test.mjs`：+6 项协议形状契约——审批/提问/动作卡超长截断仍送达（不因 400 退化）、码点合规但码元超限的全 emoji 文本必须截断（码点计数会漏的对抗用例）、surrogate pair 完整性、限内文本不加标记不误伤、按钮 ref 形态不受截断影响、三种卡 sendMessage 一律不带 `parse_mode`（v0.6.3 legacy markdown 400 事故防回归护栏）。
+- 测试契约 891 → 897；`package.json` `dshQuality.testCount`、README 双语徽章/正文、HANDOFF 测试行同步。
+- 真机验证缺口：截断后的合规长度在真机的实际表现（含代理转义差异）仍待真机复验，已记录 `docs/memory/risks.md`。
+
+## [0.8.5] - 2026-08-19
+
+### Security
+
+- `dsh-notifier/sent` 公共事件契约升级至 `0.7`：事件现在只包含送达状态、渠道、来源与标题/正文长度及 UTF-8 字节数等元数据，不再暴露 `message.title`、`message.content`、审批/用户文本或适配器错误正文；事件 payload 仍深冻结。
+- 定向 `ctx.notifier.push(..., { channel })` 现在与广播共享同一内部审计回调，在成功、失败、未配置和限流结果完成后各记录一次；直接调用方的返回值形状保持兼容。
+
+### Changed
+
+- 消费方读取 `record.message` 的 sent 事件逻辑需迁移到 `titleLength`、`contentLength`、`titleBytes`、`contentBytes`、`hasContent` 与投递状态字段。
+
+> 交接打包批：npm 发布包文档完整性修复 + guide.md 补齐 v0.8 远程提问章节 + 仓库文件地图。
+> 本版同时包含插件事件脱敏与定向发送审计统一；当前 Windows 主机 887/891 通过，4 个桌面测试需 BurntToast/PowerShell 能力。
+
+### 修复：npm 发布包文档完整性（README 引用死链）
+
+- `package.json`：`files` 数组补入 README 链接到但不在包内的用户文档——`PLUGINS.md`（插件互操作契约，README 双语均引用）、`THIRD_PARTY_NOTICES.md`（第三方声明，README 底部链接）、`docs/guide.md`（完整使用指南，README 双语均引用）、`docs/upgrade-guide.md` / `docs/upgrade-guide.en.md`（升级/回滚指南）。装包用户从此不再遇到 README 死链（`npm pack --dry-run` 验证：138 → 143 个文件）。
+- `README.zh-CN.md` / `README.md` 无需进 files 数组——npm 的 `README*` 自动包含规则已覆盖。
+- 边界规则落 HANDOFF §1.5「仓库文件地图」：**README 链接到的文件必须在发布包里**；给装包用户的文档进 files 数组，贡献者文档（HANDOFF / ADAPTER / 设计存档 / 真机测试记录 / 截图）留仓库即可。
+
+### 文档：guide.md 补齐 v0.8 远程提问章节
+
+- `docs/guide.md`：「日常使用」新增「远程提问」小节——选项卡点答（飞书/TG）/ 编号回复（QQ/微信/钉钉/WxPusher，多选逗号分隔）/ 答错重答不作废 / 超时永不代答。v0.8.0 落地的 `ask_user` 此前在全部用户文档缺位（README 双语与 HANDOFF 已由 2026-08-19 早前提交 `f559658` 同步），本版补全最后一块。
+
+### 交接
+
+- HANDOFF.md：交接快照刷新至 0.8.5；新增 §1.5 仓库文件地图（发布包内容 vs 工程仓库文件，逐目录归属）；待办清单勾销 guide.md 缺口项。
+- 仓库卫生：`node_modules`（947 文件）与 `package-lock.json` 系 v0.7.1（`59e954e`）整目录误提交（`.gitignore` 写了但先于 ignore 落库的文件不受约束），本版 `git rm --cached` 出库——实证零依赖成立（移走两者后完整测试仍全绿），`@deepseek-ai/cordis` 4.0.1 也在公共 npm，新克隆无需特殊处理。仓库体积 42MB → 2.4MB（zip 5.3MB → 1.2MB）。
 
 ### 测试
 
-- `test/questions.test.mjs` 新增 3 用例：QQ 异名通道编号回复命中且不双发、iLink 纯入站编号话术经 sendText 送达后命中、未绑定目标用户通道不补入 hintChannels（fail-closed 回归）。
-- `npm test`：888/888 通过（885 基线 + 3 新增）。
-
-### Chore
-
-- `src/admin/ui.mjs`：版本串 v0.8.5。
+- `npm test`：891 项契约；当前 Windows 主机 887 通过，4 个桌面能力测试因环境缺失失败。
 
 ## [0.8.4] - 2026-08-18
 
-### 修复：审批状态组键清扫 + 崩溃残留兜底（S-1/S-2）
+> 安全收敛批：动作卡转发拒绝（F-08）、提问按钮会话收敛 + 编号回复 onChannel 收紧（AUTH-1/S-1）、
+> WxPusher 回调面加固（INJ-1/OTH-1）、账本孤儿 pending 清扫、CI 移除 windows matrix。
+> （本条目由接手 agent 于 2026-08-19 按 `38e08e5` 提交内容回补——发版时遗漏了 CHANGELOG 条目，
+> 违反军规「每项修复必须进 CHANGELOG」，回补留档、引以为戒。）
 
-- `src/index.mjs`：`aq:`/`ap:`/`act:` 键族增加清扫归宿，`observe` 模式下有意永驻的 `ap:` pending 用守卫区分，崩溃残留的孤儿 pending 走 fail-closed（不再被裸编号回复误命中）。
-- `src/approval/router.mjs`：pending 匹配对旧行/残留行为改为 fail-closed，防崩溃后孤儿状态越权。
-- 状态组修复对应 `24-plan-stategroup.md`。
+### 安全：动作卡（ac:）来源会话校验——转发到别的会话点击不再生效（F-08）
 
-### 修复：question 编号回复 allowChats + onChannel 收紧（AUTH-1 / SEC-5/6）
+- `src/actions.mjs`：`mintAction` 增第 3 参 `meta { channel, chatId }`，账本行落 `srcChats`（channel → chatId[]）；新增 `markSource` / `unmarkSource`（多目标广播发送前登记、失败/降级撤销）；`dispatch` 增 `chatId` 参数——新卡（有 srcChats）点击会话必须在来源集合内，否则 `source-chat-mismatch` 拒绝；缺点击会话 `source-chat-required` 从严拒绝（含跨通道转发）；无 srcChats 的历史卡显式 warn + 兼容放行（不打在途旧卡，但绝不静默）。
+- `src/event-listener.mjs`：动作卡发送前先 `markSource`（登记先行堵「已发卡但账本无来源」的竞态窗口），发送失败/降级 null 时 `unmarkSource` 回滚。
+- `src/inbound/telegram-bot.mjs`：dispatch 透传 `query.message?.chat?.id`；动作卡短引用 mint 携带 `{ chatId }`（v0.6.2 `r:<ref>` 机制扩展）。
+- `src/inbound/feishu-bot.mjs`：动作卡按钮 value 嵌入 `srcChat`；callback 侧 `sourceChatAllowed` 前置校验 + dispatch 透传点击会话。
 
-- `src/questions/router.mjs`：`bus.wait` 补注册 allowChats（对齐 approval），`latestPendingFor` 的 onChannel 分支从「同渠道任意绑定用户」收紧为「同渠道同 userId」，堵住同频道用户代答他人提问的越权面（架构审查 AUTH-1 / SEC-5 / SEC-6）。
+### 安全：提问（aq:）按钮会话收敛 + 编号回复 onChannel 收紧（AUTH-1 / S-1）
 
-### 修复：动作卡来源会话加固 + WxPusher 回调加固（F-08 / INJ-1）
+- `src/questions/router.mjs`：`askQuestions` 的 `bus.wait` 登记 `allowChats`（复用 v0.8.3 SEC-1 审批同款机制），`pushQuestion` 每送达一张卡片把对应 chatId 并入集合——转发到未送达会话的按钮点击被 bus.decide 拒绝；空目标 = 空 Map，不放行任意会话。
+- `src/questions/router.mjs`：编号回复降级链的 `onChannel` 档从「该渠道推送过（他人代答）」收紧为「该渠道推送过且 userId 一致」——同渠道他人代答面关闭，exact/hint 两档语义不变（与 0.8.3 SEC-2 同向收紧）。
 
-- `src/actions.mjs`：动作卡（`ac:`）登记来源会话元数据 `srcChats`（channel+chatId），`dispatch` 据此校验点击来源，转发点击动作卡一律拒绝（架构审查 F-08）。
-- `src/event-listener.mjs`、`src/inbound/feishu-bot.mjs`、`src/inbound/telegram-bot.mjs`：动作卡嵌入来源会话，点击会话透传校验。
-- `src/inbound/wxpusher-callback.mjs`：WxPusher 回调无签名 → uid 白名单（128 上限）+ 订阅只进待确认队列（不直接当已绑定）+ 公网无 `allowedIps` 时 fail-closed（架构审查 INJ-1）。
+### 安全：WxPusher 回调面加固（INJ-1 / OTH-1）
 
-### Chore
+- `src/inbound/wxpusher-callback.mjs`：uid 形态白名单 `^[A-Za-z0-9_.:\-]+$` 且长度 ≤128（与身份层一致）——`send_up_cmd` / `app_subscribe` 双入口校验先行，拒绝空白/控制字符/路径穿插/超长，杜绝伪造 uid 投毒待确认绑定表或膨胀 store 键。
+- 回调绑定非回环 host 且未配置 `allowedIps` 时**拒绝全部回调来源**（fail-closed：WxPusher 上行回调无签名，公网面即冒用面）+ 显式告警指引（配 allowedIps 或回环 + 反代）；本地回环默认不受影响。
 
-- `src/admin/ui.mjs`：版本串 v0.8.4。
-- CI：去掉 windows 编译矩阵（缩为 linux/macos 主干）。
+### 修复：账本孤儿 pending 清扫 + 审批行落 mode
+
+- `src/index.mjs`：`ap:` / `act:` / `aq:` 的 pending 行超过孤儿线 `max(2h, approvalTimeout×2, questionTimeout×2)` 判孤儿清扫（observe 审批与无法分类的旧行保留）；`aq:` 前缀首次纳入清扫——提问账本不再无限增长。
+- `src/approval/router.mjs`：审批账本行落 `mode` 字段（`answer` 模式标记，配合孤儿线区分可清扫/需保留）。
+
+### CI
+
+- `.github/workflows/ci.yml`：移除 windows matrix——headless 环境跑不了 PowerShell desktop toast，长期红不如不跑（linux/macos 保留）。
+
+### 测试
+
+- 新增用例覆盖：动作卡来源校验三态（命中/越界/历史卡兼容放行）、TG/飞书点击会话透传、提问 allowChats 与 onChannel 收紧、WxPusher uid 形态与公网 fail-closed、孤儿清扫联动（`test/actions.test.mjs`、`test/inbound.telegram.test.mjs`、`test/inbound.feishu.test.mjs`、`test/inbound.wxpusher.test.mjs`、`test/questions.test.mjs`、`test/wiring.route.test.mjs`、`test/approval.test.mjs`、`test/inbound.test.mjs`）。
+- `npm test`：历史版本记录为 885/885 通过（862 基线 + 23 新增）。
+
 
 ## [0.8.3] - 2026-08-18
 
@@ -78,7 +434,7 @@ DSH 处于 developer preview，0.x 阶段的次版本号提升允许小幅破坏
 ## [0.8.0-tg.0] - 2026-08-17（Telegram 真机测试包）
 
 > v0.8 远程提问（issue #3/#5，规划书《选项卡通知》M1）首个可测版本。
-> 测试步骤见包内 `TG-TEST.md`。
+> 测试步骤曾随测试包提供；当前验证边界以 `docs/memory/risks.md` 为准。
 
 ### 新增：ask_user 远程提问工具（`src/questions/router.mjs`）
 
@@ -154,7 +510,7 @@ DSH 处于 developer preview，0.x 阶段的次版本号提升允许小幅破坏
 ### 测试
 
 - `test/admin-scan.test.mjs` +10 用例（微信流机：基本流/重定向/过期刷新上限/超时/凭证缺失/缺 userId/瞬态重试/已绑定与 identity 异常降级/取码与落盘异常/未知状态），全量 797 → 807。
-- 新增 `WECHAT-TEST.md` 随包分发（离线用例 + 网页/CLI 真机步骤 + 验收清单）。
+- 新增微信测试笔记随包分发（离线用例 + 网页/CLI 真机步骤 + 验收清单；后续文档整理已归档）。
 
 ## [0.7.1] - 2026-08-17
 

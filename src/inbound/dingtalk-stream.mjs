@@ -32,13 +32,39 @@
 import { createHash } from 'node:crypto'
 import { createTokenManager } from '../adapters/_tokens.mjs'
 import { createBreaker } from './_breaker.mjs'
+import { setBounded, createThrottledWarn } from './_bounded.mjs'
 import { resolveNotifyTargets } from './target-guard.mjs'
+import { normalizeImageAttachment } from './message.mjs'
 
 const DEFAULT_API_BASE = 'https://api.dingtalk.com'
 const DEFAULT_OAPI_BASE = 'https://oapi.dingtalk.com'
 const BOT_TOPIC = '/v1.0/im/bot/messages/get'
 const ROBOT_CODE_KEY = 'dingtalk:robot-code'
 const MSG_DEDUP_WINDOW_MS = 60000 // 服务端未 ack 的重推间隔：60s 窗口内同 msgId 吸收
+const MSG_DEDUP_MAX = 1024 // seenMsgIds 硬上限：窗口清扫后仍超量则淘汰最旧（宪法#4）
+// v0.8.7 P1-7（宪法#4）：sessionWebhooks/chatSenders 以 conversationId 为键只增不减 ——
+// 机器人被拉进大量群 / 陌生会话灌水时进程内存单调膨胀。1024 条上限（真实企业几十个会话，
+// 三个数量级余量），超限淘汰最旧。淘汰安全：两表都是「最近一次入站学来的发送辅助信息」，
+// 缺失分别回落 batchSend 兜底与「chatId 当 staffId」既有路径。
+const CHAT_STATE_MAX = 1024
+
+/** Keep only known image fields; arbitrary provider content never enters a control envelope. */
+export function parseDingtalkImageMessage(msg) {
+  if (msg === null || typeof msg !== 'object' || Array.isArray(msg)) return null
+  const type = String(msg.msgtype ?? '').toLowerCase()
+  const candidates = []
+  if (type === 'picture' || type === 'image') {
+    candidates.push(msg.picture, msg.image, msg.content)
+  } else if (msg.picture !== undefined || msg.image !== undefined) {
+    // Mixed text + image has an explicit attachment field; do not inspect arbitrary text content.
+    candidates.push(msg.picture, msg.image)
+  }
+  for (const candidate of candidates) {
+    const image = normalizeImageAttachment(candidate)
+    if (image !== null) return { kind: 'image', image }
+  }
+  return null
+}
 
 /** content → 6 位十六进制摘要（合成 messageId 用，与 wechat-ilink 同款）。 */
 function hash6(text) {
@@ -133,9 +159,12 @@ export function createDingtalkInbound(options = {}) {
   let reconnectTimer = null
   let robotCode = String(store?.get(ROBOT_CODE_KEY, '') ?? '') // 首条入站消息学习（跨重启恢复）
   // chatId → 最近 sessionWebhook（被动回复专用，过期即弃）/ 最近发言人（batchSend 要 staffId）
+  // 两表均有界（CHAT_STATE_MAX，setBounded 淘汰最旧；见文件头常量注释）
   const sessionWebhooks = new Map()
   const chatSenders = new Map()
-  const seenMsgIds = new Map() // msgId → 首见时间戳（60s 重推吸收窗口）
+  const seenMsgIds = new Map() // msgId → 首见时间戳（60s 重推吸收窗口 + MSG_DEDUP_MAX 硬顶）
+  const warnChatStateEvicted = createThrottledWarn(warn)
+  const warnDedupEvicted = createThrottledWarn(warn)
 
   function scheduleReconnect() {
     if (stopRequested) return
@@ -197,16 +226,27 @@ export function createDingtalkInbound(options = {}) {
     })
   }
 
-  /** msgId 去重：60s 窗口内同 msgId 视为服务端重推，吸收不二次投递（惰性清扫防膨胀）。 */
+  /**
+   * msgId 去重：60s 窗口内同 msgId 视为服务端重推，吸收不二次投递（惰性清扫防膨胀）。
+   * v0.8.7（宪法#4）：原实现只在 size>1024 时清「已过窗口」的条目——60s 内涌入上万条
+   * 新 msgId（群灌水/攻击）时无一条过期，表继续无界涨。补硬上限：清扫后仍超量则淘汰
+   * 最旧（最旧条目离过窗最近，淘汰它最不影响去重语义；窗口内去重照旧生效）。
+   * 清扫阈值必须是 `>=` 而非 `>`：setBounded 保证写后 size <= MSG_DEDUP_MAX，
+   * `>` 永不成立会让惰性清扫变成死代码——稳态高流量主机每条新消息都走「淘汰 + 告警」，
+   * 白丢去重记录还刷日志（自审发现的自引入缺陷）。表满即先清过窗条目，清不出空位才淘汰。
+   */
   function isFreshMsgId(msgId) {
     const now = Date.now()
-    if (seenMsgIds.size > 1024) {
+    if (seenMsgIds.size >= MSG_DEDUP_MAX) {
       for (const [id, at] of seenMsgIds) {
         if (now - at >= MSG_DEDUP_WINDOW_MS) seenMsgIds.delete(id)
       }
     }
     if (seenMsgIds.has(msgId)) return false
-    seenMsgIds.set(msgId, now)
+    const evicted = setBounded(seenMsgIds, msgId, now, MSG_DEDUP_MAX)
+    if (evicted > 0) {
+      warnDedupEvicted((count) => `钉钉入站去重表达上限 ${MSG_DEDUP_MAX}（60s 窗口内消息量异常），已淘汰 ${evicted} 条最旧记录${count > 1 ? `（近期累计 ${count} 次）` : ''}`)
+    }
     return true
   }
 
@@ -226,21 +266,32 @@ export function createDingtalkInbound(options = {}) {
     }
     const webhook = String(msg.sessionWebhook ?? '')
     if (webhook !== '') {
-      sessionWebhooks.set(chatId, { url: webhook, expiredAt: Number(msg.sessionWebhookExpiredTime) || 0 })
+      const evicted = setBounded(
+        sessionWebhooks,
+        chatId,
+        { url: webhook, expiredAt: Number(msg.sessionWebhookExpiredTime) || 0 },
+        CHAT_STATE_MAX,
+      )
+      if (evicted > 0) {
+        warnChatStateEvicted((count) => `钉钉会话状态表达上限 ${CHAT_STATE_MAX}，已淘汰最旧会话的 sessionWebhook（受影响会话回复改走主动推送兜底）${count > 1 ? `（近期累计 ${count} 次）` : ''}`)
+      }
     }
-    chatSenders.set(chatId, userId) // 主动推送兜底目标（batchSend 要 staffId 而非 conversationId）
-    if (String(msg.msgtype ?? '') !== 'text') return // 图片/富文本等暂不支持，静默忽略
+    // 主动推送兜底目标（batchSend 要 staffId 而非 conversationId）；同样有界
+    setBounded(chatSenders, chatId, userId, CHAT_STATE_MAX)
+    const image = parseDingtalkImageMessage(msg)
     const text = String(msg.text?.content ?? '').trim()
-    if (text === '') return
+    if (text === '' && image === null) return
     // v0.7：conversationType 透传（'1' 单聊 / '2' 群聊，/pair 私聊判定）；
     // accept 返回值消费——拒绝/命令回执不再已读不回
     const result = bus.accept({
       channel: 'dingtalk',
+      accountId: String(config?.appKey ?? ''),
       userId,
       chatId,
       chatType: String(msg.conversationType ?? ''),
       messageId: `dt:${msgId}`,
-      text,
+      text: text || '[图片消息]',
+      ...(image === null ? {} : { image: image.image, ...(text === '' ? { kind: 'image' } : {}) }),
     })
     if (result?.reply !== undefined) {
       sendReply(chatId, String(result.reply)).catch((error) => {
@@ -390,6 +441,7 @@ export function createDingtalkInbound(options = {}) {
 
   return {
     channel: 'dingtalk',
+    accountId: String(config?.appKey ?? ''),
     capabilities: { buttons: false },
 
     /** 启动 Stream 连接（幂等；失败中文 warn 后允许再次 start 重试）。 */

@@ -29,6 +29,7 @@ function makeApi(overrides = {}, { latencyMs = 0 } = {}) {
     putBindings: { via: 'putBindings', saved: true },
     getSessions: { via: 'getSessions', sessions: [] },
     patchSession: { via: 'patchSession', patched: true },
+    patchSessionControl: { via: 'patchSessionControl', control: { mode: 'team' } },
     getChannels: { via: 'getChannels', channels: [] },
     putChannel: { via: 'putChannel', written: true },
     testChannel: { via: 'testChannel', healthy: true },
@@ -136,6 +137,17 @@ test('GET /：ui 未装配（空串）→ 最小占位页', async () => {
     const response = await call(rig, '/', { token: null })
     assert.equal(response.status, 200)
     assert.equal(await textOf(response), '<!DOCTYPE html><p>admin ui 未装配</p>')
+  })
+})
+
+test('Issue #10/#13：入口查询串不回显也不能充当 token，API 仍只认 Bearer 头', async () => {
+  const urlToken = 'must-not-appear-in-ui-or-auth'
+  await withServer({ ui: ADMIN_UI_HTML }, async (rig) => {
+    const page = await call(rig, `/?token=${encodeURIComponent(urlToken)}`, { token: null })
+    assert.equal(page.status, 200)
+    assert.equal((await textOf(page)).includes(urlToken), false, '入口页不得回显 URL 中的 token')
+    const api = await call(rig, `/api/overview?token=${encodeURIComponent('secret')}`, { token: null })
+    assert.equal(api.status, 401, '查询串 token 绝不替代 Bearer 鉴权')
   })
 })
 
@@ -290,6 +302,31 @@ test('PUT /api/channels/:type：body.config 优先；无 config 键时整个 bod
 
     await call(rig, '/api/channels/bark', { method: 'PUT', body: { deviceKey: 'K' } })
     assert.deepEqual(rig.calls[1], { name: 'putChannel', args: ['bark', { deviceKey: 'K' }] })
+  })
+})
+
+test('PATCH /api/sessions/:id/control：专属路由透传 api.patchSessionControl(id, body)', async () => {
+  await withServer({}, async (rig) => {
+    const response = await call(rig, '/api/sessions/sess-abc-123/control', { method: 'PATCH', body: { mode: 'team', owner: 'u1' } })
+    assert.equal(response.status, 200)
+    assert.deepEqual(await jsonOf(response), { via: 'patchSessionControl', control: { mode: 'team' } })
+    assert.deepEqual(rig.calls, [{ name: 'patchSessionControl', args: ['sess-abc-123', { mode: 'team', owner: 'u1' }] }])
+  })
+})
+
+test('PATCH /api/sessions/:id/control：来源字段 body → api 抛 422 映射为 HTTP 422', async () => {
+  await withServer({ apiOverrides: { patchSessionControl: () => { throw apiError(422, '"channel" 是会话来源字段') } } }, async (rig) => {
+    const response = await call(rig, '/api/sessions/sess-abc-123/control', { method: 'PATCH', body: { channel: 'telegram' } })
+    assert.equal(response.status, 422)
+    assert.deepEqual(await jsonOf(response), { error: '"channel" 是会话来源字段' })
+  })
+})
+
+test('PATCH /api/sessions/:id/control：未鉴权 401 优先于路由；错方法 405', async () => {
+  await withServer({}, async (rig) => {
+    assert.equal((await call(rig, '/api/sessions/x/control', { method: 'PATCH', token: null })).status, 401)
+    assert.equal((await call(rig, '/api/sessions/x/control', { method: 'PATCH', token: 'wrong' })).status, 401)
+    assert.equal((await call(rig, '/api/sessions/x/control', { method: 'GET' })).status, 405)
   })
 })
 

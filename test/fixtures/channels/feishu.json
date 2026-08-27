@@ -1,0 +1,18 @@
+{
+  "source": {
+    "url": "https://open.feishu.cn/document/server-docs/event-subscription/event-subscription-request",
+    "title": "事件订阅请求",
+    "queried": "2026-08-27",
+    "evidence": "Dynamic official page; callback field details remain contract-tested/declared until tenant capture"
+  },
+  "inbound_callback": {
+    "context": { "open_chat_id": "oc_chat_REDACTED" },
+    "operator": { "open_id": "ou_user_REDACTED" },
+    "action": { "value": { "act": "approve", "srcChat": "oc_chat_REDACTED" } }
+  },
+  "outbound_webhook": {
+    "msg_type": "interactive",
+    "card": { "header": { "title": { "tag": "plain_text", "content": "通知" } }, "elements": [{ "tag": "markdown", "content": "正文" }] }
+  },
+  "notes": ["Shape fixture only; no tenant secret, signature, or real open_id", "Do not infer undocumented limits"]
+}

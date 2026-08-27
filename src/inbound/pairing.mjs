@@ -278,7 +278,11 @@ export function createPairing(options = {}) {
           writeCodes(table, now)
           audit('expire', { id: entry.id, origin: entry.origin })
         }
-        return { ok: false, reason: 'expired' }
+        // v0.8.7 (BYPASS-BOOT/B2)：过期码提交计入失败计数——否则过期码可无限次触发
+        // 引导码重铸（泵码），每枚新码都要走一次下发路径。
+        const tripped = recordFailure(userKey, now)
+        if (tripped) audit('lockout', { user: userKey, phase: 'tripped' })
+        return { ok: false, reason: tripped ? 'locked-out' : 'expired' }
       }
       // minted 未下发也可被核销（下发通道只是展示，不是安全边界）
       entry.state = 'redeemed'

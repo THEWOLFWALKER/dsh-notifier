@@ -1,7 +1,7 @@
 # PLUGINS.md — 从你的插件调用 dsh-notifier
 
 > dsh-notifier v0.6 起开放两条面:**出向** `ctx.notifier` 服务注入(推送)与**入向** `dsh-notifier/sent` 事件(订阅)。
-> 本文档面向**消费方插件作者**。公共面版本:`0.6`(`ctx.notifier.version`,只在公共面 breaking 时 bump,与包版本不联动)。
+> 本文档面向**消费方插件作者**。公共面版本:`0.7`(`ctx.notifier.version`,只在公共面 breaking 时 bump,与包版本不联动)。
 
 ## 30 秒上手
 
@@ -30,6 +30,8 @@ export function apply(ctx) {
 
 **同理**：要注册工具就得声明 `inject: ['tools']`（rc.6 对 `ctx.tools` 同样要求静态声明，未声明访问即抛错）；`ctx.on`（事件订阅）不需要声明。
 
+从包根直接导入时只保证 DSH 插件契约 `{ name, inject, apply }`。内部构造器（例如 store、token vault、公共 facade）不属于消费者 API，仅通过明确的 `dsh-notifier/internal` 子路径供本地测试和构建工具使用。
+
 ## push API
 
 ```js
@@ -42,7 +44,9 @@ const result = await notifier.push(message, options)
   - 长度钳制:各 20000 码点,超出截断并 warn(防止超长文本引发分段风暴)
 - `options: { sourceName?, channel? }`
   - `sourceName`: 来源标注(进账本与 sent 事件,便于审计与将来按源静默);缺省/非字符串 = `anonymous`(与其他匿名调用共享单个限流窗)
-  - `channel`: 定向推送某渠道类型(如 `'telegram'`);省略则广播全部已配置渠道并走分级路由
+- `channel`: 定向推送某渠道类型(如 `'telegram'`);省略则广播全部已配置渠道并走分级路由
+
+公共面还对每个底层 notifier 实例施加有界资源预算（可在 `public` 中覆盖）：`maxCalls` 默认 10000、`maxBytes` 默认 10 MiB、`maxConcurrent` 默认 16、`maxQueue` 默认 64。预算按实例共享，不随 `sourceName` 轮换或第二个 facade 重置；超限返回 `skipped: ['(budget)']`，并发/排队满返回 `skipped: ['(busy)']`。`sourceName` 仅是脱敏审计显示标签（trim、64 码点、控制字符替换），不是身份凭证。
 
 **返回值(永不 reject——内部错误返回 `failed: [{ reason: 'internal' }]`,你不必写 try-catch)**:
 
@@ -51,18 +55,21 @@ const result = { ok: true, delivered: ['telegram'], skipped: [], failed: [], sou
 ```
 
 - `skipped` 常见值:`(malformed)` 双空 / `(disabled)` 服务关闭 / `(rate-limited)` 超额 / `(quiet)` 会话静音 / `(渠道名)` 定向未配置
-- 定向推送(`channel` 有值)走单渠道路径:**不进账本、不发 sent 事件**,结果只看返回值
+- 定向推送(`channel` 有值)走单渠道路径；与广播一样写入一次审计记录并发出一次 `sent` 事件，结果仍只看返回值
 
 ## 限流
 
 每源独立滑动窗,默认 10 次/分钟(宿主可用 `public.limitPerMinutePerSource` 调整,0 = 不限)。超限返回 `skipped: ['(rate-limited)']`——**照记账、照发事件**(静音不等于没发生),你能感知到自己被限。
 
+公共面还设有与 `sourceName` 无关的实例预算：`maxCalls`（默认 10000 次）、`maxBytes`（默认 10 MiB，按 UTF-8）、`maxConcurrent`（默认 16）和 `maxQueue`（默认 64）。预算在分发前预留；超限仅拒绝当前调用并返回 `skipped: ['(budget)']` 或 `['(busy)']`，更换来源标签或创建第二个 facade 不能绕过同一 notifier 实例的总预算。
+
 ## 订阅 sent 事件
 
 ```js
 ctx.on?.('dsh-notifier/sent', (record) => {
-  // record: { time, message: {title, content, level, group}, ok, delivered[], skipped[], failed[], source }
-  // source v0.6 仅 { kind: 'plugin', name } 一路;本插件自动推送线 v0.7 起逐步补齐
+  // record: { time, ok, delivered[], skipped[], failed[], source?, channel?,
+  //   titleLength, contentLength, titleBytes, contentBytes, hasContent }
+  // sent 事件永不包含 title/content、审批文本、用户正文或适配器错误正文。
 })
 ```
 
@@ -83,6 +90,8 @@ export function apply(ctx) {
 
 flush 幂等,可重复调用。
 
+公共 facade 本身是冻结对象，只暴露 `version`、`enabled()`、`push()` 和 `flush()`；消费方不能调用 `dispose()`。宿主在卸载时会通过私有 disposer 清理 facade 资源，重复卸载安全。
+
 ## 三态语义(你拿到的是什么)
 
 | 宿主状态 | 你拿到的 | push 行为 |
@@ -93,8 +102,10 @@ flush 幂等,可重复调用。
 
 ## 版本与兼容
 
-- **能力探测优先**:`typeof notifier?.push === 'function'`;不要做 `version === '0.6'` 相等比较(我们发 0.7 当天你的插件就会误报)
+- **能力探测优先**:`typeof notifier?.push === 'function'`;不要做版本相等比较
 - `notifier.version` 仅用于展示/日志
+- 0.7 起 sent 事件是 metadata-only breaking contract；旧的 `record.message` 消费方必须迁移到长度/状态字段
+- facade 返回值是冻结的稳定公共面（`version`、`enabled()`、`push()`、`flush()`）；卸载由宿主内部管理，消费方不可调用 `dispose`
 - 公共面 breaking 变更才会 bump `version` 并在 CHANGELOG 置顶声明
 
 ## 完整示例(防御式配方)
@@ -137,3 +148,6 @@ import 拿到的是构造器,你得自己解析配置、自建实例——配置
 
 **Q: sourceName 可以随便填吗?**
 会进通知账本供用户审计;建议用你的插件名。恶意伪造他人 sourceName 属进程内信任域问题(与 inject 同级),不做签名。
+
+**Q: 能否直接 import 包根拿构造器?**
+包根只导出 DSH 插件入口（`name`、`inject`、`apply`）。测试或构建工具若确需内部构造器，使用显式 `dsh-notifier/internal` 路径；这不是操作系统级隔离，同进程恶意插件仍属于宿主信任边界。

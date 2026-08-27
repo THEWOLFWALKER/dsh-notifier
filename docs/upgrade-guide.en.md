@@ -88,7 +88,7 @@ Most common source: the package was installed from a `file:` local path, or file
 copied over `node_modules/dsh-notifier`. As soon as local sources change, the package inside
 node_modules **silently drifts away from the registry release** — it no longer looks like the
 official artifact, so test results don't represent the release. This exact gap once produced a
-"`ask_user` tool has an empty name" phantom (see handoff doc `17-toolname-bug.md`).
+"`ask_user` tool has an empty name" phantom; use the version, resolution-source, and restart checks in this section to rule out stale packages before treating it as a source defect.
 
 1. Reinstall the registry build over it:
 

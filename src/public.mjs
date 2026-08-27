@@ -12,12 +12,52 @@
 import { createRateLimiter } from './tool-register.mjs'
 
 /** 公共面版本。只在公共面 breaking 时 bump，不与包版本联动（审查 D2：消费方做能力探测，不做相等比较）。 */
-export const PUBLIC_API_VERSION = '0.6'
+export const PUBLIC_API_VERSION = '0.7'
+
+const utf8Encoder = typeof TextEncoder === 'function' ? new TextEncoder() : null
+
+/** Project an internal full audit record into the metadata-only cross-plugin event contract. */
+export function redactAuditRecord(record = {}) {
+  const message = record?.message !== null && typeof record?.message === 'object' ? record.message : {}
+  const title = typeof message.title === 'string' ? message.title : ''
+  const content = typeof message.content === 'string' ? message.content : ''
+  const failed = Array.isArray(record?.failed)
+    ? record.failed.map((entry) => ({
+        channel: typeof entry?.channel === 'string' ? entry.channel : '(unknown)',
+        error: 'delivery-failed',
+      }))
+    : []
+  const redacted = {
+    time: typeof record?.time === 'string' ? record.time : new Date().toISOString(),
+    ok: record?.ok === true,
+    delivered: Array.isArray(record?.delivered) ? [...record.delivered] : [],
+    skipped: Array.isArray(record?.skipped) ? [...record.skipped] : [],
+    failed,
+    titleLength: Array.from(title).length,
+    contentLength: Array.from(content).length,
+    titleBytes: utf8Encoder ? utf8Encoder.encode(title).length : title.length,
+    contentBytes: utf8Encoder ? utf8Encoder.encode(content).length : content.length,
+    hasContent: title !== '' || content !== '',
+  }
+  if (record?.source !== null && typeof record?.source === 'object') {
+    const source = {}
+    if (typeof record.source.kind === 'string') source.kind = record.source.kind
+    if (typeof record.source.name === 'string') source.name = record.source.name
+    if (Object.keys(source).length > 0) redacted.source = source
+  }
+  if (typeof record?.channel === 'string' && record.channel !== '') redacted.channel = record.channel
+  return redacted
+}
 
 /** title/content 各自的码点上限（v0.6 设计稿 §2.2：防分段风暴）。 */
 const CLAMP_CODEPOINTS = 20_000
 /** 按源限流表容量：超限淘汰最旧源（防表泄漏；淘汰会 warn——窗口归零是安全代价）。 */
 const MAX_SOURCES = 32
+const DEFAULT_MAX_CALLS = 10_000
+const DEFAULT_MAX_BYTES = 10 * 1024 * 1024
+const DEFAULT_MAX_CONCURRENT = 16
+const DEFAULT_MAX_QUEUE = 64
+const budgetRegistry = new WeakMap()
 /** 合法分级（非法值丢弃，交给 normalizeMessage 兜底 active）。 */
 const LEVELS = new Set(['timeSensitive', 'active', 'passive'])
 
@@ -76,10 +116,11 @@ function clampText(value, warn) {
  * @param {object|null} [options.notifier] - createNotifier 实例；null = no-op stub。
  * @param {object} [options.config] - resolved.public（enabled/limitPerMinutePerSource/emit）。
  * @param {object|null} [options.logger] - 宿主 logger（缺省静默）。
- * @param {(record: object) => void} [options.sink] - 限流拦截时的直落点（index 装配：账本 + emit）。
+ * @param {(record: object) => void} [options.onSend] - 统一审计回调（广播、定向、限流）。
+ * @param {(record: object) => void} [options.sink] - 兼容旧装配的限流直落点；仅在未提供 onSend 时使用。
  * @param {() => number} [options.now] - 时钟注入（测试用）。
  */
-export function createPublicFacade({ notifier = null, config = {}, logger = null, sink = null, now = Date.now } = {}) {
+export function createPublicFacade({ notifier = null, config = {}, logger = null, onSend = null, sink = null, now = Date.now, onDispose = null } = {}) {
   const warn = (message) => {
     try { logger?.warn?.('[dsh-notifier]', message) } catch { /* 日志失败绝不致命 */ }
   }
@@ -88,6 +129,55 @@ export function createPublicFacade({ notifier = null, config = {}, logger = null
     : 10
   const limiters = new Map() // sourceName → limiter（anonymous 表外常驻，见 limiterOf）
   let anonymousLimiter = null
+  const audit = typeof onSend === 'function' ? onSend : sink
+  // Instance-wide budgets are finite by default and independent of sourceName.
+  const finiteBudget = (value, fallback) => {
+    const n = Number(value)
+    return Number.isFinite(n) && n >= 0 ? Math.trunc(n) : fallback
+  }
+  const limits = {
+    maxCalls: finiteBudget(config?.maxCalls, DEFAULT_MAX_CALLS),
+    maxBytes: finiteBudget(config?.maxBytes, DEFAULT_MAX_BYTES),
+    maxConcurrent: Math.max(1, finiteBudget(config?.maxConcurrent, DEFAULT_MAX_CONCURRENT)),
+    maxQueue: finiteBudget(config?.maxQueue, DEFAULT_MAX_QUEUE),
+  }
+  const shared = (notifier !== null && (typeof notifier === 'object' || typeof notifier === 'function'))
+    ? (() => {
+        const existing = budgetRegistry.get(notifier)
+        if (existing) {
+          existing.maxCalls = Math.min(existing.maxCalls, limits.maxCalls)
+          existing.maxBytes = Math.min(existing.maxBytes, limits.maxBytes)
+          existing.maxConcurrent = Math.min(existing.maxConcurrent, limits.maxConcurrent)
+          existing.maxQueue = Math.min(existing.maxQueue, limits.maxQueue)
+          return existing
+        }
+        const created = { ...limits, calls: 0, bytes: 0, active: 0, waiters: [] }
+        budgetRegistry.set(notifier, created)
+        return created
+      })()
+    : { ...limits, calls: 0, bytes: 0, active: 0, waiters: [] }
+  let disposed = false
+  const facadeState = { get disposed() { return disposed } }
+
+  const release = () => {
+    shared.active = Math.max(0, shared.active - 1)
+    while (shared.waiters.length) {
+      const next = shared.waiters.shift()
+      if (!next || next.owner.disposed) {
+        next?.resolve(false)
+        continue
+      }
+      shared.active += 1
+      next.resolve(true)
+      break
+    }
+  }
+  const acquire = () => {
+    if (disposed) return Promise.resolve(false)
+    if (shared.active < shared.maxConcurrent) { shared.active += 1; return Promise.resolve(true) }
+    if (shared.waiters.length >= shared.maxQueue) return Promise.resolve(false)
+    return new Promise((resolve) => shared.waiters.push({ owner: facadeState, resolve }))
+  }
 
   const limiterOf = (sourceName) => {
     if (sourceName === 'anonymous') {
@@ -109,13 +199,13 @@ export function createPublicFacade({ notifier = null, config = {}, logger = null
 
   const normalizeSourceName = (value) => {
     if (typeof value !== 'string') return 'anonymous'
-    const trimmed = value.trim()
+    const trimmed = value.trim().replace(/[\u0000-\u001f\u007f\u001b]/g, '�')
     return trimmed === '' ? 'anonymous' : trimmed.slice(0, 64)
   }
 
   const adaptSingle = (result, source) => {
     // 单渠道路径形状适配（设计稿 §2.2 第 5 步）：channelResult → outcome 形状。
-    // 注意（§3.3 矩阵）：单渠道不进账本、不发 sent 事件——定向推送仅凭返回值知晓结果。
+    // 定向路径与广播共享内部审计回调；公共事件由 index.mjs 在 emit 边界脱敏。
     if (result?.skipped === true) {
       return { ok: false, delivered: [], skipped: [`(${result.channel ?? 'channel'})`], failed: [], source }
     }
@@ -131,7 +221,7 @@ export function createPublicFacade({ notifier = null, config = {}, logger = null
     }
   }
 
-  return {
+  const facade = {
     version: PUBLIC_API_VERSION,
 
     /** 服务可用性：notifier 存在且 public 未显式关闭（stub 形态恒 false）。 */
@@ -144,6 +234,7 @@ export function createPublicFacade({ notifier = null, config = {}, logger = null
       const sourceName = normalizeSourceName(options.sourceName)
       const source = { kind: 'plugin', name: sourceName }
       try {
+        if (disposed) return { ok: false, delivered: [], skipped: ['(disposed)'], failed: [], source }
         const title = clampText(msg.title, warn)
         const content = clampText(msg.content, warn)
         if (title === '' && content === '') {
@@ -153,18 +244,41 @@ export function createPublicFacade({ notifier = null, config = {}, logger = null
         if (notifier === null || notifier === undefined) {
           return { ok: false, delivered: [], skipped: ['(disabled)'], failed: [], source }
         }
+        const payloadBytes = utf8Encoder
+          ? utf8Encoder.encode(`${title}${content}`).length
+          : Array.from(`${title}${content}`).length
+        const acquired = await acquire()
+        if (!acquired) return { ok: false, delivered: [], skipped: ['(busy)'], failed: [], source }
+        if (disposed) { release(); return { ok: false, delivered: [], skipped: ['(disposed)'], failed: [], source } }
+        // Reserve call/byte budget only after acquiring a bounded slot.  A
+        // queue-full rejection must not consume lifetime budget, and a queued
+        // call re-checks limits after earlier work has consumed them.
+        if (shared.calls >= shared.maxCalls || shared.bytes + payloadBytes > shared.maxBytes) {
+          release()
+          return { ok: false, delivered: [], skipped: ['(budget)'], failed: [], source }
+        }
+        shared.calls += 1
+        shared.bytes += payloadBytes
+        try {
         if (limitPerMinute > 0 && !limiterOf(sourceName).allow()) {
-          // 静音不等于没发生：限流拦截照落账 + 照 emit（消费方能感知自己被限，设计稿 §3.3）
-          const record = {
-            time: new Date(now()).toISOString(),
-            message: { title, content, level: typeof msg.level === 'string' && LEVELS.has(msg.level) ? msg.level : undefined },
+          // 静音不等于没发生：限流拦截照走统一内部审计回调，emit 边界再脱敏。
+          const targetChannel = typeof options.channel === 'string' && options.channel.trim() !== ''
+            ? options.channel.trim()
+            : undefined
+          const outcome = {
             ok: false,
             delivered: [],
             skipped: ['(rate-limited)'],
             failed: [],
+          }
+          const record = {
+            time: new Date(now()).toISOString(),
+            message: { title, content, level: typeof msg.level === 'string' && LEVELS.has(msg.level) ? msg.level : undefined },
+            ...outcome,
             source,
           }
-          try { sink?.(record) } catch { /* sink 失败不致命 */ }
+          if (targetChannel !== undefined) record.channel = targetChannel
+          try { audit?.(record) } catch { /* audit failure never affects caller */ }
           return { ...record }
         }
         const normalized = {
@@ -174,10 +288,11 @@ export function createPublicFacade({ notifier = null, config = {}, logger = null
           group: typeof msg.group === 'string' ? msg.group : undefined,
         }
         if (typeof options.channel === 'string' && options.channel.trim() !== '') {
-          return adaptSingle(await notifier.notify(options.channel.trim(), normalized), source)
+          return adaptSingle(await notifier.notify(options.channel.trim(), normalized, { source }), source)
         }
         const outcome = await notifier.notifyAll(normalized, { source })
         return { ...outcome, source }
+        } finally { release() }
       } catch (error) {
         // never-reject（审查 S3）：内部异常吞掉，消费方无 try-catch 也不崩
         warn(`公共面 push 内部异常: ${error instanceof Error ? error.message : String(error)}`)
@@ -185,15 +300,27 @@ export function createPublicFacade({ notifier = null, config = {}, logger = null
       }
     },
 
-    /** 等待在途送达（幂等；stub 形态即 resolve）。消费方 dispose 前调用。 */
+    /** 等待在途送达（幂等；stub 形态即 resolve）。消费方卸载前调用。 */
     async flush() {
       try { await notifier?.flush?.() } catch { /* flush 失败不致命 */ }
       return { ok: true }
     },
 
-    dispose() {
-      limiters.clear()
-      anonymousLimiter = null
-    },
   }
+  Object.freeze(facade)
+  const dispose = () => {
+    if (disposed) return
+    disposed = true
+    limiters.clear()
+    anonymousLimiter = null
+    for (let i = shared.waiters.length - 1; i >= 0; i -= 1) {
+      const waiter = shared.waiters[i]
+      if (waiter?.owner === facadeState) {
+        shared.waiters.splice(i, 1)
+        try { waiter.resolve(false) } catch { /* promise resolution is harmless */ }
+      }
+    }
+  }
+  try { onDispose?.(dispose) } catch { /* teardown registration is best effort */ }
+  return facade
 }

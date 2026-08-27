@@ -88,6 +88,24 @@ test('public 块：显式关闭/限流/emit 归一（非法值回退默认）', 
   assert.equal(negative.public.limitPerMinutePerSource, 10, '负数拒绝')
 })
 
+test('public 块：实例预算仅接受有限非负值，缺省保持旧形状', () => {
+  assert.deepEqual(resolveConfig({}).public, { enabled: true, limitPerMinutePerSource: 10, emit: true })
+  const resolved = resolveConfig({ public: { maxCalls: 3.9, maxBytes: '2048', maxConcurrent: 2, maxQueue: 0 } })
+  assert.deepEqual(resolved.public, {
+    enabled: true,
+    limitPerMinutePerSource: 10,
+    emit: true,
+    maxCalls: 3,
+    maxBytes: 2048,
+    maxConcurrent: 2,
+    maxQueue: 0,
+  })
+  const bad = resolveConfig({ public: { maxCalls: -1, maxBytes: 'oops', maxConcurrent: Infinity } }).public
+  assert.equal(bad.maxCalls, 10_000)
+  assert.equal(bad.maxBytes, 10 * 1024 * 1024)
+  assert.equal(bad.maxConcurrent, 16)
+})
+
 test('normalizeMessage 归一化字段', () => {
   assert.deepEqual(normalizeMessage({ title: ' T ', content: ' c ', level: 'active', group: 'g' }), { title: 'T', content: 'c', level: 'active', group: 'g' })
   assert.deepEqual(normalizeMessage({ title: 1, content: 2 }), { title: '', content: '', level: undefined, group: undefined })

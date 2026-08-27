@@ -168,6 +168,43 @@ test('deleteMember：member 可删 + 审计记角色；末位 owner 422；404；
 
 // ---------------------------------------------------------------- confirm / dismiss 待确认
 
+// C3 审查回归（v0.8.7 REVIEW-ABC BUG-3）：C3 一度在 parseMemberKey 里也拒收含冒号的
+// userId，结果把「存量冒号绑定行」锁死——旧版 wxpusher UID_PATTERN 放行冒号，
+// addBinding 可直落 `wxpusher:UID:EVIL`；这类行升级后仍照常准入放行，却再也无法经
+// 管理台降级/删除（唯一清理入口被过度收紧堵死）。写入面 fail-closed 才是 C3 的防线。
+test('C3 存量兼容：含冒号 userId 的历史绑定行仍可经管理台降级与删除（收紧不得锁死清理入口）', () => {
+  const rig = makeRig({
+    state: {
+      'inbound:bindings': {
+        // 升级前落盘的越权行（冒号 userId），且是 owner
+        'wxpusher:UID:EVIL': { channel: 'wxpusher', userId: 'UID:EVIL', role: 'owner', pairedAt: 1, origin: 'paired' },
+        'qq:cleanowner01': { channel: 'qq', userId: 'cleanowner01', role: 'owner', pairedAt: 2, origin: 'paired' },
+      },
+    },
+  })
+  // 前置：存量冒号行确实生效（不是读盘就被丢掉 —— 否则本用例无意义）
+  assert.equal(rig.identity.allows('wxpusher', 'UID:EVIL'), true, '前置：存量冒号行仍准入')
+  // 降级：管理台必须能把它从 owner 降为 member
+  assert.equal(rig.api.putMember('wxpusher:UID:EVIL', { role: 'member' }).record.role, 'member')
+  // 删除：并且能彻底清掉
+  assert.equal(rig.api.deleteMember('wxpusher:UID:EVIL').deleted, true)
+  assert.equal(rig.identity.allows('wxpusher', 'UID:EVIL'), false, '清理后不再准入')
+})
+
+test('C3 纵深防御未被削弱：管理台 confirm 冒号待确认键不能落成绑定（写入面仍 fail-closed）', () => {
+  const rig = makeRig({
+    state: {
+      'inbound:pending': {
+        'wxpusher:UID:EVIL': { channel: 'wxpusher', userId: 'UID:EVIL', origin: 'learned', at: Date.now(), extra: {} },
+      },
+    },
+  })
+  // parseMemberKey 放行该键（读改删要用），但 addBinding 拒绝冒号 userId → 转正失败
+  assert.throws(() => rig.api.confirmPendingMember('wxpusher:UID:EVIL'), throws(404))
+  assert.equal(rig.identity.allows('wxpusher', 'UID:EVIL'), false, '冒号身份绝不能经 confirm 获得准入')
+  assert.equal(rig.identity.size(), 0, '绑定表不得新增任何行')
+})
+
 test('confirmPendingMember：转正为成员（origin=confirmed）+ 审计；404；409 已是成员；422 键；501', () => {
   const bare = makeRig({ withIdentity: false })
   assert.throws(() => bare.api.confirmPendingMember('feishu:ou_x'), throws(501))

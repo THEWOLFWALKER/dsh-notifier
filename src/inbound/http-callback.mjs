@@ -19,9 +19,10 @@ const MAX_BODY_BYTES = 64 * 1024
  * @param {string} [options.host='127.0.0.1']
  * @param {number} [options.port=8103] - 0 = 随机可用端口（测试用）
  * @param {object} [options.logger]
+ * @param {number} [options.requestTimeoutMs=30000] - 请求空闲/处理超时（10ms-120s）
  * @returns {Promise<{ port: number, close: () => Promise<void> }>}
  */
-export function startHttpCallback({ path, onPayload, host = '127.0.0.1', port = 8103, logger = null }) {
+export function startHttpCallback({ path, onPayload, host = '127.0.0.1', port = 8103, logger = null, requestTimeoutMs = 30_000 }) {
   if (typeof path !== 'string' || path === '' || !path.startsWith('/')) {
     return Promise.reject(new Error('webhookPath 必须是 / 开头的非空路径'))
   }
@@ -30,6 +31,9 @@ export function startHttpCallback({ path, onPayload, host = '127.0.0.1', port = 
     // v0.6.1 双写 stderr：宿主 logger 不落 stdout 时告警仍可见（真机事故复盘）
     try { console.error('[dsh-notifier/http-callback]', message) } catch { /* 控制台不可用不致命 */ }
   }
+  const timeoutMs = Number.isFinite(Number(requestTimeoutMs))
+    ? Math.min(120_000, Math.max(10, Math.trunc(Number(requestTimeoutMs))))
+    : 30_000
 
   return new Promise((resolve, reject) => {
     const server = createServer((request, response) => {
@@ -41,6 +45,20 @@ export function startHttpCallback({ path, onPayload, host = '127.0.0.1', port = 
         response.end(body)
       }
       try {
+        // Bound both slowloris body uploads and a handler that never settles.
+        // The timer is refreshed by Node while data arrives; the explicit
+        // processing timer below covers a body that was fully received.
+        let processingTimer = null
+        const armProcessingTimeout = () => {
+          if (processingTimer !== null) clearTimeout(processingTimer)
+          processingTimer = setTimeout(() => {
+            finish(408, 'request timeout')
+          }, timeoutMs)
+        }
+        request.setTimeout(timeoutMs, () => {
+          finish(408, 'request timeout')
+          request.destroy()
+        })
         if ((request.url ?? '').split('?')[0] !== path) return finish(404, 'not found')
         if (request.method !== 'POST') return finish(405, 'method not allowed')
         const chunks = []
@@ -62,9 +80,15 @@ export function startHttpCallback({ path, onPayload, host = '127.0.0.1', port = 
             return finish(400, 'invalid json')
           }
           if (payload === null || typeof payload !== 'object') return finish(400, 'invalid payload')
+          // Body is complete; replace the socket idle timeout with the bounded
+          // handler timer below so a late socket timeout cannot destroy the
+          // response before the 408 is observed by the caller.
+          request.setTimeout(0)
+          armProcessingTimeout()
           Promise.resolve(onPayload(payload, { ip: request.socket.remoteAddress ?? '' }))
-            .then(() => finish(200))
+            .then(() => { if (processingTimer !== null) clearTimeout(processingTimer); finish(200) })
             .catch((error) => {
+              if (processingTimer !== null) clearTimeout(processingTimer)
               warn(`payload 处理异常: ${error instanceof Error ? error.message : String(error)}`)
               finish(200) // 已接收：让平台不重试（异常由通道层 warn 吸收）
             })

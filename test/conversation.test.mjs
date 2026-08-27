@@ -8,6 +8,7 @@ import { join } from 'node:path'
 import { registerConversationRouter } from '../src/inbound/conversation.mjs'
 import { createInboundBus } from '../src/inbound/bus.mjs'
 import { createStore } from '../src/inbound/store.mjs'
+import { createControlEntry } from '../src/control/entry.mjs'
 
 function tempPath() {
   return join(mkdtempSync(join(tmpdir(), 'dsh-notifier-conv-')), 'state.json')
@@ -29,7 +30,7 @@ function makeAgent(id, status = 'idle') {
 }
 
 /** rig：真实 bus/store + 假 ctx.agents + 回执 spy。 */
-function makeRig({ agents = [], mergeWindowMs = 30, status, roots } = {}) {
+function makeRig({ agents = [], mergeWindowMs = 30, status, roots, control = null } = {}) {
   const store = createStore(tempPath())
   const bus = createInboundBus({ allowUsers: ['42'], store })
   const handlers = {}
@@ -55,12 +56,30 @@ function makeRig({ agents = [], mergeWindowMs = 30, status, roots } = {}) {
     reply: (channel, chatId, text) => replies.push({ channel, chatId, text }),
     config: { mergeWindowMs },
     logger: null,
+    ...(control === null ? {} : { control }),
   })
   const userSays = (text, { userId = '42', messageId } = {}) =>
     bus.accept({ channel: 'telegram', userId, chatId: userId, messageId: messageId ?? `m${Math.random()}`, text })
   const fire = (event, payload) => (handlers[event] ?? []).forEach((h) => h(payload))
   return { store, bus, handlers, replies, dispose, userSays, fire, agentMap }
 }
+
+test('QQ 群 control gate：/stop 与普通文本均消费/回执，不绕过 Control Core 投递到 agent', async () => {
+  const agent = makeAgent('s1', 'running')
+  const control = createControlEntry({
+    policy: { mode: 'team', capabilities: { converse: true, groupChatControl: true } },
+  })
+  const rig = makeRig({ agents: [agent], mergeWindowMs: 0, control })
+  rig.fire('agent/created', agent)
+  rig.bus.accept({ channel: 'qq', accountId: 'qq', userId: '42', chatId: 'g1', chatType: 'group', messageId: 'qq-stop', text: '/stop' })
+  rig.bus.accept({ channel: 'qq', accountId: 'qq', userId: '42', chatId: 'g1', chatType: 'group', messageId: 'qq-text', text: '不要执行' })
+  assert.deepEqual(agent.calls.cancel, [])
+  assert.equal(agent.calls.inject.length, 0)
+  assert.equal(agent.calls.followup.length, 0)
+  assert.equal(rig.replies.length, 2)
+  assert.ok(rig.replies.every((entry) => /群聊不允许远程控制/.test(entry.text)))
+  rig.dispose()
+})
 
 test('会话路由：空闲 agent + 普通文本 → followup（plugin 来源消息）', async () => {
   const agent = makeAgent('s1', 'idle')

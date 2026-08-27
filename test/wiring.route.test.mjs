@@ -12,7 +12,7 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -28,6 +28,7 @@ import { createAgentRouter } from '../src/routing/agent-router.mjs'
 import { createStore } from '../src/inbound/store.mjs'
 import { createInboundBus } from '../src/inbound/bus.mjs'
 import { createTokenVault } from '../src/inbound/tokens.mjs'
+import { createControlEntry } from '../src/control/entry.mjs'
 
 function tempDir() {
   return mkdtempSync(join(tmpdir(), 'dsh-notifier-wiring-'))
@@ -280,6 +281,43 @@ test('index 装配：questions.enabled 时注册 ask_user', async () => {
   await cleanup()
 })
 
+// REVIEW-ABC BUG-6（装配完整性，宪法#8）：CRACK-003/004 的归属闸完全依赖 index.mjs 把
+// `identity` 传进 registerApprovalHandler 与 createQuestionBridge。两处传参被删掉后
+// **全套 1011 例仍全绿**——两个 P0 归属闸静默退化成「谁都不能代决」（identity 缺失即
+// fail-closed），owner 代决能力整条消失且零告警。函数级用例都自己显式传 identity，
+// 天然测不到装配缝；此处按真实装配路径（apply）钉死这条线。
+test('index 装配完整性：identity 必须传进审批路由与提问桥（CRACK-003/004 归属闸的装配缝）', async () => {
+  const { ctx, cleanup } = bootCtx()
+  const stateDir = tempDir()
+  const port = await freePort()
+  // 走真实 apply：inbound 就绪（wxpusher 有凭证）→ 审批路由与提问桥都会被装配
+  apply(ctx, {
+    channels: [{ type: 'webhook', url: 'http://127.0.0.1:1/hook' }],
+    inbound: { stateDir, wxpusher: { appToken: 'token-1', port } },
+  })
+  // try/finally：apply 起了 wxpusher HTTP 服务，断言失败也必须卸载——否则句柄悬空
+  // 会把整个测试文件吊到 node:test 默认超时（实测 0.35s → 120s）。
+  try {
+    // 断言取「源码装配点」而非行为——行为侧要跑通 owner 代决需要真卡片往返（真机门），
+    // 而这条缝的失效模式恰恰是「静默不报错」，源码级钉死是这里唯一确定性的守卫。
+    const source = readFileSync(new URL('../src/index.mjs', import.meta.url), 'utf8')
+    const approvalCall = source.slice(source.indexOf('registerApprovalHandler({'))
+    assert.match(
+      approvalCall.slice(0, approvalCall.indexOf('})')),
+      /^\s*identity,/m,
+      'registerApprovalHandler 必须收到 identity（否则 CRACK-003 编号回复归属闸永久 fail-closed，owner 无法代决且零告警）',
+    )
+    const bridgeCall = source.slice(source.indexOf('createQuestionBridge({'))
+    assert.match(
+      bridgeCall.slice(0, bridgeCall.indexOf('})')),
+      /^\s*identity,/m,
+      'createQuestionBridge 必须收到 identity（否则 CRACK-004 hint 兜底归属闸永久 fail-closed）',
+    )
+  } finally {
+    await cleanup()
+  }
+})
+
 test('index 装配冒烟：注入的真 router 生效——route:agents 绑定让 notify 工具广播只发绑定通道', async () => {
   const originalFetch = globalThis.fetch
   const hits = []
@@ -410,10 +448,11 @@ test('状态清扫：act 孤儿 pending 回收，dedup 既有窗口行为不变'
 // ---------------------------------------------------------------- 审批分流（approval/router deps.router）
 
 /** 新契约假交互通道（approval.multi.test.mjs makeFake 同款，精简版）。 */
-function makeFakeInbound(channel, targets = []) {
+function makeFakeInbound(channel, targets = [], accountId = undefined) {
   const state = { cards: [], edits: [] }
   return {
     channel,
+    ...(accountId === undefined ? {} : { accountId }),
     state,
     notifyTargets: () => targets,
     async sendApprovalCard(payload) { state.cards.push(payload); return { messageId: `m${state.cards.length}` } },
@@ -423,7 +462,7 @@ function makeFakeInbound(channel, targets = []) {
 }
 
 /** 审批 rig：真 bus/vault/store + 假 ctx/notifier（spy notifyAll 第二参）。 */
-function makeApprovalRig({ interactive = [], routerFactory = null, notifierChannels = [] } = {}) {
+function makeApprovalRig({ interactive = [], routerFactory = null, notifierChannels = [], logger = null } = {}) {
   const store = createStore(join(tempDir(), 'state.json'))
   const vault = createTokenVault({ secret: 'wiring-secret' })
   const bus = createInboundBus({ allowUsers: ['u1', 'u2'], store, vault })
@@ -435,6 +474,8 @@ function makeApprovalRig({ interactive = [], routerFactory = null, notifierChann
     notifyAll: async (msg, options) => { broadcasts.push({ msg, options }); return { ok: true, delivered: [], skipped: [], failed: [] } },
   }
   const router = routerFactory !== null ? routerFactory(store) : null
+  // v0.8.7：Control Core 必须接线——所有审批结算统一走 Control Core。
+  const control = createControlEntry()
   const dispose = registerApprovalHandler({
     ctx,
     notifier,
@@ -442,8 +483,10 @@ function makeApprovalRig({ interactive = [], routerFactory = null, notifierChann
     vault,
     store,
     interactive,
+    control,
     approvalConfig: { mode: 'answer', timeoutMs: 400 },
     ...(router !== null ? { router } : {}),
+    ...(logger !== null ? { logger } : {}),
   })
   const handle = (request) => handlers['approval/request'](request, () => 'desktop')
   return { store, bus, broadcasts, dispose, handle }
@@ -451,7 +494,7 @@ function makeApprovalRig({ interactive = [], routerFactory = null, notifierChann
 
 test('审批分流：request.agent 有 id 时 notifyAll 收到的 channelTypes 只含绑定通道；无关交互渠道不发卡片', async () => {
   const feishu = makeFakeInbound('feishu', [{ chatId: 'oc_chat001', userId: 'u1' }])
-  const qq = makeFakeInbound('qq', [{ chatId: 'opengrp01', userId: 'u2' }])
+  const qq = makeFakeInbound('qq', [{ chatId: 'opengrp01', userId: 'u2' }], 'QQ_APP')
   const rig = makeApprovalRig({
     interactive: [feishu, qq],
     notifierChannels: ['webhook', 'qq'],
@@ -466,13 +509,13 @@ test('审批分流：request.agent 有 id 时 notifyAll 收到的 channelTypes �
   assert.equal(qq.state.cards.length, 1, '绑定的 qq 收到卡片')
   assert.equal(feishu.state.cards.length, 0, '未绑定的 feishu 不发卡片')
   const card = qq.state.cards[0]
-  rig.bus.decide({ approvalKey: card.approvalKey, decision: 'rejected', token: card.token, via: 'qq:button', userId: 'u2' })
+  rig.bus.decide({ approvalKey: card.approvalKey, decision: 'rejected', token: card.token, via: 'qq:button', userId: 'u2', chatId: 'opengrp01' })
   assert.equal(await outcome, 'rejected')
   rig.dispose()
 })
 
 test('审批分流：request 无 agent 时回落全局广播（第二参空对象，卡片照发）', async () => {
-  const qq = makeFakeInbound('qq', [{ chatId: 'opengrp01', userId: 'u2' }])
+  const qq = makeFakeInbound('qq', [{ chatId: 'opengrp01', userId: 'u2' }], 'QQ_APP')
   const rig = makeApprovalRig({
     interactive: [qq],
     notifierChannels: ['webhook', 'qq'],
@@ -482,7 +525,31 @@ test('审批分流：request 无 agent 时回落全局广播（第二参空对�
   await new Promise((resolve) => setTimeout(resolve, 30))
   assert.deepEqual(rig.broadcasts[0].options, {}, '无 agent = 不分流，全局广播')
   assert.equal(qq.state.cards.length, 1, '全局广播下交互渠道照常收卡片')
-  rig.bus.accept({ channel: 'qq', userId: 'u2', chatId: 'opengrp01', messageId: 'msg:1:opengrp01', text: '1' })
+  rig.bus.accept({ channel: 'qq', accountId: 'QQ_APP', chatType: 'private', userId: 'u2', chatId: 'opengrp01', messageId: 'msg:1:opengrp01', text: '1' })
+  assert.equal(await outcome, 'allowed-once')
+  rig.dispose()
+})
+
+test('P1-2 审批分流：路由引擎抛异常时回落全局广播且必须告警（不再静默扩散）', async () => {
+  const qq = makeFakeInbound('qq', [{ chatId: 'opengrp01', userId: 'u2' }], 'QQ_APP')
+  const warnings = []
+  const rig = makeApprovalRig({
+    interactive: [qq],
+    notifierChannels: ['webhook', 'qq'],
+    logger: { warn: (prefix, message) => warnings.push(String(message)) },
+    routerFactory: () => ({
+      resolveOutbound() { throw new Error('route engine exploded') },
+    }),
+  })
+  const outcome = rig.handle({ toolName: 'bash', callId: 'c1', agent: { id: 'ws-a' } })
+  await new Promise((resolve) => setTimeout(resolve, 30))
+  // fail-safe 语义不变：异常回落全局广播（第二参空对象），审批照发不丢
+  assert.deepEqual(rig.broadcasts[0].options, {}, '路由异常 = 回落全局广播（fail-safe 投递不变）')
+  assert.equal(qq.state.cards.length, 1, '异常回落下交互渠道照常收卡片')
+  // P1-2 新增可见性：异常路径与空集路径对仗，必须 warn 而非静默
+  const hit = warnings.find((message) => message.includes('审批分流解析异常') && message.includes('route engine exploded'))
+  assert.ok(hit !== undefined, `路由异常必须告警（实际 warnings: ${JSON.stringify(warnings)}）`)
+  rig.bus.accept({ channel: 'qq', accountId: 'QQ_APP', chatType: 'private', userId: 'u2', chatId: 'opengrp01', messageId: 'msg:1:opengrp01', text: '1' })
   assert.equal(await outcome, 'allowed-once')
   rig.dispose()
 })

@@ -129,7 +129,9 @@ async function withPlatform(platform, fn) {
   }
 }
 
-test('send: 成功路径 → spawn 一次且 file 来自构造器，close(0) 即 resolve', async () => {
+test('send: 成功路径 → spawn 一次且 file 来自构造器，close(0) 即 resolve', () => withPlatform('linux', async () => {
+  // 钉 'linux'：协议语义与宿主 OS 无关；win32 的 BurntToast 能力探测会先 spawn 一个子进程，
+  // 让「单 spawn + 一次 close」假设在 win32 上挂死——探测行为由下方专属测试覆盖。
   const calls = []
   let child
   desktop._setSpawnImpl((file, args) => {
@@ -143,9 +145,10 @@ test('send: 成功路径 → spawn 一次且 file 来自构造器，close(0) 即
   child._emit('close', 0)
   await assert.doesNotReject(pending)
   assert.equal(calls.length, 1)
-})
+}))
 
-test('send: 命令缺失（ENOENT）→ 中文 NotifyError NOT_CONFIGURED', async () => {
+test('send: 命令缺失（ENOENT）→ 中文 NotifyError NOT_CONFIGURED', () => withPlatform('linux', async () => {
+  //（平台钉 'linux' 理由见「send: 成功路径」；以下四个协议测试同款，杜绝宿主 OS 耦合）
   desktop._setSpawnImpl(() => {
     const child = makeFakeChild()
     queueMicrotask(() => {
@@ -159,9 +162,9 @@ test('send: 命令缺失（ENOENT）→ 中文 NotifyError NOT_CONFIGURED', asyn
     desktop.send({ sound: 'auto' }, MSG),
     (error) => error instanceof NotifyError && error.code === 'NOT_CONFIGURED' && error.message.includes('bell'),
   )
-})
+}))
 
-test('send: 非零退出码 → API_ERROR 且带 stderr 摘要', async () => {
+test('send: 非零退出码 → API_ERROR 且带 stderr 摘要', () => withPlatform('linux', async () => {
   desktop._setSpawnImpl(() => {
     const child = makeFakeChild()
     queueMicrotask(() => {
@@ -174,23 +177,23 @@ test('send: 非零退出码 → API_ERROR 且带 stderr 摘要', async () => {
     desktop.send({ sound: 'auto' }, MSG),
     (error) => error instanceof NotifyError && error.code === 'API_ERROR' && error.message.includes('boom from stderr'),
   )
-})
+}))
 
-test('send: silent 消息不 spawn', async () => {
+test('send: silent 消息不 spawn', () => withPlatform('linux', async () => {
   let spawned = 0
   desktop._setSpawnImpl(() => { spawned += 1; return makeFakeChild() })
   await desktop.send({ sound: 'auto' }, { ...MSG, silent: true })
   assert.equal(spawned, 0)
-})
+}))
 
-test('send: 子进程超时 kill → TIMEOUT（mock timers 推进）', async (t) => {
+test('send: 子进程超时 kill → TIMEOUT（mock timers 推进）', (t) => withPlatform('linux', async () => {
   t.mock.timers.enable({ apis: ['setTimeout'] })
   desktop._setSpawnImpl(() => makeFakeChild()) // 永不 close = 卡死命令
   const pending = desktop.send({ sound: 'auto' }, MSG)
   const assertion = assert.rejects(pending, (error) => error instanceof NotifyError && error.code === 'TIMEOUT')
   t.mock.timers.tick(10_000)
   await assertion
-})
+}))
 
 test('send: win32 探测缓存——两次发送只探测一次', async () => {
   const original = process.platform

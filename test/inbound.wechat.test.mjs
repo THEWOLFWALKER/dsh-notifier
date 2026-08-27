@@ -214,6 +214,7 @@ test('轮询入站：msgs → bus envelope；游标持久化并随请求回传',
   await tick(10)
   assert.equal(accepted.length, 1)
   assert.equal(accepted[0].channel, 'wechat')
+  assert.equal(accepted[0].accountId, 'BOT_ACC')
   assert.equal(accepted[0].userId, 'WX_USER_1')
   assert.equal(accepted[0].chatId, 'WX_USER_1')
   assert.equal(accepted[0].messageId, 'wx:M_1')
@@ -222,6 +223,23 @@ test('轮询入站：msgs → bus envelope；游标持久化并随请求回传',
   assert.equal(polls[0].body.get_updates_buf, '', '首轮空游标')
   assert.equal(polls[1].body.get_updates_buf, 'BUF_1', '游标随响应推进')
   assert.equal(rig.store.get('wechat:sync_buf'), 'BUF_2', '游标落盘')
+  await rig.inbound.stop()
+})
+
+test('重连/游标恢复后的重投不会重复执行控制命令（bus 按 messageId 去重）', async () => {
+  const rig = makeRig({ script: { updates: [
+    { ret: 0, get_updates_buf: 'BUF_C', msgs: [textMsg({ message_id: 'RCTRL', item_list: [{ type: 1, text_item: { text: '批准 1' } }] })] },
+    // 模拟重连/游标恢复：provider 用同一 batch 重投（consumer 却已推进到 BUF_C）
+    { ret: 0, get_updates_buf: 'BUF_C', msgs: [textMsg({ message_id: 'RCTRL', item_list: [{ type: 1, text_item: { text: '批准 1' } }] })] },
+    { ret: 0, get_updates_buf: 'BUF_D', msgs: [] },
+  ] } })
+  const executed = []
+  rig.bus.onMessage((envelope) => executed.push(envelope.messageId))
+  rig.inbound.start()
+  await tick(20)
+  assert.equal(executed.length, 1, '同一控制命令被重投两次只执行一次（bus 持久化去重）')
+  assert.equal(executed[0], 'wx:RCTRL')
+  assert.equal(rig.store.get('wechat:sync_buf'), 'BUF_D', '重投被去重后游标照常推进')
   await rig.inbound.stop()
 })
 
@@ -306,6 +324,152 @@ test('context_token 学习：入站即缓存 wechat:ctx:<uid>（发送回显最�
   const sendCall = rig.calls.find((c) => c.endpoint.includes('sendmessage'))
   assert.equal(sendCall.body.msg.context_token, 'CTX_IN_1', '发送回显最新入站 token')
   await rig.inbound.stop()
+})
+
+// ------------------------------------------- wechat:ctx 键族有界 + D-7 形状校验（v0.8.7 P1-7）
+
+const CTX_MAX_ENTRIES = 256 // 与 wechat-ilink.mjs 的常量对齐（改源码上限须同步本值）
+const CTX_TOKEN_MAX_LEN = 512
+
+/** 一轮 poll 内投 n 个不同 uid 的文本消息（每个各带自己的 context_token）。 */
+function ctxFlood(count, { from = 0 } = {}) {
+  const msgs = []
+  for (let i = from; i < from + count; i += 1) {
+    msgs.push(textMsg({ from_user_id: `WX_U${i}`, message_id: `M_${i}`, context_token: `CTX_${i}` }))
+  }
+  return msgs
+}
+
+test('wechat:ctx 键族有界：300 个 uid 只留最新 256 个，最早 uid 的 ctx 被淘汰并 warn 出声', async () => {
+  const rig = makeRig({ allowUsers: [], script: { updates: [{ ret: 0, msgs: ctxFlood(300) }] } })
+  rig.inbound.start()
+  await tick(20)
+  const keys = rig.store.keys('wechat:ctx:')
+  assert.equal(keys.length, CTX_MAX_ENTRIES, `键族必须收敛到 ${CTX_MAX_ENTRIES}（宪法#4 状态必须有界）`)
+  assert.equal(rig.store.get('wechat:ctx:WX_U0'), undefined, '最早的 uid 被淘汰')
+  assert.equal(rig.store.get('wechat:ctx:WX_U43'), undefined, '刚越界的 uid 被淘汰（300-256=44 个）')
+  assert.equal(rig.store.get('wechat:ctx:WX_U44'), 'CTX_44', '边界内最旧存活')
+  assert.equal(rig.store.get('wechat:ctx:WX_U299'), 'CTX_299', '最新 uid 必在')
+  assert.ok(rig.lines.some((line) => line.includes('wechat:ctx 键族达上限')), '淘汰必须可见（宪法#3）')
+  await rig.inbound.stop()
+})
+
+test('wechat:ctx 淘汰序 = 首见顺序（非 LRU）：老 uid 更新 token 不改变其淘汰次序（现状语义钉死）', async () => {
+  const rig = makeRig({ allowUsers: [], script: { updates: [
+    { ret: 0, msgs: [textMsg({ from_user_id: 'WX_OLD', message_id: 'M_old', context_token: 'CTX_OLD_V1' })] },
+    { ret: 0, msgs: ctxFlood(CTX_MAX_ENTRIES - 1, { from: 100 }) }, // 键族正好填满 256
+    { ret: 0, msgs: [textMsg({ from_user_id: 'WX_OLD', message_id: 'M_old2', context_token: 'CTX_OLD_V2' })] },
+    { ret: 0, msgs: [textMsg({ from_user_id: 'WX_NEW', message_id: 'M_new', context_token: 'CTX_NEW' })] },
+  ] } })
+  rig.inbound.start()
+  await tick(30)
+  assert.equal(rig.store.get('wechat:ctx:WX_OLD'), undefined,
+    '首见最早的 uid 即使刚更新过 token 仍被优先淘汰——store 键序不随更新刷新（与内存 Map 的 LRU 不同，见 20-techdebt 残余条目）')
+  assert.equal(rig.store.get('wechat:ctx:WX_NEW'), 'CTX_NEW')
+  assert.equal(rig.store.keys('wechat:ctx:').length, CTX_MAX_ENTRIES)
+  await rig.inbound.stop()
+})
+
+test('wechat:ctx 淘汰安全：被淘汰 uid 的发送不带 context_token 照发（回落既有无 token 路径）', async () => {
+  const rig = makeRig({ allowUsers: [], script: {
+    updates: [{ ret: 0, msgs: ctxFlood(300) }],
+    send: [{ ret: 0 }, { ret: 0 }],
+  } })
+  rig.inbound.start()
+  await tick(20)
+  assert.equal(await rig.inbound.sendText('WX_U0', '给被淘汰者'), true, '功能不丢，只是少带缓存 token')
+  const evictedSend = rig.calls.filter((c) => c.endpoint.includes('sendmessage')).at(-1)
+  assert.equal(evictedSend.body.msg.context_token, undefined)
+  assert.equal(await rig.inbound.sendText('WX_U299', '给存活者'), true)
+  const liveSend = rig.calls.filter((c) => c.endpoint.includes('sendmessage')).at(-1)
+  assert.equal(liveSend.body.msg.context_token, 'CTX_299', '未淘汰 uid 仍回显最新 token')
+  await rig.inbound.stop()
+})
+
+test('wechat:ctx 存量收敛：上限调小/旧版本遗留的超量键族在下一次写入时一并收敛', async () => {
+  const rig = makeRig({ allowUsers: [], script: { updates: [
+    { ret: 0, msgs: [textMsg({ from_user_id: 'WX_TRIGGER', message_id: 'M_t', context_token: 'CTX_T' })] },
+  ] } })
+  for (let i = 0; i < 400; i += 1) rig.store.set(`wechat:ctx:LEGACY_${i}`, `L_${i}`) // 旧版无上限遗留
+  rig.inbound.start()
+  await tick(20)
+  assert.equal(rig.store.keys('wechat:ctx:').length, CTX_MAX_ENTRIES, '一次写入把 401 条历史超量收敛到上限')
+  assert.equal(rig.store.get('wechat:ctx:WX_TRIGGER'), 'CTX_T', '本次写入必须落盘（收敛不能吃掉新值）')
+  assert.equal(rig.store.get('wechat:ctx:LEGACY_0'), undefined)
+  await rig.inbound.stop()
+})
+
+test('D-7 context_token 形状校验：512 恰好接受 / 513 拒收 / 空白与控制字符拒收；拒收只 warn 不落盘且消息照常入 bus', async () => {
+  const exact = 'A'.repeat(CTX_TOKEN_MAX_LEN)
+  const tooLong = 'B'.repeat(CTX_TOKEN_MAX_LEN + 1)
+  const rig = makeRig({ allowUsers: ['WX_OK', 'WX_LONG', 'WX_SPACE', 'WX_NL', 'WX_NUL', 'WX_DEL'], script: { updates: [
+    { ret: 0, msgs: [
+      textMsg({ from_user_id: 'WX_OK', message_id: 'S_ok', context_token: exact }),
+      textMsg({ from_user_id: 'WX_LONG', message_id: 'S_long', context_token: tooLong }),
+      textMsg({ from_user_id: 'WX_SPACE', message_id: 'S_sp', context_token: 'CTX WITH SPACE' }),
+      textMsg({ from_user_id: 'WX_NL', message_id: 'S_nl', context_token: 'CTX\nINJECT' }),
+      textMsg({ from_user_id: 'WX_NUL', message_id: 'S_nul', context_token: 'CTX\u0000NUL' }),
+      textMsg({ from_user_id: 'WX_DEL', message_id: 'S_del', context_token: 'CTX\u007fDEL' }),
+    ] },
+  ] } })
+  const accepted = []
+  rig.bus.onMessage((envelope) => accepted.push(envelope))
+  rig.inbound.start()
+  await tick(20)
+  assert.equal(rig.store.get('wechat:ctx:WX_OK'), exact, '正好 512 字符是合法上边界，必须接受')
+  for (const uid of ['WX_LONG', 'WX_SPACE', 'WX_NL', 'WX_NUL', 'WX_DEL']) {
+    assert.equal(rig.store.get(`wechat:ctx:${uid}`), undefined, `${uid} 的异常 token 不得落盘（防膨胀/污染载荷）`)
+  }
+  assert.ok(rig.lines.some((line) => line.includes('context_token 形状异常已拒收')), '拒收必须出声，不静默')
+  assert.deepEqual(
+    accepted.map((e) => e.userId).sort(),
+    ['WX_DEL', 'WX_LONG', 'WX_NL', 'WX_NUL', 'WX_OK', 'WX_SPACE'],
+    '拒收 token 绝不影响消息本身入站（宪法#6 不因一个字段失误吞掉消息）',
+  )
+  await rig.inbound.stop()
+})
+
+test('wechat:ctx 值未变不重复写盘（省一次全量 save）；值变化才写', async () => {
+  const rig = makeRig({ allowUsers: [], script: { updates: [
+    { ret: 0, msgs: [textMsg({ from_user_id: 'WX_SAME', message_id: 'A1', context_token: 'CTX_SAME' })] },
+    { ret: 0, msgs: [textMsg({ from_user_id: 'WX_SAME', message_id: 'A2', context_token: 'CTX_SAME' })] },
+    { ret: 0, msgs: [textMsg({ from_user_id: 'WX_SAME', message_id: 'A3', context_token: 'CTX_CHANGED' })] },
+  ] } })
+  const realSet = rig.store.set.bind(rig.store)
+  const writes = []
+  rig.store.set = (key, value) => { if (String(key).startsWith('wechat:ctx:')) writes.push(value); return realSet(key, value) }
+  rig.inbound.start()
+  await tick(30)
+  assert.deepEqual(writes, ['CTX_SAME', 'CTX_CHANGED'], '相同 token 第二次不写盘，变化时才写')
+  await rig.inbound.stop()
+})
+
+test('wechat:ctx 降级路径：store 无 keys() 时跳过淘汰但照常写入（fail-open 显式钉死，不静默抛错）', async () => {
+  const lines = []
+  const logger = { warn: (prefix, message) => lines.push(`${prefix} ${message}`) }
+  const state = new Map()
+  const bareStore = { // 精简 store（老实现 / 第三方 mock）：只有 get/set/delete
+    get: (key, fallback = undefined) => (state.has(key) ? state.get(key) : fallback),
+    set: (key, value) => { state.set(key, value) },
+    delete: (key) => state.delete(key),
+  }
+  const bus = createInboundBus({ allowUsers: [], logger })
+  const { fetchImpl } = makeFetch({ updates: [{ ret: 0, msgs: ctxFlood(300) }] })
+  const inbound = createWechatIlinkInbound({
+    config: resolveWechatInboundConfig({ notifyUsers: [] }, { credentials: { accountId: 'BOT_ACC', token: 'BOT_TOKEN' } }).config,
+    bus,
+    store: bareStore,
+    logger,
+    fetchImpl,
+    sleep: instantSleep,
+  })
+  inbound.start()
+  await tick(20)
+  const ctxKeys = [...state.keys()].filter((k) => k.startsWith('wechat:ctx:'))
+  assert.equal(ctxKeys.length, 300, '无 keys() 无法枚举键族 ⇒ 跳过淘汰，但绝不因此丢功能（宁可无界也不静默失败）')
+  assert.equal(state.get('wechat:ctx:WX_U0'), 'CTX_0')
+  assert.ok(!lines.some((line) => line.includes('wechat:ctx 键族达上限')), '未发生淘汰就不该谎报淘汰')
+  await inbound.stop()
 })
 
 // ---------------------------------------------------------------- 轮询容错

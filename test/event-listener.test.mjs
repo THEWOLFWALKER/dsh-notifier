@@ -172,6 +172,41 @@ test('createEventListener: dedup 防止同一 seq 重放', async () => {
   dispose()
 })
 
+test('createEventListener: root-context fallback accepts envelope and preserves duplicate delivery dedup', () => {
+  const listeners = {}
+  const root = {
+    on(event, listener) {
+      ;(listeners[event] ??= []).push(listener)
+      return () => {}
+    },
+  }
+  root.root = root
+  const ctx = {
+    root,
+    logger: { warn() {} },
+    on() { throw new Error('scoped context must not receive host subscription') },
+  }
+  const pushes = []
+  const notifier = { notifyAll: async (message) => { pushes.push(message); return { ok: true } }, flush: async () => {} }
+  const dispose = createEventListener(ctx, notifier, { enabled: true, debounceMs: 10, summaryMaxChars: 100, titlePrefix: '' })
+  const envelope = { session: makeSession('s1'), event: { type: 'approval/asked', seq: 7, data: {} } }
+  listeners['session/event'][0](envelope)
+  listeners['session/event'][0](envelope)
+  assert.equal(pushes.length, 1)
+  dispose()
+})
+
+test('createEventListener: malformed session/event does not notify or throw', () => {
+  const warnings = []
+  const listeners = {}
+  const ctx = { logger: { warn: (...args) => warnings.push(args.join(' ')) }, on(event, listener) { ;(listeners[event] ??= []).push(listener); return () => {} } }
+  const notifier = { notifyAll: async () => { throw new Error('must not notify') }, flush: async () => {} }
+  const dispose = createEventListener(ctx, notifier, { enabled: true, debounceMs: 10, summaryMaxChars: 100, titlePrefix: '' })
+  listeners['session/event'][0]({ session: { id: 's1' }, event: { type: 3 } })
+  assert.ok(warnings.some((line) => /session\/event 载荷已拒绝/.test(line)))
+  dispose()
+})
+
 test('createEventListener: agent/error 总线即时推送且按 turn:step 去重', async () => {
   const { ctx, listeners } = fakeCtx()
   let pushes = []
@@ -239,6 +274,152 @@ test('createTrailingDebounce.flush 立即触发 pending 任务', () => {
   assert.deepEqual(calls.sort(), ['a', 'b'])
   assert.equal(debounce.pendingCount(), 0)
   debounce.dispose()
+})
+
+test('createTrailingDebounce.flush 必须 clearTimeout 已挂起定时器（否则卸载后进程被吊住整个防抖窗口）', () => {
+  const liveTimers = () => process.getActiveResourcesInfo().filter((r) => r === 'Timeout').length
+  const before = liveTimers()
+  const debounce = createTrailingDebounce(600000) // 10 分钟窗口：泄漏则进程要等 10 分钟才退
+  for (let i = 0; i < 32; i += 1) debounce.schedule(`k${i}`, () => {})
+  assert.equal(liveTimers() - before, 32, '每个 key 一个在途定时器')
+  debounce.flush()
+  assert.equal(liveTimers() - before, 0, 'flush 后不得留活定时器（grace.flush 一直如此，两者必须对齐）')
+  assert.equal(debounce.pendingCount(), 0)
+  debounce.dispose()
+})
+
+test('createTrailingDebounce.dispose 同样清空在途定时器（既有行为防回归）', () => {
+  const liveTimers = () => process.getActiveResourcesInfo().filter((r) => r === 'Timeout').length
+  const before = liveTimers()
+  const debounce = createTrailingDebounce(600000)
+  for (let i = 0; i < 8; i += 1) debounce.schedule(`d${i}`, () => {})
+  debounce.dispose()
+  assert.equal(liveTimers() - before, 0)
+})
+
+// ---------- createTrailingDebounce 有界（v0.8.7 P1-7，宪法#4「状态必须有界」）----------
+// 溢出语义 = 提前触发最旧 key 的最新任务（合并窗提前收口，绝不静默丢弃——宪法#3）。
+
+test('createTrailingDebounce 有界：maxKeys=2 时第 3 个 key 提前触发最旧，且触发的是该 key 最新一次任务', async () => {
+  const calls = []
+  const overflow = []
+  const debounce = createTrailingDebounce(60000, {
+    maxKeys: 2,
+    onOverflow: (key, size) => overflow.push([key, size]),
+  })
+  debounce.schedule('a', () => calls.push('a1'))
+  debounce.schedule('a', () => calls.push('a2')) // 尾沿覆盖：a 的待发换成 a2
+  debounce.schedule('b', () => calls.push('b'))
+  assert.deepEqual(calls, [], '未溢出前不该提前触发')
+  assert.equal(debounce.pendingCount(), 2)
+  debounce.schedule('c', () => calls.push('c'))
+  assert.deepEqual(calls, ['a2'], '提前触发最旧 key，且尾沿语义保持（送最新任务而非首个）')
+  assert.deepEqual(overflow, [['a', 2]])
+  assert.equal(debounce.pendingCount(), 2, '在途数恒不超上限')
+  await new Promise((resolve) => setTimeout(resolve, 10))
+  assert.deepEqual(calls, ['a2'], '提前触发后其定时器已清，不二次送达')
+  debounce.dispose()
+})
+
+test('createTrailingDebounce 有界：同 key 反复重排不触发溢出（重排不是新增）', () => {
+  const calls = []
+  const overflow = []
+  const debounce = createTrailingDebounce(60000, { maxKeys: 2, onOverflow: (k) => overflow.push(k) })
+  debounce.schedule('a', () => calls.push('a'))
+  debounce.schedule('b', () => calls.push('b'))
+  for (let i = 0; i < 10; i += 1) debounce.schedule('a', () => calls.push(`a${i}`))
+  assert.deepEqual(calls, [])
+  assert.deepEqual(overflow, [])
+  assert.equal(debounce.pendingCount(), 2)
+  debounce.dispose()
+})
+
+test('createTrailingDebounce 有界：onOverflow 抛错 / task 抛错都不外抛，表不卡在超量状态', () => {
+  const calls = []
+  const debounce = createTrailingDebounce(60000, {
+    maxKeys: 1,
+    onOverflow: () => { throw new Error('通报炸了') },
+  })
+  debounce.schedule('boom', () => { throw new Error('任务炸了') })
+  assert.doesNotThrow(() => debounce.schedule('next', () => calls.push('next')))
+  assert.equal(debounce.pendingCount(), 1)
+  debounce.flush()
+  assert.deepEqual(calls, ['next'])
+  debounce.dispose()
+})
+
+test('createTrailingDebounce 有界：maxKeys 三态——负数钳 1；0/NaN 回落 256；默认 256 压测零丢失', () => {
+  for (const bad of [-3, 1]) {
+    const calls = []
+    const debounce = createTrailingDebounce(60000, { maxKeys: bad })
+    debounce.schedule('a', () => calls.push('a'))
+    debounce.schedule('b', () => calls.push('b'))
+    assert.deepEqual(calls, ['a'], `maxKeys=${bad} 应钳到 1`)
+    debounce.dispose()
+  }
+  for (const bad of [0, NaN]) {
+    const calls = []
+    const debounce = createTrailingDebounce(60000, { maxKeys: bad })
+    for (let i = 0; i < 256; i += 1) debounce.schedule(`k${i}`, () => calls.push(i))
+    assert.deepEqual(calls, [], `maxKeys=${String(bad)} 应回落 256`)
+    debounce.schedule('k256', () => calls.push(256))
+    assert.equal(calls.length, 1)
+    debounce.dispose()
+  }
+  const calls = []
+  const debounce = createTrailingDebounce(60000) // 缺省 256
+  for (let i = 0; i < 1000; i += 1) {
+    debounce.schedule(`s${i}`, () => calls.push(i))
+    assert.ok(debounce.pendingCount() <= 256, '任何时刻在途数不得越界')
+  }
+  assert.equal(calls.length, 1000 - 256, '提前送达 744 条')
+  debounce.flush()
+  assert.equal(calls.length, 1000, '合计零丢失')
+  debounce.dispose()
+})
+
+test('createEventListener 有界装配：300 个会话 turn/end → 在途稳定 256、超量提前推送并 warn，dispose 后零丢失', async () => {
+  const { ctx, listeners } = fakeCtx()
+  const lines = []
+  ctx.logger = { warn: (prefix, message) => lines.push(`${prefix} ${message}`) }
+  const pushes = []
+  const notifier = {
+    notifyAll: async (msg) => { pushes.push(msg); return { ok: true, delivered: [], failed: [] } },
+    flush: async () => {},
+  }
+  // debounceMs 极长 + graceSeconds=0：待发全部堆在防抖表，直接观测其上界
+  const resolved = { enabled: true, debounceMs: 600000, graceSeconds: 0, summaryMaxChars: 100, titlePrefix: '' }
+  const dispose = createEventListener(ctx, notifier, resolved)
+  for (let i = 0; i < 300; i += 1) {
+    listeners['session/event'][0](makeSession(`s${i}`), { type: 'turn/end', seq: i, data: { reason: { kind: 'completed' } } })
+  }
+  await new Promise((resolve) => setTimeout(resolve, 10))
+  assert.equal(pushes.length, 300 - 256, '超出 256 的会话被提前推送（44 条），不静默丢弃')
+  assert.ok(lines.some((line) => line.includes('防抖表达上限')), '溢出必须 warn 出声（宪法#3）')
+  await dispose()
+  assert.equal(pushes.length, 300, 'dispose flush 后 300 条通知全部送达，零丢失')
+})
+
+test('createEventListener 有界装配：宽限窗溢出同样提前推送并 warn（graceSeconds 配长也不无界堆积）', async () => {
+  const { ctx, listeners } = fakeCtx()
+  const lines = []
+  ctx.logger = { warn: (prefix, message) => lines.push(`${prefix} ${message}`) }
+  const pushes = []
+  const notifier = {
+    notifyAll: async (msg) => { pushes.push(msg); return { ok: true, delivered: [], failed: [] } },
+    flush: async () => {},
+  }
+  // debounceMs=0 让事件立刻穿过防抖落进宽限窗；graceSeconds 极长 ⇒ 堆在 grace 表
+  const resolved = { enabled: true, debounceMs: 0, graceSeconds: 3600, summaryMaxChars: 100, titlePrefix: '' }
+  const dispose = createEventListener(ctx, notifier, resolved)
+  for (let i = 0; i < 300; i += 1) {
+    listeners['session/event'][0](makeSession(`g${i}`), { type: 'turn/end', seq: i, data: { reason: { kind: 'completed' } } })
+  }
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  assert.equal(pushes.length, 300 - 256, '宽限窗在途超 256 即提前推送最旧')
+  assert.ok(lines.some((line) => line.includes('宽限窗表达上限')), '宽限窗溢出必须 warn 出声')
+  await dispose()
+  assert.equal(pushes.length, 300, 'dispose flush 后零丢失')
 })
 
 // ---------- 阶段 2：规则引擎（事件分控 / 关键词 / 宽限窗） ----------

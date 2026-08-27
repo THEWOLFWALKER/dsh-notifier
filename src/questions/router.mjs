@@ -16,42 +16,24 @@
 // 账本：store 键空间 'aq:'（与审批 'ap:' 隔离），行 = {
 //   question, options: [label], multiSelect, status: 'pending'|'resolved',
 //   pushedTo: [{channel, chatId, userId, messageId, kind:'aq'}], createdAt,
-//   hintChannels?: string[]（SEC-2：广播过编号话术的渠道，编号降级的 intended 兜底凭据，
-//     缺省/旧行 = 不兜底从严）, decision?: 'answered'|'timeout'|'error',
+//   hintTargets?: [{channel, chatId, userId}]（Control Core Step 1：per-chat 编号话术送达证据，
+//     替代旧 hintChannels 字符串数组；旧行无此字段 → fail-closed 不匹配），
+//   hintChannels?: string[]（旧格式只保留读取兼容；不再作为任何授权证据），
+//   decision?: 'answered'|'timeout'|'error',
 //   answers?: [label]（重复点击回显用）
 // }
 // 军规：任何异常只丢当次提问（工具返回明确失败对象），绝不弄崩宿主。
 
-import { randomBytes } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { normalizeInbound } from '../inbound/_contract.mjs'
 import { guardTargets } from '../inbound/target-guard.mjs'
 import { createEscalationChain } from '../approval/escalation.mjs'
+import { createInteractionLedger } from '../interaction/ledger.mjs'
 import { createRateLimiter, compileParameters } from '../tool-register.mjs'
+// 维护批 6 前置：跨渠道能力矩阵作为单一事实来源
+import { isCoveredByOutbound } from '../inbound/capability-matrix.mjs'
 
 const KEY_PREFIX = 'aq:'
-
-const DISPLAY_NAMES = {
-  telegram: 'Telegram',
-  feishu: '飞书',
-  qq: 'QQ',
-  wxpusher: 'WxPusher',
-  wechat: '微信',
-  dingtalk: '钉钉',
-}
-
-// issue #11：出站文本渠道 type 与交互入站 channel 命名不一致的别名对。
-// 出站 qq-bot（adapter type）与入站 qq（inbound channel）是同一 QQ 机器人，只是
-// 出站/入站命名不同。编号话术「是否已由出站文本送达该入站通道用户」据此判定，
-// 避免同号双发（qq-bot 已发编号话术时，qq 入站不再重发一遍）。
-const OUTBOUND_TO_INBOUND_ALIAS = {
-  'qq-bot': 'qq',
-}
-
-/** issue #11：该入站通道的编号话术是否已由出站文本送达（同名出站 type 或别名对如 qq-bot↔qq）。 */
-function isCoveredByOutbound(inboundChannel, textTypes) {
-  if (textTypes.includes(inboundChannel)) return true
-  return textTypes.some((type) => OUTBOUND_TO_INBOUND_ALIAS[type] === inboundChannel)
-}
 
 // 升级链默认节奏（与审批一致：30s / 60s 各再提醒一轮）
 const DEFAULT_ESCALATION_STAGES = [
@@ -74,11 +56,13 @@ function numberedHint(options, multiSelect) {
  * @param {import('../inbound/store.mjs').store} deps.store
  * @param {object} deps.notifier - createNotifier 实例（广播编号文案用）
  * @param {() => object[]} deps.interactive - 交互通道实例列表（惰性 getter，装配期后解引用）
+ * @param {object} [deps.identity] - 身份注册表（CRACK-004：hint 兜底编号回复仅该渠道绑定的
+ *   owner 可代答；缺失/异常 fail-closed。exact/onChannel 属当事人级命中，不查 identity）
  * @param {object} [deps.logger]
  * @param {{ timeoutMs?: number, escalation?: { enabled?: boolean, stages?: object[] } }} [deps.config]
  */
 export function createQuestionBridge(deps) {
-  const { bus, vault, store, notifier } = deps
+  const { bus, vault, store, notifier, identity } = deps
   const logger = deps.logger ?? null
   const config = deps.config ?? {}
   const defaultTimeoutMs = Math.max(1000, Number(config.timeoutMs) || 300000)
@@ -95,57 +79,131 @@ export function createQuestionBridge(deps) {
     logger,
   })
 
-  const ledger = {
-    add(key, row) {
-      store.set(key, { ...row, status: 'pending', createdAt: Date.now() })
-    },
-    get(key) {
-      return store.get(key)
-    },
-    resolve(key, decision, extra = {}) {
-      const row = store.get(key)
-      if (row === undefined) return false
-      store.set(key, { ...row, ...extra, status: 'resolved', decision, resolvedAt: Date.now() })
-      return true
-    },
-    terminate(key, extra = {}) {
-      const row = store.get(key)
-      if (row === undefined || row.status !== 'pending') return false
-      store.set(key, { ...row, ...extra, status: 'resolved', decision: 'terminated', resolvedAt: Date.now() })
-      return true
-    },
-    /**
-     * 最近一条待决提问（编号回复降级）。匹配优先级：
-     *  1) exact 推送过该 (channel,userId)；
-     *  2) onChannel 该 channel 推送过且 userId 一致；
-     *  3) hint 该 channel 收到过本问题的编号话术（=aq 行 hintChannels 含该渠道）——
-     *     替代旧 `any` 无条件兜底（SEC-2 / C-2 / BUG-11：关死「既没送卡、又没广播编号
-     *     话术的渠道裸数字越权仲裁」的面）。无卡片渠道的合法编号作答由 hint 接住。
-     */
-    latestPendingFor(channel, userId) {
-      let exact = null
-      let onChannel = null
-      let hint = null
-      for (const key of store.keys(KEY_PREFIX)) {
-        const row = store.get(key)
-        if (row?.status !== 'pending') continue
-        const pushed = Array.isArray(row.pushedTo) ? row.pushedTo : []
-        if (pushed.some((target) => target.channel === channel)) {
-          if (pushed.some((target) => target.channel === channel && String(target.userId) === String(userId))) {
-            if (exact === null || row.createdAt > exact.row.createdAt) exact = { key, row }
-            if (onChannel === null || row.createdAt > onChannel.row.createdAt) onChannel = { key, row }
+  // Interaction Core：aq: 行统一状态机（pending→resolved，decision 终态裁决）。
+  // latestPendingFor 归属/兜底启发式（exact/onChannel/hint）是提问特有语义，保留在
+  // 链内——核心只提供原子账本操作（见 interaction/ledger.mjs）。
+  const core = createInteractionLedger({ keyPrefix: KEY_PREFIX, store })
+  /**
+   * 最近一条待决提问（编号回复降级）。匹配优先级：
+   * 当 chatId 提供时（Control Core Step 1）：
+   *   1) exact (channel, userId, chatId) 精确匹配 pushedTo；
+   *   2) onChannel (channel, userId) 匹配 pushedTo 但 chatId 不匹配（错误 chat）；
+   *   3) hint (channel, userId, chatId) 匹配 hintTargets（per-chat 编号话术证据）。
+   * 当 chatId 缺失时：仅用于识别并消费同用户的待决行，永不裁决；旧 hintChannels
+   * 渠道级证据不再匹配。
+   * CRACK-004：返回值带 evidence（exact|onChannel|hint）——handleNumberedReply 的
+   * 归属闸据此放行当事人级命中、对 hint 要求 owner。onChannel 证据在 chatId 提供时
+   * 表示「同用户错误 chat」→ handleNumberedReply 消费消息但不裁决。
+   */
+  const latestPendingFor = (channel, userId, chatId, accountId = undefined) => {
+    let exact = null
+    let onChannel = null
+    let hint = null
+    const newer = (current, candidate) => current === null || Number(candidate.row.createdAt ?? 0) > Number(current.row.createdAt ?? 0)
+    const hasChatId = chatId !== undefined && chatId !== null && String(chatId) !== ''
+
+    for (const key of core.scanKeys()) {
+      const row = core.get(key)
+      if (!core.isPending(row)) continue
+      const pushed = Array.isArray(row.pushedTo) ? row.pushedTo : []
+
+      if (hasChatId) {
+        // Control Core Step 1：chat 级匹配
+        const accountMatches = (target) => target.accountId === undefined || String(target.accountId) === String(accountId ?? '')
+        const userMatch = pushed.some((target) => target.channel === channel && accountMatches(target) && String(target.userId) === String(userId))
+        if (userMatch) {
+          const chatMatch = pushed.some((target) => target.channel === channel && accountMatches(target) && String(target.userId) === String(userId) && String(target.chatId) === String(chatId))
+          if (chatMatch) {
+            const candidate = { key, row, evidence: 'exact' }
+            if (newer(exact, candidate)) exact = candidate
+          } else {
+            const candidate = { key, row, evidence: 'onChannel' }
+            if (newer(onChannel, candidate)) onChannel = candidate
           }
         }
-        if (hint === null && isHintedChannel(row, channel)) hint = { key, row }
+        // hintTargets：per-chat 编号话术证据（旧 hintChannels 字符串数组不匹配——fail-closed）
+        if (isHintedTarget(row, channel, userId, chatId, accountId)) {
+          const candidate = { key, row, evidence: 'hint' }
+          if (newer(hint, candidate)) hint = candidate
+        }
+        // hintTargets 渠道匹配但 chatId 不匹配 → 错误 chat（用 onChannel 证据触发回原会话提示）
+        const hinted = Array.isArray(row.hintTargets) ? row.hintTargets : []
+        if (hinted.some((t) => t.channel === channel && (t.accountId === undefined || String(t.accountId) === String(accountId ?? '')) && String(t.userId) === String(userId) && String(t.chatId) !== String(chatId))) {
+          const candidate = { key, row, evidence: 'onChannel' }
+          if (newer(onChannel, candidate)) onChannel = candidate
+        }
+      } else {
+        // 无 chatId：仅按 (channel,userId) 识别待决行，绝不使用旧渠道级 hintChannels。
+        if (pushed.some((target) => target.channel === channel && (target.accountId === undefined || String(target.accountId) === String(accountId ?? '')) && String(target.userId) === String(userId))) {
+          const candidate = { key, row, evidence: 'exact' }
+          if (newer(exact, candidate)) exact = candidate
+          const channelCandidate = { key, row, evidence: 'onChannel' }
+          if (newer(onChannel, channelCandidate)) onChannel = channelCandidate
+        }
+        // 缺 chatId 仍可消费已绑定用户收到过的 target-scoped 提示，但绝不裁决。
+        // 仅按 (channel,userId) 识别待决行；旧 hintChannels 渠道级证据不再使用。
+        if (Array.isArray(row.hintTargets) && row.hintTargets.some((t) => t.channel === channel && (t.accountId === undefined || String(t.accountId) === String(accountId ?? '')) && String(t.userId) === String(userId))) {
+          const candidate = { key, row, evidence: 'hint' }
+          if (newer(hint, candidate)) hint = candidate
+        }
       }
-      return exact ?? onChannel ?? hint
-    },
+    }
+    // A matching chat is always preferred over a wrong-chat guard from another
+    // pending row; only when no exact/hint evidence exists do we consume with
+    // the "return to original chat" feedback.
+    return exact ?? hint ?? onChannel
+  }
+  // 核心账本 + 提问专用归属启发式合成同一 ledger 面（其余调用点零改动）。
+  const ledger = { ...core, latestPendingFor }
+
+  /** Control Core Step 1：per-chat hint 证据匹配（=aq 行 hintTargets）。无该字段的旧行不匹配（fail-closed）。 */
+  function isHintedTarget(row, channel, userId, chatId, accountId = undefined) {
+    if (Array.isArray(row.hintTargets)) {
+      return row.hintTargets.some((t) => t.channel === channel && (t.accountId === undefined || String(t.accountId) === String(accountId ?? '')) && String(t.userId) === String(userId) && String(t.chatId) === String(chatId))
+    }
+    return false
   }
 
-  /** SEC-2：该渠道是否被本问题「广播过编号话术」（=aq 行 hintChannels）。无该字段的旧行不兜底（从严，fail-closed）。 */
-  function isHintedChannel(row, channel) {
-    if (Array.isArray(row.hintChannels)) return row.hintChannels.includes(channel)
-    return false
+  // All question callbacks use the shared Control Core when available. The
+  // question-specific chat/hint matching above remains the source of truth for
+  // numbered replies; this registration only supplies canonical event
+  // construction, authorization, and settlement for callback ingress.
+  if (deps.control !== null && deps.control !== undefined) {
+    deps.control.register('question-answer', {
+      getPending: (input) => ledger.get(input.qKey ?? input.key),
+      buildEvent: (input, row, policy, now) => {
+        const channel = String(input.channel ?? String(input.via ?? '').split(':')[0] ?? '')
+        const chatId = String(input.chatId ?? '')
+        const exact = (Array.isArray(row.pushedTo) ? row.pushedTo : []).find((target) => String(target.channel) === channel && String(target.chatId) === chatId && (target.accountId === undefined || String(target.accountId) === String(input.accountId ?? '')))
+        return {
+          eventId: input.eventId, sessionId: String(row.agentId ?? input.qKey ?? input.key), source: 'mobile', channel,
+          accountId: exact?.accountId ?? input.accountId, userId: String(exact?.userId ?? input.userId ?? ''), chatId,
+          policyVersion: String(row.policyVersion ?? policy.policyVersion ?? '1'), command: 'question-answer',
+          chatType: input.chatType, createdAt: Number(row.createdAt ?? now - 1),
+          expiresAt: Number(row.expiresAt ?? now + defaultTimeoutMs),
+        }
+      },
+      authorize: (input, row, event) => {
+        const targets = Array.isArray(row.pushedTo) ? row.pushedTo : []
+        // 同 channel/chat/user 是否存在带 accountId 的推送目标。存在时来源必须精确落到该账号：
+        // 同一用户可能控制多个 bot 账号，token/回调仍须绑定原始账号；缺失/错误 accountId 一律
+        // fail-closed，不得凭 trusted owner 兜底放开到另一账号（CRACK-004 只豁免无账号绑定的行）。
+        const bound = targets.filter((target) => String(target.channel) === event.channel && String(target.chatId) === event.chatId && (target.userId === undefined || String(target.userId) === event.userId))
+        const accountBound = bound.some((t) => t.accountId !== undefined && String(t.accountId) !== '')
+        const exact = targets.some((target) => (
+          String(target.channel) === event.channel
+          && String(target.chatId) === event.chatId
+          && (target.accountId === undefined || String(target.accountId) === event.accountId)
+          && (target.userId === undefined || String(target.userId) === event.userId)
+        ))
+        if (input.trusted !== true) return exact
+        if (accountBound) return exact
+        return exact || isAuthorizedDeciderQ(identity, event.channel, event.userId)
+      },
+      settle: (input) => input.trusted === true
+        ? settle(input.qKey ?? input.key, ledger.get(input.qKey ?? input.key), input.optIdxes, input.via, input.userId)
+        : decide({ qKey: input.qKey ?? input.key, optIdx: input.optIdx, values: input.values, token: input.token, via: input.via, userId: input.userId, chatId: input.chatId }),
+    })
   }
 
   /** 交互通道列表（归一 + 防御；getter 失败按空处理）。 */
@@ -171,6 +229,8 @@ export function createQuestionBridge(deps) {
     const options = question.options.map((option) => option.label)
     const isMulti = question.multiSelect === true
     const pushedTo = []
+    const escalationTargets = []
+    const escalationTargetKeys = new Set()
     const deliveredTypes = new Set() // 卡片已送达的通道类型：这些渠道不再重复教编号
     // issue #11：卡片未送达、但该问题目标用户已绑定此交互入站通道（kept 非空）的条目。
     // 这些通道的编号回复必须能命中（qq-bot 出站 ↔ qq 入站异名、wechat iLink 纯入站无出站都靠它）。
@@ -195,7 +255,12 @@ export function createQuestionBridge(deps) {
           multiSelect: isMulti,
         })
         if (card !== null) {
-          pushedTo.push({ channel: inbound.channel, chatId: target.chatId, userId: target.userId, messageId: card.messageId, kind: 'aq' })
+          pushedTo.push({ channel: inbound.channel, ...(inbound.accountId === undefined ? {} : { accountId: String(inbound.accountId ?? '') }), chatId: target.chatId, userId: target.userId, messageId: card.messageId, kind: 'aq' })
+          const targetKey = `${inbound.channel}\u0000${target.chatId}\u0000${target.userId}`
+          if (!escalationTargetKeys.has(targetKey)) {
+            escalationTargetKeys.add(targetKey)
+            escalationTargets.push({ inbound, target })
+          }
           if (allowChats !== null) {
             let chatSet = allowChats.get(inbound.channel)
             if (chatSet === undefined) {
@@ -209,7 +274,7 @@ export function createQuestionBridge(deps) {
         }
       }
       // issue #11：卡片未送达 + 目标用户已绑定 → 记录为待补编号话术的入站通道
-      // （sendText 送达 + 通道名补进 hintChannels）。只记 kept 非空的绑定通道，
+      // （sendText 送达 + 目标补进 hintTargets）。只记 kept 非空的绑定通道，
       // 未绑定用户的通道不进（SEC-2 fail-closed）。
       if (kept.length > 0 && !deliveredTypes.has(inbound.channel)) {
         hintedInbound.push({ channel: inbound.channel, targets: kept, inbound })
@@ -219,33 +284,53 @@ export function createQuestionBridge(deps) {
     // 一条冗余的「回复编号」广播——选项卡是主交互，编号是无卡片/投递失败时的降级。
     const allTypes = Array.isArray(notifier?.channels) ? notifier.channels : []
     const textTypes = allTypes.filter((type) => !deliveredTypes.has(type))
+    let deliveredTextTypes = []
     if (textTypes.length > 0) {
-      await notifier.notifyAll({
+      const outcome = await notifier.notifyAll({
         title,
         content: `${content}\n\n${numberedHint(options, isMulti)}`,
         level: 'timeSensitive',
-      }, { channelTypes: textTypes }).catch(() => {})
+      }, { channelTypes: textTypes }).catch(() => null)
+      // notifyAll 的 ok=true 也可能代表空目标/静音；只有返回 delivered 中的
+      // 渠道才算真正留下编号兜底证据，失败或未知返回一律 fail-closed。
+      if (outcome !== null && Array.isArray(outcome.delivered)) {
+        const delivered = new Set(outcome.delivered.map((type) => String(type)))
+        deliveredTextTypes = textTypes.filter((type) => delivered.has(String(type)))
+      }
     }
     // issue #11：把「目标用户已绑定、卡片未送达」的交互入站通道补进编号话术覆盖范围。
     // 编号话术经入站 sendText 送达（纯入站通道如 wechat iLink 没有出站文本可走）；
-    // 已由出站文本送达的通道（同名 type，或别名对如 qq-bot↔qq）只补通道名不重发，
-    // 避免同号双发。只加目标用户已绑定的通道、话术确实送达才入 hintChannels——
-    // 保持 SEC-2 fail-closed（没收到话术的渠道/用户裸编号仍拒绝）。
+    // 已由出站文本送达的通道（同名 type，或别名对如 qq-bot↔qq）不再经入站重发；
+    // 但渠道级 delivered 不能证明具体 chat 收到，因此不登记 hintTargets。
     const hintText = `${title}\n${content}\n\n${numberedHint(options, isMulti)}`
-    const hintedChannels = []
+    const hintedTargets = []
     for (const entry of hintedInbound) {
-      hintedChannels.push(entry.channel)
-      if (!isCoveredByOutbound(entry.channel, textTypes)) {
-        for (const target of entry.targets) {
-          void entry.inbound.sendText(target.chatId, hintText)
+      const coveredByOutbound = isCoveredByOutbound(entry.channel, deliveredTextTypes)
+      const hintSends = []
+      for (const target of entry.targets) {
+        const targetKey = `${entry.channel}\u0000${target.chatId}\u0000${target.userId}`
+        if (!escalationTargetKeys.has(targetKey)) {
+          escalationTargetKeys.add(targetKey)
+          escalationTargets.push({ inbound: entry.inbound, target })
+        }
+        if (!coveredByOutbound) {
+          hintSends.push(entry.inbound.sendText(target.chatId, hintText).then((ok) => ok === true).catch(() => false))
+        }
+      }
+      if (!coveredByOutbound) {
+        const outcomes = await Promise.all(hintSends)
+        // 只记录 sendText 成功的目标（per-chat 送达证据，Control Core Step 1）
+        for (let i = 0; i < entry.targets.length; i++) {
+          if (outcomes[i] === true) {
+            hintedTargets.push({ channel: entry.channel, ...(entry.inbound.accountId === undefined ? {} : { accountId: String(entry.inbound.accountId ?? '') }), chatId: entry.targets[i].chatId, userId: entry.targets[i].userId })
+          }
         }
       }
     }
-    // SEC-2：把编号话术送达过的渠道（出站 textTypes + 入站 hintedChannels）一并返回，
-    // 供 askQuestions 落账为 aq 行的 hintChannels。按「本应送达的渠道」记录（不因
-    // notifyAll/sendText 失败而丢失）——即使编号文案发送失败，行上仍记该渠道，
-    // 编号兜底反而更稳（降级链不断，见 22-plan-sec2 E4/E5）。
-    return { pushedTo, hintChannels: [...new Set([...textTypes, ...hintedChannels])] }
+    // Control Core Step 1：hintTargets 是 per-chat 送达证据，替代旧渠道级 hintChannels。
+    // 只有送达确认的 (channel, chatId, userId) 才能通过编号回复命中兜底路径。
+    // 旧 hintChannels 字符串数组不再写入新行；旧行无 hintTargets 字段 → fail-closed。
+    return { pushedTo, hintTargets: hintedTargets, escalationTargets }
   }
 
   /** 把送达过的卡片全部改成终态（超时/已答；editTarget 按 pushedTo 行的 kind 选卡片形态）。 */
@@ -307,6 +392,72 @@ export function createQuestionBridge(deps) {
     return settle(qKey, row, optIdxes, via, userId)
   }
 
+  // Button callbacks carry an explicit qKey/token. They never use the
+  // "latest pending" fallback, so concurrent questions cannot cross-talk.
+  function handleCardAction(envelope) {
+    const action = envelope?.questionAction
+    if (action === null || typeof action !== 'object') return false
+    const qKey = String(action.qKey ?? '')
+    const optIdx = String(action.optIdx ?? '')
+    const inbound = interactiveEntries().find((entry) => entry.channel === envelope.channel)
+    const feedback = (text) => { if (inbound !== undefined) void inbound.sendText(envelope.chatId, text).catch(() => {}) }
+    if (optIdx === 'c' || optIdx === 'custom') {
+      feedback('✍️ 自定义回答：直接回复「答：<你的回答>」')
+      return true
+    }
+    if (optIdx === 's' || optIdx === 'skip') {
+      const tokenVerdict = vault.verify(String(action.token ?? ''))
+      if (!tokenVerdict.ok || tokenVerdict.key !== qKey) { feedback('作答被拒绝（校验失败）'); return true }
+      const row = ledger.get(qKey)
+      if (row === undefined || row.status !== 'pending') { feedback('该提问已回答或已过期'); return true }
+      const sourceChat = envelope.chatId !== undefined && envelope.chatId !== null ? String(envelope.chatId) : ''
+      // aq-skip 也纳入 accountId 的来源绑定：同一 chat/user 但不同账号（multi-account 同聊天）
+      // 不得凭 userId 单独命中——pushedTo 只计与事件账号一致的目标，否则 fail-closed 原会话。
+      const target = Array.isArray(row.pushedTo) ? row.pushedTo.find((item) => String(item.channel) === String(envelope.channel) && String(item.chatId) === sourceChat && (item.accountId === undefined || String(item.accountId) === String(envelope.accountId ?? '')) && String(item.userId) === String(envelope.userId)) : null
+      if (target === null || sourceChat === '') { feedback('请到原会话操作'); return true }
+      // 跳过一律经共享 Control Core 的 question-answer 契约裁决（授权/来源/策略/群聊 fail-closed），
+      // 结算走 settleSkip（仍以 bus.settle 首达采纳为唯一落账点）。控制缺失 → fail-closed：
+      // 绝不直结（不再回退 bus.settle），防止无授权即放行跳过。
+      if (deps.control === null || deps.control === undefined) {
+        feedback('该提问已被作答（首达采纳）')
+        return true
+      }
+      const verdict = deps.control.handle({
+        eventId: String(envelope.messageId ?? ''),
+        command: 'question-answer',
+        qKey,
+        channel: envelope.channel,
+        accountId: envelope.accountId,
+        chatId: envelope.chatId,
+        chatType: envelope.chatType,
+        userId: envelope.userId,
+        via: `${envelope.channel}:button`,
+        trusted: true,
+        settle: () => settleSkip(qKey, envelope),
+      })
+      if (verdict.ok === true || verdict.status === 'accepted') {
+        feedback('⏭ 已跳过该提问：交还桌面处理')
+      } else {
+        // 已决/组聊/来源不满足 → fail-closed：消费回调、提示不可再跳，绝不放行词条
+        feedback(verdict.message ?? '该提问已被作答（首达采纳）')
+      }
+      return true
+    }
+    const sourceRow = ledger.get(qKey)
+    const sourceChat = envelope.chatId !== undefined && envelope.chatId !== null && String(envelope.chatId) !== '' ? String(envelope.chatId) : null
+    if (sourceRow === undefined || sourceChat === null) { feedback('请到原会话操作'); return true }
+    const sourceTargets = Array.isArray(sourceRow.pushedTo) ? sourceRow.pushedTo.filter((target) => String(target.channel) === String(envelope.channel) && String(target.chatId) === sourceChat && (target.accountId === undefined || String(target.accountId) === String(envelope.accountId ?? ''))) : []
+    if (sourceTargets.length === 0 || !sourceTargets.some((target) => String(target.userId) === String(envelope.userId))) { feedback('请到原会话操作'); return true }
+    // v0.8.7：Control Core 缺失时 fail-closed，不直结——防止无授权即放行按钮作答。
+    if (deps.control === null || deps.control === undefined) {
+      feedback('该提问已被作答（首达采纳）')
+      return true
+    }
+    const verdict = deps.control.handle({ eventId: String(envelope.messageId ?? ''), command: 'question-answer', qKey, optIdx, token: String(action.token ?? ''), via: `${envelope.channel}:button`, channel: envelope.channel, accountId: envelope.accountId, userId: envelope.userId, chatId: envelope.chatId, chatType: envelope.chatType })
+    feedback(verdict.message ?? '该提问已回答或已过期')
+    return true
+  }
+
   function settle(qKey, row, optIdxes, via, userId) {
     const idxs = resolveIdxs(row, optIdxes)
     if (idxs === null) {
@@ -320,25 +471,279 @@ export function createQuestionBridge(deps) {
     return { ok: true, message: `✅ 已作答：${labels.join('、')}`, answers: labels }
   }
 
+  /** 自定义文本作答（'答：...'）：与 settle 共享 bus.settle 首达采纳 + ledger.resolve 落账。
+   *  只在 Control Core 已放行（或控制不可用时的精确来源兜底）后才被调用——它不是新的直通后门。 */
+  function settleText(qKey, answer, envelope) {
+    const verdict = bus.settle(qKey, { kind: 'aq-text', idxs: [], text: answer }, `${envelope.channel}:text`, envelope.userId)
+    if (!verdict.ok) return { ok: false, message: '该提问已被作答（首达采纳）' }
+    ledger.resolve(qKey, 'answered', { answers: [answer], via: `${envelope.channel}:text`, userId: String(envelope.userId) })
+    warn(`${qKey} 自定义作答（via ${envelope.channel}:text）`)
+    return { ok: true, message: `✅ 已作答（自定义）：${answer}`, answers: [answer] }
+  }
+
+  /** 跳过（aq-skip）：与 admin decline 同语义（交还桌面、绝不编造答案），但来自手机端按钮。 */
+  function settleSkip(qKey, envelope) {
+    const verdict = bus.settle(qKey, { kind: 'aq-skip', idxs: [] }, `${envelope.channel}:button`, envelope.userId)
+    if (!verdict.ok) return { ok: false, message: '该提问已被作答（首达采纳）' }
+    ledger.resolve(qKey, 'skipped', { via: `${envelope.channel}:button`, userId: String(envelope.userId) })
+    warn(`${qKey} 已跳过（via ${envelope.channel}:button）`)
+    return { ok: true, message: '⏭ 已跳过该提问：交还桌面处理' }
+  }
+
+  // ———————————————— 管理台待决问题 facade（路线图阶段 2A，2026-08-26） ————————————————
+  // 本块是 admin/UI 与问题桥之间的最小兼容门面：`adminPending()` 只做脱敏只读快照，
+  // `adminSettle()` 把裁决一律经注入的 Control Core `deps.control.handle()` 路由——
+  // 授权（配对/source/policy/首达采纳）与单次结算语义全部由 Control Core 承接，本块
+  // **绝不**在门口复制 ledger 结算或直接写状态；对已待决之外的任何输入 fail-closed。
+  // 红线：快照与审计里绝不出现 token / 凭证 / 完整聊天或 agent 标识 / 答案隐私。
+  let adminSettleSeq = 0 // 每次 admin 结算给唯一 eventId（缺 eventId 会被 normalize 拒绝）
+  const sha256 = (value) => createHash('sha256').update(String(value)).digest('hex')
+  /** 待决问题键的不可逆短引用（避免把 `aq:<随机>` 原键散进 UI/日志；解析按哈希回扫）。 */
+  const questionRefOf = (key) => sha256(key).slice(0, 12)
+  /** 脱敏标识：sha256 前缀短段 —— 绝不回放完整 session/agent/chat/user 值。 */
+  const maskedId = (value, prefix, len = 6) => {
+    if (value === undefined || value === null || String(value) === '') return null
+    return `${prefix}${sha256(value).slice(0, len)}`
+  }
+  /**
+   * 解析 admin 提交的 ref → 真实 `aq:` 键。只在当前 store 的 aq 待决键中哈希匹配，
+   * 命中即该键（48-bit 前缀碰撞在并发待决里概率可忽略，最坏影响是一次错误结算被
+   * 首达采纳挡掉——fail-closed）。未知 ref 返回 null。
+   */
+  const resolveQuestionRef = (ref) => {
+    const target = String(ref ?? '').trim()
+    if (target === '') return null
+    for (const key of core.scanKeys()) if (questionRefOf(key) === target) return key
+    return null
+  }
+  /** 单条待决问题 → 脱敏快照行（只含 UI 渲染所需：文本/选项/脱敏来源/时间/状态）。 */
+  const sanitizeQuestion = (key, row) => {
+    const sources = Array.isArray(row.pushedTo)
+      ? row.pushedTo.map((target) => ({
+          channel: String(target?.channel ?? ''),
+          chat: maskedId(target?.chatId, 'chat-'),
+          user: maskedId(target?.userId, 'user-'),
+        }))
+      : []
+    return {
+      ref: questionRefOf(key),
+      question: String(row.question ?? ''),
+      options: (Array.isArray(row.options) ? row.options : []).map(String),
+      multiSelect: row.multiSelect === true,
+      status: 'pending',
+      agent: maskedId(row.agentId, 'agent-'),
+      source: sources,
+      createdAt: Number.isFinite(Number(row.createdAt)) ? Number(row.createdAt) : null,
+      expiresAt: Number.isFinite(Number(row.expiresAt)) ? Number(row.expiresAt) : null,
+    }
+  }
+  /** admin 驳回：复用手机端「跳过」的语义（`aq-skip` + ledger.resolve 'skipped'），交还桌面、
+   *  绝不编造答案；bus.settle 首达采纳保证与作答互斥（单次结算）。 */
+  function decline(key, row, via, userId) {
+    const verdict = bus.settle(key, { kind: 'aq-skip', idxs: [] }, via, userId)
+    if (!verdict.ok) return { ok: false, reason: verdict.reason ?? 'already-resolved' }
+    ledger.resolve(key, 'skipped', { via, userId })
+    return { ok: true, message: '已驳回该提问：交还桌面处理', answers: [] }
+  }
+  /** 当前待决问题汇总（读快照，绝不抛）。无任何待决返回空数组。 */
+  function adminPending() {
+    const rows = []
+    for (const key of core.scanKeys()) {
+      if (!key.startsWith(KEY_PREFIX)) continue // scanKeys 已按前缀过滤，双保险
+      const row = core.get(key)
+      if (!core.isPending(row)) continue
+      rows.push(sanitizeQuestion(key, row))
+    }
+    // 新在前，稳定排序（createdAt 同值按 ref 中止，避免排序不稳定）
+    rows.sort((a, b) => (Number(b.createdAt ?? 0) - Number(a.createdAt ?? 0)) || (a.ref < b.ref ? -1 : a.ref > b.ref ? 1 : 0))
+    return rows
+  }
+  /**
+   * 管理台裁决入口（单一入口，只对当前待决问题生效）：
+   * action 'choose' 携带 options（0 基下标数组）切到指定选项；action 'reject' 驳回交还桌面。
+   * 授权与单次结算全部经 `deps.control.handle`（pairing/source/policy/首达采纳）；
+   * 本块通过 `input.settle` 直连 Control Core 的 onSettle 并捕获真实 settle/decline 结果，
+   * 以便区分「本侧胜出」与「手机端已先答」（后者返回 handled:true，不重复结算）。
+   * 任何无法确证来源目标 / 越权 / 过期 / 未知 ref / 非法 option / 异常 → fail-closed 安全错误。
+   * @returns {{ ok: boolean, handled?: boolean, reason?: string, message?: string, optionLabels?: string[] }}
+   */
+  function adminSettle(input = {}) {
+    const ref = String(input?.ref ?? '').trim()
+    const action = String(input?.action ?? '').trim().toLowerCase()
+    if (action !== 'choose' && action !== 'reject') {
+      return { ok: false, handled: false, reason: 'invalid_action', message: 'action 只能是 choose 或 reject' }
+    }
+    const key = resolveQuestionRef(ref)
+    if (key === null) {
+      return { ok: false, handled: false, reason: 'unknown_question', message: '未找到该待决问题' }
+    }
+    const row = core.get(key)
+    if (!core.isPending(row)) {
+      // 已决（作答/超时/跳过）或缺失 → already-handled；绝不二次结算
+      return { ok: false, handled: true, reason: 'already_handled', message: '该问题已被裁决（作答/过期/驳回）' }
+    }
+    // 选项封闭集预检（越界/重复/单选多项 → fail-closed），复用 resolveIdxs 语义
+    let optIdxs = null
+    if (action === 'choose') {
+      optIdxs = resolveIdxs(row, Array.isArray(input.options) ? input.options : [])
+      if (optIdxs === null) {
+        return { ok: false, handled: false, reason: 'invalid_option', message: '无效选项：只接受该问题给出的编号（越界/重复/单选不可多项）' }
+      }
+    }
+    // 只能在一个确凿的来源目标上结算（事件绑定 pushedTo，配以 event.channel/chatId 等）。
+    // 无目标即无法安全按当事人来源路由 → fail-closed，绝不凭空编造 channel/chat。
+    const pushed = Array.isArray(row.pushedTo) ? row.pushedTo : []
+    const target = pushed.find((t) => t && t.channel !== '' && t.chatId !== undefined && t.chatId !== null && String(t.chatId) !== '')
+      ?? (pushed.length > 0 ? pushed[0] : null)
+    if (target === null) {
+      return { ok: false, handled: false, reason: 'no_target', message: '该问题没有可用的来源目标，无法安全裁决' }
+    }
+
+    const outcome = { ok: false, handled: false, reason: null, message: '', answers: null }
+    // 结算一律经 Control Core 的 question-answer 注册 spec 裁决（buildEvent/authorize/
+    // canAcceptCommand 全跑）；事件身份 = 该待决问题的确凿来源目标（pushedTo 精确命中的
+    // channel/chatId/accountId），由 spec.buildEvent 据此回填 bound userId —— 管理台操作者
+    // 绝不冒充目标用户身份，操作者来源只经 via='admin:web' 与 admin 审计带出（不落 ledger）。
+    const receipt = deps.control?.handle({
+      command: 'question-answer',
+      eventId: `admin-settle:${key}:${++adminSettleSeq}`,
+      qKey: key,
+      trusted: true,
+      via: 'admin:web',
+      channel: String(target.channel ?? ''),
+      accountId: String(target.accountId ?? ''),
+      chatId: String(target.chatId ?? ''),
+      // 终端动作仍走问题桥既有裁决核心（settle/decline），由 Control Core onSettle 调起；
+      // 捕获真实首达结果供下面区分 already-handled 与「本侧胜出」。
+      settle: () => {
+        const res = action === 'choose'
+          ? settle(key, row, optIdxs, 'admin:web', 'admin:web')
+          : decline(key, row, 'admin:web', 'admin:web')
+        outcome.ok = res?.ok === true
+        outcome.handled = outcome.handled || res?.ok !== true
+        outcome.reason = res?.reason ?? null
+        outcome.message = res?.message ?? ''
+        outcome.answers = res?.answers ?? null
+        return res === null || res === undefined ? false : res
+      },
+    })
+    // 无 Control Core（未接线）→ receipt 为空 → 落到最末 not_available，fail-closed：
+    // 结算绝不跳过控制核心直接落库（本端点不留直通后门）。
+    const status = receipt?.status
+    if (status === 'accepted') {
+      // spec 的 safest settle 已真实执行；outcome 捕获到的是首达采纳的真实结果。
+      if (outcome.ok === true) return { ok: true, handled: false, reason: null, message: outcome.message, optionLabels: outcome.answers }
+      // 手机端先答夺标：本次未重复结算，明确 already-handled
+      return { ok: false, handled: true, reason: 'already_handled', message: outcome.message || '该问题已被作答（首达采纳），本次未生效' }
+    }
+    if (status === 'already_handled') return { ok: false, handled: true, reason: 'already_handled', message: '该问题已被裁决（首达采纳），本次未生效' }
+    if (status === 'expired') return { ok: false, handled: false, reason: 'expired', message: '该问题已过期' }
+    // rejected / desktop_fallback → fail-closed，按原因细分（绝不假造放行）
+    const reason = receipt?.reason
+    if (reason === 'expired') return { ok: false, handled: false, reason: 'expired', message: '该问题已过期' }
+    if (reason === 'not_pending' || reason === 'duplicate_event') {
+      return { ok: false, handled: true, reason: 'already_handled', message: '该问题已被裁决（作答/过期/驳回）' }
+    }
+    if (reason === 'source_mismatch_channel' || reason === 'source_mismatch_chatId' || reason === 'source_mismatch_accountId'
+      || reason === 'source_mismatch_userId' || reason === 'not_paired' || reason === 'source_policy_rejected' || reason === 'owner_only') {
+      return { ok: false, handled: false, reason: 'unauthorized', message: '管理台不满足该问题的来源/身份授权（无法确证 owner/admin）' }
+    }
+    return { ok: false, handled: false, reason: 'not_available', message: '该问题结算当前不可用（Control Core 未接线或已拒绝）' }
+  }
+
   /**
    * 编号回复兜底（P4）：白名单用户回复 '2' / '1,3'（中英文逗号均可）作答最近一条待决提问。
    * 发错了不作废——无效编号：消费该消息（不进对话路由）+ 回执提示 + 把选项重发一遍，
    * 问题保持待决，用户直接再答即可；有效作答后回执确认。
    * 消费语义与审批一致：返回 true = bus 停止扇出（不进对话路由）。
    * 注意：审批的编号处理器先注册（'1'/'2' 且有待决审批时审批优先消费）。
+   *
+   * Control Core Step 1：chat 来源隔离
+   *  - 缺 chatId → fail-closed：消费消息但不裁决（不落回对话路由）
+   *  - onChannel 证据（同用户错误 chat）→ 消费 + 回执「请到原会话操作」+ 不裁决
+   *  - exact/hint 证据（chat 匹配）→ 正常作答流程
    */
   function handleNumberedReply(envelope) {
     const text = String(envelope.text ?? '').trim()
+    if (/^答[:：]/.test(text)) {
+      const chatId = envelope.chatId !== undefined && envelope.chatId !== null ? String(envelope.chatId) : null
+      // accountId 一并参与归属匹配：自定义作答不得凭 (channel,userId) 命中另一账号的待决行
+      const pending = ledger.latestPendingFor(envelope.channel, envelope.userId, chatId, envelope.accountId)
+      if (pending === null) return false
+      if (chatId === null || pending.evidence !== 'exact' && pending.evidence !== 'hint') return true
+      const answer = text.replace(/^答[:：]\s*/, '').trim()
+      const inbound = interactiveEntries().find((entry) => entry.channel === envelope.channel)
+      if (answer === '') { if (inbound !== undefined) void inbound.sendText(envelope.chatId, '请在「答：」后面写回答').catch(() => {}); return true }
+      // 自定义作答也经共享 Control Core 的 question-answer 契约裁决（授权/来源/策略/群聊 fail-closed）；
+      // 结算走 settleText（仍以 bus.settle 首达采纳为唯一落账点）。控制缺失 → fail-closed：绝不直结
+      // （不再回退 bus.settle），防止无授权即落账。
+      if (deps.control === null || deps.control === undefined) {
+        if (inbound !== undefined) void inbound.sendText(envelope.chatId, '该提问已被作答（首达采纳）').catch(() => {})
+        return true
+      }
+      const verdict = deps.control.handle({
+        eventId: String(envelope.messageId ?? ''),
+        command: 'question-answer',
+        qKey: pending.key,
+        channel: envelope.channel,
+        accountId: envelope.accountId,
+        chatId: envelope.chatId,
+        chatType: envelope.chatType,
+        userId: envelope.userId,
+        via: `${envelope.channel}:text`,
+        trusted: true,
+        settle: () => settleText(pending.key, answer, envelope),
+      })
+      if (verdict.ok === true || verdict.status === 'accepted') {
+        if (inbound !== undefined) void inbound.sendText(envelope.chatId, `✅ 已作答（自定义）：${answer}`).catch(() => {})
+      } else {
+        // 已决/来源不满足 → fail-closed：消费消息、提示不可再答
+        if (inbound !== undefined) void inbound.sendText(envelope.chatId, verdict.message ?? '该提问已被作答（首达采纳）').catch(() => {})
+      }
+      return true
+    }
     if (!/^\d{1,2}([,，]\d{1,2})*$/.test(text)) return false
     const nums = text.split(/[,，]/).map(Number)
     if (nums.length === 0) return false
-    const pending = ledger.latestPendingFor(envelope.channel, envelope.userId)
-    if (pending === null) return false
-    const row = pending.row
-    const max = row.options.length
+
+    const chatId = envelope.chatId !== undefined && envelope.chatId !== null && String(envelope.chatId) !== ''
+      ? String(envelope.chatId) : null
+
     const sendFeedback = (message) => {
       const inbound = interactiveEntries().find((entry) => entry.channel === envelope.channel)
       if (inbound !== undefined) void inbound.sendText(envelope.chatId, message)
+    }
+
+    // 缺 chatId：fail-closed——消费裸编号但不裁决，不落回对话路由
+    if (chatId === null) {
+      // v0.8.7：accountId 一并传入——pushedTo/hintTargets 现携带本地 accountId（真实适配器
+      // 恒提供），裸用 (channel,userId) 会因 accountMatches 恒 false 漏过已绑定用户的回复，
+      // 使「缺 chatId → 消费但不裁决」的 fail-closed 语义失效（泄露进对话路由）。
+      const anyPending = ledger.latestPendingFor(envelope.channel, envelope.userId, null, envelope.accountId)
+      if (anyPending === null) return false
+      return true
+    }
+
+    const pending = ledger.latestPendingFor(envelope.channel, envelope.userId, chatId, envelope.accountId)
+    if (pending === null) return false
+
+    const row = pending.row
+    const max = row.options.length
+
+    // 错误 chat（同用户同渠道但 chatId 不匹配）：消费 + 回执 + 不裁决
+    if (pending.evidence === 'onChannel') {
+      sendFeedback('请到原会话操作')
+      return true
+    }
+
+    // CRACK-004 归属闸：exact 已是当事人级命中（同 user 同 chat），直接放行；
+    // hint 属广播兜底——仅该渠道绑定的 owner 可代答。identity 缺失/异常一律 fail-closed。
+    // 拒绝语义：消费裸编号（不进对话路由）+ 回执提示，问题保持待决，原提问者仍可作答。
+    const allowed = pending.evidence === 'exact' || isAuthorizedDeciderQ(identity, envelope.channel, envelope.userId)
+    if (!allowed) {
+      warn(`提问编号越权拒绝 ${pending.key}（evidence=${pending.evidence}，user ${envelope.userId} 非 owner）`)
+      sendFeedback('此提问不是你作答的（无权回答）')
+      return true
     }
     const optIdxes = nums.map((num) => num - 1) // 展示 1 基 → 存储 0 基
     const outOfRange = optIdxes.some((idx) => idx < 0 || idx >= max)
@@ -350,14 +755,18 @@ export function createQuestionBridge(deps) {
       sendFeedback(`❓ ${why}\n${numberedHint(row.options, row.multiSelect === true)}`)
       return true // 发错了可以再发：问题保持待决，上面的选项已重发
     }
-    const verdict = decideTrusted({
-      qKey: pending.key,
-      optIdxes,
-      via: `${envelope.channel}:reply`,
-      userId: envelope.userId,
-    })
-    if (verdict.ok === true) {
-      sendFeedback(`✅ 已作答：${(verdict.answers ?? []).join('、')}`)
+    // v0.8.7：Control Core 缺失时 fail-closed，不直结——防止无授权即放行编号作答。
+    if (deps.control === null || deps.control === undefined) {
+      sendFeedback('该提问已被作答（首达采纳）')
+      return true
+    }
+    const verdict = deps.control.handle({ eventId: String(envelope.messageId ?? ''), command: 'question-answer', qKey: pending.key, channel: envelope.channel, accountId: envelope.accountId, chatId: envelope.chatId, chatType: envelope.chatType, userId: envelope.userId, via: `${envelope.channel}:reply`, optIdxes, trusted: true })
+    if (verdict.ok === true || verdict.status === 'accepted') {
+      // v0.8.7：Control Core 回执是通用形状，不携带结算明细——答案标签从已结算的账本行回读
+      //（settle → ledger.resolve 同步写入 answers），避免主数据回执出现「✅ 已作答：」空标签。
+      const row = ledger.get(pending.key)
+      const answers = Array.isArray(row?.answers) ? row.answers : []
+      sendFeedback(`✅ 已作答：${answers.join('、')}`)
       return true
     }
     // 罕见竞态（作答瞬间恰好超时）：回执说明，同样消费避免把裸编号漏进对话路由
@@ -365,7 +774,14 @@ export function createQuestionBridge(deps) {
     return true
   }
 
+  /** CRACK-004：hint 编号兜底代答资格——仅该渠道绑定的 owner 可代答；identity 缺失/异常 fail-closed。 */
+  function isAuthorizedDeciderQ(identity, channel, userId) {
+    if (!identity) return false
+    try { return identity.list(channel).some((r) => String(r.userId) === String(userId) && r.role === 'owner') } catch { return false }
+  }
+
   let disposeMessage = null
+  let disposeCardAction = null
   let disposed = false
 
   /**
@@ -373,8 +789,9 @@ export function createQuestionBridge(deps) {
    * 消费优先级：审批 '1'/'2' 先于提问编号，避免歧义时提问抢走审批回复）。
    */
   function attach() {
-    if (disposeMessage !== null || disposed) return
-    disposeMessage = bus.onMessage(handleNumberedReply)
+    if (disposed) return
+    if (disposeCardAction === null) disposeCardAction = bus.onMessage(handleCardAction)
+    if (disposeMessage === null) disposeMessage = bus.onMessage(handleNumberedReply)
   }
 
   /**
@@ -407,6 +824,7 @@ export function createQuestionBridge(deps) {
           context: String(payload?.context ?? ''),
           agentId: agentId !== null && String(agentId) !== '' ? String(agentId) : null,
           pushedTo: [],
+          expiresAt: Date.now() + timeoutMs,
         })
         // waiter 预注册先于推卡（v0.6.3 审批时序同款：早到作答不被丢）。
         // AUTH-1：wait 登记允许会话范围（allowChats）；pushQuestion 每送达一张卡片即
@@ -417,16 +835,18 @@ export function createQuestionBridge(deps) {
           onAbandon: () => { try { ledger.terminate(qKey) } catch { } },
           allowChats,
         })
-        const { pushedTo, hintChannels } = await pushQuestion(qKey, token, question, allowChats)
+        const { pushedTo, hintTargets, escalationTargets } = await pushQuestion(qKey, token, question, allowChats)
         const row = ledger.get(qKey)
-        if (row !== undefined) store.set(qKey, { ...row, pushedTo, hintChannels })
+        if (row !== undefined) store.set(qKey, { ...row, pushedTo, hintTargets })
         const startedAt = Date.now()
         escalation.start(qKey, (_key, stage) => {
-          notifier.notifyAll({
-            title: `提问仍在等待作答：${String(question.question ?? '').slice(0, 40)}`,
-            content: `${stage.note ?? '仍在等待作答'}（已等待 ${Math.round((Date.now() - startedAt) / 1000)}s）。请点击选项卡片按钮作答；无卡片渠道可回复选项编号。`,
-            level: stage.level ?? 'timeSensitive',
-          }).catch(() => {})
+          const text = `提问仍在等待作答：${String(question.question ?? '').slice(0, 40)}\n${stage.note ?? '仍在等待作答'}（已等待 ${Math.round((Date.now() - startedAt) / 1000)}s）。请点击选项卡片按钮作答；无卡片渠道可回复选项编号。`
+          // 升级提醒必须逐目标发送。按 channelTypes 调 notifyAll 仍会覆盖同渠道的
+          // 其他 chat/user；没有精确目标时 fail-closed，不向全局渠道广播。
+          const sends = Array.isArray(escalationTargets) ? escalationTargets.map(async ({ inbound, target }) => {
+            try { await inbound.sendText(target.chatId, text) } catch { /* 单目标失败不影响其他目标 */ }
+          }) : []
+          Promise.all(sends).catch(() => {})
         })
         outcome = await waitPromise
         escalation.stop(qKey)
@@ -435,6 +855,18 @@ export function createQuestionBridge(deps) {
           await markResolved(rowAfterWait?.pushedTo ?? pushedTo ?? [], '⏹ 已终止：agent 会话已结束，提问取消')
           results.push({ question: String(question.question ?? ''), answered: false, reason: 'terminated' })
           allAnswered = false
+          continue
+        }
+        if (outcome?.decision?.kind === 'aq-skip') {
+          await markResolved(ledger.get(qKey)?.pushedTo ?? [], '⏭ 已跳过：交还桌面处理')
+          results.push({ question: String(question.question ?? ''), answered: false, reason: 'skipped-by-user' })
+          allAnswered = false
+          continue
+        }
+        if (outcome?.decision?.kind === 'aq-text') {
+          const answer = String(outcome.decision.text ?? '')
+          await markResolved(ledger.get(qKey)?.pushedTo ?? [], `✅ 已作答（自定义）：${answer}`)
+          results.push({ question: String(question.question ?? ''), answered: true, answers: [answer], via: outcome.via })
           continue
         }
       } catch (error) {
@@ -469,12 +901,14 @@ export function createQuestionBridge(deps) {
 
   function dispose() {
     disposed = true
+    try { disposeCardAction?.() } catch { }
     try { disposeMessage?.() } catch { /* 反注册失败不致命 */ }
+    disposeCardAction = null
     disposeMessage = null
     escalation.dispose()
   }
 
-  return { askQuestions, decide, decideTrusted, attach, dispose }
+  return { askQuestions, decide, decideTrusted, adminPending, adminSettle, attach, dispose }
 }
 
 /** 校验并归一 ask_user 工具参数；违规返回 { ok:false, reason }。 */

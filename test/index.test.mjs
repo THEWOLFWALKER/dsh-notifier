@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { apply } from '../src/index.mjs'
@@ -27,6 +27,17 @@ function bootCtx() {
       tools: { register(def) { defs.push(def); return () => {} } },
       on(event, fn) { (listeners[event] ??= []).push(fn); return () => {} },
       effect(fn) { effects.push(fn) },
+    },
+    /** 执行 ctx.effect 收集的清理（真 cordis 语义：fn 返回值才是 disposer，需二次调用）。
+     * 起了真长轮询/HTTP 监听的用例必须调，否则 node --test 事件循环挂住不退。 */
+    async cleanup() {
+      for (const fn of effects) {
+        try {
+          const dispose = fn()
+          const result = typeof dispose === 'function' ? dispose() : dispose
+          if (result != null && typeof result.then === 'function') await result
+        } catch { /* 卸载失败不致命 */ }
+      }
     },
   }
 }
@@ -164,4 +175,132 @@ test('v0.6.1 inbound 逐通道隔离：telegram 装配炸了不崩 apply，其�
     `应点名 telegram 装配失败（实际：${warnings.join(' | ')}）`)
   assert.ok(!warnings.some((w) => /inbound 已启动：telegram/.test(w)), 'telegram 不应有启动成功告警')
   assert.deepEqual(defs.map((def) => def.name).sort(), ['ask_user', 'notify', 'notify_test'], '出站工具照常注册（apply 未被拖垮）')
+})
+
+// ————————————————— v0.8.7 B1：引导码文件交付（LEAK-2） —————————————————
+// 漏洞原状：showBootstrap 经 warn() 双写（logger + stderr）把码面明文打进持久化日志
+// （journald/Loki/ELK）——任何能读日志的账号可拿 owner 级凭证。改为写本机 0600 文件，
+// stderr 只印路径。这里往死里测「码面绝不出现在任何 warn/stderr 里」。
+
+/** 引导态启动（空 allowUsers + telegram 凭证就绪但 apiBase 不可达 → 只走装配不真联网）。 */
+function guidedBoot(stateDir) {
+  const rig = bootCtx()
+  apply(rig.ctx, {
+    channels: [{ type: 'webhook', url: 'http://127.0.0.1:1/hook' }],
+    inbound: { stateDir, telegram: { botToken: 'T0KEN', apiBase: 'http://127.0.0.1:1' } },
+  })
+  return rig
+}
+
+/** 码面形状：8 位 [A-Z2-9]（pairing.mjs CODE_ALPHABET，无 0/1/I/O 等易混字符）。 */
+const CODE_TOKEN = /\b[A-Z2-9]{8}\b/
+
+test('B1-1 引导码文件交付：bootstrap-paircode.txt 存在、mode 0600、内容是单行码面', async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), 'dsh-notifier-b1-file-'))
+  const rig = guidedBoot(stateDir)
+  try {
+    const codePath = join(stateDir, 'bootstrap-paircode.txt')
+    assert.ok(existsSync(codePath), `引导态必须写码文件（warn：${rig.warnings.join(' | ')}）`)
+    // POSIX 才是 0600 权限位语义面：强断言同组/他人零权限。win32 的 Node stat 不反映
+    // Unix 权限位（writeFileSync mode:0o600 后 stat 仍报 666），实际边界是用户目录 ACL
+    // 继承私有——存在性/单行内容/路径告警/无泄漏断言仍在全平台执行，权限面在 POSIX 锁定。
+    if (process.platform !== 'win32') {
+      assert.equal((statSync(codePath).mode & 0o777).toString(8), '600', '仅所有者可读写（同组/其他人零权限）')
+    }
+    assert.match(readFileSync(codePath, 'utf8'), /^[A-Z2-9]{8}\n$/, '文件只放码面本体 + 换行，无标签无说明')
+    // stderr/logger 只印路径与时长，不印码面。路径分隔符归一化：Windows 上 warn 可能混合
+    // `\` 与 `/`（dirname 是反斜杠、文件名拼接是斜杠），逐字节匹配会误报——归一后比语义。
+    const norm = (p) => p.replace(/\\/g, '/')
+    assert.ok(rig.warnings.some((w) => /【引导配对码】/.test(w) && norm(w).includes(norm(codePath))),
+      `warn 必须给出码文件路径（实际：${rig.warnings.join(' | ')}）`)
+  } finally {
+    await rig.cleanup()
+  }
+})
+
+test('B1-3 引导码零泄漏：码面绝不出现在任何 warn 条目里（LEAK-2 回归钉）', async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), 'dsh-notifier-b1-leak-'))
+  const rig = guidedBoot(stateDir)
+  try {
+    const code = readFileSync(join(stateDir, 'bootstrap-paircode.txt'), 'utf8').trim()
+    assert.match(code, /^[A-Z2-9]{8}$/, '前置：确实拿到了 8 位码面')
+    // 正控：真码面串不在任何 warn 里（前缀断言测不出泄漏，必须比对真码面）
+    for (const line of rig.warnings) {
+      assert.ok(!line.includes(code), `码面泄漏进 warn：${line}`)
+    }
+    // 负控加固：连「像码面的 8 位 token」都不该出现（防未来改动换个变量又把码印回去）
+    // 路径里的临时目录名含随机段，先剔除路径再扫
+    for (const line of rig.warnings) {
+      const withoutPaths = line.replace(/\/\S+/g, '')
+      assert.ok(!CODE_TOKEN.test(withoutPaths), `warn 出现疑似码面 token：${line}`)
+    }
+  } finally {
+    await rig.cleanup()
+  }
+})
+
+test('B1-1b 引导码文件写入失败：warn 指引管理台且绝不回退印码面（不静默、不泄漏）', async () => {
+  // stateDir 的父路径是普通文件 → mkdirSync ENOTDIR，写文件必失败
+  const base = mkdtempSync(join(tmpdir(), 'dsh-notifier-b1-enotdir-'))
+  const blocker = join(base, 'blocker')
+  writeFileSync(blocker, 'x')
+  const rig = guidedBoot(join(blocker, 'nested'))
+  try {
+    assert.ok(rig.warnings.some((w) => /引导码文件写入失败/.test(w)), '写失败必须可见（宪法#3 静默即事故）')
+    assert.ok(rig.warnings.some((w) => /【引导配对码】文件写入失败，请使用管理台铸码/.test(w)), '给出可用的替代路径')
+    for (const line of rig.warnings) {
+      const withoutPaths = line.replace(/\/\S+/g, '')
+      assert.ok(!CODE_TOKEN.test(withoutPaths), `写失败路径不得回退印码面：${line}`)
+    }
+  } finally {
+    await rig.cleanup()
+  }
+})
+
+// win32 非管理员/非开发者模式主机不允许创建 symlink（EPERM）——探测能力，不具备即跳过
+// （挡的是沙箱/主机能力，不挡攻击面语义；支持 symlink 的平台依旧全量断言写穿防护）。
+const CAN_CREATE_SYMLINK = (() => {
+  try {
+    const probeDir = mkdtempSync(join(tmpdir(), 'dsh-notifier-symlink-probe-'))
+    const probeFile = join(probeDir, 'victim.txt')
+    writeFileSync(probeFile, 'x')
+    symlinkSync(probeFile, join(probeDir, 'link'))
+    return true
+  } catch {
+    return false
+  }
+})()
+
+test('B1-1c 引导码文件写入前先 unlink：预置 symlink 不被跟随写穿（symlink 攻击面）', { skip: !CAN_CREATE_SYMLINK }, async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), 'dsh-notifier-b1-symlink-'))
+  const victim = join(stateDir, 'victim.txt')
+  writeFileSync(victim, 'ORIGINAL')
+  symlinkSync(victim, join(stateDir, 'bootstrap-paircode.txt'))
+  const rig = guidedBoot(stateDir)
+  try {
+    assert.equal(readFileSync(victim, 'utf8'), 'ORIGINAL', 'symlink 目标不得被写穿（写前 unlink 生效）')
+    assert.match(readFileSync(join(stateDir, 'bootstrap-paircode.txt'), 'utf8'), /^[A-Z2-9]{8}\n$/,
+      '码文件本身是新建的普通文件')
+  } finally {
+    await rig.cleanup()
+  }
+})
+
+test('B1-2c 启动清理：非引导态（allowUsers 非空）启动删掉上一轮残留码文件', async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), 'dsh-notifier-b1-stale-'))
+  const first = guidedBoot(stateDir) // 第一轮：引导态铸码写文件
+  const codePath = join(stateDir, 'bootstrap-paircode.txt')
+  assert.ok(existsSync(codePath), '前置：第一轮写了码文件')
+  await first.cleanup()
+  // 第二轮：白名单已配 → 非引导态，陈旧码文件必须被清
+  const second = bootCtx()
+  apply(second.ctx, {
+    channels: [{ type: 'webhook', url: 'http://127.0.0.1:1/hook' }],
+    inbound: { stateDir, allowUsers: ['42'], telegram: { botToken: 'T0KEN', apiBase: 'http://127.0.0.1:1' } },
+  })
+  try {
+    assert.ok(!existsSync(codePath), '引导态结束后不得残留码面文件')
+  } finally {
+    await second.cleanup()
+  }
 })

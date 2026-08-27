@@ -8,7 +8,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createServer } from 'node:net'
@@ -333,6 +333,68 @@ test('显式 token 与既有哈希不一致 → 以显式为准覆盖哈希', as
   }
 })
 
+// ———————— 就绪日志：URL/端口/token 获取方式 三态（mnt 批 1） ————————
+
+/** 就绪行断言辅助：token 获取方式提示与导出 URL 必须同时出现。 */
+function assertReadyLog(rig, port, hintPattern) {
+  const line = rig.infos.find((l) => /Web 管理台已就绪/.test(l))
+  assert.ok(line !== undefined, '必须有就绪日志（info 收集到）')
+  assert.match(line, new RegExp(`Web 管理台已就绪: http://127\\.0\\.0\\.1:${port}`), `就绪行带准确 URL+端口：${line}`)
+  assert.match(line, hintPattern, `就绪行带 token 获取方式：${line}`)
+}
+
+test('就绪日志 explicit：指向 YAML admin.token，URL/端口齐全（重启不迷茫）', async () => {
+  const dir = tempDir()
+  const rig = bootCtx()
+  const port = await freePort()
+  try {
+    apply(rig.ctx, {
+      channels: [{ type: 'webhook', url: 'http://127.0.0.1:1/hook' }],
+      inbound: { stateDir: dir },
+      admin: { enabled: true, port, token: 'explicit-tok-1' },
+    })
+    assert.ok(await waitHttp(port))
+    assertReadyLog(rig, port, /token 用 YAML 显式配置的 admin\.token/)
+  } finally {
+    await rig.cleanup()
+  }
+})
+
+test('就绪日志 reused：提示沿用首启旧值（不再发明文，也不误导用户重新生成）', async () => {
+  const dir = tempDir({ 'admin:token-hash': sha256Hex('kept-secret-token') })
+  const rig = bootCtx()
+  const port = await freePort()
+  try {
+    apply(rig.ctx, {
+      channels: [{ type: 'webhook', url: 'http://127.0.0.1:1/hook' }],
+      inbound: { stateDir: dir },
+      admin: { enabled: true, port },
+    })
+    assert.ok(await waitHttp(port))
+    assertReadyLog(rig, port, /token 沿用首启打印的旧值/)
+    assert.ok(rig.infos.every((line) => !TOKEN_PRINT.test(line)), 'reused 绝不重发 token 明文')
+  } finally {
+    await rig.cleanup()
+  }
+})
+
+test('就绪日志 generated：明确指向上方仅此一次打印的 token', async () => {
+  const dir = tempDir()
+  const rig = bootCtx()
+  const port = await freePort()
+  try {
+    apply(rig.ctx, {
+      channels: [{ type: 'webhook', url: 'http://127.0.0.1:1/hook' }],
+      inbound: { stateDir: dir },
+      admin: { enabled: true, port },
+    })
+    assert.ok(await waitHttp(port))
+    assertReadyLog(rig, port, /token 已打印到上方日志（仅此一次，请妥善保存）/)
+  } finally {
+    await rig.cleanup()
+  }
+})
+
 // ———————— 生命周期与容错 ————————
 
 test('EADDRINUSE：端口被占 → 只 warn 不崩插件（其余装配照常）', async () => {
@@ -510,7 +572,43 @@ test('§5.5 wxpusher 凭证链尾：admin 开 + store appToken（无 YAML）→ 
     assert.ok(rig.warnings.some((w) => /inbound 已启动：wxpusher/.test(w)),
       'v0.7：allowUsers 空 + 凭证就绪 → 引导态启动（不再是死路）')
     assert.ok(rig.warnings.some((w) => /【引导配对码】/.test(w)),
-      '引导态铸造 bootstrap 码（stderr 双写展示，绑定表非空后不再铸）')
+      '引导态铸造 bootstrap 码（v0.8.7 起走 0600 文件交付，不再 stderr 印码面）')
+    // v0.8.7 B1（LEAK-2）：码面落 0600 文件，warn 只带路径
+    const codePath = join(dir, 'bootstrap-paircode.txt')
+    assert.ok(existsSync(codePath), '引导态必须写出引导码文件')
+    const code = readFileSync(codePath, 'utf8').trim()
+    for (const line of rig.warnings) {
+      assert.ok(!line.includes(code), `码面不得出现在 warn/stderr（LEAK-2 回归）：${line}`)
+    }
+  } finally {
+    await rig.cleanup()
+  }
+})
+
+test('v0.8.7 B1 引导码文件终态删除：管理台撤销 bootstrap 码 → onAudit 钩子删掉码文件（A2）', async () => {
+  const dir = tempDir({ 'wxpusher:account': { appToken: 'AT_revoke' } })
+  const rig = bootCtx()
+  const port = await freePort()
+  try {
+    apply(rig.ctx, {
+      channels: [{ type: 'webhook', url: 'http://127.0.0.1:1/hook' }],
+      inbound: { stateDir: dir },
+      admin: { enabled: true, port, token: 'revoke-tok' },
+    })
+    assert.ok(await waitHttp(port), '前置：管理台就绪')
+    const codePath = join(dir, 'bootstrap-paircode.txt')
+    assert.ok(existsSync(codePath), '前置：引导态码文件存在')
+    // 经真 HTTP 面拿在铸 bootstrap 码 id（脱敏视图，无码面），再撤销
+    const members = await (await authGet(port, '/api/members', 'revoke-tok')).json()
+    const bootstrapCode = members.pairingCodes.find((entry) => entry.origin === 'bootstrap')
+    assert.ok(bootstrapCode !== undefined, `管理台应看到在铸引导码（实际：${JSON.stringify(members.pairingCodes)}）`)
+    assert.ok(!JSON.stringify(members).includes(readFileSync(codePath, 'utf8').trim()),
+      '管理台 API 响应绝不含码面（只有哈希前缀 id）')
+    const revoked = await fetch(`http://127.0.0.1:${port}/api/pairing/${bootstrapCode.id}`, {
+      method: 'DELETE', headers: { Authorization: 'Bearer revoke-tok' },
+    })
+    assert.equal(revoked.status, 200, '撤销应成功')
+    assert.ok(!existsSync(codePath), '撤销后码文件必须被 onAudit 钩子删除（不留码面残渣）')
   } finally {
     await rig.cleanup()
   }

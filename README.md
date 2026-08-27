@@ -13,18 +13,25 @@
 ![Channels](https://img.shields.io/badge/channels-27-00B4D8?style=flat-square)
 
 ![npm version](https://img.shields.io/npm/v/dsh-notifier?style=flat-square&logo=npm&logoColor=white)
-![tests](https://img.shields.io/badge/tests-846-brightgreen?style=flat-square)
+![tests](https://img.shields.io/badge/tests-1352-brightgreen?style=flat-square)
 ![license](https://img.shields.io/badge/license-MIT-brightgreen?style=flat-square)
 ![awesome-dsh-plugin](https://img.shields.io/badge/awesome--dsh--plugin-listed-00B4D8?style=flat-square)
 ![omdsh workshop](https://img.shields.io/badge/omdsh-workshop-7C3AED?style=flat-square)
+[![dshfind](https://dshfind.com/api/badge/THEWOLFWALKER/dsh-notifier?lang=en)](https://dshfind.com/en/plugins/THEWOLFWALKER/dsh-notifier?ref=badge)
+[![dshfind downloads](https://dshfind.com/api/badge/THEWOLFWALKER/dsh-notifier?metric=downloads&lang=en)](https://dshfind.com/en/plugins/THEWOLFWALKER/dsh-notifier?ref=badge)
+[![dshfind plugin card](https://dshfind.com/api/card/THEWOLFWALKER/dsh-notifier?lang=en)](https://dshfind.com/en/plugins/THEWOLFWALKER/dsh-notifier?ref=badge)
 
 ![never miss](https://img.shields.io/badge/never%20miss-a%20turn-00BFFF?style=flat-square)
 ![silence](https://img.shields.io/badge/silence%20never-approves-9C27B0?style=flat-square)
 ![push](https://img.shields.io/badge/push%20it-real%20good-FF4081?style=flat-square)
 
-Unified notification push plugin for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH) — one minimal `notify()` API in front, 27 channels behind.
+Package metadata: `dsh-notifier@0.9.0` · 1352 automated contract tests (1351 pass + 1 skip) · MIT licensed.
 
-Your agent and the harness itself both push through it: session events (`turn/end` · `approval/asked` · `agent/error`) auto-notify, the model calls a `notify` tool directly, and six inbound channels bring approvals and conversations back from your phone. v0.3 adds a local web console and multi-agent routing; v0.4 adds native desktop notifications; v0.5 turns your phone into a command center — long-task heartbeats, stall alerts, and a stop button riding the notification itself; v0.7 upgrades "who counts as family" from opaque YAML strings into a runtime identity system — pairing codes, composite-key bindings, and a members page in the admin console — all with zero runtime dependencies.
+Bring your [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) agent to the places you already use. dsh-notifier puts one minimal `notify()` API in front of 27 channels, then adds phone-friendly approvals, questions, session controls, and a calm local console — with no second runtime to deploy.
+
+[Get started](docs/guide.md) · [Upgrade guide](docs/upgrade-guide.en.md) · [Plugin integration](PLUGINS.md)
+
+Your agent and the harness itself both push through it: session events (`turn/end` · `approval/asked` · `agent/error`) auto-notify, the model calls a `notify` tool directly, and six inbound channels bring approvals and conversations back from your phone. QQ control ingress is source-marked: C2C is single-chat, while GROUP, missing `chatType`, and unknown source metadata fail closed; the conversation `routeUnsafe` bypass is blocked. v0.3 adds a local web console and multi-agent routing; v0.4 adds native desktop notifications; v0.5 turns your phone into a command center — long-task heartbeats, stall alerts, and a stop button riding the notification itself; v0.7 upgrades "who counts as family" from opaque YAML strings into a runtime identity system — pairing codes, composite-key bindings, and a members page in the admin console; v0.8 lets the agent ask you multiple-choice questions straight from your phone (`ask_user`: option cards + numbered-reply fallback, timeout never fabricates an answer) — all with zero runtime dependencies.
 
 ## How it works
 
@@ -33,14 +40,14 @@ DSH agent ──notify() tool─────────┐
                                   ├─▶ notifier core ─▶ 27 channels (IM webhooks / push apps / China apps)
 DSH session events ──auto push────┘   level routing · tiered retries · segmentation · anti-disturb · ledger
                                       heartbeat ⏱ / stall ⚠ (v0.5) ──▶ cards with a ⏹ stop button
-your phone ──6 inbound channels───▶   remote approval (buttons · reply 1/2) · remote conversation (followup/inject/steer)
+your phone ──6 inbound channels───▶   remote approval (buttons · reply 1/2) · remote conversation (followup/inject/steer) · remote questions (option cards, v0.8)
 ```
 
 Every message resolves through one chain — level (`timeSensitive` / `active` / `passive`) → routing (multi-agent matrix) → channel adapter (`resolve(cfg)` + `send(msg)`). Two trigger lines feed it: the harness auto-pushes session events (debounced, deduped), and the model calls the `notify` tool. Six inbound channels ride the same core in reverse for approvals and conversation — and since v0.5 the outbound line reports back too: long-running turns send heartbeats, silent turns raise stall alerts, and Telegram/Feishu notifications carry a one-click stop action.
 
 ## Screenshots
 
-The web admin console (`admin.enabled: true`, loopback only, mobile-friendly since v0.5) — all six pages (demo data):
+The web admin console (`admin.enabled: true`, loopback only, mobile-friendly since v0.5) — all six pages (demo data). The browser opens in personal mode: first configure, pair, test, then use; bindings and sessions stay behind an explicit advanced-settings toggle. Open the exact loopback URL printed by the `Web 管理台已就绪` startup line instead of guessing port `8104`:
 
 | Page | What it shows |
 |---|---|
@@ -92,13 +99,14 @@ That's it. `turn/end`, `approval/asked`, and `agent/error` events now reach ever
 | **Dual trigger lines** | Auto status push (`turn/end` · `approval/asked` · `agent/error`) plus a model-facing `notify` tool. |
 | **27 channels** | Telegram, Slack, Discord, Feishu, DingTalk, WeCom, WeCom App, QQ bot, OneBot, Teams, Mattermost, Google Chat, Bark, Pushover, PushDeer, Chanify, ntfy, Gotify, iGot, WxPusher, PushPlus, Server酱, Qmsg, 息知, webhook, bell, desktop — zero runtime deps. |
 | **Level routing** | `timeSensitive` / `active` / `passive` → per-channel delivery semantics (silent push, priority headers, @-mentions) with tiered retries. |
-| **Remote approval** | Answer approvals from your phone — Telegram buttons, Feishu cards, QQ / WxPusher / WeChat iLink / DingTalk reply `1`/`2`. Silence never approves. |
+| **Remote approval** | Answer approvals from your phone — Telegram/Feishu cards, QQ native buttons in 1:1 chats, and numbered-reply fallback on channels without cards. Group destinations use a safe text fallback. Silence never approves. |
 | **Remote conversation** | Chat with your agent: plain text → `followup`/`inject`, `!` prefix steers mid-turn, a merge window reassembles mobile typing. |
+| **Remote questions** (v0.8.0) | The model asks you multiple-choice questions on your phone: 1-4 questions × 2-5 options (multi-select supported). Option cards on Feishu/Telegram and QQ 1:1 chats; other destinations use a safe numbered-reply fallback. Out-of-range answers get a re-prompt without voiding the question; timeout never fabricates an answer. Same trust chain as approvals (HMAC one-time tokens, first-arrival wins, 30s/60s escalation). The loopback Web/admin console provides a masked pending-question list with choose/reject through Control Core. |
 | **Mobile command center** (v0.5.0) | Long-task heartbeats (default 15min start) and stall alerts (default 10min no events); Telegram/Feishu cards carry a ⏹ stop button (HMAC one-time tokens, same trust chain as approvals); `/quiet`·`/unquiet` mute or restore a session's pushes from your phone. |
-| **Open event source** (v0.6.0) | Other plugins push via the `notifier` service (`ctx.inject(['notifier'], …)` — shared config, routing, ledger, rate limits, flush) and subscribe to every broadcast via `ctx.on('dsh-notifier/sent')`. Per-source rate limiting (10/min), 20k-codepoint clamps, never-reject API; consumer contract in [PLUGINS.md](PLUGINS.md). |
-| **Identity system** (v0.7.0) | "Who can drive inbound" becomes a runtime object: pairing codes (`/pair <code>` in any DM; first redeemer becomes owner), composite-key bindings (`channel:userId` — a Telegram-bound id no longer admits a Feishu message), role management (last owner can't be deleted or demoted), and rejection receipts that tell unbound senders how to get in. Empty whitelist boots into a guided state with a bootstrap pairing code on stderr instead of refusing to start. **Full setup-to-daily-use walkthrough: [docs/guide.md](docs/guide.md) (中文)**. |
+| **Open event source** (v0.6.0) | Other plugins push via the `notifier` service (`ctx.inject(['notifier'], …)` — shared config, routing, ledger, rate limits, flush) and subscribe to delivery metadata via `ctx.on('dsh-notifier/sent')`. Broadcast and directed sends each produce one audited event; message text is never exposed. Per-source rate limiting (10/min), 20k-codepoint clamps, never-reject API; consumer contract in [PLUGINS.md](PLUGINS.md). |
+| **Identity system** (v0.7.0) | "Who can drive inbound" becomes a runtime object: pairing codes (`/pair <code>` in any DM; first redeemer becomes owner), composite-key bindings (`channel:userId` — a Telegram-bound id no longer admits a Feishu message), role management (last owner can't be deleted or demoted), and rejection receipts that tell unbound senders how to get in. Empty whitelist boots into a guided state with a bootstrap pairing code written to a local 0600 file (`<stateDir>/bootstrap-paircode.txt`; logs print the path, never the code) instead of refusing to start. **Full setup-to-daily-use walkthrough: [docs/guide.md](docs/guide.md) (中文)**. |
 | **Multi-agent routing** (v0.3.2) | Bidirectional agent × channel matrix; sessions auto-register; `/agent` command family + `route.mjs` CLI. |
-| **Web admin console** (v0.3.3) | 127.0.0.1-only + Bearer token; six pages — dashboard / notify / members (v0.7) / bindings / sessions / channels; responsive ≤768px layout (v0.5). |
+| **Web admin console** (v0.3.3) | 127.0.0.1-only + Bearer token; six pages — dashboard / notify / members (v0.7) / bindings / sessions / channels; responsive ≤768px layout (v0.5) with personal-first onboarding and progressive disclosure. |
 | **QR login** (v0.3.1) | One-command official scan authorization for QQ / DingTalk / Feishu (WeChat keeps iLink). |
 | **Desktop notifications** (v0.4.0) | Native `desktop` channel (`osascript` / `notify-send` / PowerShell toast) + admin SSE live stream. |
 | **Long-message segmentation** | Over-budget messages split into ordered `（i/n）` segments. |
@@ -136,7 +144,7 @@ Optional blocks each opt in under their own key:
 | `approval` | Timeout, numbered reply, escalation | `mode: answer` |
 | `conversation` | Merge window, steer prefix | `mergeWindowMs: 1500` |
 | `route` | Multi-agent routing | `sessionTtlHours: 24` |
-| `admin` | Web console | `enabled: true, port: 8104` |
+| `admin` | Web console | `enabled: true` (optional `port`; use the startup URL) |
 | `events` / `keywords` / `graceSeconds` | Anti-disturb gates | `exclude: ["heartbeat"]` |
 | `events.turnStart` / `longRunning` / `stall` | v0.5 status line | `longRunning: { firstAfterMs: 900000 }` |
 | `digest` | Ledger + daily summary | `enabled: true` |
@@ -179,7 +187,7 @@ v0.5 status line defaults: `longRunning` and `stall` are **on** (15min first hea
 
 <!-- CHANNEL-MATRIX-END -->
 
-Six channels also open inbound (remote approval + conversation): `telegram`, `feishu`, `qq-bot`, `wxpusher`, `wechat`, `dingtalk` — long-lived connections or long polling, so no public IP is required (only the WxPusher callback needs one). Since v0.5, telegram and feishu additionally carry notification action cards (stop button). Since v0.7, every inbound channel answers `/help` `/whoami` `/pair` `/unpair` registration commands, and outbound card targets resolve through a three-tier priority (per-channel bindings → channel config lists → global fallback) with per-channel id-shape guards.
+Six channels also open inbound (remote approval + conversation): `telegram`, `feishu`, `qq-bot`, `wxpusher`, `wechat`, `dingtalk` — long-lived connections or long polling, so no public IP is required (only the WxPusher callback needs one). Telegram/Feishu and QQ C2C single chats use native control buttons; other targets receive safe text or numbered-reply fallbacks, and the conversation `routeUnsafe` path cannot bypass the source-safety gate. QQ, WeChat iLink, and DingTalk image-message paths are wired; file receiving/sending follows the capability matrix. The loopback Web/admin console is the single control surface and offers a masked list of pending multi-choice questions plus choose/reject settlement through the shared Control Core. Since v0.5, telegram and feishu additionally carry notification action cards (stop button). Since v0.7, every inbound channel answers `/help` `/whoami` `/pair` `/unpair` registration commands, and outbound card targets resolve through a three-tier priority (per-channel bindings → channel config lists → global fallback) with per-channel id-shape guards.
 
 ## Architecture
 
@@ -196,11 +204,12 @@ src/
   inbound/            six inbound channels (telegram/feishu/qq/wxpusher/wechat/dingtalk) + v0.7 identity stack
                       (identity.mjs bindings · pairing.mjs codes · commands.mjs registration · target-guard.mjs resolution)
   approval/           HMAC one-time tokens, dedup, escalation
+  questions/          v0.8 ask_user remote questions (option cards + numbered fallback, rides the approval stack)
   admin/              web console (6 pages, SSE, bearer auth, mobile layout)
   ledger.mjs          JSONL ledger + daily digest
   rules.mjs           anti-disturb gates (event / keyword / grace)
 scripts/              channel-login.mjs · test-channel.mjs · route.mjs · gen-channel-matrix.mjs
-test/                 846 tests (node --test)
+test/                 1352 tests (1351 pass + 1 skip) in the 0.9.0 release line; historical 0.8.6 package carried 909 tests.
 ```
 
 Design rules: pure ESM (`.mjs`), zero runtime dependencies, a declarative spec engine for the bulk of channels, thin honest adapters, no build step.
@@ -208,7 +217,7 @@ Design rules: pure ESM (`.mjs`), zero runtime dependencies, a declarative spec e
 ## Development
 
 ```bash
-npm test          # node --test, 846 cases
+npm test          # 0.9.0 release line: 1352 (1351 pass + 1 skip)
 ```
 
 To add a channel: implement the adapter interface (`resolve(cfg)` + `send(msg)`) in `src/adapters/` and register it in `src/config.mjs`; the channel matrix above self-regenerates via `node scripts/gen-channel-matrix.mjs`.

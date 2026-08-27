@@ -1,0 +1,22 @@
+{
+  "source": {
+    "url": "https://bot.q.qq.com/wiki/develop/api-v2/autogen/event/c2c_message_create.html",
+    "title": "单聊消息事件",
+    "queried": "2026-08-27",
+    "evidence": "Official event example with id, author.user_openid, content, message_type, message_scene"
+  },
+  "inbound": {
+    "id": "ROBOT1.0_redacted",
+    "author": { "id": "USER_OPENID_REDACTED", "user_openid": "USER_OPENID_REDACTED", "bot": false },
+    "content": "你好",
+    "message_type": 0,
+    "message_scene": { "source": "default", "ext": ["msg_idx=REDACTED"] },
+    "timestamp": "2026-07-21T10:00:00+08:00"
+  },
+  "outbound": {
+    "method": "POST",
+    "path": "/v2/users/{user_openid}/messages",
+    "body": { "msg_type": 0, "content": "收到", "msg_id": "ROBOT1.0_redacted", "msg_seq": 1 }
+  },
+  "notes": ["Official sample identifiers/URLs replaced with REDACTED placeholders", "Do not use as real credentials"]
+}

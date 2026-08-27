@@ -23,7 +23,10 @@ const VALID_ORIGINS = new Set(['migrated', 'paired', 'learned', 'confirmed'])
 /** 归一化单条绑定记录（读盘防御：坏字段回退默认，坏形状整条丢弃）。 */
 function normalizeBinding(raw, fallbackKey) {
   if (raw === null || typeof raw !== 'object') return null
-  const [channel, userId] = String(fallbackKey ?? '').split(':')
+  const keyRaw = String(fallbackKey ?? '')
+  const colon = keyRaw.indexOf(':')
+  const channel = colon > 0 ? keyRaw.slice(0, colon) : ''
+  const userId = colon > 0 ? keyRaw.slice(colon + 1) : ''
   const record = {
     channel: typeof raw.channel === 'string' && raw.channel !== '' ? raw.channel : (VALID_CHANNELS.has(channel) ? channel : ''),
     userId: typeof raw.userId === 'string' && raw.userId !== '' ? raw.userId : (userId ?? ''),
@@ -81,10 +84,13 @@ export function createIdentity(options = {}) {
     const now = Date.now()
     for (const [key, value] of Object.entries(raw)) {
       if (value === null || typeof value !== 'object') continue
-      // TTL 清扫：超期条目跳过（下面统一写回，避免逐条写盘）
+      // TTL 清扫：超期条目跳过（下面统一写回）
       if (typeof value.at === 'number' && now - value.at > PENDING_TTL_MS) { expired += 1; continue }
-      const [channel, userId] = key.split(':')
-      if (!VALID_CHANNELS.has(channel) || userId === undefined || userId === '') continue
+      // C3：复合键按第一个冒号切分，含冒号的 userId 不得被截断（与 normalizeBinding/parseMemberKey 对齐）
+      const colon = key.indexOf(':')
+      const channel = colon > 0 ? key.slice(0, colon) : ''
+      const userId = colon > 0 ? key.slice(colon + 1) : ''
+      if (!VALID_CHANNELS.has(channel) || userId === '' || userId.includes(':')) continue
       out[key] = {
         channel,
         userId,
@@ -198,6 +204,10 @@ export function createIdentity(options = {}) {
       if (!VALID_CHANNELS.has(channel)) return { ok: false, reason: 'invalid-channel' }
       const uid = String(userId ?? '').trim()
       if (uid === '' || uid.length > 128) return { ok: false, reason: 'invalid-user' }
+      if (uid.includes(':')) {
+        warn(`拒绝含冒号的 userId 绑定（复合键截断风险）：${channel}:${uid.slice(0, 32)}`)
+        return { ok: false, reason: 'invalid-user' }
+      }
       const table = readBindings()
       const key = `${channel}:${uid}`
       const existing = table[key]
@@ -247,6 +257,10 @@ export function createIdentity(options = {}) {
       if (!VALID_CHANNELS.has(channel)) return { ok: false, reason: 'invalid-channel' }
       const uid = String(userId ?? '').trim()
       if (uid === '' || uid.length > 128) return { ok: false, reason: 'invalid-user' }
+      if (uid.includes(':')) {
+        warn(`拒绝含冒号的 userId 待确认绑定（复合键截断风险）：${channel}:${uid.slice(0, 32)}`)
+        return { ok: false, reason: 'invalid-user' }
+      }
       const table = readBindings()
       if (table[`${channel}:${uid}`] !== undefined) return { ok: false, reason: 'already-bound' }
       const pending = readPending()

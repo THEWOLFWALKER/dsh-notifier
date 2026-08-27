@@ -1,0 +1,25 @@
+{
+  "source": {
+    "url": "https://core.telegram.org/bots/api",
+    "title": "Telegram Bot API",
+    "queried": "2026-08-27",
+    "evidence": "Update has update_id and optional message/callback_query; sendMessage text is 1-4096 characters; callback_data is 1-64 bytes"
+  },
+  "inbound": {
+    "update_id": 100000001,
+    "message": {
+      "message_id": 42,
+      "from": { "id": 123456789, "is_bot": false },
+      "chat": { "id": -1001234567890, "type": "supergroup" },
+      "text": "approve 1"
+    }
+  },
+  "callback": {
+    "id": "CALLBACK_REDACTED",
+    "from": { "id": 123456789, "is_bot": false },
+    "message": { "message_id": 43, "chat": { "id": -1001234567890, "type": "supergroup" } },
+    "data": "ap:approve:KEY_REDACTED:TOKEN_REDACTED"
+  },
+  "outbound": { "method": "sendMessage", "body": { "chat_id": -1001234567890, "text": "收到", "disable_notification": true } },
+  "notes": ["IDs/token are synthetic or redacted; fixture is shape-only"]
+}

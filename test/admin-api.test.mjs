@@ -15,6 +15,7 @@ import { join } from 'node:path'
 
 import { createAdminApi, ApiError, INBOUND_CHANNELS } from '../src/admin/api.mjs'
 import { createAgentRouter } from '../src/routing/agent-router.mjs'
+import { createStore } from '../src/inbound/store.mjs'
 import { CHANNEL_TYPES } from '../src/config.mjs'
 
 /** 审计文件名（契约：<stateDir>/admin-audit.jsonl）。 */
@@ -56,6 +57,9 @@ function makeApi({
   registry = makeRegistry(),
   channelTest = undefined,
   scanHandlers = undefined,
+  identity = undefined,
+  pairing = undefined,
+  guidedProbe = undefined,
   storeOverrides = {},
 } = {}) {
   const store = makeStore(state, storeOverrides)
@@ -69,6 +73,9 @@ function makeApi({
     outboundConfigs,
     channelTest,
     scanHandlers,
+    identity,
+    pairing,
+    guidedProbe,
     stateDir,
   })
   return { api, store, router, stateDir }
@@ -160,6 +167,53 @@ test('overview：audit 取最近 20 条新在前', () => {
   assert.equal(audit.length, 20)
   assert.equal(audit[0].action, 'act-22') // 最新在前
   assert.equal(audit[19].action, 'act-3') // 截断到最近 20 条
+})
+
+// ———————— overview.members（Issue #10 UX 回归：总览成员计数与降级） ————————
+
+test('overview.members：identity 正常装配时返回 total/owners/guided，与 identity.list() 一致', () => {
+  const { api } = makeApi({
+    identity: {
+      list() {
+        return [
+          { channel: 'telegram', userId: 'u1', role: 'owner' },
+          { channel: 'feishu', userId: 'u2', role: 'member' },
+          { channel: 'qq', userId: 'u3', role: 'member' },
+        ]
+      },
+    },
+    guidedProbe: () => false,
+  })
+  const m = api.overview().members
+  assert.deepEqual(m, { total: 3, owners: 1, guided: false })
+})
+
+test('overview.members：identity 未装配（null / 未注入）时 total=0 owners=0 guided=true，不抛错', () => {
+  // 缺省 makeApi 不传 identity → createAdminApi 里 identity 默认 undefined
+  const { api } = makeApi()
+  const m = api.overview().members
+  assert.deepEqual(m, { total: 0, owners: 0, guided: true })
+})
+
+test('overview.members：identity.list 抛异常时降级为 0/guided，绝不击穿 overview', () => {
+  const { api } = makeApi({
+    identity: {
+      list() { throw new Error('store corrupted') },
+    },
+  })
+  let m
+  assert.doesNotThrow(() => { m = api.overview().members })
+  assert.equal(m.total, 0, '异常时 total 应降级为 0')
+  assert.equal(m.guided, true, '异常时 guided 应按引导态降级')
+})
+
+test('overview.members：空成员表 → guided=true，与成员页引导态口径一致', () => {
+  const { api } = makeApi({
+    identity: { list() { return [] } },
+    guidedProbe: () => true,
+  })
+  const m = api.overview().members
+  assert.deepEqual(m, { total: 0, owners: 0, guided: true })
 })
 
 // ———————— getBindings ————————
@@ -299,6 +353,33 @@ test('getSessions：resolved 实时注入（workspace 绑定层与 global 兜底
   assert.deepEqual(byId['s-2'].resolved, { channelTypes: ['telegram', 'bark'], quiet: false, source: 'global' })
 })
 
+test('getSessions：control 是安全脱敏摘要，绝不给原始标识符', () => {
+  const { api } = makeApi({
+    state: {
+      'route:sessions': {
+        's-1': {
+          workspace: 'proj', lastActiveAt: 1,
+          control: {
+            mode: 'team', owner: 'o-very-secret-id', approvalOwnerOnly: true,
+            approvalMembers: [{ channel: 'telegram', accountId: 'a-account', userId: 'u-very-secret' }],
+          },
+        },
+        's-2': { workspace: 'proj', lastActiveAt: 2, control: { owner: 'u1' } },
+      },
+    },
+  })
+  const byId = Object.fromEntries(api.getSessions().map((row) => [row.id, row]))
+  const c1 = byId['s-1'].control
+  assert.deepEqual(c1, { mode: 'team', approvalOwnerOnly: true, ownerConfigured: true, approvalMembersCount: 1 })
+  assert.equal('owner' in c1, false)           // 原始 owner id 不外泄
+  assert.equal('approvalMembers' in c1, false) // 原始成员三元组不外泄
+  const rawJson = JSON.stringify(byId)
+  assert.equal(rawJson.includes('o-very-secret-id'), false)
+  assert.equal(rawJson.includes('a-account'), false)
+  assert.equal(rawJson.includes('u-very-secret'), false)
+  assert.deepEqual(byId['s-2'].control, { ownerConfigured: true })
+})
+
 // ———————— patchSession ————————
 
 test('patchSession：写 diff 合并、返回新 outbound、追加审计', () => {
@@ -348,6 +429,105 @@ test('patchSession：null = 删该覆盖键（diff 清空后 outbound 键消失�
   const second = api.patchSession('s-1', { quiet: null })
   assert.equal(second.outbound, undefined) // diff 清空 → outbound 键移除
   assert.equal('outbound' in store.state['route:sessions']['s-1'], false)
+})
+
+// ———————— patchSessionControl（Stage 4） ————————
+
+test('patchSessionControl：写覆盖层、审计为脱敏摘要、返回也脱敏，字段级 null 删键', () => {
+  const { api, store } = makeApi({ state: { 'route:sessions': { 's-1': { workspace: 'p' } } } })
+  const result = api.patchSessionControl('s-1', {
+    mode: 'team', owner: 'o-secret', approvalOwnerOnly: true,
+    approvalMembers: [{ channel: 'telegram', accountId: 'a-acc', userId: 'u-secret' }],
+  })
+  assert.deepEqual(result, { id: 's-1', control: { mode: 'team', approvalOwnerOnly: true, ownerConfigured: true, approvalMembersCount: 1 } })
+  assert.equal('owner' in result.control, false)
+  assert.equal('approvalMembers' in result.control, false)
+  // 真正落盘的是规范覆盖层，不含来源字段
+  const persisted = store.state['route:sessions']['s-1'].control
+  assert.deepEqual(persisted, {
+    mode: 'team', owner: 'o-secret', approvalOwnerOnly: true,
+    approvalMembers: [{ channel: 'telegram', accountId: 'a-acc', userId: 'u-secret' }],
+  })
+  // 审计 action 与脱敏 detail
+  const audit = api.getAudit()
+  assert.equal(audit.length, 1)
+  assert.equal(audit[0].action, 'setSessionControl')
+  const rawAudit = JSON.stringify(audit)
+  assert.equal(rawAudit.includes('o-secret'), false)
+  assert.equal(rawAudit.includes('u-secret'), false)
+  // 字段级 null 删键：只清 owner
+  const partial = api.patchSessionControl('s-1', { owner: null })
+  assert.deepEqual(partial.control, { mode: 'team', approvalOwnerOnly: true, approvalMembersCount: 1 })
+  assert.equal('owner' in store.state['route:sessions']['s-1'].control, false)
+})
+
+test('patchSessionControl：全部字段 null 清空后 control 键移除并另一字段独立', () => {
+  const { api, store } = makeApi({ state: { 'route:sessions': { 's-1': { workspace: 'p', control: { owner: 'u1' } } } } })
+  const result = api.patchSessionControl('s-1', { owner: null })
+  assert.equal(result.id, 's-1')
+  assert.equal(result.control, undefined) // 无剩余覆盖层 → 摘要 undefined
+  assert.equal('control' in store.state['route:sessions']['s-1'], false)
+})
+
+test('patchSessionControl 422：来源字段 / 未知字段 / 保留键 / 越界 / 通配 / 空 diff 全拒', () => {
+  const { api } = makeApi({ state: { 'route:sessions': { 's-1': { workspace: 'p' } } } })
+  for (const key of ['channel', 'accountId', 'userId', 'chatId', 'sessionId', 'policyVersion', 'expiresAt', 'revoked']) {
+    assert.throws(() => api.patchSessionControl('s-1', { [key]: 'x' }), apiErrorOf(422), key)
+  }
+  assert.throws(() => api.patchSessionControl('s-1', { garbage: 1 }), apiErrorOf(422))       // 未知字段
+  assert.throws(() => api.patchSessionControl('s-1', { __proto__: {} }), apiErrorOf(422))    // 保留键
+  assert.throws(() => api.patchSessionControl('s-1', { constructor: 1 }), apiErrorOf(422))   // 保留键
+  assert.throws(() => api.patchSessionControl('s-1', { mode: 'bogus' }), apiErrorOf(422))
+  assert.throws(() => api.patchSessionControl('s-1', { owner: '' }), apiErrorOf(422))
+  assert.throws(() => api.patchSessionControl('s-1', { owner: '*harmless' }), apiErrorOf(422)) // 含 * → 通配
+  assert.throws(() => api.patchSessionControl('s-1', { owner: 'x'.repeat(129) }), apiErrorOf(422))
+  assert.throws(() => api.patchSessionControl('s-1', { approvalOwnerOnly: 'yes' }), apiErrorOf(422))
+  assert.throws(() => api.patchSessionControl('s-1', { approvalMembers: 'not-array' }), apiErrorOf(422))
+  assert.throws(() => api.patchSessionControl('s-1', { approvalMembers: [
+    { channel: 'telegram', accountId: 'a1', userId: 'u1', extra: 1 }, // 项内未知键
+  ] }), apiErrorOf(422))
+  assert.throws(() => api.patchSessionControl('s-1', { approvalMembers: [{}] }), apiErrorOf(422)) // 项缺字段
+  assert.throws(() => api.patchSessionControl('s-1', { approvalMembers: [
+    { channel: '*', accountId: 'a1', userId: 'u1' },
+  ] }), apiErrorOf(422)) // 项内通配
+  const many = []
+  for (let i = 0; i < 65; i++) many.push({ channel: 'telegram', accountId: 'a1', userId: `u${i}` })
+  assert.throws(() => api.patchSessionControl('s-1', { approvalMembers: many }), apiErrorOf(422)) // 超 64
+  assert.throws(() => api.patchSessionControl('s-1', {}), apiErrorOf(422))                       // 空 diff
+  assert.throws(() => api.patchSessionControl('', { owner: 'u1' }), apiErrorOf(422))             // 空 id
+  assert.throws(() => api.patchSessionControl('s-1', 'not-obj'), apiErrorOf(422))                // diff 非对象
+})
+
+test('patchSessionControl：从未建档会话 → 404；registry 有记录 → 不 404；store 故障 → 500', () => {
+  const { api } = makeApi({ state: { 'route:sessions': { 's-1': { workspace: 'p' } } } })
+  assert.throws(() => api.patchSessionControl('nope', { owner: 'u1' }), apiErrorOf(404))
+  const registry = makeRegistry({ records: { 's-9': { workspace: 'p' } } })
+  const api2 = makeApi({ registry }).api
+  assert.deepEqual(api2.patchSessionControl('s-9', { owner: 'u1' }), { id: 's-9', control: { ownerConfigured: true } })
+  // store set 抛错 → 路由写入失败 → 500
+  const { api: api3 } = makeApi({
+    state: { 'route:sessions': { 's-1': { workspace: 'p' } } },
+    storeOverrides: { set: () => { throw new Error('disk full') } },
+  })
+  assert.throws(() => api3.patchSessionControl('s-1', { owner: 'u1' }), apiErrorOf(500))
+})
+
+test('patchSessionControl：真实 createStore 落盘失败 → 500（真实写路径，非假 setter 抛错）', () => {
+  // 对抗评审 P1-2：不能只测「假 setter 抛错」——真实 createStore 过去会把磁盘失败吞掉并
+  // 当成功返回 200。这里用真实 createStore + 真实 router：父路径被常规文件占用 → durable 写
+  // 失败显式返回 false → router.safeSet 视为失败 → admin 报 500，重启即丢不再被谎报为成功。
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-admin-fail-'))
+  const blocker = join(dir, 'blocker')
+  writeFileSync(blocker, 'i am a regular file')
+  const store = createStore(join(blocker, 'state.json')) // 父级普通文件 → 落盘必然失败
+  const router = createAgentRouter({ store, agentsList: () => [] })
+  const registry = makeRegistry({ records: { 's-1': { workspace: 'p' } } }) // registry 建档 → 不 404
+  const stateDir = mkdtempSync(join(tmpdir(), 'dsh-admin-audit-'))
+  const api = createAdminApi({
+    router, registry, store, stateDir,
+    channelsEnabled: () => [], outboundConfigs: undefined,
+  })
+  assert.throws(() => api.patchSessionControl('s-1', { owner: 'u1' }), apiErrorOf(500))
 })
 
 // ———————— getChannels / putChannel ————————
@@ -429,6 +609,18 @@ test('putChannel：双域通道写机器人凭证键（appId/appKey）合法（U
   const { api, store } = makeApi()
   assert.deepEqual(api.putChannel('dingtalk', { appKey: 'k', appSecret: 's' }), { type: 'dingtalk', saved: true })
   assert.deepEqual(store.get('dingtalk:account'), { appKey: 'k', appSecret: 's' })
+})
+
+test('wxpusher accountId：管理台允许非密账号标识并与既有凭证合并', () => {
+  const { api, store } = makeApi({ state: { 'wxpusher:account': { appToken: 'tok', uids: ['u1'] } } })
+  const rows = api.getChannels()
+  const outbound = rows.find((row) => row.type === 'wxpusher' && row.direction === 'outbound')
+  const inbound = rows.find((row) => row.type === 'wxpusher' && row.direction === 'inbound')
+  assert.equal(outbound.fields.accountId.secret, false)
+  assert.equal(inbound.fields.accountId.required, false)
+  assert.match(inbound.fields.accountId.desc, /多账号/)
+  assert.deepEqual(api.putChannel('wxpusher', { accountId: 'primary' }), { type: 'wxpusher', saved: true })
+  assert.deepEqual(store.get('wxpusher:account'), { appToken: 'tok', uids: ['u1'], accountId: 'primary' })
 })
 
 test('putChannel：字段级合并（patch 语义）——只提交部分字段，其余既有键保留不丢失', () => {

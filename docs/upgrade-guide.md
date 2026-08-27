@@ -83,7 +83,7 @@ npm view dsh-notifier version
 残留最常见的来源：装包时用了 `file:` 本地路径，或手动拷贝文件覆盖过
 `node_modules/dsh-notifier`。本地源码一变，node_modules 里的包就**静默偏离 registry
 发布版**——长相和官方包不一致，测试结果不能代表发布版。这个环境差曾经制造过
-「`ask_user` 工具名为空」的假象（详见交接文档 `17-toolname-bug.md`）。
+「`ask_user` 工具名为空」的假象；先按本节的版本、解析源和重启检查排除旧包或残留文件，再判断是否为代码问题。
 
 1. 换成 registry 版重装覆盖：
 

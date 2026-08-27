@@ -3,7 +3,7 @@
 // 由 src/admin/server.mjs 以 200 text/html 返回本串；无任何外部资源引用（无外链脚本 /
 // link / CSS url()），系统字体栈。四标签页：Dashboard（通道健康矩阵/会话数/审计）、
 // 绑定矩阵（route:agents + route:channels）、会话（route:sessions 出站覆盖 diff）、通道（凭证+测试+扫码授权）。
-// 鉴权：Bearer token（用户首次输入，localStorage 持久化，401 清除重询）；错误形状 { error }。
+// 鉴权：Bearer token（用户首次输入，只保存在浏览器会话；401 清除重询）；错误形状 { error }。
 // 注意：内嵌脚本刻意不用模板字符串与反斜杠，避免与外层模板字面量转义纠缠。
 export const ADMIN_UI_HTML = `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -23,6 +23,8 @@ header { display: flex; align-items: center; gap: 12px; padding: 10px 18px; back
 header h1 { font-size: 16px; margin: 0; font-weight: 600; }
 header h1 small { color: var(--muted); font-weight: 400; margin-left: 6px; }
 #loadState { color: var(--accent); }
+#entryHint { color: var(--muted); font-size: 12px; min-width: 0; overflow-wrap: anywhere; flex: 1 1 220px; }
+#entryUrl { color: var(--text); }
 #tokenState { margin-left: auto; color: var(--muted); border-style: dashed; }
 nav { display: flex; gap: 6px; padding: 10px 18px 0; flex-wrap: wrap; }
 main { padding: 14px 18px 48px; max-width: 1240px; }
@@ -91,10 +93,30 @@ label.fld input { flex: 1; }
 .badge.ok { color: var(--ok); border-color: var(--ok); }
 .badge.none { color: var(--muted); }
 .qr .mono { background: var(--panel2); padding: 3px 8px; border-radius: 6px; word-break: break-all; }
+/* 首次使用引导卡（Issue #10：Dashboard 首屏 UX） */
+.onboard-steps { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 6px; }
+.onboard-step { display: flex; gap: 12px; flex: 1 1 260px; padding: 10px 0; }
+.onboard-num { flex: 0 0 32px; height: 32px; border-radius: 50%; background: var(--accent);
+  color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 600; font-size: 15px; }
+.onboard-body { flex: 1; min-width: 0; }
+.onboard-title { font-weight: 600; margin-bottom: 4px; }
+.onboard-desc { color: var(--muted); font-size: 13px; margin-bottom: 8px; line-height: 1.55; }
+.onboard-step.done .onboard-num { background: var(--ok); }
+.onboard-step.done .onboard-title { color: var(--muted); text-decoration: line-through; }
+.muted-btn { background: transparent; border: 1px solid var(--border); color: var(--muted); font-size: 12px; padding: 3px 10px; }
+.first-run-state { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin: 0 0 14px; }
+.first-run-state .state-node { display: inline-flex; gap: 5px; align-items: center; padding: 4px 8px; border: 1px solid var(--border); border-radius: 6px; color: var(--muted); font-size: 12px; }
+.first-run-state .state-node.current { color: var(--accent); border-color: var(--accent); }
+.first-run-state .state-node.done { color: var(--ok); border-color: var(--ok); }
+.first-run-state .state-arrow { color: var(--muted); }
+.first-visit-hint { border-left: 3px solid var(--accent); }
+.first-visit-hint .card-head { cursor: default; }
+
 /* v0.5 特性 D：移动端适配（≤768px 单列 / 导航横滚 / 宽表横滚 / 触控目标 ≥44px）。
    纯 CSS 增量，零逻辑变更零构建；桌面端（>768px）逐字节不变。 */
 @media (max-width: 768px) {
   header { flex-wrap: wrap; padding: 10px 12px; gap: 8px; }
+  #entryHint { flex-basis: 100%; order: 2; }
   main { padding: 12px 10px 40px; }
   nav { flex-wrap: nowrap; overflow-x: auto; padding: 8px 10px 0; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
   nav::-webkit-scrollbar { display: none; }
@@ -110,32 +132,108 @@ label.fld input { flex: 1; }
 </head>
 <body>
 <header>
-  <h1>dsh-notifier 管理台<small>v0.8.5</small></h1>
-  <span id="loadState"></span>
+  <h1>dsh-notifier 管理台<small>v0.9.0</small></h1>
+  <span id="loadState" role="status" aria-live="polite"></span>
+  <span id="entryHint">仅本机回环 · 当前入口：<code id="entryUrl"></code></span>
+  <button id="btnCopyEntry" title="复制当前管理台地址">复制地址</button>
   <button id="tokenState" title="点击输入或更换访问 token"></button>
+  <button id="btnLogout" title="清除此浏览器会话中的访问 token">退出</button>
   <button id="btnRefresh">刷新</button>
 </header>
 <nav>
   <button class="tabbtn active" data-tab="dashboard">Dashboard</button>
-  <button class="tabbtn" data-tab="bindings">绑定矩阵</button>
-  <button class="tabbtn" data-tab="sessions">会话</button>
+  <button class="tabbtn advanced-tab" data-tab="bindings" hidden>绑定矩阵</button>
+  <button class="tabbtn advanced-tab" data-tab="sessions" hidden>会话</button>
   <button class="tabbtn" data-tab="channels">通道</button>
   <button class="tabbtn" data-tab="members">成员</button>
   <button class="tabbtn" data-tab="notify">通知</button>
+  <button id="modeToggle" class="muted-btn" title="显示或隐藏高级会话与绑定设置">打开高级设置</button>
 </nav>
 <main>
   <div id="globalMsg" class="msg"></div>
 
   <section id="tab-dashboard" class="tabsec active">
+    <div id="firstVisitHint" class="card first-visit-hint">
+      <div class="card-head">
+        <span class="dot ok"></span><b>首次打开：先走个人模式</b>
+        <span class="badge none">无需先写 YAML</span>
+      </div>
+      <div class="card-body">
+        <p>这是仅本机可访问的管理台。地址已显示在顶部；服务启动时会在终端打印访问 token，点击右上角「未设置 token」输入即可（token 只保存在当前浏览器会话）。</p>
+        <div class="row">
+          <button id="btnFirstVisitToken" type="button">输入管理台 token</button>
+          <button class="tabbtn" data-tab="channels" type="button">配置通道 / 扫码授权 →</button>
+          <button class="tabbtn" data-tab="members" type="button">配对成员 →</button>
+        </div>
+        <p class="muted small">个人模式默认：observe + approve 已开启；converse 可按需开启；群聊控制默认关闭。绑定矩阵与会话覆盖等高级设置默认隐藏，完成基础配置后可点顶部「打开高级设置」。</p>
+        <p class="muted small">当前管理台入口：<code id="firstVisitEntryUrl"></code>（也可点顶部「复制地址」）</p>
+      </div>
+    </div>
+    <div id="firstRunState" class="first-run-state" aria-label="首次配置进度">
+      <span class="state-node current" data-state="unconfigured">未配置</span><span class="state-arrow">→</span>
+      <span class="state-node" data-state="paired">已配对</span><span class="state-arrow">→</span>
+      <span class="state-node" data-state="tested">测试通知</span><span class="state-arrow">→</span>
+      <span class="state-node" data-state="ready">正常运行</span>
+    </div>
+    <!-- 首次使用引导：无成员 + 无出站通道配置时显示，完成后自动隐藏 -->
+    <div id="onboarding" class="card" hidden>
+      <div class="card-head" style="cursor:default">
+        <span class="dot ok"></span><b>个人模式：四步开始使用 dsh-notifier</b>
+        <span class="badge none" id="onboardDismiss">已完成可关闭</span>
+      </div>
+      <div class="card-body">
+        <div class="onboard-steps">
+          <div class="onboard-step" id="step1">
+            <div class="onboard-num">1</div>
+            <div class="onboard-body">
+              <div class="onboard-title">配置通知通道</div>
+              <div class="onboard-desc">挑一个你手机上有的 App 做通知通道（Bark / Telegram / 飞书 / 钉钉 / 企微 都行），填凭证点「测试发送」，手机收到就通了。</div>
+              <button class="tabbtn" data-tab="channels">去「通道」页配置 →</button>
+            </div>
+          </div>
+          <div class="onboard-step" id="step2">
+            <div class="onboard-num">2</div>
+            <div class="onboard-body">
+              <div class="onboard-title">配对你的 IM 身份</div>
+              <div class="onboard-desc">告诉插件「这个 IM 账号就是我」。扫码授权通道通常会自动登记；其他通道用配对码 <code>/pair</code> 即可。做完一次后续不用再配。</div>
+              <button class="tabbtn" data-tab="members">去「成员」页配对 →</button>
+            </div>
+          </div>
+          <div class="onboard-step" id="step3">
+            <div class="onboard-num">3</div>
+            <div class="onboard-body">
+              <div class="onboard-title">发送测试通知</div>
+              <div class="onboard-desc">回到「通道」页点击「测试发送」。成功后再开始使用，失败时页面会显示原因和下一步。</div>
+              <button class="tabbtn" data-tab="channels">去「通道」页测试 →</button>
+            </div>
+          </div>
+          <div class="onboard-step" id="step4">
+            <div class="onboard-num">4</div>
+            <div class="onboard-body">
+              <div class="onboard-title">开始使用</div>
+              <div class="onboard-desc">给 agent 发消息，它会把通知推到你刚配的通道上。需要审批的操作会发送通知给你，按提示回复编号或点按钮即可决定。</div>
+              <div class="onboard-desc muted small">详细步骤见「使用指南」文档，或顶部菜单各标签页。</div>
+            </div>
+          </div>
+        </div>
+        <div class="row" style="margin-top:12px">
+          <button id="btnHideOnboard" class="small muted-btn">我已熟悉，隐藏引导</button>
+        </div>
+      </div>
+    </div>
+
     <div class="stats">
       <div class="stat"><b id="statActive">–</b><span>活跃会话</span></div>
       <div class="stat"><b id="statTotal">–</b><span>会话总数</span></div>
       <div class="stat"><b id="statKeys">–</b><span>agent 路由键</span></div>
+      <div class="stat"><b id="statMembers">–</b><span>成员</span></div>
     </div>
     <h3>出站通道健康（configured / enabled 着色分组）</h3>
     <div id="outGroups"></div>
     <h3>入站通道</h3>
     <div id="inGroups"></div>
+    <h3>待处理远程提问</h3>
+    <div id="pendingQuestionsPanel" class="pendingq"></div>
     <h3>最近审计（写操作 append-only）</h3>
     <div id="auditList" class="auditlist"></div>
   </section>
@@ -233,12 +331,14 @@ label.fld input { flex: 1; }
 
 <script>
 'use strict'
-var TOKEN_KEY = 'dsh-admin-token'
+var TOKEN_KEY = 'dsh-admin-session-token'
 var SCAN_TYPES = ['qq', 'dingtalk', 'feishu', 'wechat']
 var state = { overview: null, bindings: null, sessions: null, channels: null, members: null }
 var draft = null
 var scanTimers = {}
 var flashTimer = null
+var MODE_KEY = 'dsh-admin-mode'
+var TESTED_KEY = 'dsh-admin-first-run-tested'
 
 function $(sel, root) { return (root || document).querySelector(sel) }
 function $all(sel, root) { return Array.prototype.slice.call((root || document).querySelectorAll(sel)) }
@@ -279,27 +379,159 @@ function sourceLabel(s) {
   return map[s] || s || '(未知)'
 }
 
-// ---------- 鉴权：Bearer token，localStorage 持久化，401 清除并重新询问（重试一次） ----------
-function getToken() { try { return window.localStorage.getItem(TOKEN_KEY) || '' } catch (e) { return '' } }
+// ---------- 鉴权：会话级 Bearer token；单飞门 + 401 单次恢复 ----------
+// token 永不进入 URL、日志、响应或 localStorage。sessionStorage 保证同一浏览器会话刷新
+// 后无需重输；受限浏览器退化到本页内存，仍可继续使用且不会因存储异常而中断。
+var authGate = null
+var reloginPromise = null
+var authGen = 0
+var recoveryUsed = false
+var memoryToken = ''
+function sessionStore() { try { return window.sessionStorage } catch (e) { return null } }
+function getToken() {
+  if (memoryToken) return memoryToken
+  var store = sessionStore()
+  if (store) {
+    try {
+      var stored = store.getItem(TOKEN_KEY) || ''
+      if (stored) return stored
+    } catch (e) {}
+  }
+  return memoryToken
+}
+function setCandidateToken(v) {
+  memoryToken = v || ''
+  var store = sessionStore()
+  if (!store) return false
+  try { store.removeItem(TOKEN_KEY); return true } catch (e) { return false }
+}
 function setToken(v) {
-  try { if (v) window.localStorage.setItem(TOKEN_KEY, v); else window.localStorage.removeItem(TOKEN_KEY) } catch (e) {}
+  memoryToken = v || ''
+  var store = sessionStore()
+  if (!store) return false
+  try { if (v) store.setItem(TOKEN_KEY, v); else store.removeItem(TOKEN_KEY); return true } catch (e) { return false }
 }
 function askToken() {
-  var t = window.prompt('请输入管理台访问 token（服务启动时打印）：', '')
+  var t = window.prompt('请输入管理台访问 token（服务启动时打印；仅保存在当前浏览器会话，关闭标签页后需重新输入）：', '')
   return t && t.trim() ? t.trim() : ''
+}
+/** token 询问单飞门：fetch、SSE 与手动操作共享同一次弹窗；空串 = 用户取消。 */
+function acquireToken() {
+  if (!authGate) {
+    authGate = Promise.resolve().then(function () {
+      return askToken()
+    }).then(function (t) {
+      authGate = null
+      return t
+    }, function (error) {
+      authGate = null
+      throw error
+    })
+  }
+  return authGate
 }
 function renderTokenState() {
   var t = getToken()
-  $('#tokenState').textContent = t ? 'token：' + t.slice(0, 4) + '****（点击更换）' : '未设置 token（点击输入）'
+  $('#tokenState').textContent = t ? '会话 token 已设置（点击更换）' : '未设置 token（点击输入）'
+  $('#btnLogout').disabled = !t
+  var firstVisit = $('#firstVisitHint')
+  if (firstVisit) firstVisit.hidden = !!t
 }
-function api(path, options, retried) {
-  options = options || {}
-  var token = getToken() || askToken()
-  if (!token) return Promise.reject(new Error('未提供 token，点击右上角 token 状态重新输入'))
+function renderEntryPoint() {
+  var target = window.location.origin + window.location.pathname
+  $('#entryUrl').textContent = target
+  var firstVisitEntry = $('#firstVisitEntryUrl')
+  if (firstVisitEntry) firstVisitEntry.textContent = target
+  return target
+}
+function copyEntryPoint() {
+  var target = renderEntryPoint()
+  var clipboard = window.navigator && window.navigator.clipboard
+  if (!clipboard || typeof clipboard.writeText !== 'function') {
+    flash('当前地址已显示在顶部，可手动复制', 'warn')
+    return
+  }
+  clipboard.writeText(target).then(function () { flash('管理台地址已复制', 'ok') }, function () {
+    flash('复制失败：当前地址已显示在顶部，可手动复制', 'warn')
+  })
+}
+/** 低层 Bearer 请求（不含 401 处理；401 由 apiWith/relogin 统一裁决）。 */
+function request(path, options, token) {
   var init = { method: options.method || 'GET', headers: { Authorization: 'Bearer ' + token } }
   if (options.body !== undefined) { init.headers['Content-Type'] = 'application/json'; init.body = JSON.stringify(options.body) }
-  return fetch(path, init).then(function (res) {
-    if (res.status === 401 && !retried) { setToken(''); renderTokenState(); return api(path, options, true) }
+  return fetch(path, init)
+}
+/** 成功响应（非 401）才保存到会话；错误 token 不会留下。 */
+function adoptToken(t) { if (t) setToken(t) }
+/** 任何非 401 响应说明当前 token 当时有效 → 重新允许一次未来自动恢复。 */
+function markAuthOk() { recoveryUsed = false }
+/** 401 单飞重登录门：清旧 token → 单次询问 → 返回新 token（空串 = 取消）。 */
+function reloginGate() {
+  if (!reloginPromise) {
+    reloginPromise = Promise.resolve().then(function () {
+      setToken('')
+      renderTokenState()
+      return acquireToken()
+    }).then(function (t) {
+      authGen += 1 // 世代推进：此后老 token 发出的迟到 401 = 过期请求，不再自动弹窗
+      reloginPromise = null
+      return t
+    }, function (error) {
+      reloginPromise = null
+      throw error
+    })
+  }
+  return reloginPromise
+}
+/** 用新 token 恰好重试一次；仍 401 = 抛错（不循环）。成功则持久化并重新武装。 */
+function retryRelogin(path, options, t) {
+  return request(path, options, t).then(function (res) {
+    if (res.status === 401) {
+      setToken('')
+      renderTokenState()
+      throw new Error('鉴权失败：token 无效或已失效（已按一次自动重登录处理，请点击右上角 token 状态手动更新）')
+    }
+    markAuthOk()
+    adoptToken(t)
+    return res
+  })
+}
+function api(path, options) {
+  options = options || {}
+  var token = getToken()
+  var gen = authGen
+  if (!token) return acquireToken().then(function (t) {
+    if (!t) throw new Error('未提供 token，点击右上角 token 状态重新输入')
+    return apiWith(path, options, t, gen)
+  })
+  return apiWith(path, options, token, gen)
+}
+/** 一次请求 + 单次 401 裁决（并发 401 共享 reloginGate，只弹一次窗）。 */
+function apiWith(path, options, token, gen) {
+  return request(path, options, token).then(function (res) {
+    if (res.status !== 401) {
+      markAuthOk()
+      adoptToken(token)
+      return res
+    }
+    if (gen < authGen) {
+      // 用已作废 token 发出的迟到 401：请求本身过期，不重登录、只拒掉这一条
+      throw new Error('鉴权失败：该请求基于已失效的 token，请刷新后重试')
+    }
+    if (reloginPromise) {
+      // 已有在途重登录（并发 401）→ 等它，用新 token 各自重试一次
+      return reloginGate().then(function (t) {
+        if (!t) throw new Error('登录已取消')
+        return retryRelogin(path, options, t)
+      })
+    }
+    if (recoveryUsed) throw new Error('鉴权失败：token 无效或已失效（已自动重试一次，请点击右上角 token 状态手动更新）')
+    recoveryUsed = true
+    return reloginGate().then(function (t) {
+      if (!t) throw new Error('登录已取消')
+      return retryRelogin(path, options, t)
+    })
+  }).then(function (res) {
     return res.json().catch(function () { throw new Error('HTTP ' + res.status + '：响应不是 JSON') }).then(function (data) {
       if (!res.ok) throw new Error(data && data.error ? data.error : 'HTTP ' + res.status)
       return data
@@ -320,11 +552,11 @@ function inboundTypes() {
 }
 function loadAll() {
   setLoading(true)
-  return Promise.all([api('/api/overview'), api('/api/bindings'), api('/api/sessions'), api('/api/channels'), api('/api/members')])
+  return Promise.all([api('/api/overview'), api('/api/bindings'), api('/api/sessions'), api('/api/channels'), api('/api/members'), api('/api/questions')])
     .then(function (rs) {
-      state.overview = rs[0]; state.bindings = rs[1]; state.sessions = rs[2]; state.channels = rs[3]; state.members = rs[4]
+      state.overview = rs[0]; state.bindings = rs[1]; state.sessions = rs[2]; state.channels = rs[3]; state.members = rs[4]; state.questions = rs[5]
       draft = null
-      renderDashboard(); renderBindings(); renderSessions(); renderChannels(); renderMembers()
+      renderDashboard(); renderBindings(); renderSessions(); renderChannels(); renderMembers(); renderPendingQuestions()
       flash('已刷新 ' + new Date().toLocaleTimeString(), 'ok')
     })
     .catch(function (e) { flash('加载失败：' + errText(e), 'err') })
@@ -333,6 +565,28 @@ function loadAll() {
 function switchTab(name) {
   $all('.tabbtn').forEach(function (b) { b.classList.toggle('active', b.getAttribute('data-tab') === name) })
   $all('.tabsec').forEach(function (s) { s.classList.toggle('active', s.id === 'tab-' + name) })
+}
+
+// 个人模式是默认路径；高级导航仅在用户明确打开后显示。localStorage 受限时按个人模式降级。
+function readAdminMode() {
+  try { return window.localStorage.getItem(MODE_KEY) === 'advanced' ? 'advanced' : 'personal' } catch (e) { return 'personal' }
+}
+function applyAdminMode() {
+  var advanced = readAdminMode() === 'advanced'
+  $all('.advanced-tab').forEach(function (el) { el.hidden = !advanced })
+  var toggle = $('#modeToggle')
+  if (toggle) toggle.textContent = advanced ? '关闭高级设置' : '打开高级设置'
+  if (!advanced && (document.querySelector('#tab-bindings.active') || document.querySelector('#tab-sessions.active'))) switchTab('dashboard')
+}
+function setAdminMode(mode) {
+  try { window.localStorage.setItem(MODE_KEY, mode === 'advanced' ? 'advanced' : 'personal') } catch (e) {}
+  applyAdminMode()
+}
+function readTestedState() {
+  try { return window.localStorage.getItem(TESTED_KEY) === '1' } catch (e) { return false }
+}
+function markTestedState() {
+  try { window.localStorage.setItem(TESTED_KEY, '1') } catch (e) {}
 }
 
 // ---------- Dashboard：通道健康矩阵 + 统计 + 审计流 ----------
@@ -355,16 +609,59 @@ function renderDashboard() {
   var o = plain(state.overview)
   var sess = plain(o.sessions)
   var keys = plain(o.agents).keys
+  var m = plain(o.members) || {}
   $('#statActive').textContent = sess.active !== undefined ? String(sess.active) : '–'
   $('#statTotal').textContent = sess.total !== undefined ? String(sess.total) : '–'
   $('#statKeys').textContent = keys !== undefined ? String(keys) : '–'
+  $('#statMembers').textContent = m.total !== undefined ? String(m.total) : '–'
+
   var out = overviewChannels().filter(function (c) { return c.direction === 'outbound' })
   var inn = overviewChannels().filter(function (c) { return c.direction === 'inbound' })
+  var outConfigured = out.filter(function (c) { return c.configured }).length
+  var outEnabled = out.filter(function (c) { return c.configured && c.enabled }).length
+  var anyOutConfigured = outConfigured > 0
+  var anyOutEnabled = outEnabled > 0
+  var hasMembers = m.total > 0
+
+  // Issue #10：首次使用引导卡——无成员或无任何已启用出站通道时显示
+  // 注：步骤 1 完成条件 = configured && enabled（仅配置未启用 = 还不能发通知）。
+  // 步骤状态总是先算（无论卡显隐，保持内部状态一致），再决定是否显示。
+  var ob = $('#onboarding')
+  var step1Done = anyOutEnabled
+  var step2Done = hasMembers
+  var step3Done = hasMembers && anyOutEnabled && sess.total > 0
+  var step4Done = step3Done
+  $('#step1').classList.toggle('done', step1Done)
+  $('#step2').classList.toggle('done', step2Done)
+  $('#step3').classList.toggle('done', step3Done)
+  var step4 = $('#step4')
+  if (step4) step4.classList.toggle('done', step4Done)
+  // 进度条单独表达首次配置状态；不写服务器状态，也不把本地测试标记当成凭证。
+  var configured = anyOutConfigured
+  var tested = readTestedState() || step3Done
+  var ready = anyOutEnabled && hasMembers && tested
+  var current = !configured ? 'unconfigured' : !hasMembers ? 'paired' : (!tested || !anyOutEnabled) ? 'tested' : 'ready'
+  var order = ['unconfigured', 'paired', 'tested', 'ready']
+  var currentIndex = order.indexOf(current)
+  $all('#firstRunState [data-state]').forEach(function (el) {
+    var idx = order.indexOf(el.getAttribute('data-state'))
+    el.classList.toggle('done', ready ? idx < order.length - 1 : idx < currentIndex)
+    el.classList.toggle('current', idx === currentIndex)
+  })
+  var userDismissed = false
+  try { userDismissed = window.localStorage.getItem('onboard_dismissed') === '1' } catch (e) {}
+  var allDone = step1Done && step2Done
+  if (allDone) {
+    ob.hidden = true
+  } else {
+    if (!userDismissed) ob.hidden = false
+  }
+
   $('#outGroups').innerHTML = chipGroups([
     ['已启用（configured 且 enabled）', 'ok', out.filter(function (c) { return c.configured && c.enabled })],
     ['已配置未启用', 'warn', out.filter(function (c) { return c.configured && !c.enabled })],
     ['未配置', 'none', out.filter(function (c) { return !c.configured })]
-  ], '出站通道 ' + out.length + ' 个，均未配置（先用 YAML bootstrap 凭证）')
+  ], '出站通道 ' + out.length + ' 个，均未配置（打开「通道」页按字段配置；YAML 仅作为高级入口）')
   $('#inGroups').innerHTML = chipGroups([
     ['已配置', 'ok', inn.filter(function (c) { return c.configured })],
     ['未配置', 'none', inn.filter(function (c) { return !c.configured })]
@@ -374,6 +671,83 @@ function renderDashboard() {
     var r = plain(row)
     return '<div class="auditrow"><span class="at">' + esc(fmtTime(r.time)) + '</span><b>' + esc(r.action || '') + '</b><span class="mono">' + esc(fmtDetail(r.detail)) + '</span></div>'
   }).join('') || '<div class="muted small" style="padding:8px 0">暂无审计记录</div>'
+}
+
+// ---------- 路线图阶段 2A：待处理远程提问（脱敏只读快照 + 受保护结算）----------
+// 只渲染 { ref, question, options, source(掩码), agent(掩码), 时间 }；token/凭证/完整标识
+// 绝不下发到 DOM。为每个选项提供「采用此项」、整题一个「驳回（交还桌面）」。
+function renderPendingQuestions() {
+  var list = Array.isArray(state.questions) ? state.questions : []
+  var el = $('#pendingQuestionsPanel')
+  if (!el) return
+  if (!list.length) {
+    el.innerHTML = '<div class="muted small" style="padding:8px 0">暂无待处理远程提问</div>'
+    return
+  }
+  el.innerHTML = list.map(function (q) {
+    var qq = plain(q)
+    var opts = (Array.isArray(qq.options) ? qq.options : []).map(function (label, idx) {
+      return '<li><code>' + esc(String(idx + 1)) + '</code> · ' + esc(String(label)) +
+        ' <button type="button" class="small q-choose" data-ref="' + esc(qq.ref) + '" data-opt="' + idx + '">采用此项</button></li>'
+    }).join('')
+    var cul = (Array.isArray(qq.source) ? qq.source : []).map(function (s) {
+      var sp = plain(s)
+      return (esc(String(sp.channel || '?'))) + (sp.user ? ' · ' + esc(sp.user) : '') + (sp.chat ? ' · ' + esc(sp.chat) : '')
+    }).join('；')
+    var meta = []
+    if (qq.agent) meta.push('agent ' + esc(qq.agent))
+    if (cul) meta.push('来源 ' + cul)
+    meta.push('创建 ' + esc(fmtTime(qq.createdAt)))
+    meta.push('截至 ' + esc(fmtTime(qq.expiresAt)))
+    return '<div class="card"><div class="card-head" style="cursor:default"><span class="dot warn"></span>' +
+      '<b>' + esc(String(qq.question || '(无文本)')) + '</b><span class="badge none">待决</span></div>' +
+      '<div class="card-body"><ul class="qopts">' + opts + '</ul>' +
+      '<div class="muted small">' + meta.join(' · ') + '</div>' +
+      '<div class="row" style="margin-top:8px"><button type="button" class="small muted-btn q-reject" data-ref="' + esc(qq.ref) + '">驳回（交还桌面处理）</button>' +
+      '<span class="q-msg inline muted small"></span></div></div></div>'
+  }).join('')
+}
+/** 提交一条 settle 到收件人识别的路由；成功/失败都写到卡片内 q-msg 并联动刷新。 */
+function settleQuestionClick(ref, action, opt) {
+  var target = undefined
+  var refS = String(ref || '')
+  if (action === 'choose' && opt !== undefined && opt !== null) {
+    // Ref values come from the server but are still untrusted DOM data. Avoid
+    // interpolating them into a CSS selector (a malformed quote would throw
+    // before the request and leave the button stuck in an indeterminate state).
+    target = $all('button[data-ref]').find(function (el) {
+      return el.getAttribute('data-ref') === refS && el.getAttribute('data-opt') === String(opt)
+    })
+  } else {
+    target = $all('button[data-ref]').find(function (el) {
+      return el.getAttribute('data-ref') === refS
+        && el.classList.contains(action === 'reject' ? 'q-reject' : 'q-choose')
+    })
+  }
+  var msgBox = null
+  if (target) {
+    target.disabled = true
+    var card = target.closest ? target.closest('.card') : null
+    msgBox = card ? card.querySelector('.q-msg') : null
+  }
+  if (msgBox) setStatus(msgBox, '提交中…', '')
+  var body = { action: action }
+  if (action === 'choose') body.options = [Number(opt)]
+  api('/api/questions/' + encodeURIComponent(refS) + '/settle', {
+    // api()/request() serializes object bodies exactly once. Passing a
+    // pre-stringified payload here would double-encode JSON and make the
+    // server spread a string, dropping action/options and returning 422.
+    method: 'POST', body: body
+  })
+    .then(function (d) { if (msgBox) setStatus(msgBox, d.message || '已结算', 'ok') })
+    .catch(function (e) { if (msgBox) setStatus(msgBox, '未生效：' + errText(e), 'err') })
+    .then(function () { if (target) target.disabled = false; loadAll() })
+}
+function onQuestionsClick(evt) {
+  var btn = evt.target && evt.target.closest ? evt.target.closest('button[data-ref]') : null
+  if (!btn || btn.disabled) return
+  if (btn.classList.contains('q-choose')) settleQuestionClick(btn.getAttribute('data-ref'), 'choose', Number(btn.getAttribute('data-opt')))
+  else if (btn.classList.contains('q-reject')) settleQuestionClick(btn.getAttribute('data-ref'), 'reject')
 }
 
 // ---------- 绑定矩阵：agent 键勾选网格 + 通道默认 agent，整表 PUT ----------
@@ -655,7 +1029,12 @@ function testChannel(key, btn) {
   api('/api/channels/' + encodeURIComponent(type) + '/test', { method: 'POST' })
     .then(function (r) {
       var ok = plain(r).ok === true
-      setStatus(msg, (ok ? '测试通过' : '测试失败') + (r.detail ? '：' + r.detail : ''), ok ? 'ok' : 'err')
+      if (ok) {
+        markTestedState()
+        setStatus(msg, '测试通过' + (r.detail ? '：' + r.detail : '') + '；下一步：回 Dashboard 确认状态，或直接开始使用', 'ok')
+      } else {
+        setStatus(msg, '测试失败' + (r.detail ? '：' + r.detail : '') + '；下一步：检查必填凭证后重试', 'err')
+      }
     })
     .catch(function (e) { setStatus(msg, '测试失败：' + errText(e), 'err') })
     .then(function () { btn.disabled = false; btn.textContent = old })
@@ -856,6 +1235,10 @@ function onMembersClick(ev) {
   }
   var revokeId = memberKeyOf(btn, 'data-prevoke')
   if (revokeId) {
+    // Revoking a pairing code is destructive: the one-shot code becomes unusable
+    // immediately and cannot be recovered. Require an explicit confirmation so a
+    // fat-fingered click on a narrow/mobile layout does not strand the invitee.
+    if (!window.confirm('撤销配对码 ' + revokeId + '？该码将立即失效，且无法恢复。')) return
     api('/api/pairing/' + encodeURIComponent(revokeId), { method: 'DELETE' })
       .then(function () { flash('已撤销配对码 ' + revokeId, 'ok'); return loadMembersOnly() })
       .catch(function (e) { flash('撤销失败：' + errText(e), 'err') })
@@ -870,6 +1253,7 @@ function onMembersClick(ev) {
   }
   var dismissKey = memberKeyOf(btn, 'data-pdismiss')
   if (dismissKey) {
+    if (!window.confirm('忽略待确认绑定 ' + dismissKey + '？当前请求将被删除，之后需要对方重新触发订阅/扫码。')) return
     api('/api/members/' + encodeURIComponent(dismissKey) + '/dismiss', { method: 'POST' })
       .then(function () { flash('已忽略 ' + dismissKey, 'ok'); return loadMembersOnly() })
       .catch(function (e) { flash('操作失败：' + errText(e), 'err') })
@@ -885,6 +1269,7 @@ var notifyLog = []
 var notifyCount = 0
 var audioCtx = null
 var notifyStreamTimer = null
+var notifyStreamEpoch = 0
 
 function readNotifyPrefs() {
   var p = {}
@@ -905,6 +1290,10 @@ function writeNotifyPrefs() {
   $('#npHidden').checked = p.hiddenOnly
 }
 function setStreamState(text) { var el = $('#nStream'); if (el) el.textContent = text }
+function stopNotifyStream() {
+  notifyStreamEpoch += 1
+  if (notifyStreamTimer) { clearTimeout(notifyStreamTimer); notifyStreamTimer = null }
+}
 function renderPermState() {
   var el = $('#nPerm')
   if (!el) return
@@ -966,13 +1355,31 @@ function renderNotifyLog() {
       + '<td class="small">' + (row.replay ? '重放' : '实时') + '</td></tr>'
   }).join('')
 }
-/** SSE 客户端（fetch 流式读：EventSource 不支持 Authorization 头）；断线 5s 退避重连。 */
-function startNotifyStream() {
+/** SSE 客户端（fetch 流式读：EventSource 不支持 Authorization 头）；断线 5s 退避重连。
+ * 401 与 api 共用同一 reloginGate：并发时只弹一次窗，重登录成功后原流重播。 */
+function startNotifyStream(explicitToken) {
   if (notifyStreamTimer) { clearTimeout(notifyStreamTimer); notifyStreamTimer = null }
-  var token = getToken()
-  if (!token) { setStreamState('未设置 token'); return }
+  var token = explicitToken || getToken()
+  if (!token) {
+    // 首访无 token：与并行 loadAll 共享同一单飞询问（不重复弹窗）
+    var waitingGen = authGen
+    acquireToken().then(function (t) {
+      if (t && waitingGen === authGen) startNotifyStream(t)
+      else setStreamState('未设置 token，点击右上角 token 状态输入')
+    })
+    return
+  }
+  var gen = authGen
+  var epoch = notifyStreamEpoch + 1
+  notifyStreamEpoch = epoch
   fetch('/api/events', { headers: { Authorization: 'Bearer ' + token } }).then(function (res) {
-    if (res.status === 401) { setToken(''); renderTokenState(); setStreamState('token 失效'); return }
+    if (epoch !== notifyStreamEpoch) return
+    if (res.status === 401) {
+      if (gen >= authGen) { handleStream401(token); return } // 活 token 失效 → 走共享重登录门
+      setStreamState('旧会话请求已失效；当前 token 未受影响'); return // 迟到旧流不得清掉新 token
+    }
+    markAuthOk()
+    adoptToken(token) // 连接正常 → 持久化（首访 prompt 输入的 token 在此落库）
     if (!res.ok || !res.body) throw new Error('HTTP ' + res.status)
     setStreamState('已连接')
     var reader = res.body.getReader()
@@ -980,6 +1387,7 @@ function startNotifyStream() {
     var buf = ''
     function pump() {
       return reader.read().then(function (chunk) {
+        if (epoch !== notifyStreamEpoch || gen !== authGen) throw new Error('stream superseded')
         if (chunk.done) throw new Error('stream end')
         buf += decoder.decode(chunk.value, { stream: true })
         var blocks = buf.split('\\n\\n')
@@ -995,8 +1403,22 @@ function startNotifyStream() {
     }
     return pump()
   }).catch(function () {
+    if (epoch !== notifyStreamEpoch || gen !== authGen || getToken() !== token) return
     setStreamState('已断开，5 秒后重连')
     notifyStreamTimer = setTimeout(startNotifyStream, 5000)
+  })
+}
+/** SSE 401 单次重登录（与 api 共享门；并发已由 reloginGate 兜住）。 */
+function handleStream401(lastToken) {
+  if (reloginPromise) {
+    reloginGate().then(function (t) { if (t) startNotifyStream(t); else setStreamState('token 失效（未重新登录，请点击右上角重试）') })
+    return
+  }
+  if (recoveryUsed) { setStreamState('token 失效（已自动重试一次，请刷新或点击右上角更新）'); return }
+  recoveryUsed = true
+  reloginGate().then(function (t) {
+    if (t) startNotifyStream(t)
+    else { setToken(''); renderTokenState(); setStreamState('token 失效（未重新登录，请点击右上角重试）') }
   })
 }
 var NOTIFY_PREF_IDS = { npEnable: 'enable', npActive: 'active', npSound: 'sound', npHidden: 'hiddenOnly' }
@@ -1028,10 +1450,34 @@ function init() {
     b.addEventListener('click', function () { switchTab(b.getAttribute('data-tab')) })
   })
   $('#btnRefresh').addEventListener('click', function () { loadAll() })
-  $('#tokenState').addEventListener('click', function () {
-    var t = askToken()
-    if (t) { setToken(t); renderTokenState(); loadAll() }
+  applyAdminMode()
+  var modeToggle = $('#modeToggle')
+  if (modeToggle) modeToggle.addEventListener('click', function () {
+    setAdminMode(readAdminMode() === 'advanced' ? 'personal' : 'advanced')
   })
+  // Issue #10：Dashboard 首屏引导——手动隐藏记 localStorage，下次不弹
+  var hideBtn = $('#btnHideOnboard')
+  if (hideBtn) hideBtn.addEventListener('click', function () {
+    try { window.localStorage.setItem('onboard_dismissed', '1') } catch (e) {}
+    $('#onboarding').hidden = true
+  })
+  function promptAndLoadToken() {
+    var t = askToken()
+    if (t) { authGen += 1; recoveryUsed = false; stopNotifyStream(); setCandidateToken(t); renderTokenState(); loadAll(); startNotifyStream(t) } // 候选仅在成功响应后写入会话
+  }
+  $('#tokenState').addEventListener('click', promptAndLoadToken)
+  var firstVisitToken = $('#btnFirstVisitToken')
+  if (firstVisitToken) firstVisitToken.addEventListener('click', promptAndLoadToken)
+  $('#btnLogout').addEventListener('click', function () {
+    authGen += 1
+    stopNotifyStream()
+    setToken('')
+    renderTokenState()
+    setStreamState('已退出本浏览器会话；点击 token 状态重新输入')
+    flash('已退出本浏览器会话', 'ok')
+  })
+  $('#btnCopyEntry').addEventListener('click', copyEntryPoint)
+  renderEntryPoint()
   $('#tab-bindings').addEventListener('change', onBindingsChange)
   $('#tab-bindings').addEventListener('click', onBindingsClick)
   $('#tab-sessions').addEventListener('click', onSessionsClick)
@@ -1039,6 +1485,8 @@ function init() {
   // v0.7 成员页事件委托（R5 审查 R5-2-P1-1：首版漏挂——铸码/删成员/撤码/转正/忽略/改角色整页死键）
   $('#tab-members').addEventListener('click', onMembersClick)
   $('#tab-members').addEventListener('change', onMembersChange)
+  // 路线图阶段 2A：待处理远程提问结算（事件委托，面板空/缺按钮时静默）
+  $('#pendingQuestionsPanel').addEventListener('click', onQuestionsClick)
   initNotifyTab()
   renderTokenState()
   loadAll()

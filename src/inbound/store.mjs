@@ -14,7 +14,7 @@
 //    再以内存全量快照重建写路径——中止会让 dirty 无限积压、CLI↔宿主共享永久断裂；
 //  - 只有启动 load() 保留 fail-open（无记忆好过误清空）。
 
-import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs'
+import { chmodSync, closeSync, copyFileSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs'
 import { dirname } from 'node:path'
 
 /** DSH 数据目录：$DSH_HOME（宿主约定）回退 ~/.dsh。 */
@@ -36,11 +36,49 @@ const syncSleep = (ms) => {
 export function createStore(filePath) {
   // 启动载入：损坏/缺省 fail-open 到空态（无记忆好过误清空——审批丢失只导致超时回退）
   const loadBoot = () => {
+    let raw
     try {
       if (!existsSync(filePath)) return {}
-      const parsed = JSON.parse(readFileSync(filePath, 'utf8'))
+      raw = readFileSync(filePath, 'utf8')
+    } catch {
+      return {} // 读失败（权限/占用等）：维持静默 fail-open，与损坏区分
+    }
+    try {
+      // 空文件视作空态：writeFileSync 落盘必有内容，空串只可能是外部 touch/首次写中断——
+      // 无记忆可丢失、无现场可取证，按损坏告警纯属噪音（对抗性 review 第 3 轮修正）
+      if (raw.trim() === '') return {}
+      const parsed = JSON.parse(raw)
       return (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) ? parsed : {}
     } catch {
+      // P1-2 错误可见性（2026-08-20，Trae1）：启动时损坏原先静默清零——绑定表/待审批/
+      // 扫码凭证全部丢失且零日志，用户只见「绑定莫名失效」。对齐 v0.6.5 save 路径的
+      // 取证惯例：现场 copy 为 .corrupt.<ts>（copy 而非 rename——boot 时他进程可能
+      // 持有该文件，rename 会把它抽走；copy 无副作用）+ 告警。fail-open 语义不变。
+      // 对抗性 review（资源耗尽角度）：save 路径取证走 rename 是 O(1)，copy 会完整
+      // 复制——异常巨物（历史事故写出的 GB 级垃圾）会翻倍占盘。超过 8MB 只告警
+      // 不取证（正常 state.json 为 KB 级；巨物现场保留在原位，事后可手工处理）。
+      let sizeBytes = -1
+      try { sizeBytes = statSync(filePath).size } catch { /* stat 失败按未知处理 */ }
+      const FORENSIC_COPY_MAX_BYTES = 8 * 1024 * 1024
+      let preserved = false
+      let skippedForSize = false
+      if (sizeBytes >= 0 && sizeBytes > FORENSIC_COPY_MAX_BYTES) {
+        skippedForSize = true
+      } else {
+        const backup = `${filePath}.corrupt.${Date.now()}`
+        try {
+          copyFileSync(filePath, backup)
+          preserved = true
+        } catch { /* 取证 copy 失败不阻止 fail-open 起步 */ }
+      }
+      try {
+        const detail = preserved
+          ? `；现场已取证为 ${filePath}.corrupt.*，可手工排查恢复`
+          : skippedForSize
+            ? `；文件异常巨大（${sizeBytes} bytes），跳过取证复制以免占满磁盘，原始现场保留在原位`
+            : '；取证转存失败（备份目录不可写？）'
+        console.error('[dsh-notifier/store]', `state 文件启动时损坏，已按空状态起步（绑定/待审批等记忆丢失）: ${filePath}${detail}`)
+      } catch { /* 控制台不可用不致命 */ }
       return {}
     }
   }
@@ -93,10 +131,36 @@ export function createStore(filePath) {
   const isStaleLock = () => {
     try { return Date.now() - statSync(lockPath).mtimeMs > 10_000 } catch { return false }
   }
+  // P1-3 跨进程状态压力审查（2026-08-23）：mtime>10s 的陈锁判据意味着「持锁进程崩溃
+  // （kill -9/断电/OOM）后，残留锁最长 10s 内不算陈旧」——窗口内所有进程的每次 save 都
+  // 白等两轮 ~480ms 再降级无锁写入（丢写保护失效），CLI↔宿主并发写可能静默丢键。
+  // 修复：利用 v0.6.5 属主落章的 pid:random 格式做死亡探测——锁龄超过 500ms 宽限期
+  // （防「刚创建就被读」与 pid 复用竞态）后 kill(pid,0)：ESRCH=确死，视同陈锁当场回收；
+  // 存活（含 EPERM 他用户进程）与无法解析的外来锁内容一律返回 false，维持旧行为。
+  // 方向保守：pid 被无关新进程复用只会让恢复退回 10s mtime 判据，绝不提前抢活锁。
+  const LOCK_PID_PROBE_MIN_AGE_MS = 500
+  const deadHolderLock = () => {
+    try {
+      const ageMs = Date.now() - statSync(lockPath).mtimeMs
+      if (ageMs <= LOCK_PID_PROBE_MIN_AGE_MS) return false
+      const pid = Number(readFileSync(lockPath, 'utf8').split(':')[0])
+      if (!Number.isInteger(pid) || pid <= 0) return false // 外来/畸形锁内容：不做死亡推断
+      try {
+        process.kill(pid, 0)
+        return false // 探测成功 = 持有者活着（慢/被调度延迟），继续等
+      } catch (probeError) {
+        return probeError.code === 'ESRCH' // 仅确死回收；EPERM 视同存活，不冒险
+      }
+    } catch {
+      return false // stat/read 失败（锁刚被清等）：交给正常抢占流程
+    }
+  }
+  const recoverableLock = () => isStaleLock() || deadHolderLock()
+
   const acquireLock = () => {
     try { mkdirSync(dirname(filePath), { recursive: true }) } catch { /* 目录已在/不可建：后续自然失败 */ }
-    // 陈锁清理：持锁进程崩溃没释放时，按 mtime 判死回收
-    if (isStaleLock()) {
+    // 陈锁清理：持锁进程崩溃没释放时，mtime 判死（>10s）或属主 pid 探测确死（P1-3）当场回收
+    if (recoverableLock()) {
       try { unlinkSync(lockPath) } catch { /* 竞态：他人已清/已抢，继续走抢占 */ }
     }
     const ownerId = `${process.pid}:${Math.random().toString(36).slice(2, 8)}`
@@ -114,18 +178,18 @@ export function createStore(filePath) {
             } catch { /* 锁已被回收：内容比对失败即放弃（锁已易主，不能删） */ }
           }
         } catch {
-          // 锁被占：自旋等待（首拍立即重试撞运气，之后 4ms 一拍；每 8 拍复查陈锁）
+          // 锁被占：自旋等待（首拍立即重试撞运气，之后 4ms 一拍；每 8 拍复查陈锁/死锁）
           if (attempt > 0) {
             syncSleep(4)
-            if (attempt % 8 === 0 && isStaleLock()) {
+            if (attempt % 8 === 0 && recoverableLock()) {
               try { unlinkSync(lockPath) } catch { /* 他人已清/已抢：下一拍抢占 */ }
             }
           }
           continue
         }
       }
-      // 首轮等满仍被占：锁若已陈旧上面就会清，仍新鲜说明持锁者活着——再等一轮
-      if (round === 0 && isStaleLock()) {
+      // 首轮等满仍被占：锁若可判回收上面就会清，仍不可回收说明持锁者大概率活着——再等一轮
+      if (round === 0 && recoverableLock()) {
         try { unlinkSync(lockPath) } catch { /* 他人已清/已抢 */ }
         continue
       }
@@ -161,6 +225,12 @@ export function createStore(filePath) {
 
   const save = () => {
     const release = acquireLock()
+    // v0.8.7（对抗评审 Stage-4 P1-2）：save 原先在裸 catch 里吞掉一切磁盘失败并**不返回可辨识信号**，
+    // 调用方（store.set → agent-router.safeSet → admin PATCH control）据此把「没写上去」误判为「成功」
+    // 返回 200，而状态重启即丢。改为返回持久化是否真正到达磁盘的布尔：只有 write+rename 全部完成才算
+    // durable=true；磁盘异常 catch 与「损坏转存失败中止」两条路径保持 durable=false，向上显式传播失败。
+    // 既有调用方只看副作用、忽略返回值；唯一新消费方是 router.safeSet（把 false 当写失败）。行为不破坏。
+    let durable = false
     try {
       mkdirSync(dirname(filePath), { recursive: true })
       let disk = tryLoad()
@@ -175,12 +245,13 @@ export function createStore(filePath) {
           renameSync(filePath, backup)
           console.error('[dsh-notifier/store]', `state 文件损坏，已转存现场为 ${backup} 并以内存态重建（副本可手工排查恢复）`)
         } catch (renameError) {
-          // 转存失败（如备份不可写）：退回 v0.6.4 中止语义，保留 dirty 待外部修复
+          // 转存失败（如备份不可写）：退回 v0.6.4 中止语义，保留 dirty 待外部修复。
+          // 未写入磁盘 → durable 保持 false。
           if (!warnedCorrupt) {
             warnedCorrupt = true
             try { console.error('[dsh-notifier/store]', `state 文件损坏且转存失败（${renameError instanceof Error ? renameError.message : String(renameError)}），暂停写盘保留现场: ${filePath}`) } catch { /* 控制台不可用不致命 */ }
           }
-          return
+          return durable
         }
         // 现场已转存：磁盘不可读，最大可用快照就是本实例内存全量（boot 载入 + 此后更新；
         // 他进程 boot 后的写入本就读不出来——副本里留了取证）。绝不能从 {} 起步：
@@ -202,8 +273,10 @@ export function createStore(filePath) {
       dirty.clear()
       lastKnownMtimeMs = mtimeOf()
       lastRefreshCheckMs = Date.now()
+      durable = true
     } catch {
-      // 磁盘失败不致命：内存态继续工作（重启后丢失）；dirty 保留下次再试
+      // 磁盘失败不致命：内存态继续工作（重启后丢失）；dirty 保留下次再试。
+      // durable 保持 false —— 写没有真正到达盘上，向上显式传播失败。
       if (!warnedSaveError) {
         warnedSaveError = true
         try { console.error('[dsh-notifier/store]', `state 写盘失败（内存态继续，重启后丢失）: ${filePath}`) } catch { /* 控制台不可用不致命 */ }
@@ -211,6 +284,7 @@ export function createStore(filePath) {
     } finally {
       release()
     }
+    return durable
   }
 
   return {
@@ -222,7 +296,9 @@ export function createStore(filePath) {
     set(key, value) {
       state[key] = value
       dirty.add(key)
-      save()
+      // v0.8.7（对抗评审 Stage-4 P1-2）：向上传播持久化成功与否（save 的 durable 布尔），
+      // router.safeSet 据此把「写盘失败」与「写盘成功」区分开。忽略返回值的既有调用方不受影响。
+      return save()
     },
     delete(key) {
       const existed = key in state

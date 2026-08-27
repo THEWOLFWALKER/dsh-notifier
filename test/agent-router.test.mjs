@@ -5,6 +5,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import { createAgentRouter } from '../src/routing/agent-router.mjs'
+import { createSessionRegistry } from '../src/routing/session-registry.mjs'
 
 /** 全局已启用渠道池（测试基线）。 */
 const GLOBAL = ['telegram', 'bark', 'ntfy']
@@ -409,6 +410,175 @@ test('setSessionOutbound：diff 清空后 outbound 键删除，解析整体回�
     quiet: false,
     source: 'global',
   })
+})
+
+// ———————— 会话控制覆盖层（Stage 4：route:sessions[id].control） ————————
+
+test('setSessionControl：最小覆盖层只落已批准字段；来源字段被清洗；无关键保留', () => {
+  const { store, router } = makeRouter()
+  assert.equal(router.setSessionControl('s-1', {
+    mode: 'team', owner: 'u1', approvalOwnerOnly: true,
+    approvalMembers: [{ channel: 'telegram', accountId: 'a1', userId: 'u2' }],
+    channel: 'feishu', accountId: 'z1', userId: 'evil', chatId: 'c9', sessionId: 's9',
+  }), true)
+  const control = store.get('route:sessions')['s-1'].control
+  assert.deepEqual(control, {
+    mode: 'team', owner: 'u1', approvalOwnerOnly: true,
+    approvalMembers: [{ channel: 'telegram', accountId: 'a1', userId: 'u2' }],
+  })
+  for (const key of ['channel', 'accountId', 'userId', 'chatId', 'sessionId']) {
+    assert.equal(Object.prototype.hasOwnProperty.call(control, key), false, key)
+  }
+  // 覆盖层不吞并既有 outbound：会话其它字段保留
+  router.setSessionOutbound('s-1', { channels: ['telegram'] })
+  const rec = store.get('route:sessions')['s-1']
+  assert.deepEqual(rec.outbound, { channels: ['telegram'] })
+  assert.deepEqual(rec.control.mode, 'team')
+})
+
+test('setSessionControl：字段级 diff——null 删键、越界/通配清洗、清空后 control 键删除', () => {
+  const { store, router } = makeRouter()
+  router.setSessionControl('s-1', { owner: 'u1', approvalMembers: [{ channel: 'telegram', accountId: 'a1', userId: 'u2' }] })
+  assert.equal(router.setSessionControl('s-1', { approvalOwnerOnly: true }), true)
+  assert.equal(store.get('route:sessions')['s-1'].control.approvalOwnerOnly, true)
+  assert.equal(store.get('route:sessions')['s-1'].control.owner, 'u1') // 未出现的键不动
+  // owner null 删键
+  assert.equal(router.setSessionControl('s-1', { owner: null }), true)
+  assert.equal('owner' in store.get('route:sessions')['s-1'].control, false)
+  // 越界 owner 与通配成员被清洗，不落盘
+  assert.equal(router.setSessionControl('s-1', { owner: '*', approvalMembers: [{ channel: 'all', accountId: 'a1', userId: 'u9' }] }), true)
+  const cleaned = store.get('route:sessions')['s-1'].control
+  assert.equal(cleaned.owner, undefined)
+  assert.equal(cleaned.approvalMembers, undefined)
+  // 清空剩余可写字段 → control 键删除
+  assert.equal(router.setSessionControl('s-1', { mode: null, approvalOwnerOnly: null }), true)
+  assert.equal('control' in store.get('route:sessions')['s-1'], false)
+  assert.deepEqual(store.get('route:sessions'), { 's-1': {} }) // 会话记录仍保留
+})
+
+test('setSessionControl：写入防御——store 缺 set → 不抛、返回 false', () => {
+  const broken = { get: (key) => undefined }
+  const router = createAgentRouter({ store: broken, agentsList: () => [] })
+  assert.equal(router.setSessionControl('s-1', { owner: 'u1' }), false)
+  assert.throws(() => router.setSessionControl('', { owner: 'u1' }), TypeError)
+  assert.throws(() => router.setSessionControl('s-1', 'not-object'), TypeError)
+})
+
+// ———————— 并发回归（阶段 5 P2：setSessionOutbound/setSessionControl 防 sibling clobber） ————————
+
+test('setSessionOutbound 并发：session A 更新后 session B 更新不覆盖 A 的 outbound', () => {
+  const { store, router } = makeRouter()
+  // session A：设置 outbound channels
+  router.setSessionOutbound('s-A', { channels: ['telegram'] })
+  // session B：设置不同 session 的 outbound（不应影响 s-A）
+  router.setSessionOutbound('s-B', { channels: ['bark'] })
+  // s-A 的 outbound 仍完好
+  assert.deepEqual(store.get('route:sessions')['s-A'].outbound, { channels: ['telegram'] })
+  assert.deepEqual(store.get('route:sessions')['s-B'].outbound, { channels: ['bark'] })
+  // s-A 追加 quiet（模拟并发更新：re-read 最新表后合并）
+  router.setSessionOutbound('s-A', { quiet: true })
+  const sA = store.get('route:sessions')['s-A']
+  assert.deepEqual(sA.outbound, { channels: ['telegram'], quiet: true }, 'A 的 channels 不被丢失')
+  // s-B 的 outbound 仍完好
+  assert.deepEqual(store.get('route:sessions')['s-B'].outbound, { channels: ['bark'] })
+})
+
+test('setSessionControl 并发：session A 更新后 session B 更新不覆盖 A 的 control', () => {
+  const { store, router } = makeRouter()
+  // session A：设置 control overlay
+  router.setSessionControl('s-A', { owner: 'u1', mode: 'team' })
+  // session B：设置不同 session 的 control（不应影响 s-A）
+  router.setSessionControl('s-B', { owner: 'u2' })
+  // s-A 的 control 仍完好
+  const sAControl = store.get('route:sessions')['s-A'].control
+  assert.equal(sAControl.owner, 'u1')
+  assert.equal(sAControl.mode, 'team')
+  // s-A 追加 approvalOwnerOnly（模拟并发更新）
+  router.setSessionControl('s-A', { approvalOwnerOnly: true })
+  const sAAfter = store.get('route:sessions')['s-A'].control
+  assert.equal(sAAfter.owner, 'u1', 'A 的 owner 不被丢失')
+  assert.equal(sAAfter.mode, 'team', 'A 的 mode 不被丢失')
+  assert.equal(sAAfter.approvalOwnerOnly, true, 'A 的新字段已写入')
+  // s-B 的 control 仍完好
+  assert.equal(store.get('route:sessions')['s-B'].control.owner, 'u2')
+})
+
+test('setSessionOutbound 与 setSessionControl 并发：分别更新不同字段不互相覆盖', () => {
+  const { store, router } = makeRouter()
+  // 先设 outbound
+  router.setSessionOutbound('s-1', { channels: ['telegram'] })
+  // 再设 control（不应清空 outbound）
+  router.setSessionControl('s-1', { owner: 'u1' })
+  const rec = store.get('route:sessions')['s-1']
+  assert.deepEqual(rec.outbound, { channels: ['telegram'] }, 'outbound 不被 control 写入清除')
+  assert.equal(rec.control.owner, 'u1', 'control 已写入')
+  // 再更新 outbound（不应清空 control）
+  router.setSessionOutbound('s-1', { quiet: true })
+  const rec2 = store.get('route:sessions')['s-1']
+  assert.deepEqual(rec2.outbound, { channels: ['telegram'], quiet: true }, 'outbound 已合并更新')
+  assert.equal(rec2.control.owner, 'u1', 'control 不被 outbound 写入清除')
+})
+
+// ———————— 阶段 3：跨进程 session 状态写入测试 ————————
+
+test('两个独立 registry 实例：registry A 写入后 registry B 读到最新值（跨进程模拟）', () => {
+  const state = {}
+  const store = makeStore(state)
+  const router = createAgentRouter({ store })
+  // registry A 写入
+  const registryA = createSessionRegistry({ store, touchWriteMs: 0, sweepEveryMs: 0 })
+  registryA.ensureSession({ id: 's-cross', session: { id: 's-cross' } })
+  router.setSessionControl('s-cross', { owner: 'from-A', mode: 'team' })
+  // registry B 读取（模拟另一个进程重启后读同一 store）
+  const registryB = createSessionRegistry({ store, touchWriteMs: 0, sweepEveryMs: 0 })
+  const ctrl = registryB.getControl('s-cross')
+  assert.equal(ctrl.owner, 'from-A', 'registry B 读到 registry A 写入的 overlay')
+  assert.equal(ctrl.mode, 'team')
+})
+
+test('墓碑（tombstone）在并发写入后仍保留在盘上', () => {
+  const state = {}
+  const store = makeStore(state)
+  const router = createAgentRouter({ store })
+  const registry = createSessionRegistry({ store, touchWriteMs: 0, sweepEveryMs: 0 })
+  // 建档 + dispose + 标记 disposed
+  registry.ensureSession({ id: 's-tomb', session: { id: 's-tomb' } })
+  router.setSessionControl('s-tomb', { owner: 'tomb-owner' })
+  registry.markDisposed('s-tomb')
+  // 写入后盘上应有 disposedAt
+  const stored = store.get('route:sessions')
+  assert.ok(stored['s-tomb'].disposedAt, 'disposedAt 已写入')
+  assert.equal(stored['s-tomb'].control.owner, 'tomb-owner', 'control 在 dispose 后仍保留')
+})
+
+test('router.setSessionControl 返回 false 当 store 写入失败', () => {
+  const failStore = {
+    get: () => ({}),
+    set: () => false, // 模拟持久化失败
+  }
+  const router = createAgentRouter({ store: failStore })
+  const result = router.setSessionControl('s-fail', { owner: 'fail' })
+  assert.equal(result, false, 'setSessionControl 返回 false 表示写入失败')
+})
+
+test('outbound 和 control 字段并发写入不互相覆盖', () => {
+  const { store, router } = makeRouter()
+  router.setSessionOutbound('s-dual', { channels: ['telegram'] })
+  router.setSessionControl('s-dual', { owner: 'dual-owner' })
+  const after = store.get('route:sessions')['s-dual']
+  assert.deepEqual(after.outbound, { channels: ['telegram'] })
+  assert.equal(after.control.owner, 'dual-owner')
+  // 并发更新 outbound 不影响 control
+  router.setSessionOutbound('s-dual', { quiet: true })
+  const afterOut = store.get('route:sessions')['s-dual']
+  assert.deepEqual(afterOut.outbound, { channels: ['telegram'], quiet: true })
+  assert.equal(afterOut.control.owner, 'dual-owner', 'control 不被 outbound 更新覆盖')
+  // 并发更新 control 不影响 outbound
+  router.setSessionControl('s-dual', { approvalOwnerOnly: true })
+  const afterCtrl = store.get('route:sessions')['s-dual']
+  assert.deepEqual(afterCtrl.outbound, { channels: ['telegram'], quiet: true })
+  assert.equal(afterCtrl.control.owner, 'dual-owner')
+  assert.equal(afterCtrl.control.approvalOwnerOnly, true)
 })
 
 // ———————— describe 与防御 ————————

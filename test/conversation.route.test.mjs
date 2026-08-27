@@ -12,6 +12,7 @@ import { createInboundBus } from '../src/inbound/bus.mjs'
 import { createStore } from '../src/inbound/store.mjs'
 import { createAgentRouter } from '../src/routing/agent-router.mjs'
 import { createSessionRegistry } from '../src/routing/session-registry.mjs'
+import { createControlEntry } from '../src/control/entry.mjs'
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 /** 合并窗冲刷等待：多数用例用小窗口 + 等待；mergeWindowMs: 0 的立即投递有专门回归用例。 */
@@ -82,6 +83,11 @@ function makeRig(options = {}) {
     }
 
   const replies = []
+  // v0.8.7 会话内部控制闸聚焦测试：显式传 options.control 或 options.policy 才接线
+  // Control Core（converse 默认关闭）；存量测试不传 → control 缺省，route() 走 routeUnsafe。
+  const control = options.control !== undefined
+    ? options.control
+    : (options.policy !== undefined ? createControlEntry({ policy: options.policy }) : undefined)
   const dispose = registerConversationRouter({
     ctx,
     bus,
@@ -92,6 +98,7 @@ function makeRig(options = {}) {
     router,
     registry,
     channelTypes,
+    ...(control === undefined ? {} : { control }),
   })
   const userSays = (text, { userId = '42' } = {}) =>
     bus.accept({ channel: 'telegram', userId, chatId: userId, messageId: `m${Math.random()}`, text })
@@ -442,5 +449,56 @@ test('/help 文案补全：/quiet /unquiet 两行与状态上报说明一行', (
   assert.match(text, /\/quiet <workspace\|sid> — 静默该会话的出站推送/)
   assert.match(text, /\/unquiet <workspace\|sid> — 恢复该会话的出站推送/)
   assert.match(text, /长任务自动心跳（默认 15min 起）与疑似卡住提醒（默认 10min 无事件）/)
+  rig.dispose()
+})
+
+// ---------------------------------------------------------------- v0.8.7 Control Core 会话闸
+
+test('Control Core 会话闸：personal 默认 converse 关闭 → 普通文本被拒并提示开启；不投递', async () => {
+  const agent = makeAgent(ALPHA_1, 'idle', '/home/u/proj/alpha')
+  const rig = makeRig({ agents: [agent], policy: {} }) // 默认 personal：converse 关
+  rig.fire('agent/created', agent)
+  rig.bus.accept({ channel: 'telegram', accountId: 'tg-app', userId: '42', chatId: '42', messageId: 'm-conv-0', text: '跑一下' })
+  await sleep(FLUSH_MS)
+  assert.match(rig.replies.at(-1).text, /远程对话默认关闭/, '无 converse 授权应回执提示')
+  assert.equal(agent.calls.followup.length + agent.calls.inject.length + agent.calls.steer.length, 0, '默认不投递')
+  rig.dispose()
+})
+
+test('Control Core 会话闸：converse 显式开启且本地 accountId 在场 → 正常投递', async () => {
+  const agent = makeAgent(ALPHA_1, 'idle', '/home/u/proj/alpha')
+  const rig = makeRig({ agents: [agent], policy: { capabilities: { converse: true } } })
+  rig.fire('agent/created', agent)
+  rig.bus.accept({ channel: 'telegram', accountId: 'tg-app', userId: '42', chatId: '42', messageId: 'm-conv-1', text: '跑一下' })
+  await sleep(FLUSH_MS)
+  assert.equal(agent.calls.followup.length, 1)
+  assert.equal(agent.calls.followup[0].content[0].text, '跑一下')
+  // steer（! 前缀）同样受控后投递
+  rig.bus.accept({ channel: 'telegram', accountId: 'tg-app', userId: '42', chatId: '42', messageId: 'm-conv-2', text: '! 改道' })
+  await sleep(FLUSH_MS)
+  assert.equal(agent.calls.steer.length, 1)
+  assert.equal(agent.calls.steer[0].content[0].text, '改道')
+  rig.dispose()
+})
+
+test('Control Core 会话闸：缺 accountId → fail-closed 不投递（channel 绝不充当账号）', async () => {
+  const agent = makeAgent(ALPHA_1, 'idle', '/home/u/proj/alpha')
+  const rig = makeRig({ agents: [agent], policy: { capabilities: { converse: true } } })
+  rig.fire('agent/created', agent)
+  rig.bus.accept({ channel: 'telegram', userId: '42', chatId: '42', messageId: 'm-conv-3', text: '跑一下' }) // 无 accountId
+  await sleep(FLUSH_MS)
+  assert.equal(agent.calls.followup.length + agent.calls.inject.length + agent.calls.steer.length, 0, '缺账号来源不得投递')
+  assert.match(rig.replies.at(-1).text, /远程控制被拒绝/, '来源缺失回执应说明拒绝')
+  rig.dispose()
+})
+
+test('Control Core 会话闸：QQ 群聊来源拒绝远程控制，不进投递', async () => {
+  const agent = makeAgent(ALPHA_1, 'idle', '/home/u/proj/alpha')
+  const rig = makeRig({ agents: [agent], policy: { capabilities: { converse: true, groupChatControl: true } } })
+  rig.fire('agent/created', agent)
+  rig.bus.accept({ channel: 'qq', accountId: 'QQ_APP', userId: '42', chatId: 'grp-1', chatType: 'group', messageId: 'm-qq-g', text: '跑一下' })
+  await sleep(FLUSH_MS)
+  assert.equal(agent.calls.followup.length + agent.calls.inject.length + agent.calls.steer.length, 0, '群聊远程控制拒绝')
+  assert.match(rig.replies.at(-1).text, /群聊不允许远程控制/)
   rig.dispose()
 })
