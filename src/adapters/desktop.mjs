@@ -42,10 +42,15 @@ const MAC_SOUND = 'Ping'
 
 /**
  * 校验并归一化配置；桌面渠道无凭证，唯一可选项 sound 钳制合法枚举。
+ * G-64：布尔形态显式解析——YAML 裸 `sound: true/false` 首版被静默吞成 auto，
+ * 用户写 false 却照样在紧急级出声是反直觉的。true→always / false→never 语义
+ * 与三态枚举自然对齐；其余非法值回落 auto（默认策略），不因拼错炸掉桌面通知。
  * @returns {{ sound: 'auto'|'always'|'never' }}
  */
 export function resolve(cfg = {}) {
   const raw = cfg?.sound
+  if (raw === true) return { sound: 'always' }
+  if (raw === false) return { sound: 'never' }
   return { sound: raw === 'always' || raw === 'never' ? raw : 'auto' }
 }
 

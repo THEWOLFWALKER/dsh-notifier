@@ -11,6 +11,8 @@
 import { createCallbackRefs } from './callback-refs.mjs'
 import { resolveNotifyTargets } from './target-guard.mjs'
 import { buildQuestionAction } from './_contract.mjs'
+import { stripCommandMention } from './commands.mjs'
+import { verdictFailureText, cardMissingText } from './verdict-text.mjs'
 
 const DEFAULT_API_BASE = 'https://api.telegram.org'
 const POLL_TIMEOUT_S = 25
@@ -97,7 +99,12 @@ export function createTelegramInbound({ config, bus, vault, store = null, logger
       })
       const payload = await response.json().catch(() => null)
       if (payload?.ok !== true) {
-        throw new Error(`telegram ${method} 失败: HTTP ${response.status} ${payload?.description ?? ''}`.trim())
+        const error = new Error(`telegram ${method} 失败: HTTP ${response.status} ${payload?.description ?? ''}`.trim())
+        // G-08：TG 限流应答带 parameters.retry_after（秒）。此处 api() 单发不自动重试，
+        // 但把 retryAfterMs 附着在错误上，调用方（回执文案/上游退避）可据此解释间隔。
+        const retryAfter = Number(payload?.parameters?.retry_after)
+        if (Number.isFinite(retryAfter) && retryAfter > 0) error.retryAfterMs = retryAfter * 1000
+        throw error
       }
       return payload.result
     } finally {
@@ -214,9 +221,14 @@ export function createTelegramInbound({ config, bus, vault, store = null, logger
           userId: query.from?.id,
           chatId: query.message?.chat?.id,
         })
+        // G-54：失败话术按 reason 分层（token-required/key-mismatch/source-chat-mismatch/
+        // already-resolved/expired 各自文案），不再一律「已处理或已过期」误导排障方向。
+        // 卡片承载缺失（query.message 空 = 原消息被删）用专用话术，不落「请到原会话」。
         const text = verdict.ok === true || verdict.status === 'accepted'
           ? (decision === 'allowed-once' ? '✅ 已批准（单次有效）' : '❌ 已拒绝')
-          : '该审批已处理或已过期（token 单次核销）'
+          : (query.message === undefined || query.message?.chat === undefined
+            ? cardMissingText()
+            : (verdict.message ?? verdictFailureText(verdict.reason, 'approval')))
         await api('answerCallbackQuery', { callback_query_id: query.id, text }).catch(() => {})
         if (query.message?.chat?.id !== undefined) {
           await api('editMessageText', {
@@ -237,6 +249,9 @@ export function createTelegramInbound({ config, bus, vault, store = null, logger
     const message = update.message
     if (message?.text !== undefined) {
       // v0.7：chatType 透传（/pair 私聊判定）；accept 返回值消费——拒绝/命令回执不再已读不回
+      // G-06：群聊命令 '/cmd@BotName args' 在 envelope 构造处剥掉命令词 @ 后缀——
+      // parseCommand 只覆盖注册面命令，会话路由命令（/stop /status 等）自行分词，
+      // 不剥的话 '/stop@bot' 会落成未知命令；args 与正文里的 @ 原样保留。
       const envelope = {
         channel: 'telegram',
         accountId: resolvedAccountId,
@@ -244,7 +259,7 @@ export function createTelegramInbound({ config, bus, vault, store = null, logger
         chatId: String(message.chat?.id ?? ''),
         chatType: String(message.chat?.type ?? ''),
         messageId: `msg:${message.message_id}:${message.chat?.id ?? ''}`,
-        text: String(message.text),
+        text: stripCommandMention(String(message.text)),
       }
       const result = bus.accept(envelope)
       if (result?.reply !== undefined) {

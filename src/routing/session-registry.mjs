@@ -29,6 +29,10 @@ const DEFAULT_SWEEP_EVERY_MS = 60000
 /** dispose 后定时兜底的上限：ttl 再长也最多 5min 醒一次。 */
 const MAX_SWEEP_DELAY_MS = 300000
 const HOUR_MS = 3_600_000
+/** G-47（W12）：无 disposedAt 的出站覆盖行（route:sessions[id].outbound，/quiet 与管理台
+ * 覆盖配置的落点）的回收 TTL——30d 不活跃即清。registry 建档的覆盖行带 lastActiveAt/createdAt
+ * 可判年龄；agent-router 直写的纯覆盖行无时间戳，由内存首见表兜底（见 sweepAll）。 */
+const OVERLAY_TTL_MS = 30 * 24 * 60 * 60 * 1000
 
 /** 解析非负毫秒数选项（0 合法，NaN/负数/缺省回落默认值）。 */
 const nonNegativeMs = (value, fallback) => {
@@ -136,6 +140,10 @@ export function createSessionRegistry(options = {}) {
   let lastSweepMs = -Infinity // 首次内联 prune 即真扫一次（清掉停机期间过期的记录）
   /** 回收删除待落盘的会话 id：写盘失败时保留、下次 persist 再删（对齐 dirty 保留语义）。 */
   const removedIds = new Set()
+  /** G-47（W12）：无时间戳纯覆盖行（agent-router 直写 route:sessions[id].outbound，无
+   * lastActiveAt/createdAt）的首见时刻——30d 清理的年龄基准。内存态不落盘：重启后重新
+   * 起算，最坏多留一个运行周期（30d 量级，可接受；不引第三方字段污染盘上数据形状）。 */
+  const overlaySeenAt = new Map()
   /** Fields changed by this registry instance since the last durable write.  Keeping this
    * per-record/per-field lets router writes to the same route:sessions key converge without
    * allowing an old cached outbound/control snapshot to overwrite newer store data. */
@@ -260,22 +268,72 @@ export function createSessionRegistry(options = {}) {
   }
 
   // ---- 回收（§4：disposed + ttl 到期才删；bind:* 不清——同 id resume 绑定仍有效）----
-  /** 真扫：删除 disposedAt 距 now 超过 ttl 的记录，返回被删的 sessionId 数组。 */
+  // G-47（W12）扩展两条线：
+  //   1. 无 disposedAt 的出站覆盖行（route:sessions[id].outbound）→ 30d 不活跃即清
+  //      （/quiet、管理台覆盖配置长期不回收的单调膨胀封口；宿主活跃的会话覆盖绝不误删）；
+  //   2. 带 outbound 的 disposed 行到期摘除时保留出站覆盖字段——用户的静默配置
+  //      不随会话回收丢失（行瘦身为纯覆盖行，再由 30d 覆盖行 TTL 后续清理）。
+  /** 真扫：删除 disposedAt 距 now 超过 ttl 的记录，返回被回收的 sessionId 数组。 */
   const sweepAll = () => {
     refreshSessions()
     lastSweepMs = now()
     const nowMs = lastSweepMs
     const removed = []
+    // 宿主活跃判定（agents.list）作覆盖行清理的护栏：live 列表可用时，活跃会话的
+    // outbound 覆盖绝不回收；不可用（null）时退回纯时间判定。
+    const live = liveAgentIds()
     for (const [id, record] of Object.entries(sessions)) {
       const disposedAt = record?.disposedAt
-      if (disposedAt === undefined || disposedAt === null) continue
-      if (nowMs - Number(disposedAt) > ttlMs) removed.push(id)
+      if (disposedAt === undefined || disposedAt === null) {
+        // G-47 线 1：无 disposedAt 的覆盖行 → 30d TTL。registry 建档行以
+        // lastActiveAt/createdAt 判年龄（活跃会话 touch 刷新，30d 内必不触发）；
+        // agent-router 直写的纯覆盖行无时间戳 → 以本实例首见时刻起算（overlaySeenAt）。
+        if (record?.outbound === undefined) continue
+        if (live !== null && live.includes(id)) continue
+        const ageAt = Number(record.lastActiveAt ?? record.createdAt)
+        let stale
+        if (Number.isFinite(ageAt) && ageAt > 0) {
+          stale = nowMs - ageAt > OVERLAY_TTL_MS
+        } else if (overlaySeenAt.has(id)) {
+          stale = nowMs - overlaySeenAt.get(id) > OVERLAY_TTL_MS
+        } else {
+          overlaySeenAt.set(id, nowMs) // 首见登记：自此起算 30d
+          stale = false
+        }
+        if (stale) {
+          // 真正删除：清内存行 + 墓碑（removedIds 让 persist 记录级合并时从盘上基底
+          // 删掉——否则行留在内存、persist 又从盘上基底写回，30d TTL 永不落盘）。
+          delete sessions[id]
+          dirtyFields.delete(id)
+          removedIds.add(id)
+          overlaySeenAt.delete(id)
+          removed.push(id)
+        }
+        continue
+      }
+      if (nowMs - Number(disposedAt) > ttlMs) {
+        if (record?.outbound !== undefined) {
+          // G-47 线 2：会话到期摘除但保留出站覆盖字段。行瘦身为纯覆盖行并以摘除时刻
+          // 作新活跃基准（lastActiveAt=nowMs）——静默配置多活 30d 后由线 1 回收。
+          sessions[id] = { outbound: record.outbound, lastActiveAt: nowMs }
+          dirtyFields.set(id, new Set(['outbound', 'lastActiveAt']))
+          for (const field of ['disposedAt', 'createdAt', 'workspace', 'inherit', 'inbound']) markDirty(id, field)
+          removed.push(id) // 会话已从台账摘除（返回值语义：被回收的会话 id；行本身保留覆盖）
+        } else {
+          delete sessions[id]
+          dirtyFields.delete(id)
+          overlaySeenAt.delete(id)
+          removedIds.add(id) // 回收墓碑：persist 记录级合并时从盘上基底删除（防盘上旧记录被基底复活）
+          removed.push(id)
+        }
+      }
     }
     if (removed.length > 0) {
       for (const id of removed) {
+        if (sessions[id] !== undefined) continue // 摘除保留覆盖的行已瘦身，不需二次处理
         delete sessions[id]
         dirtyFields.delete(id)
-        removedIds.add(id) // 回收墓碑：persist 记录级合并时从盘上基底删除（防盘上旧记录被基底复活）
+        removedIds.add(id)
       }
       persist()
     }

@@ -10,6 +10,7 @@ import { join } from 'node:path'
 import { registerConversationRouter } from '../src/inbound/conversation.mjs'
 import { createInboundBus } from '../src/inbound/bus.mjs'
 import { createStore } from '../src/inbound/store.mjs'
+import { createIdentity } from '../src/inbound/identity.mjs'
 import { createAgentRouter } from '../src/routing/agent-router.mjs'
 import { createSessionRegistry } from '../src/routing/session-registry.mjs'
 import { createControlEntry } from '../src/control/entry.mjs'
@@ -46,9 +47,20 @@ function makeAgent(id, status = 'idle', cwd = `/tmp/proj/${id}`) {
  *    传对象 = 直接使用（抛错防御场景）。
  */
 function makeRig(options = {}) {
-  const { agents = [], channelTypes = () => ['telegram', 'bark'], clockStart = 1_000_000 } = options
+  const { agents = [], channelTypes = () => ['telegram', 'bark'], clockStart = 1_000_000, busBinding = null } = options
   const store = createStore(tempPath())
-  const bus = createInboundBus({ allowUsers: ['42'], store })
+  // G-49 用例：busBinding 指定时给 bus 注入 identity 复合键准入（可发带空白 userId 的
+  // 信封）；缺省保持 legacy allowUsers 装配，存量用例行为不变。
+  const identity = busBinding === null
+    ? null
+    : (() => {
+      const created = createIdentity({ store, logger: null })
+      created.addBinding({ channel: 'telegram', userId: busBinding })
+      return created
+    })()
+  const bus = identity === null
+    ? createInboundBus({ allowUsers: ['42'], store })
+    : createInboundBus({ identity, store })
   const handlers = {}
   const agentMap = new Map(agents.map((agent) => [agent.id, agent]))
   const ctx = {
@@ -100,8 +112,8 @@ function makeRig(options = {}) {
     channelTypes,
     ...(control === undefined ? {} : { control }),
   })
-  const userSays = (text, { userId = '42' } = {}) =>
-    bus.accept({ channel: 'telegram', userId, chatId: userId, messageId: `m${Math.random()}`, text })
+  const userSays = (text, { userId = '42', chatId = userId } = {}) =>
+    bus.accept({ channel: 'telegram', userId, chatId, messageId: `m${Math.random()}`, text })
   const flush = async (text) => { userSays(text); await sleep(FLUSH_MS) } // 文本：等合并窗冲刷后再断言
   const fire = (event, payload) => (handlers[event] ?? []).forEach((h) => h(payload))
   return {
@@ -210,6 +222,28 @@ test('/agent use 零命中：报错并提示 /agent（含 <4 位前缀不可匹�
   rig.userSays('/agent use aa') // 3 位前缀不参与匹配
   assert.match(rig.replies.at(-1).text, /未匹配到会话 aa/)
   assert.equal(rig.store.get('bind:telegram:42'), undefined)
+  rig.dispose()
+})
+
+// ---------------------------------------------------------------- G-33 含空格目标名
+
+test('G-33：/agent use 目标名含空格——整体作为 needle，不再截断到首词', async () => {
+  const agent = makeAgent(ALPHA_1, 'idle', '/home/u/proj/my space') // workspace = "my space"
+  const other = makeAgent(BETA_1, 'idle', '/home/u/proj/beta')
+  const rig = makeRig({ agents: [agent, other] })
+  rig.fire('agent/created', agent)
+  rig.fire('agent/created', other)
+
+  // 旧行为：args[1] 只取 "my" → 未匹配到会话 my；新行为：剩余参数整体 join
+  rig.userSays('/agent use my space')
+  assert.equal(rig.store.get('bind:telegram:42'), ALPHA_1, '含空格 workspace 名命中')
+  assert.match(rig.replies.at(-1).text, /workspace=my space/)
+  await rig.flush('在吗')
+  assert.equal(agent.calls.followup.length, 1, '绑定后文本投给含空格 workspace 的会话')
+  assert.equal(other.calls.followup.length, 0)
+  // 首词单独发（截断形态）仍不命中——needle 语义没有被放宽成前缀包含
+  rig.userSays('/agent use my')
+  assert.match(rig.replies.at(-1).text, /未匹配到会话 my/)
   rig.dispose()
 })
 
@@ -380,6 +414,167 @@ test('mergeWindowMs: 0 = 关闭合并（README 契约回归）：每条消息立
   assert.equal(agent.calls.followup[1].content[0].text, '第二条')
   await sleep(FLUSH_MS) // 等满一个旧默认窗口，确认没有迟到的第三次投递
   assert.equal(agent.calls.followup.length, 2, '不应有窗口到期后的追加投递')
+  rig.dispose()
+})
+
+// ---------------------------------------------------------------- G-49 身份/路由键归一
+
+test('G-49：会话绑定键全链路一致命中——空白 userId 写读同键、registry 挂钩同身份', async () => {
+  const alpha = makeAgent(ALPHA_1, 'idle', '/home/u/proj/alpha')
+  // busBinding：bus 走 identity 复合键准入（空白 userId 信封可过闸到达 conversation）
+  const rig = makeRig({ agents: [alpha], busBinding: '42' })
+  rig.fire('agent/created', alpha)
+
+  // 写侧：信封 userId ' 42 ' → conversation 键经 identity.bindingKey 归一 → bind:telegram:42
+  // （旧实现会落 'bind:telegram: 42 '，与 router 读键裂开，绑定写完即丢）
+  rig.userSays(`/bind ${ALPHA_1}`, { userId: ' 42 ' })
+  assert.equal(rig.store.get('bind:telegram:42'), ALPHA_1, 'bind 键分量归一落盘')
+  assert.deepEqual(rig.calls.attach, [{ sid: ALPHA_1, binding: { channel: 'telegram', userId: '42' } }],
+    'registry 挂钩分量与 bind 键同一归一（不存带空白的 42）')
+
+  // 读侧：agent-router L1 与写键同源——干净/带空白 userId 都命中同一条绑定
+  assert.deepEqual(rig.router.resolveInbound('telegram', '42'),
+    { sessionId: ALPHA_1, source: 'bind', ambiguous: false })
+  assert.equal(rig.router.resolveInbound('telegram', ' 42 ').sessionId, ALPHA_1, '脏 userId 归一后命中')
+
+  // 投递全链路：空白 userId 信封 → 归一键命中 → 投给绑定会话
+  rig.userSays('在吗', { userId: ' 42 ' })
+  await sleep(FLUSH_MS)
+  assert.equal(alpha.calls.followup.length, 1, '空白 userId 信封照常投递到绑定会话')
+  assert.equal(alpha.calls.followup[0].content[0].text, '在吗')
+
+  // 摘挂半链路：attach 用 ' 42 '、/agent back 用 '42' → 同一身份，挂钩摘得掉
+  rig.userSays('/agent back')
+  assert.equal(rig.store.get('bind:telegram:42'), undefined)
+  assert.equal(rig.registry.getSession(ALPHA_1).inbound, undefined, '跨空白形态 attach/detach 同键摘挂')
+  rig.dispose()
+})
+
+// ---------------------------------------------------------------- G-48 覆盖绑定摘旧挂钩
+
+test('G-48：/bind 覆盖绑定摘旧挂钩——registry 不再一 user 双挂，/route 仅显示新会话', () => {
+  const alpha = makeAgent(ALPHA_1, 'idle', '/home/u/proj/alpha')
+  const beta = makeAgent(BETA_1, 'idle', '/home/u/proj/beta')
+  const rig = makeRig({ agents: [alpha, beta] })
+  rig.fire('agent/created', alpha)
+  rig.fire('agent/created', beta)
+
+  rig.userSays(`/bind ${ALPHA_1}`)
+  assert.deepEqual(rig.registry.getSession(ALPHA_1).inbound, [{ channel: 'telegram', userId: '42' }])
+
+  // 覆盖绑定：旧实现只 attach 新 sid，旧 sid 的反查挂钩永久残留（一 user 双挂）
+  rig.userSays(`/bind ${BETA_1}`)
+  assert.equal(rig.store.get('bind:telegram:42'), BETA_1, 'store 键已指向新会话')
+  assert.equal(rig.registry.getSession(ALPHA_1).inbound, undefined, '旧会话挂钩被摘除（不再双挂）')
+  assert.deepEqual(rig.registry.getSession(BETA_1).inbound, [{ channel: 'telegram', userId: '42' }], '新会话挂钩在位')
+  assert.deepEqual(rig.calls.detach, [{ sid: ALPHA_1, binding: { channel: 'telegram', userId: '42' } }],
+    '覆盖前对旧 sid 先 detach（与 /unbind 的摘挂同一契约）')
+
+  // /route 视图与台账一致：只解析/展示新会话
+  rig.userSays('/route')
+  const text = rig.replies.at(-1).text
+  assert.ok(text.includes(BETA_1), '/route 显示新会话')
+  assert.ok(!text.includes(ALPHA_1), '/route 不得再出现旧会话')
+  rig.dispose()
+})
+
+test('G-48：/agent use 覆盖绑定同样摘旧挂钩（workspace 切换不双挂）；重绑同目标不摘不挂写放大', () => {
+  const alpha = makeAgent(ALPHA_1, 'idle', '/home/u/proj/alpha')
+  const beta = makeAgent(BETA_1, 'idle', '/home/u/proj/beta')
+  const rig = makeRig({ agents: [alpha, beta] })
+  rig.fire('agent/created', alpha)
+  rig.fire('agent/created', beta)
+
+  rig.userSays('/agent use alpha')
+  assert.ok(rig.registry.getSession(ALPHA_1).inbound !== undefined)
+  rig.userSays('/agent use beta')
+  assert.equal(rig.store.get('bind:telegram:42'), BETA_1)
+  assert.equal(rig.registry.getSession(ALPHA_1).inbound, undefined, '旧 workspace 会话挂钩摘除')
+  assert.deepEqual(rig.registry.getSession(BETA_1).inbound, [{ channel: 'telegram', userId: '42' }])
+  assert.deepEqual(rig.calls.detach, [{ sid: ALPHA_1, binding: { channel: 'telegram', userId: '42' } }])
+
+  // 幂等重绑同目标：不做摘挂（detach 不追加），registry attach 去重后挂钩不翻倍
+  rig.userSays('/agent use beta')
+  assert.equal(rig.store.get('bind:telegram:42'), BETA_1)
+  assert.equal(rig.calls.detach.length, 1, '重绑同目标不触发 detach')
+  assert.deepEqual(rig.registry.getSession(BETA_1).inbound, [{ channel: 'telegram', userId: '42' }],
+    '重复 attach 由 registry 去重，挂钩不翻倍')
+  rig.dispose()
+})
+
+test('G-48：registry.detachInbound 幂等契约——重复摘除/无记录/分量不匹配均安全无操作', () => {
+  const alpha = makeAgent(ALPHA_1, 'idle', '/home/u/proj/alpha')
+  const rig = makeRig({ agents: [alpha] })
+  rig.fire('agent/created', alpha)
+  rig.userSays(`/bind ${ALPHA_1}`)
+  const binding = { channel: 'telegram', userId: '42' }
+
+  // 第一次摘除 → 挂钩消失
+  assert.equal(rig.registry.detachInbound(ALPHA_1, binding).inbound, undefined)
+  // 第二次（已摘）→ 无异常、无变更（幂等：detached 不存在也成功）
+  assert.equal(rig.registry.detachInbound(ALPHA_1, binding).inbound, undefined)
+  // 记录不存在的 sid → undefined 不抛
+  assert.equal(rig.registry.detachInbound('no-such-sid', binding), undefined)
+  // 分量不匹配的摘除 → 无操作，他人挂钩不受牵连
+  rig.registry.attachInbound(ALPHA_1, { channel: 'feishu', userId: 'ou_x' })
+  rig.registry.detachInbound(ALPHA_1, { channel: 'telegram', userId: '42' })
+  assert.deepEqual(rig.registry.getSession(ALPHA_1).inbound, [{ channel: 'feishu', userId: 'ou_x' }],
+    '不匹配分量不得误摘他人挂钩')
+  rig.dispose()
+})
+
+// ---------------------------------------------------------------- G-51 合并窗跨 chat 串台
+
+test('G-51：同 userId 双 chat（私聊+群）窗口交替发言 → 两条独立投递、各自回执', async () => {
+  const older = makeAgent(ALPHA_1, 'idle', '/home/u/proj/alpha')
+  const newer = makeAgent(ALPHA_2, 'idle', '/home/u/proj/alpha')
+  const rig = makeRig({ agents: [older, newer] })
+  rig.fire('agent/created', older)
+  rig.advance(100)
+  rig.fire('agent/created', newer)
+  // 通道默认指向双活跃 workspace → 每次投递带消歧回执（回执去向 = 各自 chatId）
+  rig.router.setChannelDefault('telegram', 'alpha')
+
+  // 窗口内交替发言：私聊两条 + 群两条。旧键 `${channel}:${userId}` 无 chat 维度，
+  // 四条会并进同一条合并线，拼成「私聊碎片一\n群碎片一\n私聊碎片二\n群碎片二」混合投递
+  // 且只有一条回执（落在最后一条消息的 chat）——跨 chat 串台。
+  rig.userSays('私聊碎片一', { chatId: '42' })
+  rig.userSays('群碎片一', { chatId: 'grp-1' })
+  rig.userSays('私聊碎片二', { chatId: '42' })
+  rig.userSays('群碎片二', { chatId: 'grp-1' })
+  await sleep(FLUSH_MS)
+
+  // 两条独立投递：私聊窗只并私聊碎片、群窗只并群碎片，绝不交叉拼接
+  assert.equal(newer.calls.followup.length, 2, '两条独立投递（旧键下是 1 条混合投递）')
+  assert.deepEqual(
+    newer.calls.followup.map((m) => m.content[0].text).sort(),
+    ['私聊碎片一\n私聊碎片二', '群碎片一\n群碎片二'],
+    '各窗只合并本 chat 的碎片',
+  )
+  assert.equal(older.calls.followup.length, 0)
+  // 各自回执：私聊窗的投递回执回私聊 chat，群窗的回群 chat（不串台）
+  assert.ok(rig.replies.some((r) => r.chatId === '42' && r.text.includes('已投')), '私聊投递回执回到私聊 chat')
+  assert.ok(rig.replies.some((r) => r.chatId === 'grp-1' && r.text.includes('已投')), '群投递回执回到群 chat')
+  rig.dispose()
+})
+
+test('G-51：chatId 缺失（undefined）仍聚合进 "" 维度——现状语义保持 + 不并入显式 chat 窗', async () => {
+  const agent = makeAgent(ALPHA_1, 'idle', '/home/u/proj/alpha')
+  const rig = makeRig({ agents: [agent] })
+  rig.fire('agent/created', agent)
+
+  // 不带 chatId 的信封（无 chat 概念的适配器 / 旧装配）：碎片仍并进同一条 '' 窗
+  rig.bus.accept({ channel: 'telegram', userId: '42', messageId: 'm-g51-miss-1', text: '碎片一' })
+  rig.bus.accept({ channel: 'telegram', userId: '42', messageId: 'm-g51-miss-2', text: '碎片二' })
+  await sleep(FLUSH_MS)
+  assert.equal(agent.calls.followup.length, 1, 'chatId 缺失仍合并（现状语义不被本修裂窗）')
+  assert.equal(agent.calls.followup[0].content[0].text, '碎片一\n碎片二')
+
+  // '' 维度与显式 chat 维度是不同键：带 chatId 的碎片单独成窗，不并进 '' 窗
+  rig.bus.accept({ channel: 'telegram', userId: '42', chatId: '42', messageId: 'm-g51-explicit', text: '带维度的碎片' })
+  await sleep(FLUSH_MS)
+  assert.equal(agent.calls.followup.length, 2, '显式 chat 维度独立成窗')
+  assert.equal(agent.calls.followup[1].content[0].text, '带维度的碎片')
   rig.dispose()
 })
 

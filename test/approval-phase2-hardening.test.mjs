@@ -180,3 +180,56 @@ test('replay of consumed approval action is rejected (single-use token)', async 
   const result = await outcome
   assert.equal(result, 'allowed-once', 'original settlement stands')
 })
+
+// G-41 (2026-08-28): the button-recipient check is no longer gated on
+// `targets.length > 0`. An empty pushedTo (incremental-ledger window or a failed
+// persistPushed) means the delivery target cannot be proven, so the click is
+// rejected fail-closed with an actionable receipt; the non-empty match/mismatch
+// branches keep their existing behavior.
+test('G-41: empty pushedTo fails closed — receipt visible, no settlement, desktop fallback', async () => {
+  const tg = makeFake('telegram', { accountId: 'TG_APP' })
+  const rig = makeRig({ telegram: tg, approvalConfig: { timeoutMs: 400 } })
+  const outcome = rig.handle({ callId: 'g41-empty' })
+  await new Promise((r) => setTimeout(r, 50))
+  const card = tg.state.cards[0]
+  assert.ok(card, 'card pushed (token is in the user hands)')
+  // Simulate the incremental-ledger window / a failed persistPushed: card already
+  // delivered but the ledger row still carries an empty pushedTo.
+  const row = rig.store.get(card.approvalKey)
+  rig.store.set(card.approvalKey, { ...row, pushedTo: [] })
+  rig.bus.accept({
+    channel: 'telegram', accountId: 'TG_APP', userId: 'u1', chatId: '10001', messageId: 'msg-g41-empty',
+    text: 'approve', approvalAction: parseApprovalAction(buildApprovalAction('allowed-once', card.approvalKey, card.token)),
+  })
+  assert.ok(
+    tg.state.texts.some((t) => /未找到该审批的投递记录/.test(t.text)),
+    'rejection receipt is visible to the user',
+  )
+  assert.equal(rig.store.get(card.approvalKey).status, 'pending', 'no terminal state, token not consumed')
+  assert.equal(await outcome, 'desktop', 'unresolved approval falls back to the desktop')
+})
+
+test('G-41: non-empty pushedTo keeps both branches — wrong user rejected, recipient still settles', async () => {
+  const tg = makeFake('telegram', { accountId: 'TG_APP' })
+  const rig = makeRig({ telegram: tg, approvalConfig: { timeoutMs: 4000 } })
+  const outcome = rig.handle({ callId: 'g41-branches' })
+  await new Promise((r) => setTimeout(r, 50))
+  const card = tg.state.cards[0]
+  // Card delivered to u1; same channel/account, a different user (u2) clicks → rejected.
+  rig.bus.accept({
+    channel: 'telegram', accountId: 'TG_APP', userId: 'u2', chatId: '10001', messageId: 'msg-g41-wrong',
+    text: 'x', approvalAction: parseApprovalAction(buildApprovalAction('allowed-once', card.approvalKey, card.token)),
+  })
+  assert.ok(
+    tg.state.texts.some((t) => /仅审批接收人可点击裁决/.test(t.text)),
+    'mismatch receipt keeps its existing wording',
+  )
+  assert.equal(rig.store.get(card.approvalKey).status, 'pending', 'mismatch does not settle')
+  // The actual recipient (u1) can still settle afterwards — rejection did not consume the token.
+  rig.bus.accept({
+    channel: 'telegram', accountId: 'TG_APP', userId: 'u1', chatId: '10001', messageId: 'msg-g41-right',
+    text: 'approve', approvalAction: parseApprovalAction(buildApprovalAction('allowed-once', card.approvalKey, card.token)),
+  })
+  assert.equal(await outcome, 'allowed-once', 'matched recipient still settles')
+  assert.equal(rig.store.get(card.approvalKey).decision, 'allowed-once')
+})

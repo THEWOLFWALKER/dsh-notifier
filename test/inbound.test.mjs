@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createStore, defaultStateDir } from '../src/inbound/store.mjs'
 import { createTokenVault } from '../src/inbound/tokens.mjs'
-import { createInboundBus } from '../src/inbound/bus.mjs'
+import { createInboundBus, MESSAGE_PRIORITY } from '../src/inbound/bus.mjs'
 
 function tempStorePath() {
   const dir = mkdtempSync(join(tmpdir(), 'dsh-notifier-inbound-'))
@@ -352,6 +352,63 @@ test('bus：同 messageId 重复投递被拒（内存 FIFO 快速路径）', () 
   // 不同 messageId 正常通过
   assert.deepEqual(bus.accept(envelope({ messageId: 'msg:2:42' })), { ok: true })
   assert.equal(seen.length, 2)
+})
+
+test('G-15：onMessage 显式 priority 决定扇出序——与注册顺序无关', () => {
+  const bus = createInboundBus({ allowUsers: ['42'] })
+  const order = []
+  // 故意倒序注册：conversation(100) 先注册、cardAction(10) 最后——旧插入序语义下
+  // 会话路由会先看到消息；显式 priority 下仍应 cardAction → numberedReply → conversation。
+  bus.onMessage(() => { order.push('conversation'); return false }, { priority: MESSAGE_PRIORITY.conversation })
+  bus.onMessage(() => { order.push('numberedReply'); return false }, { priority: MESSAGE_PRIORITY.numberedReply })
+  bus.onMessage(() => { order.push('cardAction'); return false }, { priority: MESSAGE_PRIORITY.cardAction })
+  assert.deepEqual(bus.accept(envelope()), { ok: true })
+  assert.deepEqual(order, ['cardAction', 'numberedReply', 'conversation'])
+})
+
+test('G-15：同 priority 按注册先后稳定排序（审批先于提问的既有语义保留）', () => {
+  const bus = createInboundBus({ allowUsers: ['42'] })
+  const order = []
+  bus.onMessage(() => { order.push('approval') ; return false }, { priority: MESSAGE_PRIORITY.numberedReply })
+  bus.onMessage(() => { order.push('questions'); return false }, { priority: MESSAGE_PRIORITY.numberedReply })
+  bus.accept(envelope())
+  assert.deepEqual(order, ['approval', 'questions'])
+})
+
+test('G-15：未传 priority 缺省 default=50，高于会话路由低于编号回复（向后兼容）', () => {
+  const bus = createInboundBus({ allowUsers: ['42'] })
+  const order = []
+  bus.onMessage(() => { order.push('legacy') })
+  bus.onMessage(() => { order.push('conversation'); return false }, { priority: MESSAGE_PRIORITY.conversation })
+  bus.onMessage(() => { order.push('numbered'); return false }, { priority: MESSAGE_PRIORITY.numberedReply })
+  bus.accept(envelope())
+  assert.deepEqual(order, ['numbered', 'legacy', 'conversation'])
+})
+
+test('G-46：合成 messageId 走短去重窗——同文本第二条在短窗后放行', () => {
+  const seen = []
+  const bus = createInboundBus({ allowUsers: ['42'], syntheticDedupWindowMs: 1000 })
+  bus.onMessage((env) => seen.push(env))
+  const synthetic = (id) => envelope({ messageId: id, messageIdSynthetic: true })
+  // 同一合成键：窗内重投（HTTP 重试形态）被吸收
+  assert.equal(bus.accept(synthetic('wx:u1:abc123')).ok, true)
+  assert.deepEqual(bus.accept(synthetic('wx:u1:abc123')), { ok: false, reason: 'duplicate' })
+  // 窗过期后：同键不再拦截（原生 msgId 的 24h 窗语义不适用于内容哈希兜底键）
+  const { path } = tempStorePath()
+  const store = createStore(path)
+  store.set('dedup:telegram:wx:u1:abc123', Date.now() - 2000)
+  const bus2 = createInboundBus({ allowUsers: ['42'], store, syntheticDedupWindowMs: 1000 })
+  bus2.onMessage((env) => seen.push(env))
+  assert.equal(bus2.accept(synthetic('wx:u1:abc123')).ok, true)
+  assert.equal(seen.length, 2)
+})
+
+test('G-46：原生 messageId（无 synthetic 标记）仍走 24h 长窗', () => {
+  const { path } = tempStorePath()
+  const store = createStore(path)
+  store.set('dedup:telegram:msg:native:1', Date.now() - 90_000) // 90s 前：远超合成窗、远小于 24h
+  const bus = createInboundBus({ allowUsers: ['42'], store, syntheticDedupWindowMs: 1000 })
+  assert.deepEqual(bus.accept(envelope({ messageId: 'msg:native:1' })), { ok: false, reason: 'duplicate' })
 })
 
 test('bus：去重跨重启（store 持久层）——新 bus 实例共享 store 仍判重', () => {

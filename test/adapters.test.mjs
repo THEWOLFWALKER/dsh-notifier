@@ -8,7 +8,8 @@ import * as pushplus from '../src/adapters/pushplus.mjs'
 import * as serverchan from '../src/adapters/serverchan.mjs'
 import * as bark from '../src/adapters/bark.mjs'
 import * as webhook from '../src/adapters/webhook.mjs'
-import { NotifyError } from '../src/adapters/_shared.mjs'
+import * as qqBot from '../src/adapters/qq-bot.mjs'
+import { postJson, NotifyError } from '../src/adapters/_shared.mjs'
 
 /** 用 stub fetch 捕获一次 send 的 url/body/contentType；json 可指定成功响应体。 */
 function capture(json) {
@@ -229,4 +230,167 @@ test('各 adapter 都导出 type', () => {
   assert.equal(serverchan.type, 'serverchan')
   assert.equal(bark.type, 'bark')
   assert.equal(webhook.type, 'webhook')
+  assert.equal(qqBot.type, 'qq-bot')
 })
+
+// ===== W6 出站投递语义（G-50/08/09/56）=====
+
+/** 两段式 fetch stub：第一次 token 换取，第二次消息投递（响应用 raw 字符串而非 Response.json 契约）。 */
+function captureQq(messageResponse, tokenPayload = { access_token: 'T1', expires_in: 7200 }) {
+  const originalFetch = globalThis.fetch
+  const seen = []
+  globalThis.fetch = async (url) => {
+    seen.push(String(url))
+    if (String(url).includes('getAppAccessToken')) {
+      return { ok: true, status: 200, json: async () => tokenPayload }
+    }
+    return messageResponse
+  }
+  return { async done() { globalThis.fetch = originalFetch; return seen } }
+}
+
+test('qq-bot: 两段式成功投递（token 换取 + v2 消息）', async () => {
+  const cap = captureQq({ ok: true, status: 200, json: async () => ({ id: 'msg1', timestamp: '1' }) })
+  const resolved = qqBot.resolve({ appId: 'A1', appSecret: 'S1', groupId: 'G1' })
+  await qqBot.send(resolved, MSG)
+  const seen = await cap.done()
+  assert.equal(seen.length, 2)
+  assert.match(seen[0], /getAppAccessToken/)
+  assert.match(seen[1], /\/v2\/groups\/G1\/messages/)
+  assert.equal(resolved._msgSeq, 1)
+})
+
+test('qq-bot: 2xx 非 JSON（网关错误页）抛 BAD_UPSTREAM_RESPONSE，不再乐观当成功（G-56）', async () => {
+  const cap = captureQq({ ok: true, status: 200, json: async () => { throw new SyntaxError('Unexpected token < in JSON') } })
+  const resolved = qqBot.resolve({ appId: 'A1', appSecret: 'S1', groupId: 'G1' })
+  await assert.rejects(() => qqBot.send(resolved, MSG), (error) => {
+    assert.ok(error instanceof NotifyError)
+    assert.equal(error.code, 'BAD_UPSTREAM_RESPONSE')
+    assert.match(error.message, /2xx 但响应非 JSON/)
+    return true
+  })
+  await cap.done()
+})
+
+test('qq-bot: 失败不推进 msg_seq（重试幂等基线锚定）', async () => {
+  const cap = captureQq({ ok: true, status: 200, json: async () => { throw new SyntaxError('bad') } })
+  const resolved = qqBot.resolve({ appId: 'A1', appSecret: 'S1', targetType: 'user', userId: 'U1' })
+  await assert.rejects(() => qqBot.send(resolved, MSG), /非 JSON/)
+  await cap.done()
+  assert.equal(resolved._msgSeq, 0)
+})
+
+test('qq-bot: expires_in=0 不再 || 7200 静默活两小时——TTL 归一 fail-closed 抛错（G-55）', async () => {
+  const cap = captureQq({ ok: true, status: 200, json: async () => ({ id: 'm' }) }, { access_token: 'T1', expires_in: 0 })
+  const resolved = qqBot.resolve({ appId: 'A1', appSecret: 'S1', groupId: 'G1' })
+  await assert.rejects(() => qqBot.send(resolved, MSG), /TTL 非法/, '上游损坏响应必须失败可见，不得默认值掩盖')
+  await cap.done()
+})
+
+test('serverchan: sctp 前缀 SENDKEY 走 sctp.ftqq.com 域名（G-09 SC3）', async () => {
+  const cap = capture({ code: 0 })
+  await serverchan.send(serverchan.resolve({ sct: 'SCTP1234' }), MSG)
+  const seen = await cap.done()
+  assert.equal(seen.url, 'https://sctp.ftqq.com/SCTP1234.send')
+})
+
+test('serverchan: Turbo key 维持 sctapi 域名（G-09 回归锚定）', async () => {
+  const cap = capture({ code: 0 })
+  await serverchan.send(serverchan.resolve({ sct: 'SCT123' }), MSG)
+  const seen = await cap.done()
+  assert.equal(seen.url, 'https://sctapi.ftqq.com/SCT123.send')
+})
+
+test('serverchan: 三别名同时配置出声一次并按 sct 优先（G-09）', async () => {
+  const errors = []
+  const originalError = console.error
+  console.error = (...args) => { errors.push(args.join(' ')) }
+  try {
+    const cap = capture({ code: 0 })
+    const resolved = serverchan.resolve({ sct: 'SCT1', sendKey: 'SK2', sctKey: 'SK3' })
+    assert.equal(resolved.sct, 'SCT1')
+    await serverchan.send(resolved, MSG)
+    await serverchan.send(resolved, MSG) // 第二次不再出声
+    await cap.done()
+  } finally {
+    console.error = originalError
+  }
+  assert.equal(errors.length, 1)
+  assert.match(errors[0], /sct、sendKey、sctKey/)
+  assert.match(errors[0], /优先级取 sct/)
+})
+
+test('telegram: 429 限流应答解析 parameters.retry_after → retryAfterMs（G-08）', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    ok: false, error_code: 429, description: 'Too Many Requests: retry after 3',
+    parameters: { retry_after: 3 },
+  }), { status: 429, headers: { 'content-type': 'application/json' } })
+  try {
+    await assert.rejects(
+      () => telegram.send(telegram.resolve({ botToken: '123:ABC', chatId: '-100' }), MSG),
+      (error) => {
+        assert.equal(error.status, 429)
+        assert.equal(error.retryAfterMs, 3000)
+        // G-53 分层：公开文案=渠道中文名+状态码；响应体片段只在 detail
+        assert.equal(error.message, 'Telegram推送失败（HTTP 429）')
+        assert.doesNotMatch(error.message, /retry after 3/)
+        assert.doesNotMatch(error.publicMessage, /Too Many Requests/)
+        assert.match(error.detail, /Too Many Requests: retry after 3/)
+        return true
+      },
+    )
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('postJson: 网络层错误公开文案不带底层 message（代理地址/机器路径不外泄，G-53）', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => {
+    throw new Error('getaddrinfo ENOTFOUND proxy.corp.internal:8080 (via /etc/resolv.conf)')
+  }
+  try {
+    await assert.rejects(
+      () => postJson('https://api.example.com/x', {}, { channel: 'telegram', timeoutMs: 500 }),
+      (error) => {
+        assert.ok(error instanceof NotifyError)
+        assert.equal(error.code, 'NETWORK_ERROR')
+        assert.equal(error.message, 'Telegram网络连接失败')
+        assert.doesNotMatch(error.publicMessage, /proxy\.corp\.internal|resolv\.conf/)
+        assert.match(error.detail, /proxy\.corp\.internal:8080/)
+        return true
+      },
+    )
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('postJson: 超时抛 noRetry 错误（结果未知，不盲目重试，G-50）', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (url, init) => new Promise((resolve, reject) => {
+    init.signal.addEventListener('abort', () => {
+      const error = new Error('aborted')
+      error.name = 'AbortError'
+      reject(error)
+    })
+  })
+  try {
+    await assert.rejects(
+      () => postJson('https://example.invalid/x', {}, { timeoutMs: 30, channel: 'test' }),
+      (error) => {
+        assert.ok(error instanceof NotifyError)
+        assert.equal(error.code, 'TIMEOUT')
+        assert.equal(error.noRetry, true)
+        assert.match(error.message, /结果未知/)
+        return true
+      },
+    )
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+// S-02：urlguard DNS 恒公网夹具（假域名不打真网，见 helpers/urlguard-public.mjs）
+import './helpers/urlguard-public.mjs'

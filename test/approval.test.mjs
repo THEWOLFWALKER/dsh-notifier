@@ -13,6 +13,7 @@ import { createTokenVault } from '../src/inbound/tokens.mjs'
 import { createStore } from '../src/inbound/store.mjs'
 import { createIdentity } from '../src/inbound/identity.mjs'
 import { createControlEntry } from '../src/control/entry.mjs'
+import { buildApprovalAction, parseApprovalAction } from '../src/inbound/_contract.mjs'
 
 function tempPath() {
   return join(mkdtempSync(join(tmpdir(), 'dsh-notifier-ap-')), 'state.json')
@@ -259,6 +260,72 @@ test('router：伪造/篡改 token 被拒（bad-signature / key-mismatch），�
   assert.equal(rig.bus.decide({ approvalKey: card.approvalKey, decision: 'allowed-once', token: 'garbage.sig' }).reason, 'bad-signature')
   assert.equal(rig.bus.decide({ approvalKey: card.approvalKey, decision: 'allowed-once', token: forged }).reason, 'key-mismatch')
   assert.equal(await pending, 'desktop') // 全被拒 → 超时回退
+  rig.dispose()
+})
+
+// G-41（2026-08-28）：按钮裁决接收人校验不再被 `targets.length > 0` 门控。pushedTo
+// 空表（增量落账窗口/写盘失败的临时形态）= 无法证明投递对象 → fail-closed 回拒并给
+// 可行动回执；非空表的 userId 匹配/不匹配两分支维持既有行为。
+test('router：G-41 pushedTo 空表按钮裁决 → fail-closed 回拒（回执可见 + warn 留痕），不落终态', async () => {
+  const texts = []
+  const warns = []
+  const rig = makeRig({
+    approvalConfig: { timeoutMs: 800, escalation: { enabled: false } },
+    sendText: async (chatId, text) => { texts.push({ chatId, text }); return true },
+    logger: { warn: (...args) => warns.push(args.join(' ')) },
+  })
+  const pending = rig.handle({ toolName: 'rm', callId: 'c1', reason: 'x' })
+  await sleep(20)
+  const card = rig.cards[0]
+  // 模拟增量落账窗口/写盘失败：卡已送达（token 在用户手里），账本 pushedTo 仍为空表
+  const row = rig.store.get(card.approvalKey)
+  rig.store.set(card.approvalKey, { ...row, pushedTo: [] })
+  rig.bus.accept({
+    channel: 'telegram', accountId: 'TG_APP', userId: '42', chatId: '100', messageId: 'msg:g41:1',
+    text: 'approve', approvalAction: parseApprovalAction(buildApprovalAction('allowed-once', card.approvalKey, card.token)),
+  })
+  await sleep(10)
+  assert.equal(texts.length, 1)
+  assert.match(texts[0].text, /未找到该审批的投递记录/)
+  assert.equal(warns.some((w) => /无法核验/.test(w)), true, '回拒必须留痕（静默即事故）')
+  assert.equal(rig.store.get(card.approvalKey).status, 'pending', '回拒不落终态、不核销 token')
+  assert.equal(await pending, 'desktop', '审批未被裁决，超时交还桌面')
+  rig.dispose()
+})
+
+test('router：G-41 非空表 userId 不匹配 → 「仅审批接收人可点击裁决」回拒不裁决（既有行为维持）', async () => {
+  const texts = []
+  const rig = makeRig({
+    approvalConfig: { timeoutMs: 800, escalation: { enabled: false } },
+    sendText: async (chatId, text) => { texts.push({ chatId, text }); return true },
+  })
+  const pending = rig.handle({ toolName: 'rm', callId: 'c1', reason: 'x' })
+  await sleep(20)
+  const card = rig.cards[0]
+  // 卡片实际送达 chat 100（legacy 形状下 userId = chatId = 100）；同渠道其他用户 42 点击
+  rig.bus.accept({
+    channel: 'telegram', accountId: 'TG_APP', userId: '42', chatId: '100', messageId: 'msg:g41:2',
+    text: 'approve', approvalAction: parseApprovalAction(buildApprovalAction('allowed-once', card.approvalKey, card.token)),
+  })
+  await sleep(10)
+  assert.equal(texts.length, 1)
+  assert.match(texts[0].text, /仅审批接收人可点击裁决/)
+  assert.equal(rig.store.get(card.approvalKey).status, 'pending', '不匹配不落终态')
+  assert.equal(await pending, 'desktop', '审批未被裁决，超时交还桌面')
+  rig.dispose()
+})
+
+test('router：G-41 非空表 userId 匹配 → 正常裁决放行（既有行为维持）', async () => {
+  const rig = makeRig({ approvalConfig: { timeoutMs: 5000, escalation: { enabled: false } } })
+  const pending = rig.handle({ toolName: 'rm', callId: 'c1', reason: 'x' })
+  await sleep(20)
+  const card = rig.cards[0]
+  rig.bus.accept({
+    channel: 'telegram', accountId: 'TG_APP', userId: '100', chatId: '100', messageId: 'msg:g41:3',
+    text: 'approve', approvalAction: parseApprovalAction(buildApprovalAction('allowed-once', card.approvalKey, card.token)),
+  })
+  assert.equal(await pending, 'allowed-once')
+  assert.equal(rig.store.get(card.approvalKey).decision, 'allowed-once')
   rig.dispose()
 })
 

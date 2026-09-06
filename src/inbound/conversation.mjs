@@ -16,6 +16,8 @@ import { randomUUID } from 'node:crypto'
 import { workspaceOf } from '../routing/session-registry.mjs'
 import { CHANNEL_TYPES } from '../config.mjs'
 import { chatScopeOf } from '../control/session-arbiter.mjs'
+import { bindingKey as identityBindingKey } from './identity.mjs'
+import { MESSAGE_PRIORITY } from './bus.mjs'
 
 const DEFAULT_MERGE_WINDOW_MS = 1500
 const SUMMARY_MAX_CHARS = 120
@@ -98,7 +100,10 @@ export function registerConversationRouter(deps) {
   const agentOf = (sessionId) => {
     try { return typeof ctx?.agents?.get === 'function' ? ctx.agents.get(sessionId) : undefined } catch { return undefined }
   }
-  const bindingKey = (envelope) => `bind:${envelope.channel}:${envelope.userId}`
+  // G-49：会话绑定持久化键。分量归一收敛到 identity.bindingKey（trim + channel 小写），
+  // 与 agent-router resolveInbound L1 的读键同源——' user ' 与 'user' 写读同键永不裂
+  // （休眠边界封口：现网适配器输出恰好归一，此改不改变现网行为）。
+  const bindingKey = (envelope) => `bind:${identityBindingKey(envelope.channel, envelope.userId)}`
 
   // ---- v0.3.2 命令族支撑（军规：registry/router 任何缺失或抛错一律降级，绝不弄崩投递主线）----
 
@@ -131,8 +136,17 @@ export function registerConversationRouter(deps) {
     return agent !== undefined ? workspaceOf(agent) : ''
   }
 
-  /** 当前对话的入站挂钩（与 bind:<channel>:<userId> 键同源，registry.attach/detach 用）。 */
-  const inboundBindingOf = (envelope) => ({ channel: envelope.channel, userId: String(envelope.userId ?? '') })
+  /**
+   * 当前对话的入站挂钩（与 bind:<channel>:<userId> 键同源，registry.attach/detach 用）。
+   * G-49：分量归一镜像 identity.bindingKey 的规则（channel trim + 小写、userId trim）——
+   * attach 与 detach 的分量必落在同一身份上，' user ' 与 'user' 同挂钩（否则覆盖绑定/
+   * 解绑时摘不掉自己挂上的钩）。不从复合键反切分量（userId 可含冒号，反切会截断），
+   * 规则漂移由 test/conversation.route.test.mjs 的 G-49 全链路用例锁死。
+   */
+  const inboundBindingOf = (envelope) => ({
+    channel: String(envelope.channel ?? '').trim().toLowerCase(),
+    userId: String(envelope.userId ?? '').trim(),
+  })
 
   /**
    * 活跃会话快照（/agent 列表与 /agent use 的数据源）。registry 注入时用台账
@@ -229,7 +243,16 @@ export function registerConversationRouter(deps) {
         say(`会话 ${target} 不存在（用 /status 查看活跃会话）`)
         return true
       }
+      // G-48：覆盖绑定先摘旧会话的入站挂钩。否则 store 换了目标，registry 反查表里同一
+      // (channel,userId) 却同时挂在旧 sid 与新 sid 上（一 user 双挂）——旧会话看似仍
+      // 挂着本对话，/route 与管理台会话视图永久失真。旧值 === 新目标时跳过（幂等重绑
+      // 不做摘挂写放大）；旧值缺失（首绑）无钩可摘。registry.detachInbound 幂等：旧 sid
+      // 无记录/无该挂钩时安全无操作，不抛。
+      const previous = store.get(bindingKey(envelope))
       store.set(bindingKey(envelope), target)
+      if (typeof previous === 'string' && previous !== '' && previous !== target) {
+        registryCall('detachInbound', previous, inboundBindingOf(envelope))
+      }
       // v0.3.2：同步维护台账入站挂钩与活跃信号（防御壳内降级，不影响绑定本身）
       registryCall('attachInbound', target, inboundBindingOf(envelope))
       registryCall('touch', target)
@@ -247,7 +270,10 @@ export function registerConversationRouter(deps) {
       say('已解绑（回到通道默认路由）')
       return true
     }
-    if (cmd === 'stop') {
+    if (cmd === 'stop' && args.length === 0) {
+      // G-04：/stop 是无参命令——只有裸 '/stop' 命中取消。带附言的 '/stop 一下别急'
+      // 不再命中（收紧前 startsWith('/stop ') 会把它当取消指令，误杀长任务），
+      // 落到函数尾部的未知命令路径：回执「未识别的命令」+ 按普通文本投递。
       const bound = boundSession(envelope)
       const agent = bound !== null ? agentOf(bound) : undefined
       if (agent === undefined) { say('当前没有可停止的会话'); return true }
@@ -264,7 +290,9 @@ export function registerConversationRouter(deps) {
     if (cmd === 'agent') {
       const sub = String(args[0] ?? '').toLowerCase()
       if (sub === 'use') {
-        handleAgentUse(envelope, args[1], say)
+        // G-33：目标名可含空格（workspace 名如 "my space"）——args[1] 只取首词会截断，
+        // 改为剩余参数整体作为 needle（matchSessionByNeedle 做精确/前缀匹配，本身 trim）。
+        handleAgentUse(envelope, args.slice(1).join(' '), say)
         return true
       }
       if (sub === 'back') {
@@ -313,6 +341,11 @@ export function registerConversationRouter(deps) {
       ].filter((line) => line !== '').join('\n'))
       return true
     }
+    // G-04：未知命令回执。/stop 收紧为仅裸 '/stop' 命中取消后，'/stop 等等' 这类带
+    // 附言形态落到此路径——若只静默按普通文本投递，用户会误以为命令已被执行（回执黑洞）。
+    // 回执仅告知未识别，「当普通文本处理（避免吞消息）」的既有语义保持不变
+    // （若下方投递失败，routeUnsafe 还会另有回执）。
+    say(`未识别的命令 /${cmd}（用 /help 查看命令集）`)
     return false // 未知命令：当普通文本处理（避免吞消息）
   }
 
@@ -390,7 +423,8 @@ export function registerConversationRouter(deps) {
 
   /**
    * /agent use <target>：智能绑定（§0.5-5 解析顺序，匹配逻辑见 matchSessionByNeedle）。
-   * 成功后 store 写 bind 键 + registry.attachInbound + touch，回执确认 workspace 与 sid。
+   * 成功后 store 写 bind 键 + 摘旧会话挂钩（G-48，覆盖绑定防双挂）+ registry.attachInbound
+   * + touch，回执确认 workspace 与 sid。
    */
   function handleAgentUse(envelope, target, say) {
     if (typeof target !== 'string' || target.trim() === '') {
@@ -401,7 +435,12 @@ export function registerConversationRouter(deps) {
     if (matched.sid === null) { say(matched.message); return }
     const sid = matched.sid
     const workspace = workspaceOfSid(sid)
+    // G-48：同 /bind——覆盖绑定先摘旧会话挂钩（防一 user 双挂；旧值 === 新目标跳过）
+    const previous = store.get(bindingKey(envelope))
     store.set(bindingKey(envelope), sid)
+    if (typeof previous === 'string' && previous !== '' && previous !== sid) {
+      registryCall('detachInbound', previous, inboundBindingOf(envelope))
+    }
     registryCall('attachInbound', sid, inboundBindingOf(envelope))
     registryCall('touch', sid)
     say(`已绑定 ${workspace === '' ? '(未知 workspace)' : workspace} / ${sid}（${matched.matchedBy}；/agent back 回通道默认）`)
@@ -472,9 +511,22 @@ export function registerConversationRouter(deps) {
 
   // 合并窗：手机上打长句常拆多条；窗口内的连续消息合并为一条再投递。
   // `..` 结尾立即冲刷；`!!` 结尾立即冲刷并按 steer 投递。
-  const pending = new Map() // `${channel}:${userId}` -> { parts: string[], timer, forceSteer }
+  // G-51：键必须带 chatId 维度——`${channel}:${userId}:${String(chatId ?? '')}`。
+  // 旧键 `${channel}:${userId}` 把同一用户「私聊 + 群」两个 chat 的碎片并进同一条合并线：
+  // 私聊窗的半句被群窗的 terminator 顺手冲掉，或两个 chat 的碎片交叉拼接成一条混合投递
+  // （跨 chat 串台）。加维度后：同 channel:userId:chatId 内照旧合并；同用户私聊 + 群
+  // = 两条独立合并线、各自投递、回执回各自 chat。
+  //   - chatId 缺失（undefined/null）→ String(chatId ?? '') = ''，仍聚合进同一 '' 维度
+  //     （现状语义保持：无 chat 概念的适配器不会因本修裂窗）；
+  //   - '' 与任何显式 chatId 是不同维度（缺维度的碎片不会并进显式 chat 的窗）。
+  // 改这行键时三个分量一个都不能删：去 chatId 复活跨 chat 串台，去 userId 跨用户串台，
+  // 去 channel 跨渠道串台。timer 回调闭包持有的就是设置它的那个 envelope，flush 用同一
+  // 键函数反查，绝不找错窗。
+  const pending = new Map() // `${channel}:${userId}:${String(chatId ?? '')}` -> { parts, timer, forceSteer }
+  const mergeWindowKeyOf = (envelope) =>
+    `${envelope.channel}:${envelope.userId}:${String(envelope.chatId ?? '')}`
   function flush(envelope) {
-    const key = `${envelope.channel}:${envelope.userId}`
+    const key = mergeWindowKeyOf(envelope)
     const entry = pending.get(key)
     if (entry === undefined) return
     clearTimeout(entry.timer)
@@ -520,7 +572,9 @@ export function registerConversationRouter(deps) {
   // notifications never pass here; only remote control/conversation commands do.
   function route(envelope, text) {
     const trimmed = String(text ?? '').trim()
-    const command = trimmed === '/stop' || trimmed.startsWith('/stop ') ? 'stop'
+    // G-04：仅裸 '/stop' 归类为 stop 控制命令。'/stop 等等' 不再命中（旧 startsWith('/stop ')
+    // 会把附言形态也送进 Control Core 当取消指令，误杀长任务），改走未知命令路径。
+    const command = trimmed === '/stop' ? 'stop'
       : (trimmed.startsWith(steerPrefix) ? 'steer' : (trimmed.startsWith('/') ? null : 'ordinary-message'))
     if (control === null || command === null) return routeUnsafe(envelope, text)
     // QQ group/ambiguous envelopes must not fall through to the legacy route
@@ -555,6 +609,7 @@ export function registerConversationRouter(deps) {
     else reply(envelope.channel, envelope.chatId, '远程控制被拒绝，请回桌面确认')
   }
 
+  // G-31：会话路由是消费链末位兜底（priority 100）——前面审批/提问未消费的消息才进 agent 会话。
   const disposeMessage = bus.onMessage((envelope) => {
     const text = String(envelope.text ?? '').trim()
     if (text === '') return
@@ -563,7 +618,7 @@ export function registerConversationRouter(deps) {
       route(envelope, text)
       return
     }
-    const key = `${envelope.channel}:${envelope.userId}`
+    const key = mergeWindowKeyOf(envelope) // G-51：与 flush 同一键（含 chatId 维度）
     if (text.endsWith('..') || text.endsWith('!!')) {
       // 终止符：先并入再立即冲刷（!! 追加 steer 前缀）
       const entry = pending.get(key) ?? { parts: [], timer: null, forceSteer: false }
@@ -589,7 +644,7 @@ export function registerConversationRouter(deps) {
       timer: setTimeout(() => flush(envelope), mergeWindowMs),
       forceSteer: false,
     })
-  })
+  }, { priority: MESSAGE_PRIORITY.conversation })
 
   // 追踪最近活跃 agent（默认投递目标）；agent 退出时清理绑定与合并窗。
   // v0.7.3（#4）：DSH 的 agent/created | agent/disposed 事件签名是 (payload: { agent })，

@@ -1,5 +1,10 @@
 // dsh-notifier v0.7 inbound/pairing.mjs
-// 配对码状态机（v0.7 计划书 §3.3）：minted → active → redeemed / expired / revoked / locked。
+// 配对码状态机（v0.7 计划书 §3.3）：minted-active → redeemed / expired / revoked / locked。
+// G-20（W12）：mint 原「先落 minted 再落 active」双写之间有崩溃窗口——第一次写已上盘、
+// 第二次写丢失时，盘上残留一枚「从未下发却被视为在铸可核销」的孤儿码（管理台响应未达，
+// 用户拿不到码面，但 8 位前缀 id 已占位、可被核销）。两写合并为单次原子写：铸造即下发
+// 的语义用状态字面量 'minted-active' 一次落盘表达，孤儿码窗口消除。审计行随后独立写
+// （丢了只影响审计，不影响状态一致性）。
 // 安全纪律沿用审批 token 已验证先例：单次核销、短 TTL、SHA-256 落盘、常量时间比较、
 // 铸造/核销/撤销/锁定全进审计回调。零运行时依赖（仅 node:crypto）。
 //
@@ -22,7 +27,9 @@ const ATTEMPT_WINDOW_MS = 10 * 60 * 1000
 const LOCKOUT_MS = 10 * 60 * 1000
 /** 终态条目保留 24h 供管理台/审计回看，之后写路径顺手清扫。 */
 const TERMINAL_RETENTION_MS = 24 * 60 * 60 * 1000
-const VALID_STATES = new Set(['minted', 'active', 'redeemed', 'expired', 'revoked', 'locked'])
+// G-20（W12）：'minted-active' 是「铸造即下发」的单次原子落盘态——mint 不再有
+// minted→active 双写崩溃窗口；读取/过期/核销/撤销/锁定/列表全路径与 minted/active 同等对待。
+const VALID_STATES = new Set(['minted', 'active', 'minted-active', 'redeemed', 'expired', 'revoked', 'locked'])
 const VALID_ORIGINS = new Set(['bootstrap', 'admin', 'owner'])
 
 /** 常量时间比较（与审批 token vault 同款纪律）。 */
@@ -143,13 +150,15 @@ export function createPairing(options = {}) {
     else memoryLockout = next
   }
 
-  /** 惰性过期：读取路径顺手把超时未核销的 minted/active 转终态（免定时器）。
+  /** 惰性过期：读取路径顺手把超时未核销的 minted/active/minted-active 转终态（免定时器）。
    * 翻转即落盘 + 落盘后才发审计（R5 审查 R5-1-P3-1：原实现部分调用路径改内存不落盘，
-   * 同批超时条目每次读取重复 audit 刷屏、盘上长期停留 active）。 */
+   * 同批超时条目每次读取重复 audit 刷屏、盘上长期停留 active）。
+   * G-20（W12）：minted-active（单次原子落盘态）与 minted/active 同等可过期。 */
   function sweep(table, now = Date.now()) {
     const expired = []
     for (const entry of Object.values(table)) {
-      if ((entry.state === 'minted' || entry.state === 'active') && entry.expiresAt > 0 && now >= entry.expiresAt) {
+      if ((entry.state === 'minted' || entry.state === 'active' || entry.state === 'minted-active')
+        && entry.expiresAt > 0 && now >= entry.expiresAt) {
         entry.state = 'expired'
         expired.push(entry)
       }
@@ -208,7 +217,7 @@ export function createPairing(options = {}) {
       sweep(table, now)
       if (origin === 'bootstrap') {
         for (const entry of Object.values(table)) {
-          if (entry.origin === 'bootstrap' && (entry.state === 'minted' || entry.state === 'active')) {
+          if (entry.origin === 'bootstrap' && (entry.state === 'minted' || entry.state === 'active' || entry.state === 'minted-active')) {
             entry.state = 'revoked'
             audit('revoke', { id: entry.id, origin: 'bootstrap', reason: 're-mint' })
           }
@@ -217,14 +226,17 @@ export function createPairing(options = {}) {
       const code = generateCode()
       const hash = hashPairingCode(code)
       const expiresAt = now + (customTtl ?? ttlMs)
+      // G-20（W12）：mint 即下发（管理台响应即展示、bootstrap 即打 stderr）——minted→active
+      // 双写合并为单次原子写：状态字面量 'minted-active' 一次落盘（含 issuedAt），崩溃窗口消除。
+      // 审计行随后独立写：丢了只影响审计，不影响状态一致性。
       const entry = {
         id: hash.slice(0, 8),
         hash,
-        state: 'minted',
+        state: 'minted-active',
         origin,
         mintedBy: String(mintedBy).slice(0, 64),
         mintedAt: now,
-        issuedAt: 0,
+        issuedAt: now,
         expiresAt,
         attempts: 0,
         label: String(label ?? '').slice(0, 64),
@@ -234,10 +246,6 @@ export function createPairing(options = {}) {
       table[hash] = entry
       writeCodes(table, now)
       audit('mint', { id: entry.id, origin, mintedBy, expiresAt })
-      // mint 即下发（管理台响应即展示、bootstrap 即打 stderr）：minted→active 原子完成
-      entry.state = 'active'
-      entry.issuedAt = now
-      writeCodes(table, now)
       return { ok: true, id: entry.id, code, expiresAt }
     },
 
@@ -278,13 +286,14 @@ export function createPairing(options = {}) {
           writeCodes(table, now)
           audit('expire', { id: entry.id, origin: entry.origin })
         }
-        // v0.8.7 (BYPASS-BOOT/B2)：过期码提交计入失败计数——否则过期码可无限次触发
-        // 引导码重铸（泵码），每枚新码都要走一次下发路径。
-        const tripped = recordFailure(userKey, now)
-        if (tripped) audit('lockout', { user: userKey, phase: 'tripped' })
-        return { ok: false, reason: tripped ? 'locked-out' : 'expired' }
+        // G-30/G-31：过期码单独分支——不计入 5 次失败锁出，回执统一「码已过期」。
+        // 过期码不是爆破信号（能提交过期码说明曾真实持有在铸码，爆破面是非法形态/
+        // 查无此码，仍计失败）；防泵码由 commands.mjs ensureBootstrap 的 10min 重铸
+        // 节流兜住（v0.8.7 的锁出防泵是多余一层，且会把用过时码的合法用户误锁 10min）。
+        return { ok: false, reason: 'expired' }
       }
-      // minted 未下发也可被核销（下发通道只是展示，不是安全边界）
+      // minted/minted-active 未下发也可被核销（下发通道只是展示，不是安全边界）；
+      // G-20（W12）后 mint 只落 minted-active 单态，此处兼容存量 minted 行。
       entry.state = 'redeemed'
       entry.redeemedAt = now
       entry.redeemedBy = userKey
@@ -302,7 +311,9 @@ export function createPairing(options = {}) {
       sweep(table, now)
       // 只在在铸条目中找（R5 审查 R5-1-P3-4：8 位前缀撞车时 find 可能先命中终态条目，
       // 返回 already-* 让真正要处置的在铸码无法撤销）
-      const entry = Object.values(table).find((item) => item.id === String(id ?? '') && (item.state === 'minted' || item.state === 'active'))
+      // G-20（W12）：minted-active（单次原子落盘态）与 minted/active 同等视为在铸。
+      const entry = Object.values(table).find((item) => item.id === String(id ?? '')
+        && (item.state === 'minted' || item.state === 'active' || item.state === 'minted-active'))
       if (entry === undefined) return { ok: false, reason: 'not-found' }
       entry.state = 'revoked'
       writeCodes(table, now)
@@ -314,7 +325,8 @@ export function createPairing(options = {}) {
     lock(id, { by = '', now = Date.now() } = {}) {
       const table = readCodes()
       sweep(table, now)
-      const entry = Object.values(table).find((item) => item.id === String(id ?? '') && (item.state === 'minted' || item.state === 'active'))
+      const entry = Object.values(table).find((item) => item.id === String(id ?? '')
+        && (item.state === 'minted' || item.state === 'active' || item.state === 'minted-active'))
       if (entry === undefined) return { ok: false, reason: 'not-found' }
       entry.state = 'locked'
       writeCodes(table, now)
@@ -326,8 +338,9 @@ export function createPairing(options = {}) {
     listActive(now = Date.now()) {
       const table = readCodes()
       sweep(table, now) // 翻转即落盘（sweep 内部已持久化）
+      // G-20（W12）：minted-active（单次原子落盘态）与 minted/active 同等视为在铸在列。
       return Object.values(table)
-        .filter((entry) => entry.state === 'minted' || entry.state === 'active')
+        .filter((entry) => entry.state === 'minted' || entry.state === 'active' || entry.state === 'minted-active')
         .map((entry) => ({
           id: entry.id,
           state: entry.state,

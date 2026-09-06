@@ -68,3 +68,19 @@ test('wecom-app: AgentID/toUser 别名也生效', async () => {
     rig.restore()
   }
 })
+
+test('wecom-app: expires_in=0 不再 ?? 7200 保 0 再被钳 1 秒——TTL 归一 fail-closed 抛错（G-55）', async () => {
+  const rig = mockFetch([
+    { body: { errcode: 0, access_token: 'TOKEN3', expires_in: 0 } },
+    { body: { errcode: 0, errmsg: 'ok', msgid: '3' } },
+  ])
+  try {
+    const resolved = wecom.resolve({ corpid: 'corp-001', secret: 'sec-001', agentId: 1000002, touser: 'alice' })
+    // G-55 同值不同命：0 在本层曾被 ?? 7200 保留后 Math.max(1000,0) 钳成 1 秒——
+    // 与 qq 层「活 7200s」互相矛盾；现在统一 fail-closed
+    await assert.rejects(() => wecom.send(resolved, { title: '标题', content: '正文' }), /TTL 非法/)
+    assert.equal(rig.calls.length, 1, 'token 换取失败即止，不发消息')
+  } finally {
+    rig.restore()
+  }
+})

@@ -13,7 +13,7 @@
 ![Channels](https://img.shields.io/badge/channels-27-00B4D8?style=flat-square)
 
 ![npm version](https://img.shields.io/npm/v/dsh-notifier?style=flat-square&logo=npm&logoColor=white)
-![tests](https://img.shields.io/badge/tests-1352-brightgreen?style=flat-square)
+![tests](https://img.shields.io/badge/tests-1531-brightgreen?style=flat-square)
 ![license](https://img.shields.io/badge/license-MIT-brightgreen?style=flat-square)
 ![awesome-dsh-plugin](https://img.shields.io/badge/awesome--dsh--plugin-listed-00B4D8?style=flat-square)
 ![omdsh workshop](https://img.shields.io/badge/omdsh-workshop-7C3AED?style=flat-square)
@@ -25,7 +25,7 @@
 ![silence](https://img.shields.io/badge/silence%20never-approves-9C27B0?style=flat-square)
 ![push](https://img.shields.io/badge/push%20it-real%20good-FF4081?style=flat-square)
 
-Package metadata: `dsh-notifier@0.9.0` · 1352 automated contract tests (1351 pass + 1 skip) · MIT licensed.
+Package metadata: `dsh-notifier@0.9.5` · 1531 automated contract tests (1531 pass) · MIT licensed.
 
 Bring your [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) agent to the places you already use. dsh-notifier puts one minimal `notify()` API in front of 27 channels, then adds phone-friendly approvals, questions, session controls, and a calm local console — with no second runtime to deploy.
 
@@ -63,6 +63,8 @@ The web admin console (`admin.enabled: true`, loopback only, mobile-friendly sin
 ![Bindings](docs/screenshots/admin-bindings.png)
 ![Sessions](docs/screenshots/admin-sessions.png)
 ![Channels](docs/screenshots/admin-channels.png)
+
+> **Outbound config is "view-hot, delivery-cold"** (G-14, W12): saving an **outbound** channel in the admin console reflects in the UI immediately, and the channel card shows a **"重启后生效" (takes effect after restart)** badge — the delivery layer (outbound router/channel instances) only merges runtime config (YAML ⊕ store) at the **next plugin startup**; inbound credentials likewise reconnect at next startup. Saving does **not** mean live delivery; restart DSH once you see the badge.
 
 ## Quick start
 
@@ -114,6 +116,24 @@ That's it. `turn/end`, `approval/asked`, and `agent/error` events now reach ever
 | **Ledger & daily digest** | Append-only JSONL ledger + one `passive` summary of yesterday's traffic. |
 | **Secrets safe** | `role('secret')` keys redacted everywhere; `${ENV:NAME}` refs keep secrets out of the profile. |
 | **Never breaks startup** | Misconfigured channels are skipped silently with a log line. |
+
+### Session commands (private-chat with the bot)
+
+| Command | What it does | Boundaries |
+|---|---|---|
+| `/help` | List every available command. | No args; also explains the text / `!` / `..` conventions below. |
+| `/status` | Show binding & agent status: bound session, resolved target, agent status, active-session list. | No args; when unbound it reports the channel-default routing instead. |
+| `/agent` | Active-session group view: `workspace \| sid \| status \| outbound channel \| quiet`. | No args. |
+| `/agent use <workspace\|sid prefix>` | Switch this conversation to that session (smart binding). | The target may contain spaces (the whole remainder is matched, G-33); unknown target gets a usage receipt. |
+| `/agent back` | Release this conversation's binding and go back to the channel default. | No args. |
+| `/bind <sessionId>` | Bind to an exact session (sid-level precise operation). | Unknown sid → "session not found" receipt. Rebinding detaches the old session's inbound hook first (G-48), so one user is never double-hooked. |
+| `/unbind` | Unbind (back to channel-default routing: the channel's default agent, or the most recently active session when unset). | No args. |
+| `/stop` | Cancel the current turn. | Bare `/stop` only (G-04): an appended message such as `/stop wait` is **not** a cancel — it falls through as an unknown command and is delivered as text. |
+| `/route` | Show the bidirectional resolution: session → channel and channel → session. | Unavailable (with a receipt) when the router engine is not assembled. |
+| `/quiet <workspace\|sid>` | Mute that session's outbound pushes; remote conversation is unaffected. | Target required (full name or ≥4-char sid prefix); unavailable when the router engine is not assembled. |
+| `/unquiet <workspace\|sid>` | Restore that session's outbound pushes. | Same boundary as `/quiet`. |
+
+Sending plain text talks to the agent; a `!` prefix steers mid-turn; a `..` suffix flushes immediately (inside the merge window). Group chats refuse remote-control commands (QQ groups reply with a "群聊不允许远程控制" receipt) — use the original private chat.
 
 ## Configuration
 
@@ -208,16 +228,25 @@ src/
   admin/              web console (6 pages, SSE, bearer auth, mobile layout)
   ledger.mjs          JSONL ledger + daily digest
   rules.mjs           anti-disturb gates (event / keyword / grace)
-scripts/              channel-login.mjs · test-channel.mjs · route.mjs · gen-channel-matrix.mjs
-test/                 1352 tests (1351 pass + 1 skip) in the 0.9.0 release line; historical 0.8.6 package carried 909 tests.
+scripts/              channel-login.mjs · channel-selfcheck.mjs · route.mjs · gen-channel-matrix.mjs
+test/                 1531 tests (1531 pass) in the 0.9.5 release line; historical 0.8.6 package carried 909 tests.
 ```
 
 Design rules: pure ESM (`.mjs`), zero runtime dependencies, a declarative spec engine for the bulk of channels, thin honest adapters, no build step.
 
+### Optional dependencies (optional assembly, S-13)
+
+`package.json` carries two `optionalDependencies`, both **exact-pinned** and **lazy-loaded only** — installing them is never required, and their absence never breaks startup or the core notify path:
+
+- `@larksuiteoapi/node-sdk` `1.73.0` — Feishu QR login / inbound WebSocket only. Missing → the Feishu channel reports `missing-sdk` with install guidance (`npm i @larksuiteoapi/node-sdk@1.73.0`), other channels keep working.
+- `qrcode-terminal` `0.12.0` — terminal QR rendering in the login CLIs only. Missing → the CLIs print a scannable link instead.
+
+Pin discipline (S-13): optional ranges are locked to the reviewed versions (the `^` floor that let `@larksuiteoapi/node-sdk` drift past the `registerApp` callback rename at ≥1.73 is gone). `@tencent-connect/qqbot-connector` is **not** an optionalDependency: it is npm-flagged `UNLICENSED`, so it stays a design reference only — never copied, redistributed, or introduced as a dependency. The QQ QR-login code path keeps its lazy `import()` and degrades to a `missing-sdk` receipt if the package is installed manually.
+
 ## Development
 
 ```bash
-npm test          # 0.9.0 release line: 1352 (1351 pass + 1 skip)
+npm test          # 0.9.5 release line: 1531 (1531 pass)
 ```
 
 To add a channel: implement the adapter interface (`resolve(cfg)` + `send(msg)`) in `src/adapters/` and register it in `src/config.mjs`; the channel matrix above self-regenerates via `node scripts/gen-channel-matrix.mjs`.

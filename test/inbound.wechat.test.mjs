@@ -513,6 +513,41 @@ test('网络异常（fetch reject）计失败并续转；stop 打断挂起长轮
   assert.ok(true, 'stop() 打断挂起轮询未抛异常')
 })
 
+test('G-12 轮询假死看门狗：长轮询挂死无返回时强制 abort 断开重试（连续 kick 计数）', async () => {
+  const lines = []
+  const logger = { warn: (prefix, message) => lines.push(`${prefix} ${message}`) }
+  const store = createStore(tempPath())
+  const resolved = resolveWechatInboundConfig(
+    { notifyUsers: [], longPollTimeoutMs: 5000, watchdogIntervalMs: 10 },
+    { credentials: { accountId: 'BOT_ACC', token: 'BOT_TOKEN' } },
+  )
+  assert.ok(resolved.ok, `测试配置不可用：${resolved.reason}`)
+  const { fetchImpl, calls } = makeFetch({ updates: [{ ret: 0, get_updates_buf: 'BUF_A', msgs: [] }] })
+  let fakeNow = 1_000_000
+  const inbound = createWechatIlinkInbound({
+    config: resolved.config,
+    bus: createInboundBus({ allowUsers: ['WX_USER_1'], store, logger }),
+    store,
+    fallbackTargets: [],
+    logger,
+    fetchImpl,
+    sleep: instantSleep,
+    now: () => fakeNow,
+  })
+  const pollCalls = () => calls.filter((c) => c.endpoint.startsWith('ilink/bot/getupdates')).length
+  inbound.start()
+  await tick(20) // 第一轮即时返回 BUF_A；第二轮队尾耗尽 → 挂起（模拟 TCP 活着但服务端不回包）
+  assert.equal(pollCalls(), 2, '第一轮返回后第二轮长轮询在飞')
+  fakeNow += 60_000 // 假死 60s：超 longPollTimeoutMs(5s)+宽限(5s) 判死
+  await tick(30) // 看门狗对账周期 10ms，已多次对账
+  assert.ok(lines.some((line) => line.includes('轮询假死检测')), '假死必须出声（旧实现完全静默）')
+  assert.ok(pollCalls() >= 3, '强制 abort 后轮询循环应重试重建请求')
+  fakeNow += 60_000 // 再次挂死：连续 kick 计数递增（可观测通道真死 vs 单次抖动）
+  await tick(30)
+  assert.ok(lines.some((line) => line.includes('第 2 次')), '连续假死 kick 计数应递增')
+  await inbound.stop()
+})
+
 // ---------------------------------------------------------------- 发送分支
 
 test('sendText：无 ctx token 时省略 context_token 字段照发', async () => {

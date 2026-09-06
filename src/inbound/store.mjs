@@ -39,6 +39,22 @@ export function createStore(filePath) {
     let raw
     try {
       if (!existsSync(filePath)) return {}
+      // S-04（W12）：加载时权限自检——state.json 承载 admin token 哈希与各渠道
+      // bot_token 等敏感凭证，写路径已保证新建即 0600，但旧版本/umask 异常/手工放宽
+      // 留下的过宽 mode 不会被写路径纠正（chmod 只在新建与落盘时发生）。此处启动
+      // 读文件前先查 mode：非 0600 → warn + chmod 收紧尝试；失败仅 warn 不阻塞启动
+      // （文件系统级暴露面的缓解加固；加密/keychain 属超零依赖补丁线，见 TECHNICAL_DEBT）。
+      try {
+        const mode = statSync(filePath).mode & 0o777
+        if (mode !== 0o600) {
+          try {
+            console.error('[dsh-notifier/store]', `state 文件权限过宽（${mode.toString(8)}，应为 600），尝试收紧: ${filePath}`)
+            chmodSync(filePath, 0o600)
+          } catch (chmodError) {
+            console.error('[dsh-notifier/store]', `state 文件权限收紧失败（不阻塞启动）: ${chmodError instanceof Error ? chmodError.message : String(chmodError)}`)
+          }
+        }
+      } catch { /* stat 失败（文件刚被移走等）：自检跳过，不阻塞 */ }
       raw = readFileSync(filePath, 'utf8')
     } catch {
       return {} // 读失败（权限/占用等）：维持静默 fail-open，与损坏区分

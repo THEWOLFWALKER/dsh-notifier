@@ -6,7 +6,7 @@
 // 注意：群/单聊「主动消息」需在 QQ 开放平台为机器人开启相应场景权限。
 
 import { postJson, str, num, NotifyError, ERROR_CODES } from './_shared.mjs'
-import { createTokenManager, createRateGate } from './_tokens.mjs'
+import { createTokenManager, createRateGate, normalizeTtlMs } from './_tokens.mjs'
 
 export const type = 'qq-bot'
 
@@ -56,7 +56,8 @@ export async function send(resolved, msg) {
     if (typeof payload?.access_token !== 'string' || payload.access_token === '') {
       throw new NotifyError(`qq-bot 换取 access_token 失败：检查 appId/appSecret 是否正确（q.qq.com 开发设置页）`, ERROR_CODES.API_ERROR)
     }
-    return { token: payload.access_token, expiresInMs: (Number(payload.expires_in) || 7200) * 1000 }
+    // G-55：expires_in 秒→毫秒后归一（非有限/≤0 抛错，不再 || 7200 掩盖上游损坏）
+    return { token: payload.access_token, expiresInMs: normalizeTtlMs(Number(payload.expires_in) * 1000, 'expires_in') }
   })
   resolved._rateGate ??= createRateGate(resolved.rateMs)
 
@@ -80,9 +81,19 @@ export async function send(resolved, msg) {
     channel: 'qq-bot',
   })
   // v2 接口成功返回 2xx JSON {id, timestamp}；错误码在 HTTP 4xx body {code, message}
+  // G-56：2xx 但响应非 JSON（网关错误页/空体）不再乐观视为成功——按投递失败抛
+  // BAD_UPSTREAM_RESPONSE 并 stderr 出声。采用「解析结果」而非 content-type 头判定：
+  // 头可能被网关吞掉，但解析失败是确定的事实。结果未知宁可计 failed，让宿主
+  // 重试/告警链路接管（fail-closed，msg_seq 冻结保证重试幂等）。
   let payload = null
-  try { payload = await response.json() } catch { /* 2xx 非 JSON 也视为成功 */ }
-  if (payload !== null && typeof payload?.code === 'string' && payload.code !== '') {
+  try { payload = await response.json() } catch { payload = null }
+  if (payload === null || typeof payload !== 'object') {
+    try {
+      console.error('[dsh-notifier/adapter:qq-bot] 返回 2xx 但响应非 JSON（预期 {id,timestamp}），按投递失败处理——可能是网关错误页或空响应体')
+    } catch { /* stderr 不可用不致命 */ }
+    throw new NotifyError('qq-bot 返回格式异常：2xx 但响应非 JSON（预期 {id,timestamp}，可能是网关错误页）', ERROR_CODES.BAD_UPSTREAM_RESPONSE)
+  }
+  if (typeof payload?.code === 'string' && payload.code !== '') {
     throw new NotifyError(`qq-bot 返回错误 ${payload.code}: ${payload.message ?? '未知错误'}（确认机器人已开启${resolved.targetType === 'user' ? '单聊主动消息' : '群主动消息'}权限）`, ERROR_CODES.API_ERROR)
   }
   resolved._msgSeq = seq // 成功才推进：失败/超时重试沿用同一 seq，幂等语义生效

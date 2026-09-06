@@ -12,6 +12,10 @@ const INTENT_GROUP_AND_C2C = 1 << 25
 const INTENT_INTERACTION = 1 << 26 // 按钮化审批：INTERACTION_CREATE 回调（v0.8.4）
 const DEFAULT_INTENTS = INTENT_GROUP_AND_C2C | INTENT_INTERACTION
 
+// 孤立代理项探测器（实现无关，纯 Unicode 断言）：高代理后无低代理 / 低代理前无高代理。
+// 注意第二个字符类区间是 \uDC00-\uDFFF（低代理区）。
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/
+
 // ---------------------------------------------------------------- fakes
 
 /** mock fetch：token / gateway / 消息发送三路由；发送可脚本化失败。 */
@@ -39,7 +43,13 @@ function jsonResponse(payload, status = 200) {
   return new Response(JSON.stringify(payload), { status, headers: { 'content-type': 'application/json' } })
 }
 
-/** mock WebSocket：EventTarget 子集 + serverSend 驱动协议帧。 */
+/** mock WebSocket：EventTarget 子集 + serverSend 驱动协议帧。
+ *  G-58 mock 保真：除 open/message/close 外补三条异常支路——
+ *   - error 事件：serverError()（真实 WS 的 error 后必跟 close，重连统一在 close 调度）；
+ *   - 半帧：serverSendRaw() 直送原始文本（不 JSON 序列化），客户端 handleFrame
+ *     JSON.parse 失败即忽略，绝不能崩（无重连、无异常上抛）；
+ *   - 超时：心跳 ACK 超时支路不新增方法——serverSend  withheld ACK + t.mock.timers
+ *     推进（W8 心跳用例同手法，见下方「心跳 ACK 连续丢失」用例）。 */
 class FakeWebSocket {
   static instances = []
   constructor(url) {
@@ -59,10 +69,19 @@ class FakeWebSocket {
   }
   serverOpen() { this.readyState = 1; this.emit('open') }
   serverSend(frame) { this.emit('message', { data: JSON.stringify(frame) }) }
-  serverClose() {
+  serverClose(code = undefined) {
     if (this.readyState === 3) return
     this.readyState = 3
-    this.emit('close')
+    // G-07：close 事件携带服务端关闭码（无码=undefined → 走默认重连分支）
+    this.emit('close', code === undefined ? {} : { code })
+  }
+  /** G-58：error 事件支路——真实 WS 的 error 后必跟 close（重连在 close 里统一调度）。 */
+  serverError(message = 'mock ws error') {
+    this.emit('error', { error: new Error(message), message })
+  }
+  /** G-58：半帧支路——直送原始文本（不 JSON 序列化），模拟分片到达/粘包/垃圾帧。 */
+  serverSendRaw(raw) {
+    this.emit('message', { data: String(raw) })
   }
   send(data) { this.sent.push(JSON.parse(data)) }
   close() { this.serverClose() }
@@ -73,7 +92,12 @@ const liveInbounds = []
 
 function makeRig({ allowUsers = ['u_open'], config = {}, fetchOptions = {} } = {}) {
   const lines = []
-  const logger = { warn: (prefix, message) => lines.push(`${prefix} ${message}`) }
+  // G-40：debug 级采样日志单独收集（@ 形态白名单未命中出声断言）
+  const debugLines = []
+  const logger = {
+    warn: (prefix, message) => lines.push(`${prefix} ${message}`),
+    debug: (prefix, message) => debugLines.push(`${prefix} ${message}`),
+  }
   const bus = createInboundBus({ allowUsers, logger })
   const { fetchImpl, calls } = makeFetch(fetchOptions)
   const inbound = createQqInbound({
@@ -91,9 +115,10 @@ function makeRig({ allowUsers = ['u_open'], config = {}, fetchOptions = {} } = {
     webSocketImpl: FakeWebSocket,
     reconnectBaseMs: 2,
     reconnectCapMs: 8,
+    close4008WaitMs: config.close4008WaitMs, // G-07：测试注入缩短 4008 固定等待窗
   })
   liveInbounds.push(inbound)
-  return { bus, inbound, calls, lines, fetchImpl }
+  return { bus, inbound, calls, lines, debugLines, fetchImpl }
 }
 
 const tick = (ms = 5) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -483,6 +508,126 @@ test('INVALID_SESSION（op9）：丢弃 session，重连走全新 IDENTIFY', asy
   await rig.inbound.stop()
 })
 
+// ------------------------------------------------------------- G-21 / G-07
+
+test('G-21 INVALID_SESSION d=true：可恢复会话保留，重连走 RESUME（不再一律弃会话）', async () => {
+  const rig = makeRig()
+  const ws = await driveReady(rig)
+  ws.serverSend({ op: 0, t: 'C2C_MESSAGE_CREATE', s: 7, d: { id: 'e1', content: 'hi', author: { user_openid: 'u_open' } } })
+  await tick()
+  ws.serverSend({ op: 9, d: true }) // 官方 SDK 语义：d=true 会话可恢复
+  await tick(10)
+  const ws2 = FakeWebSocket.instances.at(-1)
+  assert.notEqual(ws2, ws, '应重建连接')
+  ws2.serverOpen()
+  ws2.serverSend({ op: 10, d: { heartbeat_interval: 60000 } })
+  await tick()
+  const resume = ws2.sent.find((frame) => frame.op === 6)
+  assert.ok(resume, 'd=true 应保留会话走 RESUME（避免多付一次 IDENTIFY + 丢续传窗）')
+  assert.equal(resume.d.session_id, 'sess_1')
+  assert.equal(resume.d.seq, 7, 'RESUME 应回传最后事件序号')
+  assert.ok(!ws2.sent.some((frame) => frame.op === 2), '不应发 IDENTIFY')
+  assert.ok(rig.lines.some((line) => line.includes('可恢复')), '告警应区分可恢复/不可恢复')
+  await rig.inbound.stop()
+})
+
+test('G-07 close 4004：作废 token 缓存重取 + 弃会话重新 IDENTIFY（不再带死凭证无限重连）', async () => {
+  const rig = makeRig()
+  const ws = await driveReady(rig)
+  const tokensBefore = rig.calls.filter((entry) => entry.url === TOKEN_URL).length
+  ws.serverClose(4004)
+  await tick(10)
+  const ws2 = FakeWebSocket.instances.at(-1)
+  assert.notEqual(ws2, ws, '应重建连接')
+  assert.equal(rig.calls.filter((entry) => entry.url === TOKEN_URL).length, tokensBefore + 1,
+    'close 4004 = token 被平台吊销：必须作废缓存重取（旧实现全文件无一处 invalidate）')
+  assert.ok(rig.lines.some((line) => line.includes('4004')), '告警应说明认证失败语义')
+  ws2.serverOpen()
+  ws2.serverSend({ op: 10, d: { heartbeat_interval: 60000 } })
+  await tick()
+  assert.ok(ws2.sent.some((frame) => frame.op === 2), '应弃会话重新 IDENTIFY')
+  assert.ok(!ws2.sent.some((frame) => frame.op === 6), '不应 RESUME 已失效会话')
+  await rig.inbound.stop()
+})
+
+test('G-07 close 4008：固定等待窗内不重连，窗过再 RESUME（限流码不走指数退避）', async () => {
+  const rig = makeRig({ config: { close4008WaitMs: 60 } })
+  const ws = await driveReady(rig)
+  const countBefore = FakeWebSocket.instances.length
+  ws.serverClose(4008)
+  await tick(20) // 指数退避口径（base=2ms/cap=8ms）早已到点——固定窗未到不得重连
+  assert.equal(FakeWebSocket.instances.length, countBefore, '固定等待窗内不得重连（短退避撞限流墙）')
+  await tick(80)
+  assert.equal(FakeWebSocket.instances.length, countBefore + 1, '等待窗过后应重连')
+  const ws2 = FakeWebSocket.instances.at(-1)
+  ws2.serverOpen()
+  ws2.serverSend({ op: 10, d: { heartbeat_interval: 60000 } })
+  await tick()
+  assert.ok(ws2.sent.some((frame) => frame.op === 6), '4008 会话仍有效，应走 RESUME')
+  await rig.inbound.stop()
+})
+
+test('G-07 close 4006/4009：会话不可恢复弃之重 IDENTIFY；无码关闭维持 RESUME 现行为', async () => {
+  for (const code of [4006, 4009]) {
+    const rig = makeRig()
+    const ws = await driveReady(rig)
+    ws.serverClose(code)
+    await tick(10)
+    const ws2 = FakeWebSocket.instances.at(-1)
+    assert.notEqual(ws2, ws, `close ${code} 应重建连接`)
+    ws2.serverOpen()
+    ws2.serverSend({ op: 10, d: { heartbeat_interval: 60000 } })
+    await tick()
+    assert.ok(ws2.sent.some((frame) => frame.op === 2), `close ${code} 应弃会话重新 IDENTIFY`)
+    assert.ok(!ws2.sent.some((frame) => frame.op === 6), `close ${code} 不应 RESUME`)
+    await rig.inbound.stop()
+  }
+  // 无码（1006 异常断开等）→ 现行为：RESUME 优先（既有用例已覆盖 close() 无码路径，
+  // 此处显式断言一次防止分支表误伤默认路径）
+  const rig = makeRig()
+  const ws = await driveReady(rig)
+  ws.serverClose()
+  await tick(10)
+  const ws2 = FakeWebSocket.instances.at(-1)
+  ws2.serverOpen()
+  ws2.serverSend({ op: 10, d: { heartbeat_interval: 60000 } })
+  await tick()
+  assert.ok(ws2.sent.some((frame) => frame.op === 6), '无码关闭应维持 RESUME 现行为')
+  await rig.inbound.stop()
+})
+
+// ------------------------------------------------------------- G-58 mock 保真
+
+test('G-58 error 支路：error 事件不直接触发重连（等 close）；close 跟随 → 正常重连', async () => {
+  const rig = makeRig()
+  const ws = await driveReady(rig)
+  const before = FakeWebSocket.instances.length
+  ws.serverError('mock network flap')
+  await tick()
+  assert.equal(FakeWebSocket.instances.length, before, 'error 事件本身不调度重连（重连统一在 close）')
+  assert.equal(ws.readyState, 1, 'error 后连接仍开着（close 才关）')
+  ws.serverClose() // 真实 WS：error 后必跟 close
+  await tick(10)
+  assert.ok(FakeWebSocket.instances.length > before, 'error 后 close 跟随 → 走既有重连路径')
+  await rig.inbound.stop()
+})
+
+test('G-58 半帧支路：分片/垃圾帧被忽略不崩，正常帧照常完成握手', async () => {
+  const rig = makeRig()
+  rig.inbound.start()
+  await tick()
+  const ws = FakeWebSocket.instances.at(-1)
+  ws.serverOpen()
+  ws.serverSendRaw('{"op":') // 半帧：JSON 未完（真实 WS 分片可能拆在任意字节边界）
+  ws.serverSendRaw('这不是 JSON 的垃圾帧')
+  await tick()
+  assert.equal(ws.sent.length, 0, '半帧/垃圾帧不应触发任何发送（客户端忽略非法帧）')
+  ws.serverSend({ op: 10, d: { heartbeat_interval: 60000 } }) // 正常 HELLO 仍可完成握手
+  await tick()
+  assert.ok(ws.sent.some((frame) => frame.op === 2), '半帧之后正常帧照常处理 → IDENTIFY')
+  await rig.inbound.stop()
+})
+
 // ---------------------------------------------------------------- 事件入站
 
 test('C2C_MESSAGE_CREATE：单聊文本 → bus envelope（chatId=userId，chatType=private）', async () => {
@@ -552,7 +697,7 @@ test('GROUP_AT_MESSAGE_CREATE：群 @ 消息剥离提及占位；chatId=group_op
   const ws = await driveReady(rig)
   ws.serverSend({
     op: 0, t: 'GROUP_AT_MESSAGE_CREATE', s: 4,
-    d: { id: 'evt_2', group_openid: 'g_open', content: '<@!BOT123> 帮我跑测试', author: { member_openid: 'u_open' } },
+    d: { id: 'evt_2', group_openid: 'g_open', content: '<@!123456> 帮我跑测试', author: { member_openid: 'u_open' } },
   })
   assert.equal(accepted.length, 1)
   assert.equal(accepted[0].channel, 'qq')
@@ -560,6 +705,40 @@ test('GROUP_AT_MESSAGE_CREATE：群 @ 消息剥离提及占位；chatId=group_op
   assert.equal(accepted[0].chatId, 'g_open')
   assert.equal(accepted[0].chatType, 'group')
   assert.equal(accepted[0].text, '帮我跑测试')
+  await rig.inbound.stop()
+})
+
+test('G-40：@ 占位白名单——三种已证实形态剥净（<@!数字>/<@数字>/行首 @名字+空格）', async () => {
+  const rig = makeRig()
+  const accepted = []
+  rig.bus.onMessage((envelope) => accepted.push(envelope))
+  const ws = await driveReady(rig)
+  // 三种已证实形态逐一入站（不同群避免去重/LRU 干扰）
+  ws.serverSend({ op: 0, t: 'GROUP_AT_MESSAGE_CREATE', s: 4, d: { id: 'evt_m1', group_openid: 'g_m1', content: '<@!123456>帮我跑测试', author: { member_openid: 'u_open' } } })
+  ws.serverSend({ op: 0, t: 'GROUP_AT_MESSAGE_CREATE', s: 5, d: { id: 'evt_m2', group_openid: 'g_m2', content: '<@123456> 帮我跑测试', author: { member_openid: 'u_open' } } })
+  ws.serverSend({ op: 0, t: 'GROUP_AT_MESSAGE_CREATE', s: 6, d: { id: 'evt_m3', group_openid: 'g_m3', content: '@小助手 帮我跑测试', author: { member_openid: 'u_open' } } })
+  assert.equal(accepted.length, 3)
+  for (const envelope of accepted) {
+    assert.equal(envelope.text, '帮我跑测试', `形态应剥净（实际: ${envelope.text}）`)
+  }
+  assert.equal(rig.debugLines.length, 0, '已证实形态不应触发 debug 采样日志')
+  await rig.inbound.stop()
+})
+
+test('G-40：未知 @ 形态保留原文 + debug 出声（不再假定「剥不掉也无害」）', async () => {
+  const rig = makeRig()
+  const accepted = []
+  rig.bus.onMessage((envelope) => accepted.push(envelope))
+  const ws = await driveReady(rig)
+  // 未知形态一：占位内非数字 ID（<@x>）——旧正则会剥 <@![A-Za-z0-9_]+>，白名单收紧后保留
+  ws.serverSend({ op: 0, t: 'GROUP_AT_MESSAGE_CREATE', s: 4, d: { id: 'evt_u1', group_openid: 'g_u1', content: '<@x> 帮我跑测试', author: { member_openid: 'u_open' } } })
+  // 未知形态二：行首 @名字 无尾随空格（缺「名字结束」判据，剥了会误伤粘连正文）
+  ws.serverSend({ op: 0, t: 'GROUP_AT_MESSAGE_CREATE', s: 5, d: { id: 'evt_u2', group_openid: 'g_u2', content: '@小助手帮我跑测试', author: { member_openid: 'u_open' } } })
+  assert.equal(accepted.length, 2)
+  assert.equal(accepted[0].text, '<@x> 帮我跑测试', '未知形态保留原文（@ 残片可见，不静默误剥）')
+  assert.equal(accepted[1].text, '@小助手帮我跑测试')
+  assert.equal(rig.debugLines.length, 2, '每条未知形态各出声一次（真机采样线索）')
+  for (const line of rig.debugLines) assert.match(line, /未命中白名单/, '出声内容应指向白名单未命中')
   await rig.inbound.stop()
 })
 
@@ -681,6 +860,77 @@ test('发送失败：sendApprovalCard 返回 null 降级；sendText 返回 false
   await rig.inbound.stop()
 })
 
+test('G-22 同根（码点安全）：超长星体平面回复按码点分段，逐段无孤立代理项且 msg_seq 递增', async () => {
+  const rig = makeRig()
+  await driveReady(rig)
+  // 4500 码点（9000 个 UTF-16 码元）→ 3 段。旧码元 slice(0, 2000) 第 2000 码元恰落
+  // 在代理对中间 → 孤立代理项（JSON 载荷非法，平台拒收或乱码）
+  const long = '🀄'.repeat(4500)
+  // rateGate 固定 1050ms 节流：本用例要连发 3 段，压掉真实等待（仅本用例内，finally 还原）
+  const realSetTimeout = globalThis.setTimeout
+  globalThis.setTimeout = (fn, ms, ...rest) => realSetTimeout(fn, ms > 0 ? 0 : ms, ...rest)
+  try {
+    assert.equal(await rig.inbound.sendText('u_open', long, 'msg_cp'), true)
+  } finally {
+    globalThis.setTimeout = realSetTimeout
+  }
+  const sends = rig.calls.filter((entry) => entry.url === `${API}/v2/users/u_open/messages`)
+  assert.equal(sends.length, 3, '4500 码点按 2000 码点/段应切 3 段（不再静默截断丢尾）')
+  assert.equal(sends.map((entry) => entry.body.content).join(''), long, '分段拼接无损（跨段 emoji 不丢字）')
+  assert.deepEqual(sends.map((entry) => entry.body.msg_seq), [1, 2, 3], '每段独立 msg_seq（msg_id+msg_seq 去重契约）')
+  assert.ok(sends.every((entry) => entry.body.msg_id === 'msg_cp'), '被动回复逐段携带原 msg_id')
+  for (const [index, entry] of sends.entries()) {
+    assert.equal(LONE_SURROGATE.test(entry.body.content), false, `第 ${index + 1} 段含孤立代理项`)
+    assert.ok(Array.from(entry.body.content).length <= 2000, `第 ${index + 1} 段超码点预算`)
+  }
+  await rig.inbound.stop()
+})
+
+test('G-22：被动回复条数配额超限 warn（c2c 4 条/群 5 条）——不硬阻塞投递，边界内静默', async () => {
+  const rig = makeRig({ config: { notifyGroups: ['g_open'] } })
+  await driveReady(rig)
+  // rateGate 固定 1050ms 节流：本用例要连发 5+5+6 段，压掉真实等待（finally 还原）
+  const realSetTimeout = globalThis.setTimeout
+  globalThis.setTimeout = (fn, ms, ...rest) => realSetTimeout(fn, ms > 0 ? 0 : ms, ...rest)
+  try {
+    // c2c：9000 码点 → 5 段 > 配额 4 → warn 出声但仍逐段投递（丢弃决策留给平台）
+    assert.equal(await rig.inbound.sendText('u_open', '🀄'.repeat(9000), 'msg_q1'), true)
+    // 群：恰好 10000 码点 → 5 段 = 配额 5（边界未超）→ 不出声
+    assert.equal(await rig.inbound.sendText('g_open', '🀄'.repeat(10000), 'msg_q2'), true)
+    // 群：12000 码点 → 6 段 > 配额 5 → warn 出声
+    assert.equal(await rig.inbound.sendText('g_open', '🀄'.repeat(12000), 'msg_q3'), true)
+  } finally {
+    globalThis.setTimeout = realSetTimeout
+  }
+  const userSends = rig.calls.filter((entry) => entry.url === `${API}/v2/users/u_open/messages`)
+  const groupSends = rig.calls.filter((entry) => entry.url === `${API}/v2/groups/g_open/messages`)
+  assert.equal(userSends.length, 5, 'c2c 超限仍投递 5 段（不硬阻塞）')
+  assert.equal(groupSends.length, 11, '群两轮共 5+6 段全部投递（不硬阻塞）')
+  assert.ok(userSends.every((entry) => entry.body.msg_id === 'msg_q1'), '被动回复逐段携带原 msg_id')
+  const quotaWarns = rig.lines.filter((line) => /配额/.test(line))
+  assert.equal(quotaWarns.length, 2, '恰好两次超限出声（c2c 一次 + 群一次），边界内静默')
+  assert.ok(quotaWarns.some((line) => line.includes('c2c') && line.includes('4')), 'c2c 超限 warn 含通道与配额数')
+  assert.ok(quotaWarns.some((line) => line.includes('群') && line.includes('5')), '群超限 warn 含通道与配额数')
+  await rig.inbound.stop()
+})
+
+test('G-22：主动消息（无 msg_id）不受被动回复配额约束——超限分段零出声', async () => {
+  const rig = makeRig()
+  await driveReady(rig)
+  const realSetTimeout = globalThis.setTimeout
+  globalThis.setTimeout = (fn, ms, ...rest) => realSetTimeout(fn, ms > 0 ? 0 : ms, ...rest)
+  try {
+    // 主动推送 9000 码点 → 5 段：无 msg_id → 不计入被动回复配额，不应出声
+    assert.equal(await rig.inbound.sendText('u_open', '🀄'.repeat(9000)), true)
+  } finally {
+    globalThis.setTimeout = realSetTimeout
+  }
+  const sends = rig.calls.filter((entry) => entry.url === `${API}/v2/users/u_open/messages`)
+  assert.equal(sends.length, 5)
+  assert.equal(rig.lines.filter((line) => /配额/.test(line)).length, 0, '主动消息超限分段不应触发配额 warn')
+  await rig.inbound.stop()
+})
+
 test('editResolved：补发审批结果文本（消息不可编辑）；无 chatId 直接跳过', async () => {
   const rig = makeRig()
   await driveReady(rig)
@@ -717,7 +967,7 @@ function floodGroupEvents(ws, count, { prefix = 'g_', from = 0 } = {}) {
       op: 0,
       t: 'GROUP_AT_MESSAGE_CREATE',
       s: 100 + i,
-      d: { id: `evt_flood_${prefix}${i}`, group_openid: `${prefix}${i}`, content: '<@!BOT> hi', author: { member_openid: 'u_open' } },
+      d: { id: `evt_flood_${prefix}${i}`, group_openid: `${prefix}${i}`, content: '<@!1> hi', author: { member_openid: 'u_open' } },
     })
   }
 }
@@ -760,7 +1010,7 @@ test('targetKinds LRU：活跃群（中途再来消息）不因「首次学习�
     op: 0,
     t: 'GROUP_AT_MESSAGE_CREATE',
     s: seq,
-    d: { id: `evt_hot_${seq}`, group_openid: 'g_hot', content: '<@!BOT> hi', author: { member_openid: 'u_open' } },
+    d: { id: `evt_hot_${seq}`, group_openid: 'g_hot', content: '<@!1> hi', author: { member_openid: 'u_open' } },
   })
   learnHot(1) // 最早学习
   floodGroupEvents(ws, CHAT_STATE_MAX - 1, { prefix: 'g_pad_' }) // 表正好填满 1024

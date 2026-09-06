@@ -525,6 +525,7 @@ export function apply(ctx, config = {}) {
         interactive: interactiveInstances,
         approvalConfig: approvalRaw,
         router, // v0.3.2 审批分流：request.agent 可解析时只发绑定通道（quiet 对审批不生效）
+        redaction: resolved.redaction, // S-05：审批推送 reason 按 minimal/extended 决定是否打码
         logger,
       })
       disposers.push(disposeApproval)

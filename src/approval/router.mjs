@@ -11,11 +11,14 @@
 
 import { createEscalationChain } from './escalation.mjs'
 import { normalizeInbound, parseApprovalAction } from '../inbound/_contract.mjs'
+import { MESSAGE_PRIORITY } from '../inbound/bus.mjs'
 import { guardTargets } from '../inbound/target-guard.mjs'
 import { createInteractionLedger } from '../interaction/ledger.mjs'
 import { workspaceOf } from '../routing/session-registry.mjs'
 // 维护批 6 前置：跨渠道能力矩阵作为单一事实来源
 import { displayNameOf } from '../inbound/capability-matrix.mjs'
+// S-05：审批推送 reason 脱敏（minimal 默认）
+import { maskSecrets, normalizeRedaction } from '../redact.mjs'
 
 const OUTCOME_ALLOWED = 'allowed-once'
 const OUTCOME_REJECTED = 'rejected'
@@ -36,6 +39,13 @@ const DEFAULT_ESCALATION_STAGES = [
   { afterMs: 30_000, level: 'timeSensitive', note: '第 1 次升级提醒' },
   { afterMs: 60_000, level: 'timeSensitive', note: '第 2 次升级提醒' },
 ]
+
+// G-34（D5）：卡片/编号裁决成功后，同 key 文本线（广播、升级链）5min 抑制窗口——
+// 双路径（事件线文本 + 交互线卡片）通知双响封口：用户点过卡片后不再收到"仍在等待批准"。
+const TEXT_SUPPRESS_WINDOW_MS = 5 * 60 * 1000
+
+// G-16（D4）：重启残留审批的失效告知文案（补发给 pushedTo 目标）。
+const STALE_APPROVAL_NOTICE = '该审批因宿主重启已失效，请回桌面处理'
 
 /**
  * 注册 approval/request 处理器。
@@ -67,6 +77,9 @@ export function registerApprovalHandler(deps) {
   const approvalConfig = deps.approvalConfig ?? {}
   const mode = approvalConfig.mode === 'answer' ? 'answer' : 'observe'
   const timeoutMs = Math.max(1000, Number(approvalConfig.timeoutMs) || 120000)
+  // S-05（CWE-200）：审批推送到第三方 IM 的 reason 是 agent 生成文本，minimal（默认）
+  // 下对密钥形态打码——不影响裁决所需信息（看到 sk-*** 足以判断，无需真实密钥值）。
+  const redaction = normalizeRedaction(deps.redaction)
   const warn = (message) => {
     try { deps.logger?.warn?.('[dsh-notifier/approval]', message) } catch { /* 日志失败绝不致命 */ }
   }
@@ -148,6 +161,17 @@ export function registerApprovalHandler(deps) {
   }
   // 核心账本 + 审批专用归属启发式合成同一 ledger 面（其余调用点零改动）。
   const ledger = { ...core, latestPendingFor }
+
+  // G-34（D5）：文本线 5min 抑制判定——行已翻终态（裁决成功/终止/超时/失效）且在窗口内，
+  // 同 key 的广播与升级链文本不再推送。窗口由 resolvedAt 表达：只有真实裁决才写终态，
+  // pending 行（observe 旁观中）永不抑制。
+  const textLineSuppressed = (key) => {
+    const row = ledger.get(key)
+    return row !== undefined && row !== null
+      && row.status !== 'pending'
+      && typeof row.resolvedAt === 'number'
+      && Date.now() - row.resolvedAt < TEXT_SUPPRESS_WINDOW_MS
+  }
 
   if (deps.control !== null && deps.control !== undefined) {
     deps.control.register('approval', {
@@ -240,7 +264,10 @@ export function registerApprovalHandler(deps) {
 
   async function pushApproval(key, token, request, channelTypes, targetsByChannel) {
     const title = `需要批准：${request.toolName}`
-    const content = `${request.reason ?? 'agent 请求执行一个需要授权的操作'}\n\n批准将仅对本次调用生效（token 单次核销）。`
+    // S-05：reason 是 agent 生成文本，minimal（默认）打码密钥形态后外发
+    const rawReason = typeof request.reason === 'string' && request.reason !== '' ? request.reason : 'agent 请求执行一个需要授权的操作'
+    const reason = redaction === 'minimal' ? maskSecrets(rawReason) : rawReason
+    const content = `${reason}\n\n批准将仅对本次调用生效（token 单次核销）。`
     const pushedTo = []
     const hintTargets = []
     const buttonChannels = []
@@ -306,6 +333,9 @@ export function registerApprovalHandler(deps) {
         return alias === undefined || !carded.has(alias)
       }).filter((type) => outbound.size === 0 || outbound.has(type))
     if (broadcastTypes !== null && broadcastTypes.length === 0) return { pushedTo, hintTargets }
+    // G-34（D5）：早到的裁决（waiter 预注册窗口内用户已点卡）已把行翻终态——广播文本
+    // 此时只会造成"已批卡片 + 还在等待批准"双响，直接抑制。
+    if (textLineSuppressed(key)) return { pushedTo, hintTargets }
     await notifier.notifyAll({
       title,
       content: channelNotes.length > 0
@@ -349,8 +379,20 @@ export function registerApprovalHandler(deps) {
       return true
     }
     const targets = (Array.isArray(row.pushedTo) ? row.pushedTo : []).filter((target) => String(target.channel) === String(envelope.channel) && (target.accountId === undefined || String(target.accountId) === String(envelope.accountId ?? '')))
-    if (targets.length > 0 && !targets.some((target) => String(target.userId) === String(envelope.userId))) {
-      reply('仅审批接收人可点击裁决')
+    // G-41（2026-08-28）：去掉原 `targets.length > 0 &&` 门控——pushedTo 为空表（或该
+    // 渠道/账号无投递记录）时同样执行接收人比对。空表意味着「无法证明投递对象」：
+    // 按钮 token 虽只随卡片下发，纵深上仍不得在无法证明回复来源时放行（原形态会跳过
+    // 比对直落 Control Core，只剩 authorize 一道内部防线，且回执话术误导为「已处理」）。
+    // 取舍：增量落账窗口（persistPushed 前的单卡发送耗时）与写盘失败造成的临时空表
+    // 在此退化为「拒绝直到账本一致」——用户回桌面或稍后重点，方向与 fail-closed 一致，
+    // 只收紧不放宽。
+    if (!targets.some((target) => String(target.userId) === String(envelope.userId))) {
+      if (targets.length === 0) {
+        warn(`审批按钮来源无法核验（无投递记录）：${key}（channel ${envelope.channel}，user ${envelope.userId}）`)
+        reply('未找到该审批的投递记录，无法核验回复来源，请回桌面处理')
+      } else {
+        reply('仅审批接收人可点击裁决')
+      }
       return true
     }
     // v0.8.7：accountId 缺失时不得用 channel 名伪造——fail-closed 交还桌面。
@@ -372,7 +414,8 @@ export function registerApprovalHandler(deps) {
     return true
   }
 
-  const disposeApprovalAction = bus.onMessage(handleApprovalAction)
+  // G-31：显式优先级——卡片动作线最先（ap: 负载是显式意图，绝不落入会话路由）。
+  const disposeApprovalAction = bus.onMessage(handleApprovalAction, { priority: MESSAGE_PRIORITY.cardAction })
 
   // 编号回复降级（无按钮渠道）：白名单用户回复 1/2 核销最近一条待决审批。
   // v0.6.3 返回 true = 消息已被审批消费——bus 据此停止扇出，同一消息不再进对话路由
@@ -418,7 +461,7 @@ export function registerApprovalHandler(deps) {
     return true
   }
 
-  const disposeMessage = bus.onMessage(handleNumberedReply)
+  const disposeMessage = bus.onMessage(handleNumberedReply, { priority: MESSAGE_PRIORITY.numberedReply })
 
   /** CRACK-003：编号回复代决资格——仅该渠道绑定的 owner 可代决他人卡片；identity 缺失/异常 fail-closed。 */
   function isAuthorizedDecider(identity, channel, userId) {
@@ -525,6 +568,9 @@ export function registerApprovalHandler(deps) {
       // 升级链与 wait 并行：每到一个 stage 再推一轮更高 level 提醒
       const startedAt = Date.now()
       escalation.start(key, (_key, stage) => {
+        // G-34（D5）：升级链文本同样受 5min 抑制——卡片已裁决的审批不再"仍在等待批准"
+        // （escalation.stop 在裁决后调用，这里兜住 stop 前的已触发 stage 竞态）。
+        if (textLineSuppressed(key)) return
         notifier.notifyAll({
           title: `${request?.toolName ?? '操作'} 仍在等待批准`,
           content: `${stage.note ?? '仍在等待批准'}（已等待 ${Math.round((Date.now() - startedAt) / 1000)}s）。\n回复 1 批准 / 2 拒绝${cardChannelNames !== '' ? `，或点击 ${cardChannelNames} 卡片按钮` : ''}。`,
@@ -556,7 +602,41 @@ export function registerApprovalHandler(deps) {
     }
   }
 
+  // G-16（D4）：启动扫描 ap: pending 行——进程重启/热重载后 waiter 已死而账本行还在
+  // （waiter 纯内存、ledger 持久化，生命周期在重启边界分叉）。全部 pending 行在此刻都
+  // 是僵尸：标记 expired + 向 pushedTo 目标补发失效告知。用户点旧卡片从"已处理"误导
+  // 回执变成明确失效告知；补发失败仅 warn，绝不阻塞启动；宿主侧 promise 由自身超时兜底。
+  const scanStalePendingApprovals = () => {
+    let marked = 0
+    for (const key of core.scanKeys()) {
+      const row = core.get(key)
+      if (!core.isPending(row)) continue
+      const targets = deliveryTargets(row)
+      try {
+        core.resolve(key, 'expired') // 翻终态：decision='expired'，resolvedAt=now
+        marked += 1
+      } catch (error) {
+        warn(`重启失效标记失败(${key}): ${error instanceof Error ? error.message : String(error)}`)
+        continue
+      }
+      for (const target of targets) {
+        const inbound = interactiveByChannel.get(target.channel)
+        if (inbound === undefined) continue
+        void inbound.sendText(target.chatId, STALE_APPROVAL_NOTICE).catch((error) => {
+          warn(`重启失效补发失败(${key} → ${target.channel}/${target.chatId}): ${error instanceof Error ? error.message : String(error)}`)
+        })
+      }
+    }
+    if (marked > 0) warn(`启动扫描: ${marked} 条重启残留审批已标记失效并补发告知`)
+  }
+
   const disposeApproval = ctx.on('approval/request', handler)
+  // G-16：装配完成后执行一次启动扫描（失败不致命，超时清扫与 token TTL 仍兜底）。
+  try {
+    scanStalePendingApprovals()
+  } catch (error) {
+    warn(`启动扫描异常（继续启动）: ${error instanceof Error ? error.message : String(error)}`)
+  }
   return () => {
     disposeApproval?.()
     disposeApprovalAction?.()

@@ -207,3 +207,23 @@ test('runChannelTest: ENV 引用先于校验解析', async () => {
     delete process.env.DSH_TEST_BARK_KEY_LEDGER
   }
 })
+
+test('runChannelTest: 发送失败 detail 只含公开文案，内部细节落 stderr（G-53）', async () => {
+  const originalFetch = globalThis.fetch
+  const errors = []
+  const originalError = console.error
+  console.error = (...args) => { errors.push(args.join(' ')) }
+  globalThis.fetch = async () => new Response('<html>gateway-error internal-host-10.0.0.5</html>', {
+    status: 502, headers: { 'content-type': 'text/html' },
+  })
+  try {
+    const result = await runChannelTest({ type: 'bark', rawConfig: { key: 'K', endpoint: 'https://bark.internal/api' } })
+    assert.equal(result.ok, false)
+    assert.match(result.detail, /发送失败：Bark推送失败（HTTP 502）/)
+    assert.doesNotMatch(result.detail, /internal-host|gateway-error/)
+    assert.ok(errors.some((line) => /internal-host-10\.0\.0\.5/.test(line)), '完整细节应落 stderr 供排障')
+  } finally {
+    globalThis.fetch = originalFetch
+    console.error = originalError
+  }
+})

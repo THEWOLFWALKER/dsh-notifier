@@ -9,16 +9,46 @@
 // 军规：读失败回退空对象（fail-open 读），写失败由 store 保留 dirty 重试；绝不覆写损坏现场。
 
 import { isValidTargetId } from './target-guard.mjs'
+import { INBOUND_CHANNEL_SET } from './channels-registry.mjs'
 
 const KEY_BINDINGS = 'inbound:bindings'
 const KEY_PENDING = 'inbound:pending'
-/** 一次性迁移标记（R5 审查 R5-1-P1-1：无标记则每次启动重播撒，管理台删除的成员被 YAML 复活）。 */
+/** 一次性迁移标记（R5 审查 R5-1-P1-1：无标记则每次启动重播撒，管理台已删成员被 YAML 复活）。 */
 const KEY_MIGRATED = 'inbound:migrated'
 /** lastSeenAt 更新节流：每用户每小时最多一次落盘（避免每条入站消息都全量重写 state.json）。 */
 const LAST_SEEN_THROTTLE_MS = 60 * 60 * 1000
-const VALID_CHANNELS = new Set(['telegram', 'feishu', 'qq', 'wxpusher', 'wechat', 'dingtalk'])
+const VALID_CHANNELS = INBOUND_CHANNEL_SET // G-13：单一事实来源（原内联六通道字面量）
 const VALID_ROLES = new Set(['owner', 'member'])
 const VALID_ORIGINS = new Set(['migrated', 'paired', 'learned', 'confirmed'])
+
+/**
+ * G-49 身份/路由复合键的**唯一构造点**：`${channel}:${userId}`（会话绑定域由调用方再前缀
+ * `bind:`）。四处键构造全部改引本函数，归一规则单一来源：
+ *  - identity.allows 的读键与 lastSeenAt 写回键（本文件）；
+ *  - conversation 的会话绑定持久化键 `bind:<channel>:<userId>`；
+ *  - agent-router resolveInbound L1 的读键（与 conversation 写键同源才能命中）；
+ *  - registry 入站挂钩的 channel/userId 分量（conversation 构造，镜像本函数规则）。
+ *
+ * 归一策略（大小写收敛）：
+ *  - 两分量 trim：' user ' 与 'user' 同键——当前各适配器输出恰好归一，此修是休眠边界
+ *    封口（不改现网行为，只保证未来空白/大小写漂移不裂键）；
+ *  - channel 收敛小写：渠道是有限小写类型集合（VALID_CHANNELS），大小写漂移同键；
+ *  - userId **不**折叠大小写：渠道侧 id 大小写语义真实存在（wxpusher UID_ 前缀、飞书
+ *    open_id），折叠会让存量盘上键打 miss——只 trim 不折叠。
+ *
+ * 不返回归一后的分量（userId 可含冒号，复合键反切会截断）——需要分量的调用方
+ * （registry 挂钩）在构造处镜像本规则，一致性由 test/identity.test.mjs 与
+ * test/conversation.route.test.mjs 的全链路用例锁死。
+ *
+ * @param {string} channel - 渠道类型（telegram/feishu/qq/wxpusher/wechat/dingtalk）
+ * @param {string} userId - 渠道侧用户 id
+ * @returns {string} 归一复合键 `${channel}:${userId}`
+ */
+export function bindingKey(channel, userId) {
+  const normalizedChannel = String(channel ?? '').trim().toLowerCase()
+  const normalizedUserId = String(userId ?? '').trim()
+  return `${normalizedChannel}:${normalizedUserId}`
+}
 
 /** 归一化单条绑定记录（读盘防御：坏字段回退默认，坏形状整条丢弃）。 */
 function normalizeBinding(raw, fallbackKey) {
@@ -75,6 +105,45 @@ export function createIdentity(options = {}) {
     store.set(KEY_BINDINGS, table)
   }
 
+  // G-44（W12）：启动时一次性清洗坏绑定键 + 写回 + warn 计数。
+  // 坏键 = 存储键与业务视图无法往返的键：normalizeBinding 判坏形状（整条丢弃），或
+  // 键与归一复合键不一致——bindingKey 收敛空白/大小写后对不上（如 ' telegram:42'、
+  // 'Telegram:42'、'telegram: 42' 这类读路径永远命中不了的幽灵键）。allows() 用
+  // bindingKey 归一查询，这些键只占存储不见天日，是「存储与业务视图长期不一致」的来源，
+  // 读时清洗不写回会让盘上死键无限累积，故本批次改为启动一次性清洗 + 写回。
+  // 只动 inbound:bindings，绝不动 inbound:migrated——白名单重播的一次性守卫若被清洗
+  // 连带清掉，「启动损坏白纸重置」（绑定表全坏读到空白）场景下管理台已删成员会被
+  // YAML 静默复活（删减权收归管理台的契约被推翻），这是本条的放大面，测试必含。
+  const startupCleanup = () => {
+    if (store === null) return
+    let raw
+    try {
+      raw = store.get(KEY_BINDINGS, {})
+    } catch (error) {
+      warn(`坏绑定键启动清洗读表失败（跳过，不阻塞）: ${error instanceof Error ? error.message : String(error)}`)
+      return
+    }
+    if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return
+    const badKeys = []
+    const cleaned = {}
+    for (const [key, value] of Object.entries(raw)) {
+      const record = normalizeBinding(value, key)
+      if (record === null) { badKeys.push(key); continue }
+      const canonical = bindingKey(record.channel, record.userId)
+      if (canonical !== key) { badKeys.push(key); continue }
+      cleaned[key] = record
+    }
+    if (badKeys.length === 0) return // 无死键：零写放大
+    try {
+      store.set(KEY_BINDINGS, cleaned)
+      const preview = badKeys.slice(0, 3).map((k) => String(k).slice(0, 32)).join('、')
+      warn(`坏绑定键启动清洗：${badKeys.length} 条移除（${preview}${badKeys.length > 3 ? '…' : ''}），绑定表与业务视图对齐`)
+    } catch (error) {
+      warn(`坏绑定键清洗写回失败（不致命）: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+  startupCleanup()
+
   function readPending() {
     if (store === null) return {}
     const raw = store.get(KEY_PENDING, {})
@@ -115,14 +184,19 @@ export function createIdentity(options = {}) {
     /** 复合键准入（v0.7 计划书 §3.1：准入带渠道维度，修跨渠道串扰）。 */
     allows(channel, userId) {
       if (typeof channel !== 'string' || typeof userId !== 'string') return false
+      // G-49：读键与写回键同走 bindingKey 归一（' user ' 与 'user' 同键），单一构造点
+      // 防读写两侧漂移——若写回用裸 channel 拼键，未来分量归一放宽时会落出
+      // ' telegram :user' 这类永不被读键命中的幽灵重复键。现网适配器输出恰好归一，
+      // 此修是休眠边界封口，不改变现网行为。
+      const key = bindingKey(channel, userId)
       const table = readBindings()
-      const record = table[`${channel}:${String(userId)}`]
+      const record = table[key]
       if (record === undefined) return false
       // lastSeenAt 节流更新（内存判定 + 稀疏落盘，不放大写放大）
       if (Date.now() - record.lastSeenAt > LAST_SEEN_THROTTLE_MS) {
         try {
           record.lastSeenAt = Date.now()
-          writeBindings({ ...table, [`${channel}:${record.userId}`]: record })
+          writeBindings({ ...table, [key]: record })
         } catch (error) {
           warn(`lastSeenAt 更新失败（不致命）: ${error instanceof Error ? error.message : String(error)}`)
         }

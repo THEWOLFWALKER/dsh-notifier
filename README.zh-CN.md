@@ -13,7 +13,7 @@
 ![渠道](https://img.shields.io/badge/channels-27-00B4D8?style=flat-square)
 
 ![npm version](https://img.shields.io/npm/v/dsh-notifier?style=flat-square&logo=npm&logoColor=white)
-![tests](https://img.shields.io/badge/tests-1352-brightgreen?style=flat-square)
+![tests](https://img.shields.io/badge/tests-1531-brightgreen?style=flat-square)
 ![license](https://img.shields.io/badge/license-MIT-brightgreen?style=flat-square)
 ![awesome-dsh-plugin](https://img.shields.io/badge/awesome--dsh--plugin-%E5%AE%98%E6%96%B9%E6%94%B6%E5%BD%95-00B4D8?style=flat-square)
 ![omdsh workshop](https://img.shields.io/badge/omdsh-workshop-7C3AED?style=flat-square)
@@ -25,7 +25,7 @@
 ![沉默](https://img.shields.io/badge/%E6%B2%89%E9%BB%98-%E6%B0%B8%E4%B8%8D%E6%89%B9%E5%87%86-9C27B0?style=flat-square)
 ![推送](https://img.shields.io/badge/push%20it-real%20good-FF4081?style=flat-square)
 
-包元数据：`dsh-notifier@0.9.0` · 1352 个自动化契约测试（1351 通过 + 1 个跳过）· MIT 许可。
+包元数据：`dsh-notifier@0.9.5` · 1531 个自动化契约测试（1531 通过）· MIT 许可。
 
 把 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) agent 带到你平时使用的地方。dsh-notifier 用一个极简 `notify()` API 接住 27 个渠道，再提供手机审批、手机提问、会话控制和清爽的本机管理台——无需额外部署第二套运行时。
 
@@ -114,6 +114,24 @@ insert:
 | **账本 + 每日摘要** | 只追加 JSONL 账本 + 昨日流量一条 `passive` 摘要。 |
 | **密钥安全** | `role('secret')` 密钥处处脱敏；`${ENV:NAME}` 引用让密钥不落 profile。 |
 | **绝不搞崩启动** | 配错的渠道静默跳过并留一行日志。 |
+
+### 会话命令（私聊机器人发）
+
+| 命令 | 干什么 | 边界说明 |
+|---|---|---|
+| `/help` | 列出全部可用命令。 | 无参；顺带说明下面的文本 / `!` / `..` 约定。 |
+| `/status` | 查看绑定与 agent 状态：绑定 sid、解析目标、agent 状态、活跃会话清单。 | 无参；未绑定时回显通道默认路由提示。 |
+| `/agent` | 活跃会话分组视图：`workspace \| sid \| 状态 \| 出站通道 \| quiet`。 | 无参。 |
+| `/agent use <workspace\|sid 前缀>` | 本对话切到该会话（智能绑定）。 | 目标名可含空格（剩余整段参与匹配，G-33）；未命中给用法回执。 |
+| `/agent back` | 解除本对话绑定，回通道默认。 | 无参。 |
+| `/bind <sessionId>` | 精确绑定到指定会话（sid 级操作）。 | 未知 sid → 「会话不存在」回执；覆盖绑定先摘旧会话的入站挂钩（G-48），一用户绝不双挂。 |
+| `/unbind` | 解绑（回到通道默认路由：通道默认 agent，未配置则最近活跃）。 | 无参。 |
+| `/stop` | 取消当前 turn。 | 仅裸 `/stop` 命中（G-04）：带附言的 `/stop 等等` **不**取消，按未知命令落为普通文本投递。 |
+| `/route` | 查看当前双向解析：会话→通道 / 通道→会话。 | 路由引擎未装配时回执不可用。 |
+| `/quiet <workspace\|sid>` | 静默该会话的出站推送；远程对话不受影响。 | 必须带目标（完整名或 ≥4 位 sid 前缀）；路由引擎未装配时不可用。 |
+| `/unquiet <workspace\|sid>` | 恢复该会话的出站推送。 | 边界同 `/quiet`。 |
+
+直接发文本 = 对话；`!` 前缀 = 中途纠偏（steer）；`..` 结尾 = 立即发送（合并窗内）。群聊拒绝远程控制命令（QQ 群回「群聊不允许远程控制」）——请回原私聊会话操作。
 
 ## 配置项
 
@@ -208,16 +226,25 @@ src/
   admin/              网页控制台（6 页、SSE、bearer 鉴权、移动端自适应）
   ledger.mjs          JSONL 账本 + 每日摘要
   rules.mjs           防打扰闸门（事件 / 关键词 / 宽限窗）
-scripts/              channel-login.mjs · test-channel.mjs · route.mjs · gen-channel-matrix.mjs
-test/                 1352 个测试（1351 通过 + 1 个跳过，0.9.0 发布线）；历史 0.8.6 包为 909 个测试。
+scripts/              channel-login.mjs · channel-selfcheck.mjs · route.mjs · gen-channel-matrix.mjs
+test/                 1531 个测试（1531 通过，0.9.5 发布线）；历史 0.8.6 包为 909 个测试。
 ```
 
 设计准则：纯 ESM（`.mjs`）、零运行时依赖、绝大多数渠道走声明式 spec 引擎、适配器薄而诚实、无构建步骤。
 
+### 可选依赖（可选装配语义，S-13）
+
+`package.json` 只保留两个 `optionalDependencies`，均**精确锁定版本**且**仅懒加载**——不装也能跑，缺失绝不搞崩启动、不影响核心 notify 链路：
+
+- `@larksuiteoapi/node-sdk` `1.73.0` —— 仅飞书扫码登录 / 入站 WebSocket 用。缺失时飞书渠道报 `missing-sdk` 并给出安装指引（`npm i @larksuiteoapi/node-sdk@1.73.0`），其余渠道照常工作。
+- `qrcode-terminal` `0.12.0` —— 仅登录 CLI 的终端二维码渲染用。缺失时 CLI 改打印可扫链接。
+
+锁定纪律（S-13）：可选依赖区间收敛为已审查的精确版本（此前 `^` 下限会让 `@larksuiteoapi/node-sdk` 漂移到 ≥1.73 的 `registerApp` 回调改名；如今漂移面封死）。`@tencent-connect/qqbot-connector` **不在** optionalDependencies 中：npm 标记 `UNLICENSED`，维持「仅参考不引入」——不复制、不分发、不作为依赖引入。QQ 扫码登录代码路径保留懒 `import()`：若用户手动安装该包仍可用，缺包则降级为 `missing-sdk` 回执。
+
 ## 开发
 
 ```bash
-npm test          # 0.9.0 发布线：1352（1351 通过 + 1 个跳过）
+npm test          # 0.9.5 发布线：1531（1531 通过）
 ```
 
 新增渠道：在 `src/adapters/` 实现适配器接口（`resolve(cfg)` + `send(msg)`），并在 `src/config.mjs` 注册；上方渠道矩阵由 `node scripts/gen-channel-matrix.mjs` 自动重生成。

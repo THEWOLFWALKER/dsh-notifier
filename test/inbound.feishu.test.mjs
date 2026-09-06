@@ -225,6 +225,143 @@ test('im.message.receive_v1：文本入站 → bus.accept 规范化 envelope（@
   await rig.inbound.stop()
 })
 
+// ---------------------------------------------------------------- G-25 @提及还原
+
+/** 飞书 mentions 事件负载形态（官方《接收消息内容结构》）：mentions 与 content 同级，
+ *  每项 { key: '@_user_N', name: 展示名, id: { open_id, … } }（id 另有字符串旧 schema，
+ *  还原只用 key/name）。占位符 @_user_N 的 N 对应 mentions 的序号。 */
+function mentionEvent({ text, mentions, messageId = 'om_m', chatId = 'oc_group', chatType = 'group' }) {
+  return {
+    sender: { sender_id: { open_id: 'ou_1' } },
+    message: {
+      message_id: messageId,
+      chat_id: chatId,
+      chat_type: chatType,
+      message_type: 'text',
+      content: JSON.stringify({ text }),
+      mentions,
+    },
+  }
+}
+
+test('G-25 正文提及还原：占位符 @_user_N → @名字，语义保留且无连续双空格', async () => {
+  const rig = makeRig()
+  const accepted = []
+  rig.bus.onMessage((envelope) => accepted.push(envelope))
+  rig.inbound.start()
+  await tick()
+  rig.fake.state.dispatcher.handlers['im.message.receive_v1'](mentionEvent({
+    text: '帮我提醒 @_user_2 下午三点开会',
+    mentions: [
+      { key: '@_user_1', id: { open_id: 'ou_bot' }, name: '通知机器人' },
+      { key: '@_user_2', id: { open_id: 'ou_9' }, name: '李四' },
+    ],
+  }))
+  assert.equal(accepted.length, 1)
+  assert.equal(accepted[0].text, '帮我提醒 @李四 下午三点开会', '正文提及还原为 @李四（旧实现会删成空串留下双空格）')
+  assert.ok(accepted[0].text.includes('@李四'), '还原出的 @名字在场')
+  assert.ok(!accepted[0].text.includes('  '), '无连续双空格')
+  await rig.inbound.stop()
+})
+
+test('G-25 命令词粘连提及：/pair@_user_1 code → 命令词 @ 后缀剥除，args 不含 @ 残片', async () => {
+  const rig = makeRig()
+  const accepted = []
+  rig.bus.onMessage((envelope) => accepted.push(envelope))
+  rig.inbound.start()
+  await tick()
+  rig.fake.state.dispatcher.handlers['im.message.receive_v1'](mentionEvent({
+    text: '/pair@_user_1 ABCD-1234',
+    mentions: [{ key: '@_user_1', id: { open_id: 'ou_bot' }, name: '通知机器人' }],
+    chatId: 'ou_1',
+    chatType: 'p2p',
+  }))
+  assert.equal(accepted.length, 1)
+  assert.equal(accepted[0].text, '/pair ABCD-1234', '还原后命令词 @ 后缀剥净')
+  // parseCommand 视角复核：args 必须干净（码面不带 @ 残片）
+  const { parseCommand } = await import('../src/inbound/commands.mjs')
+  const cmd = parseCommand(accepted[0].text)
+  assert.equal(cmd.name, 'pair')
+  assert.deepEqual(cmd.args, ['ABCD-1234'], 'args 不含 @ 残片')
+  await rig.inbound.stop()
+})
+
+test('G-25 行首机器人提及 + 群聊命令：@_user_1 /stop → 还原后剥行首寻址噪音，命令仍可解析', async () => {
+  const rig = makeRig()
+  const accepted = []
+  rig.bus.onMessage((envelope) => accepted.push(envelope))
+  rig.inbound.start()
+  await tick()
+  // 群聊里用户必须 @ 机器人才能发消息：还原后是 '@通知机器人 /stop'，
+  // 不剥行首提及则 conversation 的 startsWith('/') 判定失效、群聊命令全废
+  rig.fake.state.dispatcher.handlers['im.message.receive_v1'](mentionEvent({
+    text: '@_user_1 /stop',
+    mentions: [{ key: '@_user_1', id: { open_id: 'ou_bot' }, name: '通知机器人' }],
+  }))
+  assert.equal(accepted.length, 1)
+  assert.equal(accepted[0].text, '/stop', '行首机器人提及剥净，命令裸露可解析')
+  await rig.inbound.stop()
+})
+
+test('G-25 行首机器人提及 + 正文他人提及：寻址噪音剥、语义内容留', async () => {
+  const rig = makeRig()
+  const accepted = []
+  rig.bus.onMessage((envelope) => accepted.push(envelope))
+  rig.inbound.start()
+  await tick()
+  rig.fake.state.dispatcher.handlers['im.message.receive_v1'](mentionEvent({
+    text: '@_user_1 提醒 @_user_2 对一下 @_user_3 的排期',
+    mentions: [
+      { key: '@_user_1', id: { open_id: 'ou_bot' }, name: '通知机器人' },
+      { key: '@_user_2', id: { open_id: 'ou_9' }, name: '李四' },
+      { key: '@_user_3', id: { open_id: 'ou_8' }, name: '王五' },
+    ],
+  }))
+  assert.equal(accepted.length, 1)
+  assert.equal(accepted[0].text, '提醒 @李四 对一下 @王五 的排期', '行首机器人剥净，正文两个提及还原保留')
+  assert.ok(!accepted[0].text.includes('  '), '无连续双空格')
+  await rig.inbound.stop()
+})
+
+test('G-25 mentions 缺失/未命中映射：退回旧行为（删占位符），不留 @_user_N 残片', async () => {
+  const rig = makeRig()
+  const accepted = []
+  rig.bus.onMessage((envelope) => accepted.push(envelope))
+  rig.inbound.start()
+  await tick()
+  // 事件完全不带 mentions（旧 schema / 部分网关裁剪）→ 无从还原，删占位符
+  rig.fake.state.dispatcher.handlers['im.message.receive_v1']({
+    sender: { sender_id: { open_id: 'ou_1' } },
+    message: { message_id: 'om_e1', chat_id: 'oc_g', message_type: 'text', content: JSON.stringify({ text: '帮我提醒 @_user_2 开会' }) },
+  })
+  // mentions 在但缺 name（异常负载）→ 该项不入映射
+  rig.fake.state.dispatcher.handlers['im.message.receive_v1'](mentionEvent({
+    text: '找 @_user_2 聊聊',
+    mentions: [{ key: '@_user_2', id: { open_id: 'ou_9' }, name: '' }],
+  }))
+  assert.equal(accepted.length, 2)
+  // 无 mentions 时无从还原 → 退回旧行为：占位符删成空串（正文中间会留下双空格残迹，
+  // 这是 G-25 修复面之外的既有残留——只有事件带 mentions 映射才能还原消掉它）
+  assert.equal(accepted[0].text, '帮我提醒  开会', '无 mentions 时退回删占位符（旧残留双空格仍在）')
+  assert.ok(!accepted[0].text.includes('@_user'), '不留 @_user_N 残片')
+  assert.equal(accepted[1].text, '找  聊聊', 'name 缺失的映射项不还原（退回删占位符）')
+  await rig.inbound.stop()
+})
+
+test('G-25 纯提及无正文：还原后剥行首为空 → 不投递（与钉钉纯提及同语义）', async () => {
+  const rig = makeRig()
+  const accepted = []
+  rig.bus.onMessage((envelope) => accepted.push(envelope))
+  rig.inbound.start()
+  await tick()
+  rig.fake.state.dispatcher.handlers['im.message.receive_v1'](mentionEvent({
+    text: '@_user_1',
+    mentions: [{ key: '@_user_1', id: { open_id: 'ou_bot' }, name: '通知机器人' }],
+  }))
+  assert.equal(accepted.length, 0, '纯 @机器人 无正文不投递')
+  await rig.inbound.stop()
+})
+
 test('白名单外用户：消息不到达订阅者（白名单在 bus 层拦截）', async () => {
   const rig = makeRig({ allowUsers: ['ou_2'] })
   let seen = 0
@@ -239,7 +376,7 @@ test('白名单外用户：消息不到达订阅者（白名单在 bus 层拦截
   await rig.inbound.stop()
 })
 
-test('非文本消息：转成占位文本继续投递（agent 可感知用户发了图/文件）', async () => {
+test('G-26 非文本消息：静默忽略 + 回执「暂不支持该消息类型」（不再注入占位符文本）', async () => {
   const rig = makeRig()
   const accepted = []
   rig.bus.onMessage((envelope) => accepted.push(envelope))
@@ -249,8 +386,14 @@ test('非文本消息：转成占位文本继续投递（agent 可感知用户�
     sender: { sender_id: { open_id: 'ou_1' } },
     message: { message_id: 'om_2', chat_id: 'oc_g', message_type: 'image', content: '' },
   })
-  assert.equal(accepted.length, 1)
-  assert.equal(accepted[0].text, '[不支持的消息类型：image]')
+  await tick()
+  // G-26：占位符文本会进 agent 语境被当指令解读（注入面）——非文本消息不再投递
+  assert.equal(accepted.length, 0, '非文本消息不注入占位符，bus 无入站')
+  // 回执尽力而为（失败仅 warn）：fake client 应收到「暂不支持该消息类型」
+  assert.equal(rig.fake.state.sent.length, 1)
+  assert.equal(rig.fake.state.sent[0].receiveId, 'oc_g')
+  assert.equal(rig.fake.state.sent[0].msgType, 'text')
+  assert.equal(JSON.parse(rig.fake.state.sent[0].content).text, '暂不支持该消息类型')
   await rig.inbound.stop()
 })
 
@@ -321,7 +464,8 @@ test('card.action.trigger：重复点击同一审批 → already-resolved toast�
   const first = fire()
   const second = fire()
   assert.equal(first.toast.type, 'success')
-  assert.match(second.toast.content, /已处理或已过期/)
+  // G-54：already-resolved 有专属话术（不再笼统「已处理或已过期」）
+  assert.match(second.toast.content, /该审批已处理，无需重复操作/)
   assert.equal((await outcome).decision, 'rejected', '首达采纳')
   await inbound.stop()
 })

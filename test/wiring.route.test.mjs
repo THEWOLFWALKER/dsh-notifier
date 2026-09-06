@@ -230,7 +230,7 @@ test('index 装配：预置 bind:telegram:u1 旧绑定 → apply 后 route:sessi
   writeFileSync(join(stateDir, 'state.json'), JSON.stringify({ 'bind:telegram:u1': 'sess-legacy' }))
   const { ctx, warnings } = bootCtx()
   apply(ctx, {
-    channels: [{ type: 'webhook', url: 'http://127.0.0.1:1/hook' }],
+    channels: [{ type: 'webhook', url: 'http://public-hook.test/hook' }],
     inbound: { allowUsers: ['u1'], stateDir },
   })
   const sessions = createStore(join(stateDir, 'state.json')).get('route:sessions')
@@ -245,7 +245,7 @@ test('index 装配：预置 bind:telegram:u1 旧绑定 → apply 后 route:sessi
 
 test('index 装配：apply 返回 resolved；createAgentRouter/createSessionRegistry/workspaceOf 三导出可用', () => {
   const { ctx } = bootCtx()
-  const resolved = apply(ctx, { channels: [{ type: 'webhook', url: 'http://127.0.0.1:1/hook' }] })
+  const resolved = apply(ctx, { channels: [{ type: 'webhook', url: 'http://public-hook.test/hook' }] })
   assert.deepEqual(resolved.channels.map((entry) => entry.type), ['webhook'])
   assert.equal(typeof indexExports.createAgentRouter, 'function')
   assert.equal(typeof indexExports.createSessionRegistry, 'function')
@@ -259,7 +259,7 @@ test('index 装配：registry.dispose 幂等——apply 两次并重复执行清
   const stateDir = tempDir()
   const { ctx, effects } = bootCtx()
   const config = {
-    channels: [{ type: 'webhook', url: 'http://127.0.0.1:1/hook' }],
+    channels: [{ type: 'webhook', url: 'http://public-hook.test/hook' }],
     inbound: { allowUsers: ['u1'], stateDir },
   }
   apply(ctx, config)
@@ -274,7 +274,7 @@ test('index 装配：questions.enabled 时注册 ask_user', async () => {
   const stateDir = tempDir()
   const port = await freePort()
   apply(ctx, {
-    channels: [{ type: 'webhook', url: 'http://127.0.0.1:1/hook' }],
+    channels: [{ type: 'webhook', url: 'http://public-hook.test/hook' }],
     inbound: { stateDir, wxpusher: { appToken: 'token-1', port } },
   })
   assert.equal(defs.some((def) => def.name === 'ask_user'), true)
@@ -292,7 +292,7 @@ test('index 装配完整性：identity 必须传进审批路由与提问桥（CR
   const port = await freePort()
   // 走真实 apply：inbound 就绪（wxpusher 有凭证）→ 审批路由与提问桥都会被装配
   apply(ctx, {
-    channels: [{ type: 'webhook', url: 'http://127.0.0.1:1/hook' }],
+    channels: [{ type: 'webhook', url: 'http://public-hook.test/hook' }],
     inbound: { stateDir, wxpusher: { appToken: 'token-1', port } },
   })
   // try/finally：apply 起了 wxpusher HTTP 服务，断言失败也必须卸载——否则句柄悬空
@@ -355,7 +355,7 @@ test('状态清扫：aq 已决行超 24h 删除，窗口内保留', async () => 
   }))
   const { ctx, cleanup } = bootCtx()
   apply(ctx, {
-    channels: [{ type: 'webhook', url: 'http://127.0.0.1:1/hook' }],
+    channels: [{ type: 'webhook', url: 'http://public-hook.test/hook' }],
     inbound: { stateDir },
   })
   const store = createStore(join(stateDir, 'state.json'))
@@ -373,7 +373,7 @@ test('状态清扫：aq 崩溃残留跨重启回收，在途 pending 保留', as
   }))
   const { ctx, cleanup } = bootCtx()
   apply(ctx, {
-    channels: [{ type: 'webhook', url: 'http://127.0.0.1:1/hook' }],
+    channels: [{ type: 'webhook', url: 'http://public-hook.test/hook' }],
     inbound: { stateDir },
   })
   const restarted = createStore(join(stateDir, 'state.json'))
@@ -393,7 +393,7 @@ test('状态清扫：ap answer 孤儿删除，observe 与旧行保留', async ()
   }))
   const { ctx, cleanup } = bootCtx()
   apply(ctx, {
-    channels: [{ type: 'webhook', url: 'http://127.0.0.1:1/hook' }],
+    channels: [{ type: 'webhook', url: 'http://public-hook.test/hook' }],
     inbound: { stateDir },
     approval: { mode: 'answer', timeoutMs: 120000 },
   })
@@ -413,7 +413,7 @@ test('状态清扫：approval 超时配置放大时保留在途 answer，清扫�
   }))
   const { ctx, cleanup } = bootCtx()
   apply(ctx, {
-    channels: [{ type: 'webhook', url: 'http://127.0.0.1:1/hook' }],
+    channels: [{ type: 'webhook', url: 'http://public-hook.test/hook' }],
     inbound: { stateDir },
     approval: { mode: 'answer', timeoutMs: 3 * 60 * 60 * 1000 },
   })
@@ -434,7 +434,7 @@ test('状态清扫：act 孤儿 pending 回收，dedup 既有窗口行为不变'
   }))
   const { ctx, cleanup } = bootCtx()
   apply(ctx, {
-    channels: [{ type: 'webhook', url: 'http://127.0.0.1:1/hook' }],
+    channels: [{ type: 'webhook', url: 'http://public-hook.test/hook' }],
     inbound: { stateDir },
   })
   const store = createStore(join(stateDir, 'state.json'))
@@ -632,3 +632,6 @@ test('事件分流：quiet=false 时按 channelTypes 分流，只实际发送绑
     globalThis.fetch = originalFetch
   }
 })
+
+// S-02：urlguard DNS 恒公网夹具（假域名不打真网，见 helpers/urlguard-public.mjs）
+import './helpers/urlguard-public.mjs'

@@ -24,13 +24,19 @@ export function resolve(cfg = {}) {
   }
   const template = str(cfg.template) || 'markdown'
   const channel = str(cfg.channel)
+  // G-62：两个枚举字段同一待遇——非空且非法一律抛错（空值走默认）。
+  // 首版 template 静默回落 markdown、channel 却抛错，用户拼错 template 无任何提示，
+  // 推送默默变成 markdown 渲染（html 模板被当纯文本）——静默改写语义比报错更糟。
+  if (!TEMPLATES.has(template)) {
+    throw new NotifyError(`pushplus 配置非法：template 仅支持 ${[...TEMPLATES].join('/')}（当前：${template}）`, ERROR_CODES.NOT_CONFIGURED)
+  }
   if (channel !== '' && !ALLOWED_CHANNELS.has(channel)) {
     warn(`pushplus channel 非法：${channel}（仅支持 wechat/webwx/wecom/dingtalk）`)
     throw new NotifyError(`pushplus 配置非法：channel 仅支持 wechat/webwx/wecom/dingtalk（当前：${channel}）`, ERROR_CODES.NOT_CONFIGURED)
   }
   return {
     token,
-    template: TEMPLATES.has(template) ? template : 'markdown',
+    template,
     topic: str(cfg.topic),
     channel,
     timeoutMs: num(cfg.timeoutMs, 10000, 1000, 60000),

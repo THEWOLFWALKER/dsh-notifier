@@ -17,17 +17,26 @@
 // 频控：Bot 维度 60qpm ≈ 1 条/秒（复用出站 qq-bot 的限速门经验值）；被动回复
 // （带 msg_id 关联事件）有独立配额，5 条内免主动消息权限。
 
-import { createTokenManager, createRateGate } from '../adapters/_tokens.mjs'
+import { createTokenManager, createRateGate, normalizeTtlMs } from '../adapters/_tokens.mjs'
 import { setBounded, createThrottledWarn } from './_bounded.mjs'
 import { resolveNotifyTargets } from './target-guard.mjs'
 import { buildApprovalAction, parseApprovalAction, buildQuestionAction, parseQuestionAction } from './_contract.mjs'
 import { parseQQImageMessage } from './message.mjs'
+import { splitByCodePoints } from './segment.mjs'
 
 const TOKEN_URL = 'https://bots.qq.com/app/getAppAccessToken'
 const DEFAULT_API_BASE = 'https://api.sgroup.qq.com'
 const INTENT_GROUP_AND_C2C = 1 << 25
 const INTENT_INTERACTION = 1 << 26 // INTERACTION_CREATE：消息按钮点击回调（v0.8.4 按钮化）
 const CHAT_STATE_MAX = 1024
+// 出站单条上限按 Unicode 码点计（非 UTF-16 码元）：文本 2000 / Markdown 3000（官方限制）。
+// 码点语义经 splitByCodePoints 保证——码元切片会把星体平面字符切成孤立代理项（G-22 同根）。
+const QQ_TEXT_MAX_CODEPOINTS = 2000
+const QQ_MARKDOWN_MAX_CODEPOINTS = 3000
+/** G-22：被动回复条数配额（QQ 官方平台限制：c2c 4 条 / 群 5 条，按同一 msg_id 的被动回复计）。
+ *  超限时平台静默丢弃（无错误码、无回执）——本侧不硬阻塞投递（硬阻塞把「可能仍送达」
+ *  变成「必然不送达」），仅 warn 出声让丢弃可见。主动消息（无 msg_id）不受此配额约束。 */
+const QQ_PASSIVE_REPLY_QUOTA = { user: 4, group: 5 }
 
 // WS op codes（QQ 网关协议）
 const OP_DISPATCH = 0
@@ -38,6 +47,10 @@ const OP_RECONNECT = 7
 const OP_INVALID_SESSION = 9
 const OP_HELLO = 10
 const OP_HEARTBEAT_ACK = 11
+
+/** G-07：close 4008（连接被限速）是服务端给出的硬性等待窗——按官方 SDK 语义固定等
+ *  60s 再重连，不走指数退避（限流期短退避重连等于连续撞墙，反而加剧限流）。 */
+const CLOSE_4008_WAIT_MS = 60000
 
 /**
  * 解析并校验 inbound.qq 配置。
@@ -70,9 +83,28 @@ export function resolveQqInboundConfig(raw, options = {}) {
   }
 }
 
-/** 群消息 content 常以 @机器人 占位开头（<@!BOTID> 或 @名字），剥掉再投递。 */
+/**
+ * G-40：群消息 @ 机器人占位白名单化——仅剥已证实形态，绝不「假定剥不掉也无害」。
+ * 已证实形态：`<@!数字ID>`、`<@数字ID>`（官方占位）与行首 `@名字+空格`（纯文本形态）。
+ * 未命中白名单但形似提及（以 @ / <@ 开头）→ 保留原文并由调用方 debug 出声：
+ * @ 残片会污染 agent 语境与 /pair 参数；平台若改格式，日志可见而非静默漏剥。
+ * 官方文档称群 content 已自动去 @ 前缀（docs/protocol-preflight/qq-bot.md），但真机
+ * 样本不足——白名单+出声是「漏剥可见」与「误剥可见」之间的保守中点。
+ */
+const MENTION_WHITELIST = [
+  /^<@!\d+>\s*/, // 官方占位形态一：<@!数字ID>（占位自定界，尾随空格可缺省）
+  /^<@\d+>\s*/, // 官方占位形态二：<@数字ID>
+  /^@\S+\s+/, // 纯文本形态：行首 @名字+空格（空格是「名字结束」判据，缺空格视为未知）
+]
+
+/** 剥离群消息行首的 @ 机器人占位；返回 { text, matched, mentionLike }（matched=命中
+ *  白名单已剥；mentionLike=形似提及但未命中，调用方据此 debug 出声）。 */
 function stripMention(content) {
-  return String(content ?? '').replace(/^(<@![A-Za-z0-9_]+>|@\S+)\s*/, '').trim()
+  const text = String(content ?? '')
+  for (const pattern of MENTION_WHITELIST) {
+    if (pattern.test(text)) return { text: text.replace(pattern, '').trim(), matched: true }
+  }
+  return { text: text.trim(), matched: false, mentionLike: /^(@|<@)/.test(text) }
 }
 
 /**
@@ -106,6 +138,8 @@ export function createQqInbound(options = {}) {
   const WebSocketImpl = options.webSocketImpl ?? globalThis.WebSocket
   const reconnectBaseMs = Math.max(1, Number(options.reconnectBaseMs) || 1000)
   const reconnectCapMs = Math.max(reconnectBaseMs, Number(options.reconnectCapMs) || 30000)
+  // G-07：close 4008 的固定等待窗（默认 60s；测试注入缩短，不参与指数退避）
+  const close4008WaitMs = Math.max(0, Number(options.close4008WaitMs) || CLOSE_4008_WAIT_MS)
   const ackThreshold = Number(options.maxMissedAcks)
   const maxMissedAcks = Number.isFinite(ackThreshold) && ackThreshold >= 1 ? Math.min(10, Math.floor(ackThreshold)) : 2
 
@@ -113,6 +147,11 @@ export function createQqInbound(options = {}) {
     try { logger?.warn?.('[dsh-notifier/inbound:qq]', message) } catch { /* 日志失败绝不致命 */ }
     // v0.6.1 双写 stderr：宿主 logger 不落 stdout 时轮询/装配告警仍可见（真机事故复盘）
     try { console.error('[dsh-notifier/inbound:qq]', message) } catch { /* 控制台不可用不致命 */ }
+  }
+  // debug 级诊断只走宿主 logger（不双写 stderr）：@ 形态采样这类低频诊断由宿主按需开启，
+  // 避免 stderr 噪音；宿主未接 debug 时静默跳过（fail-safe，不影响主路径）。
+  const debug = (message) => {
+    try { logger?.debug?.('[dsh-notifier/inbound:qq]', message) } catch { /* 日志失败绝不致命 */ }
   }
   const evictionWarn = createThrottledWarn(warn, { intervalMs: 1000 })
   const onEvict = (key) => evictionWarn((count) => `目标类型学习表达上限：淘汰 ${count} 个旧目标（最近淘汰 ${String(key).slice(0, 32)}）`)
@@ -129,7 +168,8 @@ export function createQqInbound(options = {}) {
     if (typeof payload?.access_token !== 'string' || payload.access_token === '') {
       throw new Error(`换取 access_token 失败（HTTP ${response.status}）：检查 appId/appSecret`)
     }
-    return { token: payload.access_token, expiresInMs: (Number(payload.expires_in) || 7200) * 1000 }
+    // G-55：与出站 qq-bot 同一归一——expires_in 非法（非有限/≤0）不再 || 7200 掩盖
+    return { token: payload.access_token, expiresInMs: normalizeTtlMs(Number(payload.expires_in) * 1000, 'expires_in') }
   })
   const rateGate = createRateGate(1050) // 60qpm ≈ 1 条/秒
 
@@ -155,10 +195,12 @@ export function createQqInbound(options = {}) {
     return (config.notifyGroups ?? []).includes(String(chatId)) ? 'group' : 'user'
   }
 
-  function scheduleReconnect({ resume = false } = {}) {
+  function scheduleReconnect({ resume = false, delayMs = null } = {}) {
     if (stopRequested) return
     if (reconnectTimer !== null) return
-    const delay = Math.min(reconnectBaseMs * 2 ** reconnectAttempts, reconnectCapMs)
+    // G-07：4008（连接被限速）服务端给出的是硬性等待窗，不用指数退避——按计划固定 60s
+    const delay = delayMs !== null ? Math.max(0, delayMs)
+      : Math.min(reconnectBaseMs * 2 ** reconnectAttempts, reconnectCapMs)
     reconnectAttempts += 1
     reconnectTimer = setTimeout(() => {
       reconnectTimer = null
@@ -180,6 +222,36 @@ export function createQqInbound(options = {}) {
       try { ws.close() } catch { /* 已关闭 */ }
       ws = null
     }
+  }
+
+  /** G-07：关闭码分支表（对齐官方 SDK reconnect 语义，dsh-im qqbot-connector 同源）：
+   *  - 4004 认证失败：token 已被平台吊销——作废 token 缓存（此前全文件无一处
+   *    tokens.invalidate()，带着死凭证无限重连直到 TTL 自然过期）+ 弃会话重 IDENTIFY
+   *  - 4008 连接被限速：服务端硬性等待窗，固定等（不走指数退避）；会话仍有效走 RESUME
+   *  - 4006 seq 非法 / 4007 shard 无效 / 4009 会话超时：会话不可恢复，弃之重 IDENTIFY
+   *  - 其余（1000 正常关闭 / 1006 异常断开 / 无码）：现行为——RESUME 优先 + 指数退避 */
+  function scheduleReconnectForClose(code) {
+    if (code === 4004) {
+      warn('QQ 网关认证失败（close 4004）：作废 access_token 缓存重取，弃会话重新 IDENTIFY')
+      tokens.invalidate()
+      sessionId = null
+      lastSeq = null
+      scheduleReconnect({ resume: false })
+      return
+    }
+    if (code === 4008) {
+      warn(`QQ 网关连接被限速（close 4008）：按服务端等待窗固定 ${Math.round(close4008WaitMs / 1000)}s 后 RESUME（不走指数退避）`)
+      scheduleReconnect({ resume: true, delayMs: close4008WaitMs })
+      return
+    }
+    if (code === 4006 || code === 4007 || code === 4009) {
+      warn(`QQ 网关闭码 ${code}：会话不可恢复，弃会话重新 IDENTIFY`)
+      sessionId = null
+      lastSeq = null
+      scheduleReconnect({ resume: false })
+      return
+    }
+    scheduleReconnect({ resume: true })
   }
 
   async function fetchGatewayUrl() {
@@ -271,7 +343,13 @@ export function createQqInbound(options = {}) {
         const userId = String(d?.author?.member_openid ?? '')
         const chatId = String(d?.group_openid ?? '')
         const messageId = String(d?.id ?? '')
-        const text = stripMention(d?.content)
+        // G-40：白名单未命中但形似提及 → 保留原文 + debug 出声（@ 残片会污染 agent 语境
+        // 与 /pair 参数；平台改格式时靠日志发现而非静默漏剥）。头部截 32 字符便于采样。
+        const mention = stripMention(d?.content)
+        if (mention.mentionLike === true) {
+          debug(`群消息 @ 形态未命中白名单，已保留原文（QQ @ 占位真机样本不足，出现即需采样登记）: ${JSON.stringify(String(d?.content ?? '').slice(0, 32))}`)
+        }
+        const text = mention.text
         if (messageId === '' || userId === '' || chatId === '' || text === '') return
         setBounded(targetKinds, chatId, 'group', CHAT_STATE_MAX, onEvict)
         // v0.7：群聊拒绝回执发回群（含「请私聊发送 /pair」引导）
@@ -382,11 +460,17 @@ export function createQqInbound(options = {}) {
       return
     }
     if (frame.op === OP_INVALID_SESSION) {
-      warn('会话失效（op9）：丢弃 session 重新 IDENTIFY')
-      sessionId = null
-      lastSeq = null
+      // G-21：按官方 SDK 语义看 d 标志——d:true 会话仍可恢复（保留 session 走 RESUME，
+      // 事件续传不丢）；d:false 会话已死才弃之重 IDENTIFY。旧实现一律弃会话：
+      // 每次可恢复失效都多付一次 IDENTIFY 握手 + 丢失续传窗。
+      const resumable = frame.d === true
+      warn(`会话失效（op9）：${resumable ? '可恢复，保留 session 走 RESUME' : '不可恢复，弃会话重新 IDENTIFY'}`)
+      if (!resumable) {
+        sessionId = null
+        lastSeq = null
+      }
       cleanupSocket()
-      scheduleReconnect({ resume: false })
+      scheduleReconnect({ resume: resumable })
     }
   }
 
@@ -401,36 +485,55 @@ export function createQqInbound(options = {}) {
         warn(`帧处理异常: ${error instanceof Error ? error.message : String(error)}`)
       }
     })
-    ws.addEventListener('close', () => {
+    ws.addEventListener('close', (event) => {
       cleanupSocket()
-      scheduleReconnect({ resume: true })
+      // G-07：关闭码带语义——4004 刷 token / 4008 固定窗 / 4006/4007/4009 弃会话
+      scheduleReconnectForClose(Number(event?.code))
     })
     ws.addEventListener('error', () => { /* close 会跟着来，重连在 close 里统一调度 */ })
   }
 
+  /** 发文本：超长按码点分段逐条发送（每段独立 msg_seq，服务端按 msg_id+msg_seq 去重）。
+   *  G-22 同根修复：旧 slice(0, 2000) 是 UTF-16 码元语义，第 2000 码元恰落在星体平面
+   *  字符（emoji/生僻字）中间时产生孤立代理项（JSON 载荷非法，平台拒收或乱码）。
+   *  G-22 配额：被动回复（携带 msg_id）分段数超平台配额时 warn 出声但不阻塞（超限部分
+   *  平台静默丢弃，先让丢弃可见——见 QQ_PASSIVE_REPLY_QUOTA 注释）。
+   *  任一段失败即抛错（已发段不撤回，与 iLink 分块语义一致）。 */
   async function postMessage(chatId, content, msgId = undefined) {
     if (fetchImpl === undefined) return null
     const token = await tokens.get()
-    await rateGate.gate()
     const target = String(chatId)
-    const seq = (msgSeqs.get(target) ?? 0) + 1
-    setBounded(msgSeqs, target, seq, CHAT_STATE_MAX, onEvict)
     const kind = targetKindOf(target)
     const url = kind === 'group'
       ? `${apiBase}/v2/groups/${target}/messages`
       : `${apiBase}/v2/users/${target}/messages`
-    const body = { content: String(content ?? '').slice(0, 2000), msg_type: 0, msg_seq: seq }
-    if (msgId !== undefined) body.msg_id = msgId
-    const response = await fetchImpl(url, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: `QQBot ${token}` },
-      body: JSON.stringify(body),
-    })
-    const payload = await response.json().catch(() => null)
-    if (!response.ok || (typeof payload?.code === 'string' && payload.code !== '')) {
-      throw new Error(`QQ 发送失败（HTTP ${response.status}${payload?.code ? ` code ${payload.code}` : ''}: ${payload?.message ?? ''}）`)
+    const chunks = splitByCodePoints(String(content ?? ''), QQ_TEXT_MAX_CODEPOINTS)
+    const pieces = chunks.length > 0 ? chunks : ['']
+    if (msgId !== undefined) {
+      const quota = kind === 'group' ? QQ_PASSIVE_REPLY_QUOTA.group : QQ_PASSIVE_REPLY_QUOTA.user
+      if (pieces.length > quota) {
+        warn(`被动回复分段 ${pieces.length} 条超过${kind === 'group' ? '群' : 'c2c'}配额 ${quota} 条：超限部分平台将静默丢弃（本侧不硬阻塞，已照发）: ${target}`)
+      }
     }
-    return typeof payload?.id === 'string' && payload.id !== '' ? payload.id : `qq:${target}:${seq}`
+    let lastId = null
+    for (const piece of pieces) {
+      await rateGate.gate()
+      const seq = (msgSeqs.get(target) ?? 0) + 1
+      setBounded(msgSeqs, target, seq, CHAT_STATE_MAX, onEvict)
+      const body = { content: piece, msg_type: 0, msg_seq: seq }
+      if (msgId !== undefined) body.msg_id = msgId
+      const response = await fetchImpl(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `QQBot ${token}` },
+        body: JSON.stringify(body),
+      })
+      const payload = await response.json().catch(() => null)
+      if (!response.ok || (typeof payload?.code === 'string' && payload.code !== '')) {
+        throw new Error(`QQ 发送失败（HTTP ${response.status}${payload?.code ? ` code ${payload.code}` : ''}: ${payload?.message ?? ''}）`)
+      }
+      lastId = typeof payload?.id === 'string' && payload.id !== '' ? payload.id : `qq:${target}:${seq}`
+    }
+    return lastId
   }
 
   /** 互动事件回执（PUT /interactions/{id}，50QPS）：3 秒窗口内告知平台已受理，
@@ -457,7 +560,10 @@ export function createQqInbound(options = {}) {
     const url = kind === 'group'
       ? `${apiBase}/v2/groups/${target}/messages`
       : `${apiBase}/v2/users/${target}/messages`
-    const body = { msg_type: 2, msg_seq: seq, markdown: { content: String(markdownContent).slice(0, 3000) }, keyboard }
+    // Markdown+键盘是单张卡片：超长只按码点截断（取首块），不拆多卡——键盘必须与卡片
+    // 同体，拆卡会重复按钮/permission；码点截断同样不产生孤立代理项（G-22 同根）。
+    const markdownText = splitByCodePoints(String(markdownContent ?? ''), QQ_MARKDOWN_MAX_CODEPOINTS)[0] ?? ''
+    const body = { msg_type: 2, msg_seq: seq, markdown: { content: markdownText }, keyboard }
     const response = await fetchImpl(url, {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `QQBot ${token}` },

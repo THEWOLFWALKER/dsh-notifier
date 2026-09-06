@@ -172,6 +172,21 @@ test('createEventListener: dedup 防止同一 seq 重放', async () => {
   dispose()
 })
 
+test('createEventListener: G-18 同 seq 不同负载的 approval/asked 不互吞（dedup 键带负载摘要）', async () => {
+  const { ctx, listeners } = fakeCtx()
+  let pushes = 0
+  const notifier = { notifyAll: async () => { pushes += 1; return { ok: true, delivered: [], failed: [] } }, flush: async () => {} }
+  const resolved = { enabled: true, debounceMs: 30, summaryMaxChars: 100, titlePrefix: '' }
+  const dispose = createEventListener(ctx, notifier, resolved)
+  const session = makeSession('s1')
+  // 同 session 同 seq 重放但负载不同（宿主重放先请 toolA 后请 toolB）：
+  // 键追加 hash6(detail) → 两条都推；turn 类维持现状（同 seq 即同一事件）。
+  listeners['session/event'][0](session, { type: 'approval/asked', seq: 9, data: { toolName: 'email_send', reason: '给 x@y.z 发邮件' } })
+  listeners['session/event'][0](session, { type: 'approval/asked', seq: 9, data: { toolName: 'bash', reason: '跑构建命令' } })
+  assert.equal(pushes, 2, '同 seq 不同负载 → 双推不互吞')
+  dispose()
+})
+
 test('createEventListener: root-context fallback accepts envelope and preserves duplicate delivery dedup', () => {
   const listeners = {}
   const root = {
@@ -671,8 +686,10 @@ test('v0.5 动作卡片：stall 触发时对交互通道 mint + sendActionCard�
   }
   const cards = []
   const rawChannel = {
-    channel: 'mock',
-    notifyTargets: () => [{ chatId: 'c1', userId: 'u1' }],
+    // S-12：形状守卫对未登记渠道整体拒绝——测试替身也用真实渠道名（telegram），
+    // 既过了闸，也比自造 'mock' 键更贴近真实路径。
+    channel: 'telegram',
+    notifyTargets: () => [{ chatId: '10086', userId: 'u1' }],
     sendActionCard: async (payload) => { cards.push(payload); return { messageId: 'm1' } },
   }
   const dispose = createEventListener(ctx, notifier, {

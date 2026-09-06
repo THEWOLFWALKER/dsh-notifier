@@ -83,7 +83,7 @@ test('notify 到已配置渠道：请求体含 title/content', async () => {
     return { ok: true, status: 200, json: async () => ({}) }
   }
   try {
-    const notifier = makeNotifier([webhookChannel('http://127.0.0.1:1/hook')])
+    const notifier = makeNotifier([webhookChannel('http://public-hook.test/hook')])
     const result = await notifier.notify('webhook', { title: '标题', content: '正文', level: 'critical' })
     assert.equal(result.ok, true)
     assert.equal(seen.body.title, '标题')
@@ -195,3 +195,6 @@ test('flush 等待在途推送完成（headless 退出前送达）', async () =>
     globalThis.fetch = originalFetch
   }
 })
+
+// S-02：urlguard DNS 恒公网夹具（假域名不打真网，见 helpers/urlguard-public.mjs）
+import './helpers/urlguard-public.mjs'

@@ -43,6 +43,18 @@ export function randomWechatUin() {
   return Buffer.from(String(randomInt(0, 2 ** 32)), 'utf8').toString('base64')
 }
 
+/** G-28：contextToken 缺省 warn 节流表（目标 → 上次告警时刻），60s/目标一次防日志洪水。 */
+const NO_CONTEXT_WARN_AT = new Map()
+const NO_CONTEXT_WARN_INTERVAL_MS = 60_000
+
+function warnNoContext(to) {
+  const now = Date.now()
+  const last = NO_CONTEXT_WARN_AT.get(to) ?? 0
+  if (now - last < NO_CONTEXT_WARN_INTERVAL_MS) return
+  NO_CONTEXT_WARN_AT.set(to, now)
+  try { console.error('[dsh-notifier/ilink]', `sendMessage 无 contextToken（to=${to.slice(0, 16)}）：可能落错会话窗口，建议先经入站学习拿 token 再发`) } catch { /* 控制台不可用不致命 */ }
+}
+
 /** POST 请求头（token 缺省时省略 Authorization——登录前的 QR 流程用 GET，不需要）。 */
 export function ilinkHeaders(token) {
   const headers = {
@@ -159,6 +171,9 @@ export function createIlinkClient(options = {}) {
     },
     /** 发文本（contextToken 缺省省略字段；无 token 可能落错会话窗口，尽量先入站学习）。 */
     sendMessage({ to, text, contextToken = '', clientId }) {
+      // G-28：缺 token warn 一次/目标——"落错会话窗口"是协议层可观测的降级，
+      // 静默发送会让「消息发出去了但没人看见」变成不可诊断（节流 60s/目标）。
+      if (contextToken === '') warnNoContext(String(to ?? ''))
       const msg = {
         from_user_id: '',
         to_user_id: String(to ?? ''),

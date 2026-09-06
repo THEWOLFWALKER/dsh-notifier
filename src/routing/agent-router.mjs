@@ -29,8 +29,10 @@ const KEY_CHANNELS = 'route:channels'
 const KEY_SESSIONS = 'route:sessions'
 
 import { normalizeControlOverlay } from '../control/session-arbiter.mjs'
+import { bindingKey } from '../inbound/identity.mjs'
 
-/** 入站显式绑定键前缀（与 conversation.mjs 既有键格式一致：bind:<channel>:<userId>）。 */
+/** 入站显式绑定键前缀（与 conversation.mjs 键格式一致：bind:<channel>:<userId>，分量经
+ * identity.bindingKey 归一——G-49 单一构造点，读写两侧同键）。 */
 const BIND_PREFIX = 'bind:'
 
 /** 取「普通对象」：null / 数组 / 标量一律视为无条目（手工编辑或损坏数据防御）。 */
@@ -209,9 +211,11 @@ export function createAgentRouter({ store, agentsList } = {}) {
      *   首位即被投递的 sessionId）；sessionId=null 表示无处可投。
      */
     resolveInbound(channel, userId, { latestSessionId } = {}) {
-      // L1 显式绑定：值为字符串即命中（损坏数据跳过）
+      // L1 显式绑定：值为字符串即命中（损坏数据跳过）。
+      // G-49：读键与 conversation 的写键同走 identity.bindingKey（分量 trim + channel
+      // 小写）——带空白/大小写漂移的分量两侧同键，绝不裂键（休眠边界封口）。
       if (typeof channel === 'string' && typeof userId === 'string') {
-        const bound = safeGet(`${BIND_PREFIX}${channel}:${userId}`)
+        const bound = safeGet(`${BIND_PREFIX}${bindingKey(channel, userId)}`)
         if (typeof bound === 'string' && bound.trim() !== '') {
           return { sessionId: bound, source: 'bind', ambiguous: false }
         }

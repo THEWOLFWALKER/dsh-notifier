@@ -159,7 +159,7 @@ test('settleQuestion: 501 when identity not assembled (cannot prove admin)', () 
 test('admin API: INBOUND_CHANNELS matches capability-matrix inbound channels', () => {
   // All inbound channels should be in the INBOUND_CHANNELS list
   const expected = ['telegram', 'feishu', 'qq', 'wxpusher', 'wechat', 'dingtalk']
-  assert.deepEqual(INBOUND_CHANNELS.sort(), expected.sort())
+  assert.deepEqual([...INBOUND_CHANNELS].sort(), expected.sort())
 })
 
 test('admin API: putChannel rejects unknown channel type', () => {

@@ -37,11 +37,19 @@ test('isValidTargetId：跨渠道串门形态拦截（TG 数字进飞书 / 飞�
   assert.equal(isValidTargetId('feishu', 'oc1'), false, '飞书 id 必须带 ou_/oc_/on_ 前缀')
 })
 
-test('isValidTargetId：未知渠道/空值 fail-open + fail-closed（守卫不是白名单）', () => {
-  assert.equal(isValidTargetId('bark', 'anything-goes'), true, '未知渠道放行：只排已知形态')
-  assert.equal(isValidTargetId('', '10086'), true)
-  assert.equal(isValidTargetId(null, 'x'), true)
+test('isValidTargetId：未知渠道 S-12 fail-closed 拒绝；空值/空串 fail-closed', () => {
+  assert.equal(isValidTargetId('bark', 'anything-goes'), false, 'S-12：未知渠道拒绝（枚举收敛 channels-registry 后，未知只剩拼写错误/漂移）')
+  assert.equal(isValidTargetId('', '10086'), false)
+  assert.equal(isValidTargetId(null, 'x'), false)
   assert.equal(isValidTargetId('telegram', ''), false, '空串在任何已知渠道都不合格')
+})
+
+test('guardTargets：S-12 未知渠道整体跳过 + warn 列出合法渠道', () => {
+  const warns = []
+  const { kept, skipped } = guardTargets('bark', [{ chatId: 'a' }, { chatId: 'b' }], (m) => warns.push(m))
+  assert.equal(kept.length, 0)
+  assert.equal(skipped.length, 2)
+  assert.match(warns.join(' '), /未知渠道.*telegram\/feishu/, '告警列出合法渠道')
 })
 
 // ---------------------------------------------------------------- guardTargets

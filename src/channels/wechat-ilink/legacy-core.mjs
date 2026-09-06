@@ -5,7 +5,7 @@
 //  - 游标 wechat:sync_buf 必须持久化（丢失/回退会重复收消息）
 //  - context_token：入站消息永远最新（收到即缓存 wechat:ctx:<uid>），发送回显最新值。
 //    v0.8.7：写入前做形状校验（≤512 字符、无空白/控制字符）+ 键族 256 上限淘汰最旧（宪法#4）
-//  - 发送分块（默认 2000 字/块，块间 2s 降密度）
+//  - 发送分块（默认 2000 码点/块，块间 2s 降密度；码点切分不产生孤立代理项，G-03）
 //  - 错误语义：
 //      会话过期（-14 / 伪装的 -2 unknown error）→ 剥 context_token 重试一次；
 //        仍失败 → 清 ctx tokens + 游标 + 凭证，通道停用，中文告警「重新扫码登录」
@@ -24,6 +24,7 @@ import {
 import { createBreaker } from '../../inbound/_breaker.mjs'
 import { createThrottledWarn } from '../../inbound/_bounded.mjs'
 import { resolveNotifyTargets } from '../../inbound/target-guard.mjs'
+import { splitByCodePoints } from '../../inbound/segment.mjs'
 import { DEFAULT_INBOUND_MEDIA_TIMEOUT_MS, MAX_INBOUND_IMAGE_BYTES } from '../../inbound/message.mjs'
 import { normalizeInboundMessage, normalizeUpdateBatch, boundedCursor, validAccountId } from './protocol.mjs'
 
@@ -77,6 +78,9 @@ export function resolveWechatInboundConfig(raw, { credentials } = {}) {
       userId: String(cfg.userId ?? cred.userId ?? '').trim(),
       notifyUsers: (Array.isArray(cfg.notifyUsers) ? cfg.notifyUsers : []).map((id) => String(id).trim()).filter((id) => id !== ''),
       longPollTimeoutMs: clampInt(cfg.longPollTimeoutMs, 35000, 5000, 120000),
+      // G-12：轮询假死看门狗对账周期（默认 15s；在飞 getupdates 超 longPollTimeoutMs+
+      // 一个对账周期仍无返回 → 判假死强制 abort 断开重试）
+      watchdogIntervalMs: clampInt(cfg.watchdogIntervalMs, 15000, 5, 300000),
       timeoutMs: clampInt(cfg.timeoutMs, 15000, 1000, 60000),
       chunkSize: clampInt(cfg.chunkSize, 2000, 10, 4000),
       sendChunkDelayMs: clampInt(cfg.sendChunkDelayMs, 2000, 0, 30000),
@@ -110,6 +114,8 @@ export function createWechatIlinkInbound(options = {}) {
   const accountKey = accountScoped ? `${accountPrefix}account` : ACCOUNT_KEY
   const contextKey = (uid) => accountScoped ? `${accountPrefix}ctx:${uid}` : `${CTX_PREFIX}${uid}`
   const sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)))
+  // G-12：看门狗对账周期（resolveWechatInboundConfig 已归一；直接构造时兜底默认 15s）
+  const watchdogIntervalMs = clampInt(config.watchdogIntervalMs, 15000, 5, 300000)
   const imageDownloadTimeoutMs = clampInt(options.imageDownloadTimeoutMs, DEFAULT_INBOUND_MEDIA_TIMEOUT_MS, 1000, 60000)
   const imageDownloadMaxBytes = Math.min(MAX_INBOUND_IMAGE_BYTES,
     Math.max(1, Number(options.imageDownloadMaxBytes) || MAX_INBOUND_IMAGE_BYTES))
@@ -135,6 +141,11 @@ export function createWechatIlinkInbound(options = {}) {
   let disabled = false // 会话过期后置位：轮询停 + 发送拒（需人工重新扫码）
   let loopPromise = null
   let currentAbort = null
+  // G-12 假死看门狗状态：pollStartedAt 记当前在飞 getupdates 的发起时刻（null=无在飞）；
+  // watchdogKicks 计连续 kick 次数（任一次正常返回即清零——连续增长说明通道真死）。
+  let pollStartedAt = null
+  let watchdogTimer = null
+  let watchdogKicks = 0
   let syncBuf = boundedCursor(store?.get(syncBufKey, ''))
 
   function ctxKey(uid) {
@@ -253,10 +264,13 @@ export function createWechatIlinkInbound(options = {}) {
       warnCtxRejected((count) => `context_token 形状异常已拒收（长度或字符不符合限制，上限 ${CTX_TOKEN_MAX_LEN}，不接受空白/控制字符）：来自 ${from} 的本条消息照常处理，发送将走无 token 重试路径${count > 1 ? `（近期累计 ${count} 次）` : ''}`)
     }
     const text = String(normalized.text ?? '')
-    const messageId = String(normalized.messageId ?? '') || `wx:${from}:${hash6(text)}`
+    const rawMessageId = String(normalized.messageId ?? '')
+    // G-46：hash6 兜底键标记 synthetic——bus 去重走 60s 短窗（原生 msgId 才配 24h）。
+    const messageId = rawMessageId !== '' ? rawMessageId : `wx:${from}:${hash6(text)}`
+    const messageIdSynthetic = rawMessageId === ''
     // v0.7：accept 返回值消费——拒绝/命令回执不再已读不回
     // context_token is transport state, never a Control Core/audit field.
-    const envelope = { ...normalized, channel: 'wechat', accountId: String(config?.accountId ?? ''), userId: from, chatId: from, messageId, text }
+    const envelope = { ...normalized, channel: 'wechat', accountId: String(config?.accountId ?? ''), userId: from, chatId: from, messageId, messageIdSynthetic, text }
     delete envelope.contextToken
     delete envelope.contextTokenRejected
     const result = bus.accept(envelope)
@@ -270,16 +284,36 @@ export function createWechatIlinkInbound(options = {}) {
     if (normalized.image !== undefined) downloadImageBestEffort(normalized)
   }
 
+  /**
+   * G-12：轮询假死看门狗。长轮询挂死（TCP 活着但服务端永不回包）不产生任何异常——
+   * 失败计数（只覆盖显式异常）与熔断（只覆盖 sendmessage 限流）都不触发，通道静默失效
+   * 用户却以为插件在线。本层对账：在飞 getupdates 超过 longPollTimeoutMs + 一个对账
+   * 周期仍未返回，即 abort 强制断开，让轮询循环保守的失败计数路径重建连接。
+   * 对齐 dsh-im supervisor 思路（周期对账 + 防重入：仅在飞且超期才动手）。
+   */
+  function watchdogTick() {
+    if (!running || currentAbort === null || pollStartedAt === null) return
+    const nowMs = (options.now ?? Date.now)()
+    const inflightMs = nowMs - pollStartedAt
+    const deadlineMs = config.longPollTimeoutMs + Math.max(5000, watchdogIntervalMs)
+    if (inflightMs <= deadlineMs) return
+    watchdogKicks += 1
+    warn(`轮询假死检测：getupdates 在飞 ${Math.round(inflightMs / 1000)}s 未归（长轮询上限 ${Math.round(config.longPollTimeoutMs / 1000)}s，连续第 ${watchdogKicks} 次），强制断开重试`)
+    try { currentAbort.abort() } catch { /* 已完成不致命 */ }
+  }
+
   async function pollLoop() {
     let failures = 0
     while (running) {
       const controller = new AbortController()
       currentAbort = controller
+      pollStartedAt = (options.now ?? Date.now)() // G-12：在飞起点（finally 清）
       try {
         const response = await client.getUpdates(syncBuf, {
           timeoutMs: config.longPollTimeoutMs,
           signal: controller.signal,
         })
+        watchdogKicks = 0 // 正常返回即证通道未死，连续 kick 计数清零
         const batch = normalizeUpdateBatch(response, { accountId: config.accountId })
         if (!batch.ok) {
           const verdict = batch
@@ -322,6 +356,7 @@ export function createWechatIlinkInbound(options = {}) {
         await sleep(backoff ? config.backoffDelayMs : config.retryDelayMs)
       } finally {
         currentAbort = null
+        pollStartedAt = null // G-12：在飞结束（正常/异常/打断都算）
       }
     }
   }
@@ -371,13 +406,14 @@ export function createWechatIlinkInbound(options = {}) {
     }
   }
 
-  /** 分块发送文本；任一块失败即返回 false（已发块不撤回）。 */
+  /** 分块发送文本；任一块失败即返回 false（已发块不撤回）。
+   *  G-03：块按 Unicode 码点切（splitByCodePoints）——旧 content.slice 是 UTF-16 码元
+   *  语义，跨块的 emoji/生僻字会被切成孤立代理项，微信端显示乱码或拒收。ZWJ 序列
+   *  仍可能在块边界拆成多个完整码点（显示为两个符号，无非法序列），属可接受降级。 */
   async function sendTextInternal(chatId, text) {
     const content = String(text ?? '').trim()
     if (content === '') return true
-    const size = config.chunkSize
-    const chunks = []
-    for (let i = 0; i < content.length; i += size) chunks.push(content.slice(i, i + size))
+    const chunks = splitByCodePoints(content, config.chunkSize)
     for (let i = 0; i < chunks.length; i += 1) {
       if (i > 0) await sleep(config.sendChunkDelayMs) // 块间降密度，防主动消息限频
       await sendChunk(chatId, chunks[i])
@@ -403,14 +439,19 @@ export function createWechatIlinkInbound(options = {}) {
     start() {
       if (running || loopPromise !== null || disabled) return
       running = true
+      // G-12：假死看门狗与轮询循环同生命周期（unref：不独自挂住进程）
+      watchdogTimer = setInterval(watchdogTick, watchdogIntervalMs)
+      watchdogTimer.unref?.()
       loopPromise = pollLoop().finally(() => {
         loopPromise = null
+        if (watchdogTimer !== null) { clearInterval(watchdogTimer); watchdogTimer = null }
       })
     },
 
     /** 停止：打断在途长轮询并等循环退出（幂等）。 */
     async stop() {
       running = false
+      if (watchdogTimer !== null) { clearInterval(watchdogTimer); watchdogTimer = null }
       try { currentAbort?.abort() } catch { /* abort 不致命 */ }
       try { await loopPromise } catch { /* 循环异常已在内部吸收 */ }
       loopPromise = null

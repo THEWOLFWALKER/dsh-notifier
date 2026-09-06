@@ -90,7 +90,7 @@ URL·method·body / 成功失败路径 / secret 脱敏。
 
 声明表一段 + fixture 一个 JSON + **真机推送成功一次**。
 无法真机验证的渠道不收录——这是 awesome 列表 PR #277 确立的验证标准。
-`node scripts/test-channel.mjs --channel <type>` 可在仓库侧完成真机验证。
+`node scripts/channel-selfcheck.mjs --channel <type>` 可在仓库侧完成真机验证。
 
 ## 6. good first issue 指引
 

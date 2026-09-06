@@ -1,6 +1,17 @@
-// v0.3.1 测试：inbound/dingtalk-stream（gettoken 编码、Stream 网关握手、帧 ack 与二次
-// parse、msgId 去重、sessionWebhook 被动回复、batchSend 主动推送、熔断联动、token 生命
-// 周期、重连退避、stop 幂等、凭证安全）。fetch 与 WebSocket 全 mock，不发真实网络请求。
+// 测试：inbound/dingtalk-stream（gettoken 编码、Stream 网关握手（G-10 ua 字段名）、帧 ack
+// （G-01：messageId 仅在 headers、头字段名 messageId、data 为 JSON 字符串 "OK"）、SYSTEM/ping
+// 回显与非 ping 子类隔离（G-02）、data 二次 parse 失败可观测（G-42）、richText 归一（G-23）、
+// 被动回复 messageId 唯一化（G-24）、msgId 去重、sessionWebhook 被动回复、batchSend 主动推送、
+// 熔断联动、token 生命周期、重连退避、stop 幂等、凭证安全）。fetch 与 WebSocket 全 mock，
+// 不发真实网络请求。
+//
+// mock 帧形态对齐 dingtalk-stream 官方 SDK（2.1.4 / 2.1.6-beta.1 / 2.1.7-beta.1）
+// dist/client.d.ts 的 DWClientDownStream：{ specVersion, type, headers:{…, messageId, topic},
+// data }，顶层无 messageId/path——旧 mock 顶层带 messageId，把错误契约钉成基线，是 G-01
+// 三重偏差漏检的直接原因，勿再回退。richText 消息体形态对齐官方《机器人接收消息》文档
+// （content.richText 数组：text 段 + downloadCode/type:'picture' 段）；图片段可解析 URL 字段
+// 沿用既有 normalizeImageAttachment 白名单（Issue #14 契约）。协议形态均未经真机验证，
+// 证据登记 docs/protocol-preflight/dingtalk.md。
 
 import test, { beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
@@ -94,7 +105,11 @@ const liveInbounds = []
 
 function makeRig({ allowUsers = ['staff_1'], config = {}, fetchOptions = {} } = {}) {
   const lines = []
-  const logger = { warn: (prefix, message) => lines.push(`${prefix} ${message}`) }
+  const debugLines = []
+  const logger = {
+    warn: (prefix, message) => lines.push(`${prefix} ${message}`),
+    debug: (prefix, message) => debugLines.push(`${prefix} ${message}`),
+  }
   const bus = createInboundBus({ allowUsers, logger })
   const store = createMemoryStore()
   const { fetchImpl, calls } = makeFetch(fetchOptions)
@@ -117,7 +132,7 @@ function makeRig({ allowUsers = ['staff_1'], config = {}, fetchOptions = {} } = 
     reconnectCapMs: 8,
   })
   liveInbounds.push(inbound)
-  return { bus, inbound, calls, lines, store }
+  return { bus, inbound, calls, lines, debugLines, store }
 }
 
 const tick = (ms = 5) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -132,13 +147,25 @@ async function driveConnected(rig) {
   return ws
 }
 
-/** 服务端推一条业务帧：data 为 JSON 字符串（协议要求二次 parse）。 */
+/**
+ * 服务端推一条业务帧（SDK DWClientDownStream 形态）：type:'CALLBACK'，messageId 与 topic
+ * 都在 headers，顶层无 messageId。data 为 JSON 字符串（协议要求二次 parse）。
+ */
 let frameSeq = 0
 function pushMessage(overrides = {}) {
   frameSeq += 1
   const ws = FakeWebSocket.instances.at(-1)
   ws.serverSend({
-    headers: { contentType: 'application/json' },
+    type: 'CALLBACK',
+    specVersion: '1.0',
+    headers: {
+      appId: 'APP_KEY',
+      connectionId: `conn_${frameSeq}`,
+      contentType: 'application/json',
+      messageId: `srv_${frameSeq}`,
+      time: String(Date.now()),
+      topic: BOT_TOPIC,
+    },
     data: JSON.stringify({
       conversationId: 'cid_1',
       msgId: `msg_${frameSeq}`,
@@ -151,9 +178,14 @@ function pushMessage(overrides = {}) {
       text: { content: ' 帮我跑测试 ' },
       ...overrides,
     }),
-    path: BOT_TOPIC,
-    messageId: `srv_${frameSeq}`,
   })
+  return ws
+}
+
+/** 服务端推任意原始帧（SYSTEM/ping、非法 data 等 G-02/G-42 用例）。 */
+function pushFrame(frame) {
+  const ws = FakeWebSocket.instances.at(-1)
+  ws.serverSend(frame)
   return ws
 }
 
@@ -238,7 +270,7 @@ test('gettoken：GET 查询串按 URLSearchParams 编码（appkey/appsecret 特�
   assert.equal(parsed.searchParams.get('appsecret'), 'sc#2?')
 })
 
-test('网关：POST body 精确形状（subscriptions + uesrAgent 拼写勿改）与双 JSON 头', async () => {
+test('网关（G-10）：POST body 精确形状（subscriptions + ua 字段名）与双 JSON 头', async () => {
   const rig = makeRig()
   await driveConnected(rig)
   const gwCall = rig.calls.find((entry) => entry.url === GW_URL)
@@ -246,12 +278,15 @@ test('网关：POST body 精确形状（subscriptions + uesrAgent 拼写勿改�
   assert.equal(gwCall.method, 'POST')
   assert.equal(gwCall.headers['Content-Type'], 'application/json')
   assert.equal(gwCall.headers['Accept'], 'application/json')
+  // G-10：字段名是 ua（三版 SDK getEndpoint 全系 `ua: this.config.ua`）；
+  // 旧 uesrAgent「官方拼写错误照抄」一说经三版源码核对查无实据
   assert.deepEqual(gwCall.body, {
     clientId: 'APP_KEY',
     clientSecret: APP_SECRET,
     subscriptions: [{ type: 'CALLBACK', topic: BOT_TOPIC }],
-    uesrAgent: 'dsh-notifier',
+    ua: 'dsh-notifier',
   })
+  assert.equal(gwCall.body.uesrAgent, undefined, '不得再发送 uesrAgent 拼写错误字段')
 })
 
 test('WS URL：endpoint + encodeURIComponent(ticket)（ticket 含 /、&、空格）', async () => {
@@ -280,6 +315,27 @@ test('入站消息：data 二次 parse → bus.accept 形状（channel/userId/ch
   })
 })
 
+test('G-06 @ 机器人剥离：行首 @提及 与 命令词 @ 后缀在入站剥净（args 无 @ 残片）', async () => {
+  const rig = makeRig()
+  const accepted = []
+  rig.bus.onMessage((envelope) => accepted.push(envelope))
+  await driveConnected(rig)
+  // 钉钉群消息行首带 '@机器人名 ' 字面提及 → 剥离后命令与正文干净
+  pushMessage({ msgId: 'msg_at1', conversationType: '2', text: { content: '@我的机器人 /status 跑一下' } })
+  // 行首 @提及 + 命令词 @ 后缀叠加形态
+  pushMessage({ msgId: 'msg_at2', conversationType: '2', text: { content: '@机器人 /pair@bot ABCD-1234' } })
+  // 正文中间的 @（提及他人）不剥
+  pushMessage({ msgId: 'msg_at3', conversationType: '2', text: { content: '帮我看下 @同事 的排期' } })
+  // 纯 @提及（无正文）→ 剥完为空，按空消息不投递
+  pushMessage({ msgId: 'msg_at4', conversationType: '2', text: { content: '@我的机器人 ' } })
+  await tick()
+  assert.deepEqual(accepted.map((e) => e.text), [
+    '/status 跑一下',
+    '/pair ABCD-1234',
+    '帮我看下 @同事 的排期',
+  ], '行首机器人提及与命令词 @ 后缀剥净，正文 @ 保留，纯提及不投递')
+})
+
 test('msgId 去重：服务端重推同 msgId 不二次投递（60s 重推吸收），但每帧仍回 ack', async () => {
   const rig = makeRig()
   const accepted = []
@@ -289,20 +345,144 @@ test('msgId 去重：服务端重推同 msgId 不二次投递（60s 重推吸收
   pushMessage({ msgId: 'msg_dup', text: { content: 'hi' } })
   pushMessage({ msgId: 'msg_other', text: { content: 'yo' } })
   assert.deepEqual(accepted.map((e) => e.messageId), ['dt:msg_dup', 'dt:msg_other'])
-  assert.equal(ws.sent.filter((frame) => frame.data === 'ack').length, 3, '每条服务端帧都应回执')
+  assert.equal(ws.sent.filter((frame) => frame.data === '"OK"').length, 3, '每条服务端帧都应回执')
 })
 
-test('ack 回帧：{ code:200, headers:{contentType,requestId}, messageId, data:"ack" }', async () => {
+// ---------------------------------------------------------------- ack 契约（G-01）
+
+test('ack 回帧（G-01）：messageId 仅在 headers 也回执；头字段名 messageId、data 为 JSON 字符串 "OK"', async () => {
   const rig = makeRig()
   await driveConnected(rig)
   const ws = pushMessage({ msgId: 'msg_ack' })
+  assert.equal(ws.sent.length, 1, '业务帧必须回执（旧实现读顶层 messageId 恒为空 → 从不回执）')
   assert.deepEqual(ws.sent[0], {
     code: 200,
-    headers: { contentType: 'application/json', requestId: 'srv_1' },
-    messageId: 'srv_1',
-    data: 'ack',
+    headers: { contentType: 'application/json', messageId: 'srv_1' },
+    data: '"OK"',
   })
+  assert.equal(ws.sent[0].headers.requestId, undefined, '回执头字段名是 messageId，不是 requestId')
+  assert.equal(ws.sent[0].messageId, undefined, '回执不携带顶层 messageId')
 })
+
+test('ack（G-01）：顶层 messageId 是陷阱字段——回执只认 headers.messageId', async () => {
+  const rig = makeRig()
+  await driveConnected(rig)
+  const ws = pushFrame({
+    type: 'CALLBACK',
+    headers: { contentType: 'application/json', messageId: 'srv_real', topic: BOT_TOPIC },
+    messageId: 'top_level_trap',
+    data: JSON.stringify({ msgId: 'msg_trap', conversationId: 'cid_1', senderStaffId: 'staff_1', text: { content: 'hi' } }),
+  })
+  assert.deepEqual(ws.sent[0].headers, { contentType: 'application/json', messageId: 'srv_real' })
+})
+
+test('ack：headers 无 messageId 的帧不回执（空 messageId 短路，不产半截帧），业务照常处理', async () => {
+  const rig = makeRig()
+  const accepted = []
+  rig.bus.onMessage((envelope) => accepted.push(envelope))
+  await driveConnected(rig)
+  const ws = pushFrame({
+    type: 'CALLBACK',
+    headers: { contentType: 'application/json', topic: BOT_TOPIC },
+    data: JSON.stringify({ msgId: 'msg_nomid', conversationId: 'cid_1', senderStaffId: 'staff_1', text: { content: 'hi' } }),
+  })
+  assert.equal(ws.sent.length, 0, '无 messageId 不回执')
+  assert.equal(accepted.length, 1, 'ack 缺席不影响业务投递')
+})
+
+// ---------------------------------------------------------------- SYSTEM 帧（G-02）
+
+test('SYSTEM/ping（G-02，method 形态）：原样回显 headers+data（含 opaque），不进业务分发、不发业务 ack', async () => {
+  const rig = makeRig()
+  const accepted = []
+  rig.bus.onMessage((envelope) => accepted.push(envelope))
+  await driveConnected(rig)
+  const headers = {
+    appId: 'APP_KEY',
+    connectionId: 'conn_sys',
+    contentType: 'application/json',
+    messageId: 'sys_ping_1',
+    method: 'ping',
+  }
+  const ws = pushFrame({ type: 'SYSTEM', headers, data: 'opaque-ping-payload' })
+  assert.equal(accepted.length, 0, 'SYSTEM ping 不得进业务分发')
+  assert.deepEqual(ws.sent, [{ code: 200, headers, data: 'opaque-ping-payload' }], '原样回显 headers 与 data')
+})
+
+test('SYSTEM/ping（G-02）：SDK 源码形态 headers.topic 与 event_type 形态同样回显', async () => {
+  const rig = makeRig()
+  const accepted = []
+  rig.bus.onMessage((envelope) => accepted.push(envelope))
+  await driveConnected(rig)
+  // SDK 三版（2.1.4/2.1.6-beta.1/2.1.7-beta.1）onSystem 均按 headers.topic 分派 SYSTEM 子类
+  const topicHeaders = { contentType: 'application/json', messageId: 'sys_ping_topic', topic: 'ping' }
+  pushFrame({ type: 'SYSTEM', headers: topicHeaders, data: { opaque: 'topic-form' } })
+  const eventHeaders = { contentType: 'application/json', messageId: 'sys_ping_event', event_type: 'ping' }
+  const ws = pushFrame({ type: 'SYSTEM', headers: eventHeaders, data: 'event-form' })
+  assert.equal(accepted.length, 0)
+  assert.deepEqual(ws.sent[0], { code: 200, headers: topicHeaders, data: { opaque: 'topic-form' } })
+  assert.deepEqual(ws.sent[1], { code: 200, headers: eventHeaders, data: 'event-form' })
+})
+
+test('SYSTEM 非 ping 子类（G-02）：disconnect/KEEPALIVE/REGISTERED 记 debug 后返回，不进业务分发、不回显', async () => {
+  const rig = makeRig()
+  const accepted = []
+  rig.bus.onMessage((envelope) => accepted.push(envelope))
+  const ws = await driveConnected(rig)
+  for (const topic of ['disconnect', 'KEEPALIVE', 'REGISTERED', 'CONNECTED']) {
+    pushFrame({
+      type: 'SYSTEM',
+      headers: { contentType: 'application/json', messageId: `sys_${topic}`, topic },
+      data: JSON.stringify({ note: topic }),
+    })
+  }
+  assert.equal(accepted.length, 0, 'SYSTEM 子类不得进业务分发')
+  assert.equal(ws.sent.length, 0, '非 ping 的 SYSTEM 子类不回显、不发业务 ack')
+  for (const marker of ['disconnect', 'keepalive', 'registered', 'connected']) {
+    assert.ok(rig.debugLines.some((line) => line.includes(marker)), `SYSTEM ${marker} 应记 debug 日志`)
+  }
+})
+
+// ---------------------------------------------------------------- data 二次 parse（G-42）
+
+test('data 非法 JSON（G-42）：warn 可观测（messageId/type/前 64 字符）且不投递；ack 照回', async () => {
+  const rig = makeRig()
+  const accepted = []
+  rig.bus.onMessage((envelope) => accepted.push(envelope))
+  await driveConnected(rig)
+  const ws = pushFrame({
+    type: 'CALLBACK',
+    headers: { contentType: 'application/json', messageId: 'srv_bad', topic: BOT_TOPIC },
+    data: '{not-json',
+  })
+  assert.equal(accepted.length, 0, '解析失败不得投递')
+  assert.deepEqual(ws.sent.map((frame) => frame.data), ['"OK"'], 'ack 已回执——服务端不会重推，丢弃必须可观测')
+  const line = rig.lines.find((l) => l.includes('二次 parse 失败') && l.includes('srv_bad'))
+  assert.ok(line, 'parse 失败必须 warn（旧实现静默 return 是 G-42）')
+  assert.ok(line.includes('srv_bad'), 'warn 含 messageId')
+  assert.ok(line.includes('CALLBACK'), 'warn 含 frame.type')
+  assert.ok(line.includes('{not-json'), 'warn 含内容前 64 字符')
+})
+
+test('data 非法 JSON（G-42）：超长内容预览截断到 64 字符，尾部不进日志', async () => {
+  const rig = makeRig()
+  const accepted = []
+  rig.bus.onMessage((envelope) => accepted.push(envelope))
+  await driveConnected(rig)
+  const payload = `${'A'.repeat(70)}END_MARKER`
+  pushFrame({
+    type: 'CALLBACK',
+    headers: { contentType: 'application/json', messageId: 'srv_long', topic: BOT_TOPIC },
+    data: payload,
+  })
+  assert.equal(accepted.length, 0)
+  const line = rig.lines.find((l) => l.includes('二次 parse 失败') && l.includes('srv_long'))
+  assert.ok(line, '超长非法 data 同样必须 warn')
+  assert.ok(line.includes('A'.repeat(32)), '预览保留前段内容')
+  assert.ok(!line.includes('END_MARKER'), '预览截断到 64 字符')
+})
+
+// ---------------------------------------------------------------- 图片与 richText（G-23）
 
 test('Issue #14：钉钉 picture 缺 URL 仍静默拒绝，ack 照回', async () => {
   const rig = makeRig()
@@ -311,7 +491,7 @@ test('Issue #14：钉钉 picture 缺 URL 仍静默拒绝，ack 照回', async ()
   await driveConnected(rig)
   const ws = pushMessage({ msgId: 'msg_pic', msgtype: 'picture', text: undefined })
   assert.equal(accepted.length, 0)
-  assert.ok(ws.sent.some((frame) => frame.data === 'ack'))
+  assert.ok(ws.sent.some((frame) => frame.data === '"OK"'))
 })
 
 test('Issue #14：钉钉混合 text + picture 保留文本和安全图片附件', async () => {
@@ -344,6 +524,78 @@ test('Issue #14：钉钉图片重放和不受信任 sender 仍走原有去重/�
   assert.equal(accepted.length, 1)
   assert.equal(accepted[0].kind, 'image')
   assert.equal(accepted[0].messageId, 'dt:msg_picture_replay')
+})
+
+test('richText 混排（G-23）：text 段拼接进 envelope.text，图片段走既有管线入 envelope.image', async () => {
+  const rig = makeRig()
+  const accepted = []
+  rig.bus.onMessage((envelope) => accepted.push(envelope))
+  await driveConnected(rig)
+  pushMessage({
+    msgId: 'msg_rich_mixed',
+    msgtype: 'richText',
+    text: undefined,
+    content: {
+      richText: [
+        { text: '请看这张图' },
+        // 官方《机器人接收消息》文档形态：图片段只有 downloadCode（无直链 URL）→ 既有管线
+        // 解析不出安全 URL，fail-closed 丢弃该段（见下一测试）
+        { downloadCode: 'mIofN681YE3fxxxxxxxxxxxxJkVBG2vhj4Q9TsmsNCHy0Phdd2tn', type: 'picture' },
+        // 可解析 URL 字段（downloadUrl）沿用既有 normalizeImageAttachment 白名单（Issue #14 契约）
+        { type: 'picture', downloadUrl: 'https://media.example.test/rich.png', width: 640, height: 480 },
+      ],
+    },
+  })
+  assert.equal(accepted.length, 1)
+  assert.equal(accepted[0].text, '请看这张图')
+  assert.deepEqual(accepted[0].image, { url: 'https://media.example.test/rich.png', width: 640, height: 480 })
+  assert.equal(accepted[0].kind, undefined, '文本非空时不标 kind:image')
+})
+
+test('richText（G-23）：官方 downloadCode-only 图片段 fail-closed 丢弃，文本段照常投递', async () => {
+  const rig = makeRig()
+  const accepted = []
+  rig.bus.onMessage((envelope) => accepted.push(envelope))
+  await driveConnected(rig)
+  pushMessage({
+    msgId: 'msg_rich_dc',
+    msgtype: 'richText',
+    text: undefined,
+    content: {
+      richText: [
+        { text: '收到一张图 ' },
+        { downloadCode: 'mIofN681YE3f/+m+NnxxxxgeqPd7xpJF/9NbOAORDnadz0WbSwWTiYvByBeYDjbg2ecUdno', type: 'picture' },
+      ],
+    },
+  })
+  assert.equal(accepted.length, 1)
+  assert.equal(accepted[0].text, '收到一张图')
+  assert.equal(accepted[0].image, undefined, 'downloadCode 换不到安全 URL，不得伪造图片附件')
+})
+
+test('richText（G-23）：纯文本多段拼接；纯图降级 [图片消息]（纯文本/纯图行为不变）', async () => {
+  const rig = makeRig()
+  const accepted = []
+  rig.bus.onMessage((envelope) => accepted.push(envelope))
+  await driveConnected(rig)
+  pushMessage({
+    msgId: 'msg_rich_text',
+    msgtype: 'richText',
+    text: undefined,
+    content: { richText: [{ text: '订单 ' }, { text: '12345 已创建' }] },
+  })
+  pushMessage({
+    msgId: 'msg_rich_img',
+    msgtype: 'richText',
+    text: undefined,
+    content: { richText: [{ type: 'picture', downloadUrl: 'https://media.example.test/only.png' }] },
+  })
+  assert.equal(accepted.length, 2)
+  assert.equal(accepted[0].text, '订单 12345 已创建')
+  assert.equal(accepted[0].image, undefined)
+  assert.equal(accepted[1].text, '[图片消息]')
+  assert.equal(accepted[1].kind, 'image')
+  assert.deepEqual(accepted[1].image, { url: 'https://media.example.test/only.png' })
 })
 
 test('robotCode 学习：首条入站消息落 store（dingtalk:robot-code），后续推送携带', async () => {
@@ -495,6 +747,20 @@ test('被动回复：POST sessionWebhook，头带 x-acs-dingtalk-access-token，
   assert.ok(!rig.calls.some((entry) => entry.url.startsWith(BATCH_URL)), '未过期不应走主动推送')
 })
 
+test('被动回复 messageId（G-24）：同会话同内容两次回复 ID 不同（旧 hash6 必碰撞）', async () => {
+  const rig = makeRig()
+  await driveConnected(rig)
+  pushMessage({ msgId: 'msg_reply_1' })
+  const card = { chatId: 'cid_1', title: '需要批准：部署', content: '同一份内容' }
+  const first = await rig.inbound.sendApprovalCard(card)
+  const second = await rig.inbound.sendApprovalCard({ ...card })
+  assert.ok(first !== null && second !== null, '两次回复都应成功')
+  assert.notEqual(first.messageId, second.messageId, '同会话同内容两次回复不得同 ID（G-24）')
+  assert.match(first.messageId, /^dt:reply-[0-9a-z]+-[0-9a-z]+$/, 'dt:reply-<ts36>-<seq36> 形态')
+  assert.match(second.messageId, /^dt:reply-[0-9a-z]+-[0-9a-z]+$/, 'dt:reply-<ts36>-<seq36> 形态')
+  assert.equal(rig.calls.filter((entry) => entry.url.startsWith(WEBHOOK_URL)).length, 2, '两次都走 sessionWebhook 被动回复')
+})
+
 test('sessionWebhook 过期：不回复、告警，改走 batchSend 兜底（staffId 取最近发言人）', async () => {
   const rig = makeRig()
   await driveConnected(rig)
@@ -571,13 +837,28 @@ test('notifyTargets：notifyUsers 优先，缺省回落 fallbackTargets；capabi
 
 // ---------------------------------------------------------------- token 与重连
 
-test('token 到期前 60s 余量：缓存落入刷新窗口即重取（两次回复两次 gettoken）', async () => {
+test('G-29 动态刷新余量：短 TTL 不再「每发必取」，TTL 到点后重取', async () => {
   const rig = makeRig({ fetchOptions: { tokenResponse: { errcode: 0, access_token: 'AT_TOKEN', expires_in: 1 } } })
   await driveConnected(rig)
   pushMessage({ msgId: 'msg_tk1' })
   assert.equal(await rig.inbound.sendText('cid_1', '一'), true)
   assert.equal(await rig.inbound.sendText('cid_1', '二'), true)
-  assert.equal(rig.calls.filter((entry) => entry.url.startsWith(`${OAPI}/gettoken?`)).length, 2)
+  // TTL=1s 远小于 60s 余量：旧固定余量下缓存永判不新鲜（第二次发送即重取，短 TTL 渠道
+  // 每发必打 gettoken）；G-29 动态余量 min(60s, 剩余寿命 20%) 下缓存可用到自然到期。
+  assert.equal(rig.calls.filter((entry) => entry.url.startsWith(`${OAPI}/gettoken?`)).length, 1,
+    '两次发送应共用同一 token（1 次 gettoken）')
+  await new Promise((resolve) => setTimeout(resolve, 1100)) // TTL(1s) 到点
+  assert.equal(await rig.inbound.sendText('cid_1', '三'), true)
+  assert.equal(rig.calls.filter((entry) => entry.url.startsWith(`${OAPI}/gettoken?`)).length, 2,
+    '过期后的下一次发送应重取 token')
+})
+
+test('G-55：gettoken 返回 expires_in=0 → TTL 归一 fail-closed，发送失败且告警可见（不再 || 7200）', async () => {
+  const rig = makeRig({ fetchOptions: { tokenResponse: { errcode: 0, access_token: 'AT_TOKEN', expires_in: 0 } } })
+  await driveConnected(rig)
+  pushMessage({ msgId: 'msg_tk0' })
+  assert.equal(await rig.inbound.sendText('cid_1', '一'), false, '上游损坏不再被默认值掩盖成「活 7200s」')
+  assert.ok(rig.lines.some((line) => line.includes('TTL 非法')), '告警必须含 TTL 非法语义')
 })
 
 test('errcode!==0：token 作废重取后重试一次成功（不误报失败）', async () => {

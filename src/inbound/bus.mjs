@@ -17,9 +17,30 @@
 import { createCommandHandler, getChannelName, parseCommand } from './commands.mjs'
 
 const DEFAULT_DEDUP_WINDOW_MS = 24 * 60 * 60 * 1000
+/** G-46：合成 messageId（内容哈希兜底键）短去重窗——只兜平台 HTTP 重投（秒级），
+ *  绝不能像平台原生 msgId 一样扛 24h：合成键撞车 = 两条不同消息同文本（如用户对
+ *  两次审批各回一条「1」），24h 窗会把第二条静默吞成 duplicate。60s 覆盖重投窗口，
+ *  又把误吞面收敛到「同一分钟内同文本」这一本就歧义的窄缝。 */
+const DEFAULT_SYNTHETIC_DEDUP_WINDOW_MS = 60 * 1000
 const DEFAULT_FIFO_MAX = 512
 /** 拒绝回执节流：每用户 60 秒至多一条（内存 Map，重启清零无妨）。 */
 const REPLY_THROTTLE_MS = 60 * 1000
+
+/**
+ * G-31：onMessage 显式消费优先级（数值小者先收到消息；同优先级按注册先后稳定排序）。
+ * 原实现是 Set 插入序即优先级——装配顺序（index.mjs 里 approval → questions →
+ * conversation 的注册次序）成了隐式契约，questions 的 attach() 还专门注释「必须在
+ * 审批路由注册之后调用」。显式化后任何装配顺序都得到同一判定链：
+ *   cardAction      ap:/aq: 显式动作负载（卡片按钮/编号回执线）
+ *   numberedReply   裸 1/2 编号回复（审批先于提问靠同优先级插入序：审批注册在前）
+ *   conversation    会话路由兜底（最后；前层未消费的消息才进 agent 会话）
+ */
+export const MESSAGE_PRIORITY = Object.freeze({
+  cardAction: 10,
+  numberedReply: 20,
+  default: 50,
+  conversation: 100,
+})
 
 /**
  * 创建入站总线。
@@ -29,7 +50,8 @@ const REPLY_THROTTLE_MS = 60 * 1000
  * @param {import('./pairing.mjs').createPairing} [options.pairing] - v0.7 配对码状态机（/pair 受理用）
  * @param {import('./store.mjs').store} [options.store] - 持久化 store（去重跨重启）
  * @param {object} [options.vault] - createTokenVault 实例
- * @param {number} [options.dedupWindowMs] - 去重窗口，默认 24h
+ * @param {number} [options.dedupWindowMs] - 去重窗口，默认 24h（平台原生 messageId）
+ * @param {number} [options.syntheticDedupWindowMs] - 合成 messageId 去重窗口，默认 60s（G-46）
  * @param {object} [options.logger] - cordis logger
  * @param {() => void} [options.onBootstrapRemint] - 引导码重铸回调（stderr 展示）
  */
@@ -40,6 +62,7 @@ export function createInboundBus(options = {}) {
   const store = options.store ?? null
   const vault = options.vault ?? null
   const dedupWindowMs = options.dedupWindowMs ?? DEFAULT_DEDUP_WINDOW_MS
+  const syntheticDedupWindowMs = options.syntheticDedupWindowMs ?? DEFAULT_SYNTHETIC_DEDUP_WINDOW_MS
   const warn = (message) => {
     try { options.logger?.warn?.('[dsh-notifier/inbound]', message) } catch { /* 日志失败绝不致命 */ }
     // v0.6.1 双写 stderr：宿主 logger 不落 stdout 时告警仍可见（真机事故复盘）
@@ -49,32 +72,42 @@ export function createInboundBus(options = {}) {
     ? createCommandHandler({ identity, pairing, logger: options.logger, onBootstrapRemint: options.onBootstrapRemint })
     : null
 
-  // 双层去重：内存 FIFO（快速路径）+ store（重启恢复）
-  const fifo = new Set()
+  // 双层去重：内存 FIFO（快速路径）+ store（重启恢复）。
+  // G-46 起条目带时间戳：短窗键（合成 messageId）到期自动放行——原实现是纯 Set，
+  // 条目只按容量淘汰不按时间过期，60s 短窗会被 FIFO 永久挡死（同文本第二条在
+  // 512 条新消息把它挤出去之前永远 duplicate）。
+  const fifo = new Map()
   const dedupKeyOf = (envelope) => `dedup:${envelope.channel}:${envelope.messageId}`
+  // G-46：合成键（adapter 侧内容哈希兜底）按 envelope 标记走短窗；平台原生 msgId 长窗不变。
+  const dedupWindowOf = (envelope) => envelope?.messageIdSynthetic === true ? syntheticDedupWindowMs : dedupWindowMs
 
   // 拒绝回执节流表：(channel,userId) -> lastReplyAt；相同平台用户号在
   // 不同渠道属于不同身份，不能互相节流。
   const replyThrottle = new Map()
 
   const waiters = new Map() // approvalKey -> { resolve, timer, settled }
-  const messageHandlers = new Set()
+  // G-31：handler -> { priority, seq }；扇出按 (priority asc, seq asc) 稳定排序。
+  const messageHandlers = new Map()
+  let handlerSeq = 0
   const agentWaiters = new Map()
   let disposed = false
 
   function isDuplicate(envelope, now = Date.now()) {
     const key = dedupKeyOf(envelope)
-    if (fifo.has(key)) return true
+    const fifoAt = fifo.get(key)
+    if (typeof fifoAt === 'number' && now - fifoAt < dedupWindowOf(envelope)) return true
     if (store !== null) {
       const seenAt = store.get(key)
-      if (typeof seenAt === 'number' && now - seenAt < dedupWindowMs) return true
+      if (typeof seenAt === 'number' && now - seenAt < dedupWindowOf(envelope)) return true
     }
     return false
   }
 
   function remember(envelope, now = Date.now()) {
     const key = dedupKeyOf(envelope)
-    fifo.add(key)
+    // 重置插入序：同 key 重复 remember 不占容量（Map.set 原地更新不挪位，语义无妨——
+    // 容量淘汰只关心界内条目数）
+    fifo.set(key, now)
     if (fifo.size > DEFAULT_FIFO_MAX) {
       const oldest = fifo.keys().next().value
       fifo.delete(oldest)
@@ -170,7 +203,10 @@ export function createInboundBus(options = {}) {
         remember(envelope)
         // v0.6.3 消费语义：handler 返回 true = 消息已被该处理器消费，停止扇出
         // （审批编号回复吃掉「1」后不再进对话路由，防同一消息双重消费）。
-        for (const handler of messageHandlers) {
+        // G-31：按显式 priority 稳定排序扇出（原 Set 插入序 = 隐式装配顺序契约）。
+        const ordered = [...messageHandlers.entries()]
+          .sort((a, b) => (a[1].priority - b[1].priority) || (a[1].seq - b[1].seq))
+        for (const [handler] of ordered) {
           try {
             if (handler(envelope) === true) break
           } catch (error) {
@@ -197,9 +233,17 @@ export function createInboundBus(options = {}) {
       return { ok: false, reason: 'whitelist' }
     },
 
-    /** 订阅通过白名单+去重的文本消息（conversation router 用）。 */
-    onMessage(handler) {
-      messageHandlers.add(handler)
+    /**
+     * 订阅通过白名单+去重的文本消息（conversation router 用）。
+     * G-31：options.priority 显式声明消费优先级（数值小者先收到；缺省 default=50，
+     * 与旧插入序行为对齐——审批/提问/会话路由都已改传显式值）。同一 bus 实例上的
+     * 注册顺序不再是行为契约。
+     * @param {(envelope: object) => boolean | void} handler 返回 true = 消费并停止扇出
+     * @param {{ priority?: number }} [options]
+     * @returns {() => void} 反订阅
+     */
+    onMessage(handler, { priority = MESSAGE_PRIORITY.default } = {}) {
+      messageHandlers.set(handler, { priority: Number(priority) || 0, seq: (handlerSeq += 1) })
       return () => messageHandlers.delete(handler)
     },
 

@@ -4,7 +4,7 @@
 // 端点/body/成功判定语义移植自 push-all-in-one（MIT）src/push/wechat-app.ts，改写为零依赖 fetch。
 
 import { postJson, getJson, str, num, NotifyError, ERROR_CODES } from './_shared.mjs'
-import { createTokenManager } from './_tokens.mjs'
+import { createTokenManager, normalizeTtlMs } from './_tokens.mjs'
 
 export const type = 'wecom-app'
 
@@ -70,7 +70,8 @@ export async function send(resolved, msg) {
     if (typeof payload?.access_token !== 'string' || payload.access_token === '') {
       throw new NotifyError(`wecom-app 换取 access_token 失败（${payload?.errcode ?? '无码'}）: ${payload?.errmsg ?? '检查 corpid 与 secret 是否匹配'}`, ERROR_CODES.API_ERROR)
     }
-    return { token: payload.access_token, expiresInMs: (payload.expires_in ?? 7200) * 1000 }
+    // G-55：expires_in 秒→毫秒后归一（非有限/≤0 抛错，不再 ?? 7200 掩盖上游损坏）
+    return { token: payload.access_token, expiresInMs: normalizeTtlMs(Number(payload.expires_in) * 1000, 'expires_in') }
   })
 
   const body = {

@@ -6,6 +6,7 @@
 // 移植方式为「协议知识移植」：axios.post 机械改写为零依赖 fetch。见 THIRD_PARTY_NOTICES.md。
 
 import { postJson, postForm, postText, readTextCapped, str, num, NotifyError, ERROR_CODES } from './_shared.mjs'
+import { assertPublicHttpUrl } from './_urlguard.mjs'
 
 /** 从任意响应负载里提取人类可读的失败原因（跨渠道常见字段名兜底）。 */
 export function describeFailure(json, text) {
@@ -41,7 +42,11 @@ export function makeSpecAdapter(type, spec) {
       const raw = cfg[key]
       let value
       if (field.type === 'number') {
-        value = typeof raw === 'number' && Number.isFinite(raw) ? raw : field.default
+        // 数值字段双形态：数字字面量直收；数字字符串（YAML/JSON 里 QQ 号常被引号包裹）
+        // Number() 归一——非数字（含空串）回落 default，绝不当 0 灌进请求体。
+        if (typeof raw === 'number' && Number.isFinite(raw)) value = raw
+        else if (typeof raw === 'string' && raw.trim() !== '' && Number.isFinite(Number(raw))) value = Number(raw)
+        else value = field.default
       } else {
         value = str(raw)
       }
@@ -53,6 +58,8 @@ export function makeSpecAdapter(type, spec) {
     }
     if (typeof spec.validate === 'function') spec.validate(resolved)
     resolved.timeoutMs = num(cfg.timeoutMs, spec.timeoutMs ?? 10000, 1000, 60000)
+    // S-02 逃生口（引擎级配置，同 timeoutMs 语义：不入 fields 声明表）
+    resolved.allowPrivateNetwork = cfg.allowPrivateNetwork === true
     return resolved
   }
 
@@ -61,6 +68,16 @@ export function makeSpecAdapter(type, spec) {
     const url = str(request?.url)
     if (url === '') {
       throw new NotifyError(`${type} 请求构造失败：url 为空`, ERROR_CODES.NOT_CONFIGURED)
+    }
+    // S-02：声明了 ssrfGuard 的 spec（URL 含用户可配字段）发送前过 SSRF 闸。
+    //  - true：私网/保留段默认拒绝，allowPrivateNetwork: true 显式放行；
+    //  - 'private-ok'：渠道本质是本机/内网服务（onebot 文档默认 127.0.0.1），默认放行私网；
+    //  - 未声明：官方固定域名渠道（URL 非用户可配），不走校验。
+    if (spec.ssrfGuard !== undefined) {
+      await assertPublicHttpUrl(url, {
+        allowPrivate: spec.ssrfGuard === 'private-ok' || resolved.allowPrivateNetwork === true,
+        channel: label,
+      })
     }
     const encode = spec.encode ?? 'json'
     const options = { timeoutMs: resolved.timeoutMs, channel: label }

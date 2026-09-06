@@ -244,12 +244,14 @@ export function createActionDispatcher({ vault = null, store = null, logger = nu
           const message = typeof result.message === 'string' && result.message !== ''
             ? result.message
             : (ok ? '✅ 已执行' : '操作未生效')
-          try { ledger.resolve(actionKey, ok ? 'done' : 'handler-declined', { via }) } catch { /* 账本失败不致命 */ }
+          // S-14（W12）：账本已终态不翻转，终局落地走 claimedSettle 显式逃生门——
+          // 'executing' 是同一执行的中段占位，允许在此落定终态裁决（done/declined/error）。
+          try { ledger.resolve(actionKey, ok ? 'done' : 'handler-declined', { via }, { claimedSettle: true }) } catch { /* 账本失败不致命 */ }
           warn(`动作 ${actionKey} 裁决 via ${via}（user ${userId}）: ${ok ? 'done' : 'handler-declined'}`)
           return { ok: true, message }
         } catch (error) {
           const reason = error instanceof Error ? error.message : String(error)
-          try { ledger.resolve(actionKey, 'handler-error', { via }) } catch { /* 账本失败不致命 */ }
+          try { ledger.resolve(actionKey, 'handler-error', { via }, { claimedSettle: true }) } catch { /* 账本失败不致命 */ }
           warn(`动作 handler 异常（已核销）: ${reason}`)
           return { ok: true, message: '动作已核销，但执行异常（任务状态请以 /agent 为准）' }
         }

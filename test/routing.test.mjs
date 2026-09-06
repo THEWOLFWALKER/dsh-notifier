@@ -95,6 +95,61 @@ test('sendWithRetry：全部失败抛最后一次错误', async () => {
   )
 })
 
+// ===== W6 出站投递语义（G-50/08）=====
+
+test('sendWithRetry：noRetry 错误立即抛出，不再消耗后续尝试（G-50 超时语义）', async () => {
+  let calls = 0
+  await assert.rejects(
+    sendWithRetry(async () => {
+      calls += 1
+      const error = new Error('投递超时，结果未知')
+      error.noRetry = true
+      throw error
+    }, { attempts: 5, backoffMs: 0 }),
+    /结果未知/,
+  )
+  assert.equal(calls, 1)
+})
+
+test('sendWithRetry：retryAfterMs 抬高退避——按平台说的等（G-08）', async () => {
+  let calls = 0
+  const start = Date.now()
+  await sendWithRetry(
+    async () => {
+      calls += 1
+      if (calls === 1) {
+        const error = new Error('telegram 429')
+        error.retryAfterMs = 80
+        throw error
+      }
+    },
+    { attempts: 2, backoffMs: 0 },
+  )
+  const elapsed = Date.now() - start
+  assert.equal(calls, 2)
+  // 退避被 retryAfterMs 抬高到 >=80ms（固定 backoff 为 0 时若未实现则立即重试）
+  assert.ok(elapsed >= 75, `elapsed=${elapsed} 应 >= retryAfterMs(80)`)
+})
+
+test('sendWithRetry：退避取 max(指数, retryAfterMs)，指数更大时按指数（G-08）', async () => {
+  let calls = 0
+  const start = Date.now()
+  await sendWithRetry(
+    async () => {
+      calls += 1
+      if (calls === 1) {
+        const error = new Error('telegram 429')
+        error.retryAfterMs = 5
+        throw error
+      }
+    },
+    { attempts: 2, backoffMs: 60 },
+  )
+  const elapsed = Date.now() - start
+  assert.equal(calls, 2)
+  assert.ok(elapsed >= 55, `elapsed=${elapsed} 应 >= 指数退避(60)`)
+})
+
 test('normalizeLevel：未知值归 active', () => {
   assert.equal(normalizeLevel('timeSensitive'), 'timeSensitive')
   assert.equal(normalizeLevel(undefined), 'active')
@@ -170,3 +225,6 @@ test('notifyAll 集成：timeSensitive 渠道失败按策略重试（指数退�
     delete globalThis.fetch
   }
 })
+
+// S-02：urlguard DNS 恒公网夹具（假域名不打真网，见 helpers/urlguard-public.mjs）
+import './helpers/urlguard-public.mjs'

@@ -17,15 +17,9 @@
 //    群聊仅普通消息/普通通知（README 明确不建议敏感用途），
 //    按钮化审批/提问仅限单聊场景，由各发送方在 pushedTo 校验层把关。
 
-/** 六入站通道全集（与 admin/api.mjs INBOUND_CHANNELS 同序，保持一致）。 */
-export const INBOUND_CHANNELS = Object.freeze([
-  'telegram',
-  'feishu',
-  'qq',
-  'wxpusher',
-  'wechat',
-  'dingtalk',
-])
+/** 六入站通道全集（单一事实来源 channels-registry，此处转发导出保持既有 import 兼容）。 */
+export { INBOUND_CHANNELS, INBOUND_CHANNEL_SET } from './channels-registry.mjs'
+import { INBOUND_CHANNELS } from './channels-registry.mjs'
 
 /**
  * 出站 adapter type → 入站 channel 名的别名映射。

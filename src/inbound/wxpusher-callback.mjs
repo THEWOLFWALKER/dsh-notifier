@@ -34,6 +34,12 @@ function hash6(content) {
   return createHash('sha256').update(String(content ?? '')).digest('hex').slice(0, 6)
 }
 
+// G-27：进程内单调 seq——回调无消息 id，合成键 `cmd:uid:time:hash6` 同秒同内容两条
+// 真实消息会撞键被 60s 短窗吞掉第二条；追加 seq 后键唯一。权衡：传输重投（上游重发
+// 同一回调）也随之失去合成键去重——无签名回调本就无重投保证，且业务层幂等兜底
+// （重复裁决回执「已无待决审批」），让位给「用户对两次审批连回两条同文本」的真实高频。
+let syntheticSeq = 0
+
 /** 剥 `#{appId} 内容` 标准指令前缀（WxPusher 上行的官方格式），返回净文本。 */
 function stripCommandPrefix(content, appId) {
   const text = String(content ?? '').trim()
@@ -164,7 +170,10 @@ export function createWxpusherInbound(options = {}) {
           accountId: resolvedAccountId,
           userId: uid,
           chatId: uid,
-          messageId: `cmd:${uid}:${time}:${hash6(text)}`,
+          // G-46/G-27：回调无消息 id，hash6 合成键标记 synthetic——bus 去重走 60s 短窗
+          // （只吸收传输层重推）；键追加进程内单调 seq，同秒同内容两条真实消息不再互吞。
+          messageId: `cmd:${uid}:${time}:${hash6(text)}:${syntheticSeq++}`,
+          messageIdSynthetic: true,
           text,
         })
         if (result?.reply !== undefined) {

@@ -374,3 +374,48 @@ test('image download timeout never blocks text delivery', async () => {
   assert.ok(lines.some((line) => line.includes('图片下载超时')), '超时告警必须出声')
   await inbound.stop()
 })
+
+test('G-03: outbound chunking is codepoint-safe — astral emoji/ZWJ never split into lone surrogates', async () => {
+  // 孤立代理项探测器（实现无关）：高代理后无低代理 / 低代理前无高代理
+  const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/
+  const store = storeOf()
+  const sentTexts = []
+  // 13 码点（含星体平面 🀄/𝕏 与 ZWJ 序列 🏳️‍🌈=4 码点）：chunkSize=4 时旧码元切片
+  // 会在第 4 码元处切开代理对（首块退化为 'a🀄b'+孤立高代理）
+  const reply = 'a🀄b𝕏c🀄d🏳️‍🌈e𝕏'
+  let updateOnce = true
+  const fetchImpl = async (url, init = {}) => {
+    if (String(url).includes('getupdates')) {
+      if (updateOnce) {
+        updateOnce = false
+        return new Response(JSON.stringify({ ret: 0, get_updates_buf: 'CURSOR_CP', msgs: [{
+          from_user_id: 'USER_A', message_id: 'M_CP',
+          item_list: [{ type: 1, text_item: { text: '跑一下测试' } }],
+        }] }), { status: 200 })
+      }
+      return new Promise((resolve, reject) => init.signal?.addEventListener('abort', () => reject(new Error('aborted'))))
+    }
+    if (String(url).includes('sendmessage')) {
+      sentTexts.push(String(JSON.parse(init.body).msg.item_list[0].text_item.text))
+      return new Response(JSON.stringify({ ret: 0 }), { status: 200 })
+    }
+    return new Response(JSON.stringify({ ret: 0 }), { status: 200 })
+  }
+  const inbound = createWechatIlinkInbound({
+    config: { ...config, chunkSize: 4 },
+    store,
+    bus: { accept: () => ({ reply }) },
+    fetchImpl,
+    sleep: async () => {},
+  })
+  inbound.start()
+  await new Promise((resolve) => setTimeout(resolve, 15))
+  await inbound.stop()
+  assert.equal(sentTexts.length, 4, '13 码点按 4 码点/块应切 4 块')
+  assert.equal(sentTexts[0], 'a🀄b𝕏', '首块必须按码点切（码元切片会得到 \'a🀄b\'+孤立代理项）')
+  assert.equal(sentTexts.join(''), reply, '块拼接无损（跨块 emoji 不丢字）')
+  for (const [index, text] of sentTexts.entries()) {
+    assert.equal(LONE_SURROGATE.test(text), false, `第 ${index + 1} 块含孤立代理项: ${JSON.stringify(text)}`)
+    assert.ok(Array.from(text).length <= 4, `第 ${index + 1} 块超码点预算`)
+  }
+})

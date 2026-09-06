@@ -86,10 +86,13 @@ export function createNotifier(ctx, channels, options = {}) {
         audit(normalized, { ok: true, delivered: [type], skipped: [], failed: [] }, { source: sendOptions?.source, channel: type })
         return result
       } catch (error) {
-        const reason = error instanceof Error ? error.message : String(error)
-        warn(`渠道 "${type}" 推送失败: ${reason}`)
+        // G-53 分层：failed[].error / audit 记公开文案（无响应体/网络原文）；
+        // 完整 detail 只进 warn 日志（宿主 logger + 排障可见，不进事件/工具反馈）。
+        const publicText = error instanceof Error ? (error.publicMessage ?? error.message) : String(error)
+        const internalDetail = error instanceof Error ? (error.detail ?? error.message) : String(error)
+        warn(`渠道 "${type}" 推送失败: ${internalDetail}`)
         const result = channelResult(type, 'failed', error)
-        audit(normalized, { ok: false, delivered: [], skipped: [], failed: [{ channel: type, error: reason }] }, { source: sendOptions?.source, channel: type })
+        audit(normalized, { ok: false, delivered: [], skipped: [], failed: [{ channel: type, error: publicText }] }, { source: sendOptions?.source, channel: type })
         return result
       }
     })())
@@ -151,9 +154,11 @@ export function createNotifier(ctx, channels, options = {}) {
         )
         delivered.push(target.type)
       } catch (error) {
-        const reason = error instanceof Error ? error.message : String(error)
-        warn(`渠道 "${target.type}" 推送失败: ${reason}`)
-        failed.push({ channel: target.type, error: reason })
+        // G-53：同 notify()——公开文案进 failed[]，内部细节只进日志。
+        const publicText = error instanceof Error ? (error.publicMessage ?? error.message) : String(error)
+        const internalDetail = error instanceof Error ? (error.detail ?? error.message) : String(error)
+        warn(`渠道 "${target.type}" 推送失败: ${internalDetail}`)
+        failed.push({ channel: target.type, error: publicText })
       }
     })
     await track(Promise.all(batch))

@@ -1,6 +1,6 @@
 {
   "name": "dsh-notifier",
-  "version": "0.9.0",
+  "version": "0.9.5",
   "description": "DSH 统一通知推送插件：一个 notify() API 打天下 + 多渠道 adapter；远程审批/远程会话支持 telegram/feishu/qq/wxpusher/wechat/dingtalk 六通道双向回传；移动指挥中心（长任务心跳 / 疑似卡住提醒 / 通知按钮停止任务）；开放事件源（其他插件经 notifier 服务推送 + dsh-notifier/sent 事件订阅）；QQ/钉钉/飞书官方扫码授权；本机 Web 管理台（凭证/路由/扫码授权网页可管，移动端适配）。零运行时依赖（只用 fetch + node:crypto + 原生 WebSocket）。",
   "type": "module",
   "main": "src/plugin-entry.mjs",
@@ -12,7 +12,12 @@
   "files": [
     "src",
     "test",
-    "scripts",
+    "scripts/channel-login.mjs",
+    "scripts/channel-selfcheck.mjs",
+    "scripts/gen-channel-matrix.mjs",
+    "scripts/route.mjs",
+    "scripts/verify-release.mjs",
+    "scripts/wechat-login.mjs",
     "cordis.patch.yml",
     "CHANGELOG.md",
     "PLUGINS.md",
@@ -26,7 +31,7 @@
     "verify:release": "node scripts/verify-release.mjs"
   },
   "dshQuality": {
-    "testCount": 1352
+    "testCount": 1531
   },
   "dsh": {
     "bundle": {
@@ -37,9 +42,8 @@
     "@deepseek-ai/cordis": "^4.0.1"
   },
   "optionalDependencies": {
-    "@larksuiteoapi/node-sdk": "^1.61.1",
-    "@tencent-connect/qqbot-connector": "^1.2.0",
-    "qrcode-terminal": "^0.12.0"
+    "@larksuiteoapi/node-sdk": "1.73.0",
+    "qrcode-terminal": "0.12.0"
   },
   "engines": {
     "node": ">=22"

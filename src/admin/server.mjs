@@ -62,18 +62,69 @@ function apiStatusOf(error) {
  * @param {object} [options.events] - 通知事件 hub（admin/events.mjs；提供 subscribe/publish）；
  *                                    未注入时 GET /api/events 回 501（能力不可用语义同 ApiError）
  * @param {number} [options.heartbeatMs=15000] - SSE 心跳间隔（测试注入小值）
+ * @param {string[]} [options.allowedOrigins=[]] - S-06 额外放行的 Origin（反代/HTTPS 场景，
+ *                                                如 'https://admin.example.com'；回环默认自动放行）
+ * @param {string[]} [options.allowedHosts=[]] - S-06 额外放行的 Host 头（公网反代场景，
+ *                                               如 'admin.example.com'；回环默认自动放行）
  * @param {object} [options.logger] - { warn(message) } 注入；日志失败绝不致命
  * @returns {{ start: () => Promise<{ port: number, address: string }>,
  *             stop: () => Promise<void>,
  *             get port(): number | null }}
  */
-export function createAdminServer({ api, verifyToken, host = '127.0.0.1', port = 8104, ui = '', events = null, heartbeatMs = DEFAULT_HEARTBEAT_MS, logger } = {}) {
+export function createAdminServer({ api, verifyToken, host = '127.0.0.1', port = 8104, ui = '', events = null, heartbeatMs = DEFAULT_HEARTBEAT_MS, allowedOrigins = [], allowedHosts = [], logger } = {}) {
   const warn = (message) => {
     // stderr 双写（R5 审查 R5-2-P1-2：与 api.mjs 同款纪律，web profile 下 logger 不落 stdout）
     try { logger?.warn?.('[dsh-notifier/admin:server]', message) } catch { /* 日志失败绝不致命 */ }
     try { console.error('[dsh-notifier/admin:server]', message) } catch { /* 控制台不可用不致命 */ }
   }
   const htmlPage = ui === '' ? FALLBACK_UI : String(ui)
+
+  // ---- S-06（CWE-352/942）Origin/Host 第二道纵深 ----
+  // Bearer 模型下浏览器不自动附带凭证（token 在 sessionStorage），经典 CSRF 难利用——
+  // 但「host 改 0.0.0.0/反代公网 + token 被钓」场景缺第二道防线：
+  //  - Origin 头存在时必须在白名单（浏览器跨站请求必带；curl 等非浏览器客户端不带 → 放行，
+  //    由 Bearer 鉴权兜底）；
+  //  - Host 头必须在白名单（防 DNS rebinding：受害者浏览器被解析到 127.0.0.1 时
+  //    Host 是攻击者域名，缺这道闸时同源策略完全失守）。
+  // 回环绑定（127.0.0.1/localhost）自动放行 127.0.0.1/localhost/[::1] 三形态（带不带端口、
+  // http/https 两种 Origin scheme 都接受——本机反代 TLS 终止是合法形态）；公网/反代
+  // 场景由 allowedOrigins/allowedHosts 显式注入。端口用实际监听值（port=0 测试随机分配）。
+  const extraOrigins = (Array.isArray(allowedOrigins) ? allowedOrigins : []).map((value) => String(value).trim()).filter((value) => value !== '')
+  const extraHostHeaders = (Array.isArray(allowedHosts) ? allowedHosts : []).map((value) => String(value).trim().toLowerCase()).filter((value) => value !== '')
+  const loopbackBind = host === '127.0.0.1' || host === 'localhost' || host === '::1'
+  const hostVariants = loopbackBind ? ['127.0.0.1', 'localhost', '[::1]', '::1'] : [host]
+
+  /** 按实际监听端口构建当次请求的 Origin/Host 白名单（listen 前 port=0 时只比 extras）。 */
+  function buildGateAllowlist() {
+    const actualPort = listenInfo?.port ?? port
+    const hosts = new Set(extraHostHeaders)
+    const origins = new Set(extraOrigins)
+    for (const variant of hostVariants) {
+      hosts.add(variant)
+      hosts.add(`${variant}:${actualPort}`)
+      origins.add(`http://${variant}:${actualPort}`)
+      origins.add(`https://${variant}:${actualPort}`)
+      if (loopbackBind) {
+        // 无端口形态：反代剥端口 / HTTP/1.0 客户端；仅回环绑定接受（公网绑定必须精确）
+        hosts.add(variant)
+        origins.add(`http://${variant}`)
+        origins.add(`https://${variant}`)
+      }
+    }
+    return { hosts, origins }
+  }
+
+  /**
+   * S-06 请求闸：Origin（存在时）与 Host 必须命中白名单。
+   * @returns {true | 'origin' | 'host'} 放行返回 true，否则返回被拒的头名。
+   */
+  function gateCheck(request) {
+    const origin = typeof request.headers.origin === 'string' ? request.headers.origin.trim() : ''
+    if (origin !== '' && !buildGateAllowlist().origins.has(origin)) return 'origin'
+    const hostHeader = typeof request.headers.host === 'string' ? request.headers.host.trim().toLowerCase() : ''
+    if (hostHeader === '' || !buildGateAllowlist().hosts.has(hostHeader)) return 'host'
+    return true
+  }
 
   // 路由表（段匹配：':name' 匹配任意非空单段；先收集同路径全部方法再分派 → 405 可判定）。
   const routes = [
@@ -258,6 +309,12 @@ export function createAdminServer({ api, verifyToken, host = '127.0.0.1', port =
    * @param {import('node:http').ServerResponse} response
    */
   async function handle(request, respond, response) {
+    // S-06 请求闸先于路由与鉴权（403 不泄露路由存在性；被拒请求也不消耗 api 配额）。
+    const gate = gateCheck(request)
+    if (gate !== true) {
+      warn(`请求被 Origin/Host 闸拒绝（${gate} 头不在白名单）`)
+      return respond.json(403, { error: '请求被拒绝：Origin/Host 校验未通过' })
+    }
     const rawPath = String(request.url ?? '').split('?')[0]
     const pathname = rawPath.startsWith('/') ? rawPath : `/${rawPath}`
     const method = String(request.method ?? 'GET').toUpperCase()

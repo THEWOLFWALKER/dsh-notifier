@@ -1,5 +1,156 @@
 # Changelog
 
+## [0.9.5] - 2026-08-28
+
+R5「测试保真与文档」修复列车（80 项清单 W13：G-57/G-58/G-59/G-60/S-11/S-13 + mock 分层原则）。全部为 mock/contract 证据，协议类修复未经真机验证（真机缺口登记 `docs/memory/risks.md`）；`npm test` 为 1531（1531 pass，同 0.9.4——本批为测试与文档面）。
+
+### W13 测试保真与文档
+
+- **G-57 脚本重命名**：`scripts/test-channel.mjs` → `scripts/channel-selfcheck.mjs`——`test-*` 前缀会被 Node 22 裸 `node --test` 默认 glob 误吞；README/AGENTS/ADAPTER/OPERATIONS/CI 引用全同步。
+- **G-58 mock 保真**：qq FakeWebSocket 补 error 事件/半帧垃圾帧支路（error 不直接调度重连、非法帧不崩握手）；public fetch mock 补超时支路（AbortError 与 G-50 TIMEOUT+noRetry 分类同构）；mock 分层维护规则（协议合约 fixtures / 传输 fake / 业务断言三层分离）写入 `docs/TECHNICAL_DEBT.md`。
+- **G-59 三新测试套件**：`test/health.test.mjs`（渠道自检错误形态/SSRF 拦截/凭证缺失指引/`${ENV:}` 解析）、`test/escalation.test.mjs`（升级链阶段推进/mock timers/多 key 独立/重启清计时器）、`test/pairing.test.mjs`（配对码锁出新语义：过期码不翻锁、无效码 5 次锁出、TTL/审计/隔离）。
+- **G-60 文档缺口**：README 两语言补全会话命令 11 条带边界说明；guide.md 排障新增 accountId 来源规则（绝不 channel 兜底、多账号显式配置）。
+- **S-11 hook-server 排除出包**：package.json `files` 从含整个 `scripts` 目录改为显式列举 6 个发布脚本，`hook-server.mjs`（127.0.0.1 + 512KB cap 开发用）不随包分发；verify-release 增加发布脚本显式列举校验。
+- **S-13 optional 依赖锁定**：`@larksuiteoapi/node-sdk` `^1.61.1` → `1.73.0`（已审查版本）、`qrcode-terminal` → `0.12.0` 精确锁定；移除 UNLICENSED 的 `@tencent-connect/qqbot-connector`（维持「仅参考不引入」决策）。
+
+### 已知残留（登记 `docs/memory/risks.md`）
+
+- 沿用 R4 的 SSRF DNS rebinding 竞态、单 token 模型固有边界、G-19 scoped 事件契约未定、G-47 首见基准内存态四条残留。
+
+## [0.9.4] - 2026-08-28
+
+R4「配置收敛与入站生命周期」修复列车（80 项清单 W10/W11/W12 共 25 项）。全部为 mock/contract 证据，协议类修复未经真机验证（真机缺口登记 `docs/memory/risks.md`）；`npm test` 为 1531（1531 pass）。
+
+### ⚠️ 破坏性语义变化（迁移说明）
+
+- **出站配置「视图热、投递冷」（G-14）**：管理台保存出站渠道凭证后 UI 即时回显并标「重启后生效」——投递层只在插件下次启动时并入运行时（YAML ⊕ store 合并）。**此前「保存即生效」的认知作废；重启前保存不影响已运行的出站链路。**
+- **配对码过期不再计入 5 次失败锁出（G-30/31）**：过期码单独分支回执「码已过期」，不翻锁——能提交过期码说明曾真实持有在铸码，不是爆破信号；防泵码由引导码重铸 10min 节流单层兜住。**依赖「过期码 5 次锁出」的用户不再生效（无效码仍计失败锁出）。**
+- **合成消息 id 语义（G-46/G-27）**：无消息 id 回调（wxpusher 等）的合成幂等键从 24h 长窗改 60s 短窗；wxpusher 键追加进程内单调 seq——同一秒内同文本的两条真实消息不再互吞（传输层重投去重让位，幂等由业务层兜底）。
+
+### W10 配置校验与渠道枚举收敛（G-13/S-12/G-61~64/G-32/G-38/G-39/G-45/G-28）
+
+- **G-13 渠道枚举唯一来源**：新增 `src/inbound/channels-registry.mjs` 冻结数组，identity/target-guard/assembly/admin 四处硬编码改引——新渠道单点注册。
+- **S-12 target-guard 未知渠道 fail-closed**：未知出站渠道从放行改为拒绝 + warn（对齐入站默认拒绝红线）。
+- **G-61~64/G-32/G-38/G-39/G-45/G-28 配置形态收敛**：数值字段 `type:'number'` 声明；pushplus template/channel 白名单；webhook headers 值字符串化；desktop sound 布尔形态全表解析；`_bounded` max 非数字回落调用方默认；slack 仅 Incoming Webhook 显式报错；discord >2000 码点 fail-fast；postText 补 `content-type`；iLink contextToken 缺省 warn。
+
+### W11 入站生命周期与交互健壮性（G-15/G-46/G-16/G-17/G-18/G-26/G-27/G-30/31/G-34；G-19 取证登记）
+
+- **G-15 bus 消费优先级显式化**：`MESSAGE_PRIORITY` 冻结常量（cardAction=10/numberedReply=20/default=50/conversation=100），五处注册点显式传参 + 同 priority 注册序稳定排序——暗契约转明契约。
+- **G-16 重启残留审批失效告知（D4）**：启动扫描 `ap:` pending 行 → 标记 expired + 向 pushedTo 目标补发「该审批因宿主重启已失效，请回桌面处理」；补发失败仅 warn 不阻塞启动。
+- **G-17 飞书卡片 TTL 兜底**：卡片 value 增带签发时间 `iat`，回调超 15min（对齐 TG refs）拒绝 + toast 指引；升级前在途缺 iat 卡片 warn 后兼容放行。
+- **G-18 event-listener 去重键按 intent 分离**：approval/asked 键追加负载摘要（同 seq 不同负载不再互吞）；turn 类维持现状。
+- **G-26 非文本消息静默忽略 + 回执**：飞书非文本消息不再注入占位符文本进 agent 语境（注入面关闭），回执「暂不支持该消息类型」尽力而为。
+- **G-27 wxpusher 合成键单调 seq**：同秒同内容两条真实消息不再互吞（60s 窗语义内放行双消息）。
+- **G-30/31 过期码单独分支**：见上文破坏性变化。
+- **G-34 双路径通知双响封口（D5）**：卡片/编号裁决成功后同 key 文本线（广播 + 升级链）5min 抑制窗口——点过卡片不再收到「仍在等待批准」。
+- **G-19 scoped 事件契约（取证登记，不改码）**：C 轮 cordis 源码证据（`events.ts:165-175` context filter、`agent/disposed` Scoped）与现有 root 订阅策略存在张力，但源码不在仓库、真机未验证——按计划登记 `docs/memory/risks.md`，行为保持 scope 诊断 + root 回落，留真机回归项。
+
+### W12 存储与状态（G-20/G-47/G-44/G-14/S-14/S-04）
+
+- **G-20 配对码铸造单次原子写**：mint 的 minted→active 双写崩溃窗口（孤儿码可被核销）合并为单态 `minted-active` 一次落盘；审计行独立写不影响状态一致性。
+- **G-47 route:sessions 出站覆盖行 30d TTL**：无 disposedAt 的覆盖行（/quiet、管理台覆盖）30d 不活跃即清（宿主活跃会话护栏不误删）；disposed 行到期摘除时保留出站覆盖字段——静默配置不随会话回收丢失。
+- **G-44 坏绑定键启动清洗**：启动一次性清洗坏形状/幽灵键 + 写回 + warn 计数；只动 `inbound:bindings`，绝不动 `inbound:migrated`——「启动损坏白纸重置」下已删成员不复活（放大面测试钉死）。
+- **G-14 出站配置视图热/投递冷**：见上文破坏性变化。
+- **S-14 ledger.resolve 前态不设防**：已终态行二次 resolve 返回 `already-resolved` 不再翻转；actions 多步落地走 `claimedSettle` 显式逃生门。
+- **S-04 凭证明文落盘缓解加固**：store 加载前 mode 自检——非 0600 warn + chmod 收紧尝试（失败仅 warn 不阻塞启动）。
+
+### 已知残留（登记 `docs/memory/risks.md`）
+
+- 沿用 0.9.3 的 SSRF DNS rebinding 竞态、单 token 模型固有边界两条残留。
+- **G-19 scoped 事件契约未定**：见上文——需真机/宿主源码复验后才决定 root 订阅、双订阅或 payload 兜底策略。
+- **W12 G-47 纯覆盖行首见基准内存态**：重启后重新起算 30d，最坏多留一个运行周期（30d 量级可接受）。
+
+## [0.9.3] - 2026-08-28
+
+R3「安全中危加固」列车（80 项清单 W9：S-02/S-05/S-06/S-07 四项）。全部为 mock/contract 证据，协议行为未经真机验证（真机缺口登记 `docs/memory/risks.md`）；`npm test` 为 1478（1478 pass）。
+
+### 🔒 Security
+
+- **S-02（CWE-918）SSRF 防护**：新增 `src/adapters/_urlguard.mjs`——用户可配 URL 的渠道（webhook / slack / discord / wecom / mattermost / gchat / teams / ntfy / gotify / chanify / pushdeer）发送前三道闸：scheme 白名单（http/https）、私网/保留段拦截（IPv4 十五段直查 + IPv6 窗口比较 + `::ffff:` v4-mapped 与 NAT64 内嵌递归）、域名 `dns.lookup({all:true})` 全地址校验（60s 短 TTL 缓存）。`0x7f000001` 这类非常规四进制写法经 DNS 路径同样拦截。**逃生口**：`allowPrivateNetwork: true` 显式放行内网自托管接收端；onebot（`ssrfGuard: 'private-ok'`）因渠道本质是本机服务（文档默认 `http://127.0.0.1:3000`）默认放行。重定向绕过面同步关闭：`_shared.mjs` 全部出站 fetch 改 `redirect:'manual'`，3xx 显式报错拒绝跟随。
+- **S-05（CWE-200）出站片段脱敏**：新增 `src/redact.mjs`——自动状态推送（不是用户显式 notify）默认 `redaction: 'minimal'`：宿主会话摘录 200→80 字符（尾沿截断，结论通常在最后）+ 密钥形态打码（JWT/sk-/ghp_/xox/AKIA/Bearer/32+ hex/40+ base64 → `***`）；审批推送 reason 同打码。`redaction: 'extended'` 显式维持原文（README 已声明数据流向）。拼错值一律回落 minimal——安全配置的非法值不配得到宽松解释。
+- **S-06（CWE-352/942）admin Origin/Host 闸**：Bearer 模型下补第二道纵深——浏览器跨站请求必带的 Origin 头不在白名单 → 403（先于鉴权与路由，不泄露路由存在性）；Host 头校验挡 DNS rebinding（受害者浏览器被解析到 127.0.0.1 时 Host 是攻击者域名）。回环绑定自动放行 127.0.0.1/localhost/[::1] 三形态（实际端口、http/https 双 scheme、无端口形态）；公网反代场景用 `allowedOrigins`/`allowedHosts` 显式注入。非浏览器客户端（curl 无 Origin）放行，由 Bearer 鉴权兜底。
+- **S-07（CWE-74）回答内容边界**：ask_user 自定义回答（`答：...`）入口补与身份链正交的内容闸——2000 Unicode 码点上限（码点计数，非 UTF-16 单元；emoji/中文按人类感知计），超长 fail-closed 拒绝（绝不静默截断——半句话的回答比没有回答更危险）+ 回执指引；控制/零宽/bidi 不可见字符剥离（对人类不可见，却是注入载体；`\n\t\r` 保留）。前置检查在 Control Core 之前回执（不白跑一轮裁决），`settleText` 内同闸兜底。
+
+### 已知残留（登记 `docs/memory/risks.md`）
+
+- **SSRF DNS rebinding 竞态**：urlguard 校验与 fetch 建连之间存在理论竞态窗口（校验后 DNS 记录被换到内网地址）。完全闭合需自定义 dispatcher 钉死 IP，超出零依赖约束；60s 短 TTL 缓存压观测窗口，中危定级下属可接受残留。
+- **单 token 模型固有边界**：持有 admin token 的攻击者可同时改 URL 与 `allowPrivateNetwork` 开关——urlguard 挡的是默认路径与配置被钓后的低成本内网跳板，不防已持 token 者（S-09 范畴）。
+
+## [0.9.2] - 2026-08-28
+
+R2「投递与凭证可靠性」修复列车（80 项清单第二批 13 项：W6/W7/W8）。全部为 mock/contract 证据，协议类修复未经真机验证（真机缺口已登记 `docs/memory/risks.md`）；`npm test` 为 1447（1447 pass）。
+
+### ⚠️ 破坏性语义变化（迁移说明）
+
+- **投递超时不再重试（G-50）**：超时 = 请求可能已到达，重试即 at-least-once 重复通知。现在超时统一标记 noRetry（错误码仍 TIMEOUT，文案「结果未知，不再重试」）；确定性失败（连接拒绝/明确 4xx/5xx）维持重试。**依赖「超时后自动重试」的用户需自行评估是否补发**。
+- **token TTL 非法值 fail-closed（G-55）**：上游返回 `expires_in` 为 0/负/非数值时，qq-bot/wecom-app/钉钉入站/qq 网关四处不再各自 `|| 7200` 静默吞掉——统一抛错让投递失败并告警。上游损坏必须可见，不得拿默认值掩盖。
+- **QQ 网关 INVALID_SESSION 可恢复会话不再弃（G-21）**：op9 带 `d:true` 时保留 session 走 RESUME；`d:false` 才重新 IDENTIFY（对齐官方 SDK）。
+
+### W6 出站投递语义（G-50/08/09/56）
+
+- **G-50 超时不再盲目重试**：`postJson`/`postForm` 超时统一 `timeoutNoRetryError`（noRetry=true）——重试会把「可能已送达」变成「必然重复送达」。
+- **G-08 平台限流退避**：HTTP 错误体解析 `parameters.retry_after` 附着 `retryAfterMs`，重试退避取 max(指数退避, retryAfterMs)；Telegram 入站 `api()` 同附着。
+- **G-09 Server酱 SC3**：`sctp` 前缀 SENDKEY 走 `sctp.ftqq.com` 域名；`sct`/`sendKey`/`sctKey` 三别名同时配置按 sct > sendKey > sctKey 取值并 stderr 出声一次。
+- **G-56 qq-bot 2xx 非 JSON**：解析失败抛 `BAD_UPSTREAM_RESPONSE` + stderr，不再乐观当成功；msg_seq 冻结语义维持（失败不推进，重试幂等）。
+
+### W7 错误可见性分层（G-53/54）
+
+- **G-53 publicMessage/detail 分层**：错误对象区分对外话术（通知/回执用，不含上游原文与凭证碎片）与对内明细（日志用）；`health` 与 `notify` 各取所需。
+- **G-54 渠道名映射**：对外话术用中文渠道名（「钉钉」「企业微信」而非 `dingtalk`/`wecom-app`）；`verdict-text` 统一生成，`bus.mjs` 枚举零改动。
+
+### W8 token 与网关生命周期（G-11/55/29/07/21/12）
+
+- **G-11 代际守卫**：`invalidate()` 递增 generation 并清 inflight；在飞任务写回前比对代际——旧任务晚完成不再把被吊销 token 连同 7200s TTL 写回缓存。
+- **G-55 TTL 归一单一实现 `normalizeTtlMs`**：非有限/≤0 抛错，正数钳制 [1s, 7d]。同值不同命终结：0 曾在 qq 层活 7200s、wecom 层活 1s、feishu-register 变立即超时（本地配置不炸 CLI：回退默认 480s 并出声）。
+- **G-29 动态刷新余量**：余量 = min(配置值, 剩余寿命 20%)——TTL < 60s 的渠道不再「永判不新鲜」每发必取 gettoken。
+- **G-07 QQ 关闭码分支表**：4004 作废 token + 弃会话（全文件首处 `tokens.invalidate()`，不再带死凭证无限重连）；4008 固定 60s 等待窗（限流码走短退避反而雪崩）；4006/4007/4009 弃会话重 IDENTIFY；其余现行为。
+- **G-21 INVALID_SESSION 看 d 标志**：见上文破坏性变化。
+- **G-12 iLink 轮询假死看门狗**：在飞 getupdates 超 longPollTimeoutMs + 宽限仍未返回即 abort 强制断开重试（连续 kick 计数可观测）——TCP 活着但服务端不推消息的假死从「完全静默」变「可检测」。
+
+## [0.9.1] - 2026-08-28
+
+R1「正确性第一线」修复列车（20 轮审查 80 项清单的第一批 18 项）。全部为 mock/contract 证据，协议类修复未经真机验证（真机缺口已登记 `docs/memory/risks.md`）；`npm test` 为 1414（1414 pass）。
+
+### ⚠️ 破坏性语义变化（迁移说明）
+
+- **`/stop` 收紧为无参命令（G-04）**：此前 `/stop 任意文字` 会误触发任务取消——用户一句「/stop 一下别急」就把长任务杀了。现仅裸 `/stop` 命中取消；`/stop 附言` 回执「未识别的命令」且附言按普通文本投递。**依赖「/stop + 文字」取消的用户须改发裸 `/stop`**。
+- **未知 `/` 命令现在有回执**（G-04 副作用）：此前静默按普通文本投递；现在先回执「未识别的命令」（文本仍会送达 agent）。
+- **裸编号多选消费面扩大（G-52）**：`1 3`、`1、3`、`1;3`、`1, 3`（分隔符混用）现在按多选裁决；此前被当普通文本喂给 agent。授权闸不变（fail-closed 语义不变）。`1, 1` 在单选题直接按 1 作答（去重）。
+- **`/agent use` 支持含空格名（G-33）**：`/agent use my space` 整体作为目标名；此前只用首词。
+
+### W1 钉钉 Stream 协议修正（G-01/02/10/23/24/42，P1×2）
+
+- **G-01 ack 回执三重偏差**：messageId 改读 `frame.headers.messageId`（顶层无该字段，旧实现读顶层恒为空）；回执头字段名 `requestId`→`messageId`；`data:'ack'`→`JSON.stringify('OK')`。仲裁源：dingtalk-stream 2.1.4/2.1.6-beta.1/2.1.7-beta.1 三版 SDK 源码核对，证据沉淀 `docs/protocol-preflight/dingtalk.md`。旧测试 mock 把错误契约钉死成基线，已重写（headers.messageId 形态钉契约）。
+- **G-02 SYSTEM/ping 零应答**：新增 SYSTEM 帧分支——ping 原样回显 headers+data（含必须回显的 opaque），disconnect/KEEPALIVE/REGISTERED 记 debug 后不进业务。应用层 SYSTEM ping 与传输层 WS 心跳是两码事，注释写明不得合并。
+- **G-10 建连字段名**：`uesrAgent`→`ua`，删除「官方 SDK 拼写错误照抄勿改」的错误注释（三版源码核对查无实据，全系 `ua: this.config.ua`）。
+- **G-42 data 二次 parse 失败静默**：warn（含 messageId/type/前 64 字符）后仍丢弃——ack 已发则服务端不重推，丢消息至少可观测。
+- **G-23 richText 归一**：richText 消息遍历内容模块，text 段拼接、图片段走既有管线；downloadCode-only 图片段 fail-closed 丢弃（换 URL 需另调文件下载接口，超出本批次）。纯文本/纯图行为不变。
+- **G-24 被动回复 messageId 碰撞**：hash6(content) 合成改 `dt:reply-<ts36>-<seq36>` 模块级单调序，同会话同内容两次回复不再同 ID。
+
+### W2 码点安全分段统一（G-03/22/40）
+
+- **G-03+G-22 同根**：新增 `splitByCodePoints` helper（`Array.from` 码点语义），微信 iLink 发送、QQ 文本分段（2000 码点）、QQ Markdown 截断（3000 码点）三处 UTF-16 码元切片全部改用——星体平面字符（emoji/生僻字）跨块不再产生孤立代理项。ZWJ 序列拆为多个完整码点属可接受降级（注释说明）。
+- **G-40 stripMention 白名单化**：仅剥已证实形态（`<@!数字>`/`<@数字>`/行首 `@名字+空格`），未命中但形似提及保留原文并 debug 出声——@ 残片污染 agent 语境从「静默漏剥」变「日志可见」。
+- **G-22 被动回复配额 warn**：QQ c2c 4 条/群 5 条配额常量 + 超限 warn（平台静默丢弃，先让丢弃可见），不硬阻塞。
+
+### W3 命令解析矩阵修正（G-04/06/25/33/43/52/65）
+
+- **G-06 `/cmd@botname` 支持**：命令词 @ 后缀贪心剥除（涵盖含点号 botname）；TG 群聊/钉钉入站 @ 剥离同修。`/pair@bot code` 剥离后 args 干净。
+- **G-65 全角斜杠**：`／pair` 规范化为 `/pair`（仅首字符）；命令附言保留在 args。
+- **G-43 缺 chatId 裸编号黑洞**：fail-closed 消费后补指路回执（「请回到原卡片回复或使用管理台裁决」），裁决结果不受影响。
+- **G-25 飞书 @提及还原**：依据事件 mentions 映射把 `@_user_N` 占位符还原为 `@名字`（非删空），双空格消失；事件无 mentions 时退回旧行为。三渠道 @ 策略差异（TG/钉钉剥离、飞书还原、QQ 白名单）注释写明。
+
+### W4 管理台裁决审计隔离（G-05/41）
+
+- **G-05 审计失败不再翻转为 500**：本文件全部 9 处 `appendAudit` 调用点经统一 `auditGuard` 兜底——审计写失败只 warn（host logger + stderr），已生效的裁决结果照常返回。取舍：审计是可观测性副作用，裁决已生效的事实不能被磁盘满推翻；降级经 warn 可观测。
+- **G-41 裁决接收人校验去门控**：删除 `targets.length > 0 &&` 前置——pushedTo 空表同样执行 userId 比对并 fail-closed 回拒（「未找到该审批的投递记录，无法核验回复来源，请回桌面处理」）。空表意味着无法证明投递对象；临时空表退化为「拒绝直到账本一致」，方向与 fail-closed 一致，只收紧不放宽。
+
+### W5 合并窗与身份路由键（G-51/48/49）
+
+- **G-51 合并窗跨 chat 串台**：pending/flush 键从 `(channel,userId)` 加宽为 `(channel,userId,chatId)`——同一用户私聊+群不再并线成一条混合投递。chatId 缺失仍聚合（现状语义）。内存上界分析：键基数=窗口内活跃 chat 元组数，每条配对冲刷 timer，无无界增长路径。
+- **G-48 覆盖绑定摘旧挂钩**：`/bind`、`/agent use` 覆盖绑定前先经 registry 既有 `detachInbound` 摘旧会话入站挂钩（幂等），`/route` 不再一 user 双挂。
+- **G-49 身份键归一**：新增单一 `bindingKey(channel, userId)`（trim + channel 小写收敛，userId 保持大小写敏感——wxpusher/飞书 ID 大小写语义真实），conversation/agent-router/identity/registry 四处键构造改引。现网行为零变化（休眠边界封口），回归测试保护。
+
 ## [0.9.0] - 2026-08-27
 
 - 2026-08-27 v0.9.0 release candidate：汇总维护、Control Core 安全收口、六条入站通道契约、个人模式管理台和文档整理；`npm test` 为 1352（1351 pass + 1 skip），版本/测试计数已统一到本候选发布线。

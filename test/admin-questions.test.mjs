@@ -31,11 +31,13 @@ const OUT = { question: '选部署环境', options: [{ label: '测试' }, { labe
  * @param {boolean} [options.identityNeverBind] 装配身份层但不绑定任何 owner（ownerCount=0）
  * @param {object} [options.controlPolicy] createControlEntry 的 policy
  * @param {{ chatId: string, userId: string } | null} [options.target] 送达目标（默认绑定 owner）
+ * @param {object} [options.logger] admin api 的 host logger（缺省吞 warn；G-05 用例注入采集器）
  */
 function makeRig({
   wireControl = true, wireQuestions = true, wireIdentity = true, identityNeverBind = false,
   controlPolicy = { mode: 'personal', capabilities: { approve: true } },
   target = { chatId: '900113', userId: 'the-owner' }, // telegram 形状守卫要求数值 chatId
+  logger = { warn: () => {} },
 } = {}) {
   const store = createStore(tempPath())
   const vault = createTokenVault({ secret: 's3cret-that-must-never-leak-9ab4def' })
@@ -77,7 +79,7 @@ function makeRig({
     identity,
     pairing: null,
     stateDir: tempDir(),
-    logger: { warn: () => {} },
+    logger,
     questions: wireQuestions ? bridge : null,
     control: wireControl ? control : null,
   })
@@ -130,7 +132,8 @@ test('settleQuestion choose：合法选项生效，返回 not 泄漏原值，且
   const rig = makeRig()
   askPending(rig)
   await sleep(10)
-  const result = rig.api.settleQuestion({ ref: rig.api.getPendingQuestions()[0].ref, action: 'choose', options: [1] })
+  const ref = rig.api.getPendingQuestions()[0].ref
+  const result = rig.api.settleQuestion({ ref, action: 'choose', options: [1] })
   assert.equal(result.settled, true)
   assert.equal(result.alreadyHandled, false)
   assert.equal(Array.isArray(result.optionLabels), true)
@@ -143,9 +146,51 @@ test('settleQuestion choose：合法选项生效，返回 not 泄漏原值，且
   const audit = rig.api.getAudit()
   const entry = audit.find((r) => r.action === 'settleQuestion')
   assert.ok(entry, '应写入 settleQuestion 审计')
+  // G-05 正常路径：审计行字段完整（ref/action/handled/settled），与裁决结果一致
+  assert.equal(entry.detail.ref, ref)
+  assert.equal(entry.detail.action, 'choose')
+  assert.equal(entry.detail.handled, false)
+  assert.equal(entry.detail.settled, true)
+  assert.equal(entry.detail.reason, undefined, '成功路径不携带 reason')
   const detail = JSON.stringify(entry.detail)
   assert.ok(!detail.includes(rig.sentinel), '审计不含 token secret')
   assert.ok(!detail.includes('optionLabels') && !detail.includes('900113'), '审计不泄选取/原始 chatId')
+})
+
+// G-05（2026-08-28）：审计写失败不得把已生效裁决翻成 500。裁决先行生效、审计只是
+// 可观测性副作用——磁盘满/权限异常时调用点独立兜底（warn 后继续返回已生效结果），
+// 绝不让前端拿到 500 去重试、再命中 already-handled 形成内外状态认知分叉。
+test('G-05：appendAudit 抛错（mock 磁盘满）→ 响应仍 settled:true，降级 warn 可观测', async () => {
+  const warns = []
+  const rig = makeRig({ logger: { warn: (...args) => warns.push(args.join(' ')) } })
+  askPending(rig)
+  await sleep(10)
+  const ref = rig.api.getPendingQuestions()[0].ref
+  // mock：审计入口抛错（裁决将在 Control Core 内先行生效）
+  const attempted = []
+  const original = rig.api.appendAudit
+  rig.api.appendAudit = (action) => { attempted.push(String(action)); throw new Error('ENOSPC: mock 磁盘满') }
+  let result
+  try {
+    result = rig.api.settleQuestion({ ref, action: 'choose', options: [1] })
+  } finally {
+    rig.api.appendAudit = original
+  }
+  assert.equal(result.settled, true, '裁决已生效，审计失败不得改变返回语义')
+  assert.equal(result.alreadyHandled, false)
+  assert.deepEqual(attempted, ['settleQuestion'], '确实尝试过写审计（失败路径被真实走到，而非未被调用）')
+  // 降级可观测：warn 经 host logger（另有 stderr 双写）出口，静默丢审计即事故
+  assert.equal(warns.some((line) => /审计写入失败/.test(line) && /settleQuestion/.test(line)), true)
+  // 该次审计行确实缺失（取舍：可观测性副作用让位于已生效事实，损失以 warn 留痕）
+  assert.equal(rig.api.getAudit().some((r) => r.action === 'settleQuestion'), false)
+  // 账本终态与响应一致：问题确已结算，重试命中 already-handled（409）——内外无认知分叉
+  assert.deepEqual(rig.api.getPendingQuestions(), [])
+  assert.throws(() => rig.api.settleQuestion({ ref, action: 'choose', options: [0] }), (e) => e.status === 409)
+  // 审计恢复后重试路径如实落账（settled:false + handled:true，不伪造成功）
+  const retryEntry = rig.api.getAudit().find((r) => r.action === 'settleQuestion')
+  assert.ok(retryEntry, '恢复后的审计调用正常落账')
+  assert.equal(retryEntry.detail.settled, false)
+  assert.equal(retryEntry.detail.handled, true)
 })
 
 test('settleQuestion reject（驳回）：交还桌面（aq-skip），不编造答案', async () => {

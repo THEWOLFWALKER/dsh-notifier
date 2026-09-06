@@ -90,11 +90,13 @@ export function normalizeInboundMessage(message, { accountId = '' } = {}) {
     ? (message.item_list.map(normalizeImageItem).find(Boolean) ?? null)
     : null
   if (text === '' && image === null) return null
+  // G-46：rawId 缺失时 hash6 兜底键标记 synthetic——bus 去重走 60s 短窗。
   const messageId = rawId !== '' ? `wx:${account}:${rawId}` : `wx:${account}:${userId}:${hash6(text)}`
+  const messageIdSynthetic = rawId === ''
   const rawContextToken = String(message.context_token ?? '').trim()
   const contextToken = validBoundedToken(rawContextToken)
   const envelope = {
-    channel: 'wechat', accountId: account, userId, chatId: userId, messageId,
+    channel: 'wechat', accountId: account, userId, chatId: userId, messageId, messageIdSynthetic,
     contextToken,
     contextTokenRejected: rawContextToken !== '' && contextToken === '',
   }

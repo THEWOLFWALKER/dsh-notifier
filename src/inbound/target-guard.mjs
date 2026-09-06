@@ -19,6 +19,8 @@
 /**
  * 各渠道 id 形态（null = 无已知形态，一律放行）。
  */
+import { INBOUND_CHANNELS, INBOUND_CHANNEL_SET } from './channels-registry.mjs'
+
 const CHANNEL_ID_PATTERNS = {
   telegram: /^-?\d{1,16}$/,
   feishu: /^(ou|oc|on)_[A-Za-z0-9]+$/,
@@ -28,15 +30,18 @@ const CHANNEL_ID_PATTERNS = {
   dingtalk: /^[A-Za-z0-9._-]{4,64}$/,
 }
 
-/** 渠道 id 形态是否可信（未知渠道 fail-open 放行——守卫不是白名单）。 */
+/** 渠道 id 形态是否可信（S-12：未知渠道 fail-closed 拒绝——枚举收敛到 channels-registry 后，未知渠道只剩拼写错误或上游漂移两种来源，都不该放行）。 */
 export function isValidTargetId(channel, id) {
+  if (!INBOUND_CHANNEL_SET.has(String(channel ?? ''))) return false
   const pattern = CHANNEL_ID_PATTERNS[String(channel ?? '')]
-  if (pattern === undefined) return true
+  if (pattern === undefined) return true // 已登记渠道暂无形态表：宁放过不错杀（错杀真成员是 P1）
   return pattern.test(String(id ?? ''))
 }
 
 /**
  * 形状守卫：过滤掉形态不符的目标（发送前最后一道防线）。
+ * S-12：未知渠道的目标整体拒绝 + warn——拼写错误的渠道键曾因 fail-open 静默放行，
+ * 目标可能被投到根本不是该平台的会话 id 上。
  * @param {string} channel - 渠道键（telegram/feishu/qq/wxpusher/wechat/dingtalk）
  * @param {{ chatId: string, userId?: string }[]} targets - 待发送目标
  * @param {(message: string) => void} [warn] - 跳过时的告警回调（缺省静默）
@@ -46,6 +51,12 @@ export function guardTargets(channel, targets, warn = null) {
   const list = Array.isArray(targets) ? targets : []
   const kept = []
   const skipped = []
+  if (!INBOUND_CHANNEL_SET.has(String(channel ?? ''))) {
+    if (warn !== null) {
+      try { warn(`目标形状守卫拦截（未知渠道 "${channel}"，全部跳过；合法渠道：${INBOUND_CHANNELS.join('/')}）`) } catch { /* 告警失败不致命 */ }
+    }
+    return { kept, skipped: [...list] }
+  }
   for (const target of list) {
     const chatId = String(target?.chatId ?? '')
     if (chatId === '') {

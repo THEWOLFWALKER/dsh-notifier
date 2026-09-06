@@ -238,6 +238,57 @@ test('命令集：/stop 调 agent.cancel', async () => {
   rig.dispose()
 })
 
+// ---------------------------------------------------------------- G-04 /stop 收紧
+
+test('G-04：/stop 附言形态不误杀长任务——不取消、回执未识别、附言按普通文本投递', async () => {
+  const agent = makeAgent('s1', 'running')
+  const rig = makeRig({ agents: [agent] })
+  rig.fire('agent/created', agent)
+  // 旧行为：startsWith('/stop ') 命中 → 正在跑的长任务被误取消
+  rig.userSays('/stop 一下别急')
+  await sleep(40)
+  assert.deepEqual(agent.calls.cancel, [], '附言形态绝不取消正在跑的 turn')
+  assert.ok(rig.replies.some((r) => /未识别的命令 \/stop/.test(r.text)), '落未知命令路径并回执「未识别的命令」')
+  assert.equal(agent.calls.inject.length, 1, '附言按普通文本投递（不吞消息）')
+  assert.equal(agent.calls.inject[0].content[0].text, '/stop 一下别急')
+  // 同一 rig 里裸 /stop 仍一键取消（收紧不能砍掉本义）
+  rig.userSays('/stop')
+  await sleep(40)
+  assert.deepEqual(agent.calls.cancel, ['remote-stop'])
+  assert.ok(rig.replies.some((r) => /已请求取消/.test(r.text)))
+  rig.dispose()
+})
+
+test('G-04：Control Core 装配时同样收紧——/stop 附言不再以 stop 命令进闸', async () => {
+  const agent = makeAgent('s1', 'running')
+  const control = createControlEntry({
+    policy: { mode: 'team', capabilities: { converse: true, stop: true } },
+  })
+  const rig = makeRig({ agents: [agent], mergeWindowMs: 0, control })
+  rig.fire('agent/created', agent)
+  rig.bus.accept({ channel: 'telegram', accountId: 'tg-app', userId: '42', chatId: '42', messageId: 'g04-cc-1', text: '/stop 一下别急' })
+  await sleep(20)
+  assert.deepEqual(agent.calls.cancel, [], '不以 stop 控制命令进 Control Core')
+  assert.ok(rig.replies.some((r) => /未识别的命令 \/stop/.test(r.text)))
+  assert.equal(agent.calls.inject.length, 1, '与未知命令同路径：按普通文本投递')
+  // 裸 /stop 仍经 Control Core 核销后取消
+  rig.bus.accept({ channel: 'telegram', accountId: 'tg-app', userId: '42', chatId: '42', messageId: 'g04-cc-2', text: '/stop' })
+  await sleep(20)
+  assert.deepEqual(agent.calls.cancel, ['remote-stop'])
+  rig.dispose()
+})
+
+test('G-04：未知命令回执不再静默（/foo 也有「未识别的命令」，投递语义不变）', async () => {
+  const agent = makeAgent('s1', 'idle')
+  const rig = makeRig({ agents: [agent] })
+  rig.fire('agent/created', agent)
+  rig.userSays('/etc/passwd 看看这个')
+  await sleep(60)
+  assert.equal(agent.calls.followup.length, 1, '不吞消息（既有语义）')
+  assert.ok(rig.replies.some((r) => /未识别的命令 \/etc\/passwd/.test(r.text)), '新增回执消除黑洞')
+  rig.dispose()
+})
+
 test('命令集：未知 /xxx 命令当普通文本投递（不吞消息）', async () => {
   const agent = makeAgent('s1', 'idle')
   const rig = makeRig({ agents: [agent] })

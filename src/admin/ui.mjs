@@ -92,6 +92,8 @@ label.fld input { flex: 1; }
 .badge { font-size: 12px; padding: 1px 8px; border-radius: 10px; border: 1px solid var(--border); }
 .badge.ok { color: var(--ok); border-color: var(--ok); }
 .badge.none { color: var(--muted); }
+/* G-14（W12）：出站配置视图热/投递冷的「重启后生效」警示角标（warn 色） */
+.badge.warn { color: var(--warn); border-color: var(--warn); }
 .qr .mono { background: var(--panel2); padding: 3px 8px; border-radius: 6px; word-break: break-all; }
 /* 首次使用引导卡（Issue #10：Dashboard 首屏 UX） */
 .onboard-steps { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 6px; }
@@ -132,7 +134,7 @@ label.fld input { flex: 1; }
 </head>
 <body>
 <header>
-  <h1>dsh-notifier 管理台<small>v0.9.0</small></h1>
+  <h1>dsh-notifier 管理台<small>v0.9.5</small></h1>
   <span id="loadState" role="status" aria-live="polite"></span>
   <span id="entryHint">仅本机回环 · 当前入口：<code id="entryUrl"></code></span>
   <button id="btnCopyEntry" title="复制当前管理台地址">复制地址</button>
@@ -948,7 +950,13 @@ function cardHtml(c) {
     return fieldRow(k, specs[k], current, ro)
   }).join('')
   var dir = c.direction === 'inbound' ? '入站' : '出站'
-  var badge = c.configured ? '<span class="badge ok">已配置</span>' : '<span class="badge none">未配置</span>'
+  // G-14（W12）：出站配置视图热/投递冷——出站行保存后 UI 即时回显，但投递层（出站路由/
+  // 通道实例）只在插件下次启动时并入运行时（YAML ⊕ store 合并），故角标显著标记「重启后
+  // 生效」而非「已配置」；入站保持「已配置」（凭证保存即下次启动启用/重连，语义近似热）。
+  // 标记随 getChannels 返回的 restartRequired 走：出站恒 true（YAML 改也要重启才并入）。
+  var badge = c.configured
+    ? '<span class="badge ' + (c.restartRequired ? 'warn">重启后生效' : 'ok">已配置') + '</span>'
+    : '<span class="badge none">未配置</span>'
   var scan = c.direction === 'inbound' && SCAN_TYPES.indexOf(c.type) >= 0
     ? '<button data-scan="' + esc(c.type) + '">扫码授权</button>' : ''
   // 微信专属提示：iLink 机器人 = 扫码微信的专属好友（1:1），扫码那一刻即完成配对
@@ -1015,9 +1023,19 @@ function saveChannel(key, btn) {
       }
       // 热更新边界：store 凭证在下次插件启动时并入运行时（YAML ⊕ store 合并）；
       // v0.7（审查 #8）：不再引导用户用出站自检去“验证”入站凭证——语义分开说清
+      // G-14（W12）：出站配置视图热/投递冷——保存后角标就地翻成「重启后生效」即时回显
+      // （不整表重渲染，避免收起正在编辑的其他卡片）；本地 state 同步置 configured，
+      // 后续 loadAll/重渲染保持一致。
+      if (direction === 'outbound') {
+        var head = $('.card-head', card)
+        var oldBadge = head ? $('.badge', head) : null
+        if (oldBadge) oldBadge.outerHTML = '<span class="badge warn">重启后生效</span>'
+        var local = (state.channels || []).filter(function (c) { return c.type === type && c.direction === direction })[0]
+        if (local) local.configured = true
+      }
       setStatus(msg, direction === 'inbound'
         ? '凭证已保存（state.json，0600）；入站通道在插件下次启动时启用/重连。入站是否可用请在 IM 端实际发消息验证'
-        : '凭证已保存（state.json，0600）；出站在插件下次启动时并入运行时（YAML ⊕ store 合并），可点「测试发送」验证出站链路', 'ok')
+        : '出站配置已保存（视图即时回显，重启后生效）：投递层在插件下次启动时并入运行时（YAML ⊕ store 合并），重启前不影响已运行的出站链路；可点「测试发送」验证凭证连通', 'ok')
     })
     .catch(function (e) { setStatus(msg, '保存失败：' + errText(e), 'err') })
     .then(function () { btn.disabled = false; btn.textContent = old })

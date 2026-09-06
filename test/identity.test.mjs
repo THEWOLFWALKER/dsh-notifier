@@ -13,7 +13,7 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createStore } from '../src/inbound/store.mjs'
-import { createIdentity } from '../src/inbound/identity.mjs'
+import { createIdentity, bindingKey } from '../src/inbound/identity.mjs'
 import { createPairing } from '../src/inbound/pairing.mjs'
 import { createInboundBus } from '../src/inbound/bus.mjs'
 
@@ -81,6 +81,58 @@ test('identity：迁移不复活管理台已删成员（一次性标记的验收
   identity.removeBinding('telegram', '42') // 管理台删人
   identity.migrate(['42'], ['telegram']) // YAML 仍在，重启
   assert.equal(identity.allows('telegram', '42'), false, '重启后不复活（R5-1-P1-1 验收）')
+  assert.equal(identity.size(), 0)
+})
+
+test('G-44：坏绑定键启动一次性清洗——死键移除写回 + warn 计数，合法成员保留', () => {
+  const { store } = tempStore()
+  const first = createIdentity({ store, logger: quiet })
+  first.addBinding({ channel: 'telegram', userId: '999' })
+  // 注入三类坏键：空白漂移（键值错位）、大小写漂移（非法渠道形状）、纯形状损坏
+  const raw = store.get('inbound:bindings', {})
+  raw['telegram: 999'] = { ...raw['telegram:999'], userId: ' 999' }
+  raw['Telegram:999'] = { ...raw['telegram:999'], channel: 'Telegram' }
+  raw['feishu:ou_broken'] = { channel: 'nope', userId: 'x' }
+  store.set('inbound:bindings', raw)
+  // 重启：createIdentity 即触发一次性清洗（logger.warn 收前缀+正文两参，join 后断言正文）
+  const warns = []
+  const identity = createIdentity({ store, logger: { warn: (...args) => warns.push(args.join(' ')) } })
+  const cleaned = store.get('inbound:bindings', {})
+  assert.deepEqual(Object.keys(cleaned), ['telegram:999'], '三类坏键全移除，合法成员保留')
+  assert.equal(identity.size(), 1)
+  assert.equal(identity.allows('telegram', '999'), true, '合法成员不受清洗影响')
+  assert.ok(warns.some((w) => /坏绑定键启动清洗/.test(w)), `清洗必须 warn 可见（实际：${warns.join(' | ')}）`)
+  assert.ok(warns.some((w) => /3 条移除/.test(w)), `warn 带移除计数（实际：${warns.join(' | ')}）`)
+  // 幂等：再启动一次清洗为 no-op，不重复 warn
+  const warns2 = []
+  createIdentity({ store, logger: { warn: (m) => warns2.push(m) } })
+  assert.ok(!warns2.some((w) => /坏绑定键启动清洗/.test(w)), '无死键时零写放大零告警')
+})
+
+test('G-44 放大面：启动损坏白纸重置——绑定表全坏键清成空白，已删成员仍不复活（inbound:migrated 守卫）', () => {
+  const { store } = tempStore()
+  // 第一启动：迁移播撒成员 42（origin=migrated），管理台随后删除，仅剩 999
+  const first = createIdentity({ store, logger: quiet })
+  first.migrate(['42'], ['telegram'])
+  first.addBinding({ channel: 'telegram', userId: '999' })
+  first.removeBinding('telegram', '42') // 管理台删人
+  // 损坏白纸现场：绑定表全部键形状损坏（读如空白），迁移标记仍在
+  const raw = store.get('inbound:bindings', {})
+  for (const key of Object.keys(raw)) raw[key] = { channel: 'nope', userId: 'x' }
+  store.set('inbound:bindings', raw)
+  assert.equal(store.get('inbound:migrated', false), true, '迁移标记在场（第一启动已落）')
+  // 重启：清洗把全坏键清成空白表 + warn；标记绝不被连带清掉
+  const warns = []
+  const identity = createIdentity({ store, logger: { warn: (...args) => warns.push(args.join(' ')) } })
+  assert.deepEqual(store.get('inbound:bindings', {}), {}, '全坏键清空（白纸重置）')
+  assert.equal(store.get('inbound:migrated', false), true, '清洗绝不碰迁移标记')
+  assert.equal(identity.isEmpty(), true, '业务视图白纸')
+  assert.ok(warns.some((w) => /坏绑定键启动清洗/.test(w)), `清洗必须 warn 可见（实际：${warns.join(' | ')}）`)
+  // 白名单重播（放大面）：标记在场 → skipped，已删成员 42 绝不复活
+  const replay = identity.migrate(['42'], ['telegram'])
+  assert.equal(replay.added, 0)
+  assert.equal(replay.skipped, true)
+  assert.equal(identity.allows('telegram', '42'), false, '已删成员不复活')
   assert.equal(identity.size(), 0)
 })
 
@@ -196,6 +248,48 @@ test('identity：待确认绑定 add/confirm/dismiss 生命周期', () => {
   assert.equal(identity.dismissPending('qq', 'q1').ok, true)
   assert.equal(identity.allows('qq', 'q1'), false)
   assert.equal(identity.confirmPending('qq', 'q1').reason, 'not-found')
+})
+
+// ---------------------------------------------------------------- G-49 键归一（休眠边界封口）
+
+test('G-49：bindingKey 单一构造点——空白/大小写漂移的分量同键，allows 读写同源', () => {
+  const { store } = tempStore()
+  const identity = createIdentity({ store, logger: quiet })
+  identity.addBinding({ channel: 'telegram', userId: 'user' })
+
+  // 键构造归一：两分量 trim；channel 收敛小写（有限小写渠道集合）；userId 不折叠大小写
+  // （渠道侧 id 大小写语义真实存在：wxpusher UID_ 前缀、飞书 open_id——折叠会打 miss 存量键）
+  assert.equal(bindingKey('telegram', 'user'), 'telegram:user')
+  assert.equal(bindingKey(' telegram ', ' user '), bindingKey('telegram', 'user'), "' user ' 与 'user' 同键")
+  assert.equal(bindingKey('TELEGRAM', 'user'), 'telegram:user', 'channel 大小写漂移同键')
+  assert.equal(bindingKey('\tqq\n', '1'), 'qq:1', '各类空白（含制表/换行）都 trim')
+  assert.notEqual(bindingKey('telegram', 'User'), bindingKey('telegram', 'user'), 'userId 大小写不得折叠')
+
+  // allows 读键归一：带空白 userId / 脏 channel 的调用命中同一条绑定
+  assert.equal(identity.allows('telegram', 'user'), true)
+  assert.equal(identity.allows('telegram', ' user '), true)
+  assert.equal(identity.allows('telegram', 'user '), true)
+  assert.equal(identity.allows(' telegram ', 'user'), true, '脏 channel 归一后命中')
+  // lastSeenAt 写回键与读键同源：表不膨胀、不落幽灵键
+  assert.equal(identity.size(), 1)
+  assert.deepEqual(Object.keys(store.get('inbound:bindings', {})), ['telegram:user'])
+  // 归一不抹掉渠道维度：跨渠道隔离照旧（身份是 (channel, userId)，不是全局用户串）
+  assert.equal(identity.allows('feishu', 'user'), false)
+  assert.equal(identity.allows('feishu', ' user '), false)
+  assert.equal(identity.allows('feishu', ' USER '), false, 'userId 大小写不折叠（跨大小写不得误命中）')
+})
+
+test('G-49：bus 全链路——带空白 userId 的信封经 identity 复合准入一致命中并扇出', () => {
+  const { bus } = makeRig({ bindings: [['telegram', 'user']] })
+  let fannedOut = 0
+  bus.onMessage(() => { fannedOut += 1 })
+  // 信封 userId 带空白 → bus.allows → identity.allows → bindingKey 归一 → 命中 'user' 绑定
+  assert.equal(bus.allows('telegram', ' user '), true)
+  assert.equal(bus.accept(env({ text: 'hi', userId: ' user ' })).ok, true, '空白 userId 同键准入')
+  assert.equal(fannedOut, 1, '准入命中 → 业务扇出（消息不丢）')
+  // 非成员照旧拒绝（归一只封空白/大小写边界，不放宽成员资格）
+  assert.equal(bus.accept(env({ text: 'hi', userId: ' nope ' })).ok, false)
+  assert.equal(fannedOut, 1)
 })
 
 // ---------------------------------------------------------------- bus 复合准入与引导态
@@ -484,61 +578,63 @@ test('pairing：终态条目 24h 后写路径清扫（防 state 无限膨胀）'
     'redeemed 超 24h 被清扫')
 })
 
-// ————————————————— v0.8.7 B1：过期码锁出 + 引导码重铸节流 —————————————————
-// 漏洞原状（BYPASS-BOOT）：redeem 对 expired 码不记 recordFailure（直接 return），
-// 过期码可无限次触发 ensureBootstrap 重铸；配合旧的 stderr 印码面 = 泵码 144 枚/天。
-// 修法双保险：expired 计入失败计数（5 次锁出 10min）+ ensureBootstrap 节流 10min。
+// ————————————————— v0.8.7 B1 防泵码 → W11 G-30/G-31 语义修订 —————————————————
+// 漏洞原状（BYPASS-BOOT）：expired 不记失败，可无限触发 ensureBootstrap 重铸泵码。
+// v0.8.7 修法：expired 计入失败（5 次锁出）+ ensureBootstrap 节流 10min——双保险。
+// G-30/G-31（本列车）：过期码单独分支、不计锁出——过期码不是爆破信号（能提交过期码
+// 说明曾真实持有在铸码），锁出只留给形态非法/查无此码的真暴力面；防泵码由
+// commands.mjs ensureBootstrap 的 10min 节流单层兜住（B1-6 覆盖），
+// 锁出层同时撤销（否则用旧码的合法用户会被误锁 10min）。
 
-test('B1-4 过期码计入失败计数：连提 5 次过期码 → locked-out（BYPASS-BOOT 泵码堵死）', () => {
+test('G-30/G-31 过期码不计锁出：连提 5 次过期码始终 expired，永不 locked-out', () => {
   const { store } = tempStore()
   const pairing = createPairing({ store, logger: quiet })
   const stale = pairing.mint({ origin: 'bootstrap', mintedBy: 'system:boot', ttlMs: 1 })
   const later = Date.now() + 5000 // 码已过期
-  // 前 4 次：过期回执，尚未触阈
-  for (let i = 0; i < 4; i += 1) {
+  for (let i = 0; i < 8; i += 1) {
     assert.equal(pairing.redeem(stale.code, { channel: 'telegram', userId: '42', now: later }).reason, 'expired',
-      `第 ${i + 1} 次应仍是 expired`)
+      `第 ${i + 1} 次应始终是 expired（过期码不翻锁）`)
   }
-  // 第 5 次：触发锁出，reason 换成 locked-out（commands 的 expired 分支因此不再命中 → 不重铸）
-  assert.equal(pairing.redeem(stale.code, { channel: 'telegram', userId: '42', now: later }).reason, 'locked-out',
-    '第 5 次过期码提交必须触发锁出（否则可无限泵码）')
-  assert.equal(pairing.isLockedOut('telegram', '42', later), true)
-  // 锁出期内：连有效码也进不来（锁出优先，与 invalid-code 锁出同口径）
+  assert.equal(pairing.isLockedOut('telegram', '42', later), false, '过期码提交不触发锁出')
+  // 防泵码由 commands 层节流兜底（B1-6），锁出不参与过期路径
   const fresh = pairing.mint({ origin: 'admin', mintedBy: 'boss', now: later })
-  assert.equal(pairing.redeem(fresh.code, { channel: 'telegram', userId: '42', now: later }).reason, 'locked-out')
-  // 越过锁出期：恢复受理（注意 fresh 自身 10 分钟 TTL 此时也过期了，另铸一枚测恢复）
-  const unlocked = later + 11 * 60 * 1000
-  assert.equal(pairing.isLockedOut('telegram', '42', unlocked), false, '10 分钟后解锁')
+  assert.equal(pairing.redeem(fresh.code, { channel: 'telegram', userId: '42', now: later }).ok, true,
+    '过期码不计失败 → 合法新码直接可配对，无锁出阴影')
+})
+
+test('G-30/G-31 无效码仍计失败：查无此码连提 5 次 → locked-out（爆破面锁出保留）', () => {
+  const { store } = tempStore()
+  const pairing = createPairing({ store, logger: quiet })
+  const now = Date.now()
+  for (let i = 0; i < 4; i += 1) {
+    assert.equal(pairing.redeem('AAAA1111', { channel: 'qq', userId: 'q1', now }).reason, 'invalid-code',
+      `第 ${i + 1} 次无效码仍计失败`)
+  }
+  assert.equal(pairing.isLockedOut('qq', 'q1', now), false, '4 次后不该锁（阈值是 5，下边界）')
+  assert.equal(pairing.redeem('AAAA2222', { channel: 'qq', userId: 'q1', now }).reason, 'locked-out', '第 5 次翻锁（上边界）')
+  // 锁出期内：连有效码也进不来（锁出优先，与过期路径无关）
+  const fresh = pairing.mint({ origin: 'admin', mintedBy: 'boss', now })
+  assert.equal(pairing.redeem(fresh.code, { channel: 'qq', userId: 'q1', now }).reason, 'locked-out')
+  // 越过锁出期：恢复受理
+  const unlocked = now + 11 * 60 * 1000
+  assert.equal(pairing.isLockedOut('qq', 'q1', unlocked), false, '10 分钟后解锁')
   const afterUnlock = pairing.mint({ origin: 'admin', mintedBy: 'boss', now: unlocked })
-  assert.equal(pairing.redeem(afterUnlock.code, { channel: 'telegram', userId: '42', now: unlocked }).ok, true,
+  assert.equal(pairing.redeem(afterUnlock.code, { channel: 'qq', userId: 'q1', now: unlocked }).ok, true,
     '解锁后合法用户可正常配对（宪法#6 用户失误不永久锁死）')
 })
 
-test('B1-4b 过期码锁出边界：第 4 次仍受理、恰好第 5 次翻锁（上下边界各钉一次）', () => {
+test('G-30/G-31 锁出按 (channel,userId) 隔离：一个用户被锁不牵连他人', () => {
   const { store } = tempStore()
   const pairing = createPairing({ store, logger: quiet })
-  const stale = pairing.mint({ origin: 'bootstrap', mintedBy: 'system:boot', ttlMs: 1 })
-  const later = Date.now() + 5000
-  for (let i = 0; i < 3; i += 1) pairing.redeem(stale.code, { channel: 'qq', userId: 'q1', now: later })
-  assert.equal(pairing.isLockedOut('qq', 'q1', later), false, '3 次后不该锁（阈值是 5）')
-  assert.equal(pairing.redeem(stale.code, { channel: 'qq', userId: 'q1', now: later }).reason, 'expired', '第 4 次仍是 expired')
-  assert.equal(pairing.isLockedOut('qq', 'q1', later), false, '4 次后仍不该锁（下边界）')
-  assert.equal(pairing.redeem(stale.code, { channel: 'qq', userId: 'q1', now: later }).reason, 'locked-out', '第 5 次翻锁（上边界）')
-})
-
-test('B1-5 过期码锁出按 (channel,userId) 隔离：一个用户被锁不牵连他人', () => {
-  const { store } = tempStore()
-  const pairing = createPairing({ store, logger: quiet })
-  const stale = pairing.mint({ origin: 'bootstrap', mintedBy: 'system:boot', ttlMs: 1 })
-  const later = Date.now() + 5000
-  for (let i = 0; i < 5; i += 1) pairing.redeem(stale.code, { channel: 'telegram', userId: '42', now: later })
-  assert.equal(pairing.isLockedOut('telegram', '42', later), true, '前置：42 已锁')
+  const now = Date.now()
+  for (let i = 0; i < 5; i += 1) pairing.redeem('AAAA1111', { channel: 'telegram', userId: '42', now })
+  assert.equal(pairing.isLockedOut('telegram', '42', now), true, '前置：42 已锁（无效码触发）')
   // 同渠道另一 userId：不受牵连
-  assert.equal(pairing.isLockedOut('telegram', '43', later), false)
+  assert.equal(pairing.isLockedOut('telegram', '43', now), false)
   // 同 userId 另一渠道：复合键隔离（身份是 (channel,userId) 不是全局用户串）
-  assert.equal(pairing.isLockedOut('qq', '42', later), false)
-  const fresh = pairing.mint({ origin: 'admin', mintedBy: 'boss', now: later })
-  assert.equal(pairing.redeem(fresh.code, { channel: 'telegram', userId: '43', now: later }).ok, true,
+  assert.equal(pairing.isLockedOut('qq', '42', now), false)
+  const fresh = pairing.mint({ origin: 'admin', mintedBy: 'boss', now })
+  assert.equal(pairing.redeem(fresh.code, { channel: 'telegram', userId: '43', now }).ok, true,
     '无辜用户照常可配对')
 })
 

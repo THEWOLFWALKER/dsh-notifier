@@ -212,6 +212,10 @@ export function resolveConfig(config = {}) {
     ? Math.max(0, Math.trunc(raw.summaryMaxChars))
     : 500
   const titlePrefix = typeof raw.titlePrefix === 'string' ? raw.titlePrefix.trim() : ''
+  // S-05（CWE-200）出站脱敏档位：minimal（默认）= 摘录 80 字符 + 密钥形态打码；
+  // extended = 维持原文（用户显式选择向第三方 IM 外发完整片段，README 已声明数据流向）。
+  // 非法值一律回落 minimal：安全配置的非法值不配得到宽松解释。
+  const redaction = raw.redaction === 'extended' ? 'extended' : 'minimal'
 
   // 事件粒度开关（阶段 2 规则引擎）：默认全开。turnEnd 支持两种写法：
   //   turnEnd: false                     → 整类关闭
@@ -363,6 +367,7 @@ export function resolveConfig(config = {}) {
     debounceMs,
     summaryMaxChars,
     titlePrefix,
+    redaction,
     events,
     toolRateLimitPerMinute,
     questions,

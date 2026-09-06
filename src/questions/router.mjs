@@ -26,6 +26,7 @@
 
 import { createHash, randomBytes } from 'node:crypto'
 import { normalizeInbound } from '../inbound/_contract.mjs'
+import { MESSAGE_PRIORITY } from '../inbound/bus.mjs'
 import { guardTargets } from '../inbound/target-guard.mjs'
 import { createEscalationChain } from '../approval/escalation.mjs'
 import { createInteractionLedger } from '../interaction/ledger.mjs'
@@ -34,6 +35,29 @@ import { createRateLimiter, compileParameters } from '../tool-register.mjs'
 import { isCoveredByOutbound } from '../inbound/capability-matrix.mjs'
 
 const KEY_PREFIX = 'aq:'
+
+// ---- S-07（CWE-74）ask_user 回答内容边界 ----
+// 身份校验链（token/来源/Control Core）管的是「谁答的」，不管「答了什么」——回答文本
+// 经校验后直接进宿主 agent 会话，无长度上限、无控制字符过滤。这里补的是与身份正交的
+// 内容边界：超长回答拒绝（fail-closed，绝不静默截断——半句话的回答比没有回答更危险），
+// 控制/零宽/bidi 字符过滤（它们对人类不可见，却是注入载体）。
+/** 自定义回答长度上限（Unicode 码点，非 UTF-16 单元——emoji/中文按人类感知计数）。 */
+export const ANSWER_MAX_CODEPOINTS = 2000
+/** 控制字符（保留 \n\t\r）、DEL、零宽/双向覆盖/字间隐藏类不可见字符。 */
+const INVISIBLE_CHARS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F\u200B-\u200F\u202A-\u202E\u2060-\u2064\uFEFF]/g
+
+/**
+ * 归一化远程回答文本：过滤不可见字符，统计码点长度。
+ * @param {string} text
+ * @returns {{ text: string, removed: number, tooLong: boolean }}
+ */
+export function sanitizeAnswerText(text) {
+  const raw = String(text ?? '')
+  const stripped = raw.replace(INVISIBLE_CHARS, '')
+  const removed = raw.length - stripped.length
+  const codePoints = [...stripped].length
+  return { text: stripped, removed, tooLong: codePoints > ANSWER_MAX_CODEPOINTS }
+}
 
 // 升级链默认节奏（与审批一致：30s / 60s 各再提醒一轮）
 const DEFAULT_ESCALATION_STAGES = [
@@ -472,13 +496,21 @@ export function createQuestionBridge(deps) {
   }
 
   /** 自定义文本作答（'答：...'）：与 settle 共享 bus.settle 首达采纳 + ledger.resolve 落账。
-   *  只在 Control Core 已放行（或控制不可用时的精确来源兜底）后才被调用——它不是新的直通后门。 */
+   *  只在 Control Core 已放行（或控制不可用时的精确来源兜底）后才被调用——它不是新的直通后门。
+   *  S-07：入口处过内容边界（超长拒绝、不可见字符过滤），身份链不动。 */
   function settleText(qKey, answer, envelope) {
-    const verdict = bus.settle(qKey, { kind: 'aq-text', idxs: [], text: answer }, `${envelope.channel}:text`, envelope.userId)
+    const safe = sanitizeAnswerText(answer)
+    if (safe.removed > 0) {
+      warn(`${qKey} 自定义作答含 ${safe.removed} 个控制/零宽字符，已过滤（S-07 注入边界）`)
+    }
+    if (safe.tooLong) {
+      return { ok: false, message: `回答过长（超过 ${ANSWER_MAX_CODEPOINTS} 字符），已拒绝；请精简后重发或在桌面端直接回答` }
+    }
+    const verdict = bus.settle(qKey, { kind: 'aq-text', idxs: [], text: safe.text }, `${envelope.channel}:text`, envelope.userId)
     if (!verdict.ok) return { ok: false, message: '该提问已被作答（首达采纳）' }
-    ledger.resolve(qKey, 'answered', { answers: [answer], via: `${envelope.channel}:text`, userId: String(envelope.userId) })
+    ledger.resolve(qKey, 'answered', { answers: [safe.text], via: `${envelope.channel}:text`, userId: String(envelope.userId) })
     warn(`${qKey} 自定义作答（via ${envelope.channel}:text）`)
-    return { ok: true, message: `✅ 已作答（自定义）：${answer}`, answers: [answer] }
+    return { ok: true, message: `✅ 已作答（自定义）：${safe.text}`, answers: [safe.text] }
   }
 
   /** 跳过（aq-skip）：与 admin decline 同语义（交还桌面、绝不编造答案），但来自手机端按钮。 */
@@ -652,14 +684,16 @@ export function createQuestionBridge(deps) {
   }
 
   /**
-   * 编号回复兜底（P4）：白名单用户回复 '2' / '1,3'（中英文逗号均可）作答最近一条待决提问。
+   * 编号回复兜底（P4）：白名单用户回复 '2' / '1,3' 作答最近一条待决提问。
+   * G-52：分隔符宽容化——{, ， 、 ; ； 空白} 任意混用（'1, 3' '1、3' '1 3' 均按多选），
+   * 重复编号去重；任一词非 1-2 位数字仍整条不认（fail-closed 落回对话路由）。
    * 发错了不作废——无效编号：消费该消息（不进对话路由）+ 回执提示 + 把选项重发一遍，
    * 问题保持待决，用户直接再答即可；有效作答后回执确认。
    * 消费语义与审批一致：返回 true = bus 停止扇出（不进对话路由）。
    * 注意：审批的编号处理器先注册（'1'/'2' 且有待决审批时审批优先消费）。
    *
    * Control Core Step 1：chat 来源隔离
-   *  - 缺 chatId → fail-closed：消费消息但不裁决（不落回对话路由）
+   *  - 缺 chatId → fail-closed：消费消息但不裁决（不落回对话路由）；G-43 补指路回执
    *  - onChannel 证据（同用户错误 chat）→ 消费 + 回执「请到原会话操作」+ 不裁决
    *  - exact/hint 证据（chat 匹配）→ 正常作答流程
    */
@@ -674,6 +708,13 @@ export function createQuestionBridge(deps) {
       const answer = text.replace(/^答[:：]\s*/, '').trim()
       const inbound = interactiveEntries().find((entry) => entry.channel === envelope.channel)
       if (answer === '') { if (inbound !== undefined) void inbound.sendText(envelope.chatId, '请在「答：」后面写回答').catch(() => {}); return true }
+      // S-07 内容边界前置检查：超长直接拒收并回执指引（不进 Control Core 白跑一轮；
+      // settleText 内还有同一道闸兜底，双覆盖只花几行）
+      const precheck = sanitizeAnswerText(answer)
+      if (precheck.tooLong) {
+        if (inbound !== undefined) void inbound.sendText(envelope.chatId, `回答过长（超过 ${ANSWER_MAX_CODEPOINTS} 字符），已拒绝；请精简后重发或在桌面端直接回答`).catch(() => {})
+        return true
+      }
       // 自定义作答也经共享 Control Core 的 question-answer 契约裁决（授权/来源/策略/群聊 fail-closed）；
       // 结算走 settleText（仍以 bus.settle 首达采纳为唯一落账点）。控制缺失 → fail-closed：绝不直结
       // （不再回退 bus.settle），防止无授权即落账。
@@ -702,9 +743,16 @@ export function createQuestionBridge(deps) {
       }
       return true
     }
-    if (!/^\d{1,2}([,，]\d{1,2})*$/.test(text)) return false
-    const nums = text.split(/[,，]/).map(Number)
-    if (nums.length === 0) return false
+    // G-52：分词式裸编号识别。旧整条正则 ^\d{1,2}([,，]\d{1,2})*$ 只认「紧邻的中/英文逗号」，
+    // '1, 3'（逗号后空格）、'1、3'（顿号）、'1 3'（纯空格）全部不匹配 → return false 落回
+    // 对话路由——用户明明在作答，裸编号却被当普通文本喂给 agent，等到超时才发现没生效。
+    // 改为按多分隔符分词后逐词校验：分隔符集 {, ， 、 ; ； 空白} 任意混用均可；任一词不是
+    // 1-2 位数字即整条不认。fail-closed 语义不变——不匹配仍 return false 落回对话路由，
+    // 越界号校验维持既有回执（下方 outOfRange 分支）。
+    const tokens = text.split(/[,，、;；\s]+/).filter(Boolean)
+    if (tokens.length === 0 || tokens.some((t) => !/^\d{1,2}$/.test(t))) return false
+    // 去重：'1, 1' 与 '1' 同义（重复勾选同一项不二次落账）；Set 保序去重
+    const nums = [...new Set(tokens.map(Number))]
 
     const chatId = envelope.chatId !== undefined && envelope.chatId !== null && String(envelope.chatId) !== ''
       ? String(envelope.chatId) : null
@@ -721,6 +769,12 @@ export function createQuestionBridge(deps) {
       // 使「缺 chatId → 消费但不裁决」的 fail-closed 语义失效（泄露进对话路由）。
       const anyPending = ledger.latestPendingFor(envelope.channel, envelope.userId, null, envelope.accountId)
       if (anyPending === null) return false
+      // G-43：消费黑洞补回执。此前该路径吃掉裸编号后静默 return true——消息被消费（不进
+      // 对话路由）、问题不裁决，用户端零反馈，要等超时才知道作答没生效。补一条指路回执，
+      // 裁决结果不受影响（仍不落账、问题保持待决），仅消除黑洞。回执走该渠道普通回复路径
+      // （best-effort：chatId 本就缺失，适配器 sendText 拿不到有效目标时自行失败吞掉，
+      // 不影响消费语义）。
+      sendFeedback('该回复未能定位到提问卡片（缺少会话上下文），请回到原卡片回复或使用管理台裁决')
       return true
     }
 
@@ -785,13 +839,15 @@ export function createQuestionBridge(deps) {
   let disposed = false
 
   /**
-   * 挂载编号回复处理器。必须在审批路由注册之后调用（bus.onMessage 插入序 =
-   * 消费优先级：审批 '1'/'2' 先于提问编号，避免歧义时提问抢走审批回复）。
+   * 挂载编号回复处理器。G-31 起消费优先级由 bus.onMessage 的显式 priority 声明
+   * （卡片动作 10 / 编号回复 20），不再依赖「先于审批路由注册」的调用次序——
+   * 审批与提问同为 numberedReply 时按注册序稳定排序，审批仍先裁决（歧义时
+   * 提问不抢走审批的 '1'/'2' 回复）。
    */
   function attach() {
     if (disposed) return
-    if (disposeCardAction === null) disposeCardAction = bus.onMessage(handleCardAction)
-    if (disposeMessage === null) disposeMessage = bus.onMessage(handleNumberedReply)
+    if (disposeCardAction === null) disposeCardAction = bus.onMessage(handleCardAction, { priority: MESSAGE_PRIORITY.cardAction })
+    if (disposeMessage === null) disposeMessage = bus.onMessage(handleNumberedReply, { priority: MESSAGE_PRIORITY.numberedReply })
   }
 
   /**

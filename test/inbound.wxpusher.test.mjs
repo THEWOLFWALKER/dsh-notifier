@@ -149,7 +149,8 @@ test('send_up_cmd：剥 #{appId} 前缀 → bus envelope；白名单外 uid 拒�
   assert.equal(accepted[0].userId, 'UID_1')
   assert.equal(accepted[0].chatId, 'UID_1')
   assert.equal(accepted[0].text, '跑一下测试')
-  assert.match(accepted[0].messageId, /^cmd:UID_1:1770000000:[0-9a-f]{6}$/)
+  // G-27：合成键追加进程内单调 seq（`...:hash6:seq`），同秒同内容两条真实消息可区分
+  assert.match(accepted[0].messageId, /^cmd:UID_1:1770000000:[0-9a-f]{6}:\d+$/)
 
   // 白名单外
   await post(rig, { action: 'send_up_cmd', data: { uid: 'UID_EVIL', appId: 'AT_app', time: '1', content: 'hi' } })
@@ -209,17 +210,19 @@ test('前缀词边界：appId AT_app 不得部分匹配 #AT_application（回归
   await rig.inbound.stop()
 })
 
-test('幂等：同 uid+time+content 重复回调只入站一次（合成 messageId 去重）', async () => {
+test('G-27：同秒同内容重复回调不再互吞（合成键带单调 seq；重投去重让位给真实双消息）', async () => {
   const rig = makeRig()
   const accepted = []
   rig.bus.onMessage((envelope) => accepted.push(envelope))
   rig.inbound.start()
   await tick()
   const payload = { action: 'send_up_cmd', data: { uid: 'UID_1', appId: 'a', time: '42', content: '#a 重复消息' } }
+  // 同 uid+time+content 连发两次（真实场景：用户对两次审批各回一条同文本）：
+  // 键带 seq 后两条都入站——重投去重能力让位，幂等由业务层兜底（重复裁决回执）。
   await post(rig, payload)
   await post(rig, payload)
   await post(rig, { ...payload, data: { ...payload.data, time: '43' } }) // time 不同 → 新消息
-  assert.equal(accepted.length, 2)
+  assert.equal(accepted.length, 3)
   await rig.inbound.stop()
 })
 

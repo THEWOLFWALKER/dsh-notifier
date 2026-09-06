@@ -286,6 +286,87 @@ test('多选作答：中文逗号 1，3 也认，去重后两项落账', async (
   rig.bridge.dispose()
 })
 
+// ---------------------------------------------------------------- G-52 分隔符宽容化
+
+/** G-52：同一 rig 逐形态驱动多选作答（每形态独立提问、独立断言，共用装配减少样板）。 */
+async function driveMultiForm(text) {
+  const identity = createIdentity({ store: createStore(tempPath()) })
+  identity.addBinding({ channel: 'qq', userId: '100' })
+  const rig = makeRig({ inbounds: [{ channel: 'qq', accountId: 'QQ_APP', card: false, targets: [{ chatId: 'qq-user-100', userId: '100' }] }], channelTypes: ['qq'], identity, notifyOutcome: { ok: true, delivered: [], skipped: ['qq'], failed: [] } })
+  const seen = []
+  rig.bus.onMessage((envelope) => { seen.push(envelope.text); return false })
+  const pending = rig.bridge.askQuestions({ questions: [MULTI] })
+  await sleep(30)
+  rig.bus.accept({ channel: 'qq', accountId: 'QQ_APP', chatType: 'private', userId: '100', chatId: 'qq-user-100', messageId: `msg:q:${text}`, text })
+  const result = await pending
+  rig.bridge.dispose()
+  return { result, seen }
+}
+
+test('G-52 裸编号多选分隔符矩阵：1, 3 / 1、3 / 1 3 / 1；3 均按多选裁决两项', async () => {
+  for (const text of ['1, 3', '1、3', '1 3', '1；3']) {
+    const { result, seen } = await driveMultiForm(text)
+    assert.equal(result.answered, true, `${text} → 已作答`)
+    assert.deepEqual(result.results[0].answers, ['张三', '王五'], `${text} → 落账两项`)
+    assert.deepEqual(seen, [], `${text} → 裸编号被消费，不进对话路由`)
+  }
+})
+
+test('G-52 分隔符混用：1, 3、2 三种分隔符并存仍逐词解析，三项全落账', async () => {
+  const { result } = await driveMultiForm('1, 3、2')
+  assert.equal(result.answered, true)
+  assert.deepEqual(result.results[0].answers, ['张三', '王五', '李四'], '混用分隔符逐词解析（顺序保持）')
+})
+
+test('G-52 重复编号去重：1, 1 等价单选 1（不触发单选多项误报）', async () => {
+  const { result, seen } = await driveMultiForm('1, 1')
+  assert.equal(result.answered, true, '去重后按单编号作答成功')
+  assert.deepEqual(result.results[0].answers, ['张三'])
+  assert.deepEqual(seen, [], '被消费不进对话路由')
+})
+
+test('G-52 单选 + 重复编号：2 2 去重为单编号，不再误报「本题是单选」', async () => {
+  const identity = createIdentity({ store: createStore(tempPath()) })
+  identity.addBinding({ channel: 'qq', userId: '42' })
+  const rig = makeRig({ inbounds: [{ channel: 'qq', accountId: 'QQ_APP', card: false, targets: [{ chatId: 'qq-user-42', userId: '42' }] }], channelTypes: ['qq'], identity, notifyOutcome: { ok: true, delivered: [], skipped: ['qq'], failed: [] } })
+  const pending = rig.bridge.askQuestions({ questions: [SINGLE] })
+  await sleep(30)
+  rig.bus.accept({ channel: 'qq', accountId: 'QQ_APP', chatType: 'private', userId: '42', chatId: 'qq-user-42', messageId: 'msg:q:dup', text: '2 2' })
+  const result = await pending
+  assert.equal(result.answered, true, '重复编号去重后按 2 作答')
+  assert.deepEqual(result.results[0].answers, ['预发环境'])
+  rig.bridge.dispose()
+})
+
+test('G-52 fail-closed 保持：混入非编号词（1, a / 1 2x）整条不认，落回对话路由', async () => {
+  for (const text of ['1, a', '1 2x', '一, 3', '1..3']) {
+    const { result, seen } = await driveMultiForm(text)
+    assert.equal(result.answered, false, `${text} → 不裁决（超时未答）`)
+    assert.deepEqual(seen, [text], `${text} → 落回对话路由（未被消费）`)
+  }
+})
+
+test('G-52 越界号维持既有回执：1, 99 → 提示编号需在 1-3 之间 + 选项重发，问题保持待决', async () => {
+  const identity = createIdentity({ store: createStore(tempPath()) })
+  identity.addBinding({ channel: 'qq', userId: '100' })
+  const rig = makeRig({ inbounds: [{ channel: 'qq', accountId: 'QQ_APP', card: false, targets: [{ chatId: 'qq-user-100', userId: '100' }] }], channelTypes: ['qq'], identity, notifyOutcome: { ok: true, delivered: [], skipped: ['qq'], failed: [] } })
+  const pending = rig.bridge.askQuestions({ questions: [MULTI] })
+  await sleep(30)
+  const qq = rig.instances[0]
+  rig.bus.accept({ channel: 'qq', accountId: 'QQ_APP', chatType: 'private', userId: '100', chatId: 'qq-user-100', messageId: 'msg:q:oor', text: '1, 99' })
+  await sleep(10)
+  assert.ok(qq.texts.length > 0, '有回执')
+  assert.match(qq.texts.at(-1).text, /编号需在 1-3 之间/, '越界提示在场（逗号后空格形态也进越界分支）')
+  assert.match(qq.texts.at(-1).text, /1\. 张三/, '选项重发在场')
+  assert.equal(rig.store.get(rig.store.keys('aq:')[0]).status, 'pending', '问题保持待决')
+  // 发错了可以再发：随后用规范形态作答成功
+  rig.bus.accept({ channel: 'qq', accountId: 'QQ_APP', chatType: 'private', userId: '100', chatId: 'qq-user-100', messageId: 'msg:q:oor2', text: '1, 2' })
+  const result = await pending
+  assert.equal(result.answered, true)
+  assert.deepEqual(result.results[0].answers, ['张三', '李四'])
+  rig.bridge.dispose()
+})
+
 test('裸编号消费语义：有效作答被消费（不进对话路由），无待决时裸编号不拦', async () => {
   const identity = createIdentity({ store: createStore(tempPath()) })
   identity.addBinding({ channel: 'qq', userId: '42' }) // 首条绑定 = owner（CRACK-004 hint 兜底需 owner）
@@ -1067,7 +1148,7 @@ test('CC-1 同 chat 不同用户：hint 证据含 userId=42，userId=100 裸编�
   await pending
 })
 
-test('CC-1 缺 chatId：envelope 无 chatId → fail-closed（消费但不裁决，不落回对话路由）', async () => {
+test('CC-1 缺 chatId：envelope 无 chatId → fail-closed（消费但不裁决，不落回对话路由）+ G-43 指路回执', async () => {
   const identity = createIdentity({ store: createStore(tempPath()) })
   identity.addBinding({ channel: 'qq', userId: '42' }) // owner
   const rig = makeRig({
@@ -1079,14 +1160,20 @@ test('CC-1 缺 chatId：envelope 无 chatId → fail-closed（消费但不裁决
   rig.bus.onMessage((envelope) => { seen.push(envelope.text); return false })
   const pending = rig.bridge.askQuestions({ questions: [SINGLE] })
   await sleep(30)
+  const qq = rig.instances[0]
+  const textsBefore = qq.texts.length
   // 无 chatId 的编号回复
   rig.bus.accept({ channel: 'qq', accountId: 'QQ_APP', chatType: 'private', userId: '42', messageId: 'm1', text: '1' })
   await sleep(10)
   assert.deepEqual(seen, [], '缺 chatId 编号被消费，不进对话路由')
   const row = rig.store.get(rig.store.keys('aq:')[0])
   assert.equal(row.status, 'pending', '缺 chatId 不裁决')
+  // G-43：消费黑洞补回执——此前该路径静默 return true，用户零反馈
+  assert.equal(qq.texts.length, textsBefore + 1, '补发一条指路回执')
+  assert.match(qq.texts.at(-1).text, /未能定位到提问卡片/, '回执指明缺少会话上下文')
+  assert.match(qq.texts.at(-1).text, /回到原卡片|管理台/, '回执给出可操作出路')
   const result = await pending
-  assert.equal(result.answered, false, '超时未作答')
+  assert.equal(result.answered, false, '超时未作答（回执不影响 fail-closed 裁决语义）')
   rig.bridge.dispose()
 })
 

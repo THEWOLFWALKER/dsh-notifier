@@ -9,7 +9,7 @@ node scripts/gen-channel-matrix.mjs --check
 node --check src/index.mjs
 ```
 
-The current development baseline is `1352` tests (`1351` pass + `1` skip), on the unreleased `0.8.6` development line. The published v0.8.6 artifact historically records `909`; do not change `package.json`'s release count to make these baselines look identical. Desktop/host and provider protocol behavior still require real-device validation where noted below.
+The current development baseline is `1531` tests (`1531` pass) on the v0.9.5 line (R1–R5 closed 2026-09-05). The published npm `latest` remains `0.9.0` (1352-test artifact) until v0.9.5 is published; the v0.8.6 artifact historically records `909`. Do not change `package.json`'s release count to make these baselines look identical. The public GitHub source mirror (`main`) is synced to v0.9.5. Desktop/host and provider protocol behavior still require real-device validation where noted below.
 
 The project has no install step for runtime tests. Optional packages are needed only for the corresponding real inbound flows: Feishu SDK, QQ connector, or QR terminal rendering.
 
@@ -31,7 +31,7 @@ The Web admin console is the only control console and the full install-to-daily-
 
 | Symptom | First checks |
 |---|---|
-| No outbound delivery | Admin channel status, `test-channel.mjs`, adapter config resolution, stderr warnings |
+| No outbound delivery | Admin channel status, `channel-selfcheck.mjs`, adapter config resolution, stderr warnings |
 | Inbound silent | Optional dependency installed, token/account fallback, paired composite identity, provider long-poll/WS logs |
 | Approval did not apply | Original chat/channel, token age, first-arrival state, desktop fallback; never treat timeout as approval |
 | Ask-user missing | Installed package version, `questions.enabled`, startup assembly log, `npm ls dsh-notifier` |

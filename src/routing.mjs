@@ -112,7 +112,13 @@ export async function sendWithRetry(sendFn, { attempts = 1, backoffMs = 0, onRet
       if (error?.noRetry === true) throw error
       if (attempt < attempts) {
         if (typeof onRetry === 'function') onRetry(attempt, error)
-        await sleep(backoffMs * 2 ** (attempt - 1))
+        // G-08：平台限流应答（如 TG 429 parameters.retry_after）附着的 retryAfterMs
+        // 优先级高于固定指数退避——按平台说的等，而不是用短 backoff 连撞同一堵墙。
+        const scheduled = backoffMs * 2 ** (attempt - 1)
+        const retryAfterMs = Number(error?.retryAfterMs)
+        await sleep(Number.isFinite(retryAfterMs) && retryAfterMs > 0
+          ? Math.max(scheduled, retryAfterMs)
+          : scheduled)
       }
     }
   }

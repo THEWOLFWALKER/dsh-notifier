@@ -6,8 +6,11 @@
 // 生命周期军规（与三条链旧实现逐字节行为等价，迁移时逐一核对过）：
 //  - add 总是覆写为 { ...row, status:'pending', createdAt}——旧行/僵尸行按
 //    「非 pending」判非待决，与三条链既有语义一致；
-//  - resolve 不检查前态：有行即翻终态（approval/questions 既有语义；actions 的
-//    首达采纳 → 执行 → 终局多步落地也靠它）；
+//  - resolve 已终态不翻转（S-14，W12）：已决行二次 resolve 返回 'already-resolved'，
+//    内部 API 误用/迟到 settle/竞态双 resolve 不再覆写既有终态裁决（approval/questions
+//    单次裁决不受影响；主链路 bus settle 本就有防线）。actions 的
+//    「首达采纳 → 执行 → 终局多步落地」用 opts.claimedSettle 显式逃生门：'executing'
+//    是执行中占位声明（并发双击/崩溃中段的消费护栏），同一执行在终局允许落定终态裁决；
 //  - terminate 仅 pending 可翻：防已决行被 onAbandon 二次改写（C2/P1-5 僵尸守卫）；
 //  - get 不做投影：行原样返回，上游按 status/decision 自己裁决；
 //  - 过期不设独立 status：token TTL + decision 'timeout' 表达（与三条链现状一致）。
@@ -53,11 +56,18 @@ export function createInteractionLedger(options = {}) {
     },
     /** 待决判定：非对象/非 pending（含旧行、僵尸行）一律视为已决（fail-closed）。 */
     isPending,
-    /** 行存在即翻终态（无 pending 前置检查；首达采纳后的多步落地依赖此语义）。
-     *  缺失行返回 false。extra 不能覆盖 status/decision/resolvedAt。 */
-    resolve(key, decision, extra = {}) {
+    /** 行缺失返回 false；已终态（status='resolved'）返回 'already-resolved' 不再翻转
+     *  （S-14，W12：内部 API 误用/迟到 settle/竞态双 resolve 不覆写既有终态裁决）。
+     *  actions 的「首达采纳后多步落地」（'executing' 占位 → 'done' 终局）是同一执行的
+     *  显式逃生门：传 opts={claimedSettle:true} 放行已占位行的终局落定；除此之外任何
+     *  已决行二次 resolve 一律拒绝。extra 不能覆盖 status/decision/resolvedAt。
+     * @param {object} [opts.claimedSettle] - 仅 actions 用：放行对已终态行的终局落地 */
+    resolve(key, decision, extra = {}, opts = {}) {
       const row = store?.get(key)
       if (row === undefined) return false
+      if (row.status === statuses.resolved && opts.claimedSettle !== true) {
+        return 'already-resolved'
+      }
       store.set(key, resolvedRowOf(row, decision, extra))
       return true
     },

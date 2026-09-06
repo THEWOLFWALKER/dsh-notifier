@@ -31,9 +31,25 @@ function makeRig({ channels = [{ type: 'webhook', url: 'http://x/hook' }], logge
   return { notifier, records }
 }
 
-async function withFetch(ok = true, fn) {
+async function withFetch(ok = true, fn, { timeout = false } = {}) {
   const original = globalThis.fetch
-  globalThis.fetch = async () => ({ ok, status: ok ? 200 : 500, json: async () => ({}), text: async () => 'err' })
+  if (timeout) {
+    // G-58：超时支路——请求挂起直到被终止，fetch 以 AbortError 拒绝。
+    // postJson 把 AbortError 归为 TIMEOUT + noRetry（G-50 语义，见 adapters.test.mjs
+    // 同款手法）；兜底 25ms 是为不等配置级 timeoutMs（webhook 被钳到 ≥1s）——
+    // 模拟的结局（AbortError）与真实超时逐字节同构，错误分类只看 error.name。
+    globalThis.fetch = (url, init) => new Promise((resolve, reject) => {
+      const fail = () => {
+        const error = new Error('aborted')
+        error.name = 'AbortError'
+        reject(error)
+      }
+      init?.signal?.addEventListener?.('abort', fail) // 走真实 AbortController 路径
+      setTimeout(fail, 25) // 兜底：确定性终止，不让测试挂 1s+
+    })
+  } else {
+    globalThis.fetch = async () => ({ ok, status: ok ? 200 : 500, json: async () => ({}), text: async () => 'err' })
+  }
   try {
     // 必须 await：finally 在 fn 整体 settle 后才恢复 fetch（return fn() 会在首个 await 处提前恢复）
     return await fn()
@@ -118,6 +134,21 @@ test('facade 定向推送：skipped 与 failed 的形状适配', async () => {
     assert.equal(records[1].failed[0].channel, 'webhook')
     assert.match(records[1].failed[0].error, /HTTP 500/)
   })
+})
+
+test('G-58 超时支路：fetch AbortError → TIMEOUT noRetry 文案（结果未知，不再重试）', async () => {
+  const { notifier, records } = makeRig()
+  const facade = createPublicFacade({ notifier, logger: { warn() {} } })
+  await withFetch(true, async () => {
+    const timedOut = await facade.push({ title: 't', content: 'c' }, { channel: 'webhook' })
+    assert.equal(timedOut.ok, false)
+    assert.equal(timedOut.failed.length, 1)
+    assert.equal(timedOut.failed[0].channel, 'webhook')
+    assert.match(timedOut.failed[0].error, /投递超时.*结果未知.*不再重试/)
+    assert.equal(records.length, 1)
+    assert.equal(records[0].channel, 'webhook')
+    assert.match(records[0].failed[0].error, /投递超时|TIMEOUT/)
+  }, { timeout: true })
 })
 
 test('facade never-reject：notifyAll 内部抛错 → failed:[{reason:"internal"}]，绝不 reject', async () => {
@@ -469,7 +500,7 @@ test('redactAuditRecord：只投影 source 标量字段，不泄露或冻结嵌�
 
 test('装配：宿主有 provide → ctx.provide("notifier", facade) 注册服务（spike 配方）', async () => {
   const state = bootCtx({ provide: true })
-  const resolved = apply(state.ctx, { channels: [{ type: 'webhook', url: 'http://127.0.0.1:1/hook' }] })
+  const resolved = apply(state.ctx, { channels: [{ type: 'webhook', url: 'http://public-hook.test/hook' }] })
   assert.equal(resolved.public.enabled, true)
   assert.equal(state.provided.length, 1)
   assert.equal(state.provided[0].name, 'notifier')
@@ -478,7 +509,7 @@ test('装配：宿主有 provide → ctx.provide("notifier", facade) 注册服�
 
 test('装配：无 provide（测试桩宿主）→ 回退直接赋值 ctx.notifier', async () => {
   const state = bootCtx()
-  apply(state.ctx, { channels: [{ type: 'webhook', url: 'http://127.0.0.1:1/hook' }] })
+  apply(state.ctx, { channels: [{ type: 'webhook', url: 'http://public-hook.test/hook' }] })
   assert.equal(typeof state.ctx.notifier?.push, 'function')
   assert.equal(state.ctx.notifier.version, '0.7')
 })
@@ -499,7 +530,7 @@ test('装配：顶层 enabled:false → 仍提供 no-op stub（服务缺失会�
 test('装配：public.enabled:false → 真 notifier 在场也注入 stub（push 返回 (disabled)）', async () => {
   const state = bootCtx({ provide: true })
   apply(state.ctx, {
-    channels: [{ type: 'webhook', url: 'http://127.0.0.1:1/hook' }],
+    channels: [{ type: 'webhook', url: 'http://public-hook.test/hook' }],
     public: { enabled: false },
   })
   const stub = state.provided[0].value
@@ -510,7 +541,7 @@ test('装配：public.enabled:false → 真 notifier 在场也注入 stub（push
 
 test('装配 + emit：push 一次 → dsh-notifier/sent 收到冻结的 metadata-only record', async () => {
   const state = bootCtx({ provide: true, emit: true })
-  apply(state.ctx, { channels: [{ type: 'webhook', url: 'http://127.0.0.1:1/hook' }] })
+  apply(state.ctx, { channels: [{ type: 'webhook', url: 'http://public-hook.test/hook' }] })
   const facade = state.provided[0].value
   await withFetch(true, async () => {
     const result = await facade.push({ title: 'et', content: 'ec' }, { sourceName: 'emit-test' })
@@ -537,7 +568,7 @@ test('装配 + emit：push 一次 → dsh-notifier/sent 收到冻结的 metadata
 
 test('装配 + emit：定向成功只发一条 metadata-only 事件并保留目标渠道', async () => {
   const state = bootCtx({ provide: true, emit: true })
-  apply(state.ctx, { channels: [{ type: 'webhook', url: 'http://127.0.0.1:1/hook' }] })
+  apply(state.ctx, { channels: [{ type: 'webhook', url: 'http://public-hook.test/hook' }] })
   const facade = state.provided[0].value
   await withFetch(true, async () => {
     const result = await facade.push({ title: 'directed', content: 'body' }, { channel: 'webhook', sourceName: 'directed-test' })
@@ -554,7 +585,7 @@ test('装配 + emit：定向成功只发一条 metadata-only 事件并保留目�
 test('装配 + emit：public.emit:false → 整链不发射（零开销家训）', async () => {
   const state = bootCtx({ provide: true, emit: true })
   apply(state.ctx, {
-    channels: [{ type: 'webhook', url: 'http://127.0.0.1:1/hook' }],
+    channels: [{ type: 'webhook', url: 'http://public-hook.test/hook' }],
     public: { emit: false },
   })
   const facade = state.provided[0].value
@@ -566,7 +597,7 @@ test('装配 + emit：public.emit:false → 整链不发射（零开销家训）
 
 test('装配 + emit：宿主无 ctx.emit → push 照常成功，仅 warn 一次（可观测降级）', async () => {
   const state = bootCtx({ provide: true }) // 无 emit
-  apply(state.ctx, { channels: [{ type: 'webhook', url: 'http://127.0.0.1:1/hook' }] })
+  apply(state.ctx, { channels: [{ type: 'webhook', url: 'http://public-hook.test/hook' }] })
   const facade = state.provided[0].value
   await withFetch(true, async () => {
     const result = await facade.push({ title: 't', content: 'c' }, { sourceName: 'A' })
@@ -601,3 +632,6 @@ test('PLUGINS.md：代码块可被 node --check（防文档腐烂）', async () 
     }
   }
 })
+
+// S-02：urlguard DNS 恒公网夹具（假域名不打真网，见 helpers/urlguard-public.mjs）
+import './helpers/urlguard-public.mjs'

@@ -36,6 +36,7 @@ export const SPEC_CHANNELS = {
   slack: {
     label: 'Slack',
     desc: 'Slack Incoming Webhook',
+    ssrfGuard: true, // S-02：webhook 地址用户可配
     fields: {
       webhook: { required: true, secret: true, desc: 'Slack Incoming Webhook 完整地址：api.slack.com/apps → 你的 App → Incoming Webhooks → 添加到工作区后复制' },
     },
@@ -43,16 +44,34 @@ export const SPEC_CHANNELS = {
     request: (cfg, msg) => ({ url: cfg.webhook, body: { text: joinPara(msg) } }),
     ok: ({ status }) => status === 200, // Slack 成功只回 200 纯文本 "ok"，无业务码
     fail: ({ status, text }) => (status === 403 ? 'webhook 无效或已失效（403）：到 Slack App → Incoming Webhooks 重新复制地址' : text.slice(0, 120)),
+    // 边界显式报错（G-38）：Incoming Webhook 官方域名只有 hooks.slack.com——
+    // 填成普通 chat.postMessage API 地址（或别的站）会 404/静默失败，校验给出定向指引。
+    validate: (resolved) => {
+      let host = ''
+      try { host = new URL(resolved.webhook).hostname } catch { host = '' }
+      if (host !== 'hooks.slack.com') {
+        throw new NotifyError('slack 未配置：webhook 必须是 https://hooks.slack.com/services/ 开头的 Incoming Webhook 地址（API token 不走本渠道）', ERROR_CODES.NOT_CONFIGURED)
+      }
+    },
   },
 
   discord: {
     label: 'Discord',
     desc: 'Discord Webhook',
+    ssrfGuard: true, // S-02：webhook 地址用户可配
     fields: {
       webhook: { required: true, secret: true, desc: 'Discord Webhook 完整地址：服务器设置 → 整合 → Webhook → 新建后复制' },
     },
     encode: 'json',
-    request: (cfg, msg) => ({ url: cfg.webhook, body: { content: joinText(msg) } }),
+    // G-39：Discord content 硬上限 2000 字符——超限发送只回一句 400[Bulk edit]，
+    // 建连前 fail-fast 给出当前长度，比远程报错可诊断。（单 if，不违声明表控制流军规）
+    request: (cfg, msg) => {
+      const content = joinText(msg)
+      if (content.length > 2000) {
+        throw new NotifyError(`discord 推送失败：内容超过 Discord 上限 2000 字符（当前 ${content.length}），请缩短正文`, ERROR_CODES.API_ERROR)
+      }
+      return { url: cfg.webhook, body: { content } }
+    },
     ok: is2xx, // 成功回 204 No Content，无业务码
     fail: ({ status }) => (status === 404 ? 'webhook 已删除（404）：到 Discord 服务器设置重新创建 Webhook' : ''),
   },
@@ -60,6 +79,7 @@ export const SPEC_CHANNELS = {
   wecom: {
     label: '企业微信群机器人',
     desc: 'WeCom group robot webhook',
+    ssrfGuard: true, // S-02：webhook 整地址用户可配（key 模式拼官方域名也会被同一闸校验，官方域名公网放行无副作用）
     fields: {
       webhook: { secret: true, desc: '机器人完整 webhook 地址（与 key 二选一）：企业微信群 → 群设置 → 添加群机器人 → 复制 webhook' },
       key: { secret: true, desc: '机器人 key（webhook 地址 ?key= 后面的部分，与 webhook 二选一）' },
@@ -81,6 +101,7 @@ export const SPEC_CHANNELS = {
   mattermost: {
     label: 'Mattermost',
     desc: 'Mattermost incoming webhook',
+    ssrfGuard: true, // S-02：server/webhook 均用户可配；内网 Mattermost 需 allowPrivateNetwork: true
     fields: {
       server: { desc: 'Mattermost 服务器地址（与 webhook 二选一时给全地址可省略），如 https://mm.example.com' },
       hookId: { secret: true, desc: 'Incoming Webhook 的 id：Mattermost → 集成 → Incoming Webhook 复制地址末段' },
@@ -107,6 +128,7 @@ export const SPEC_CHANNELS = {
   gchat: {
     label: 'Google Chat',
     desc: 'Google Chat webhook (spaces)',
+    ssrfGuard: true, // S-02：webhook 地址用户可配
     fields: {
       webhook: { required: true, secret: true, desc: 'Google Chat 空间 Incoming Webhook：空间名旁 ▾ → 应用和集成 → Webhook → 复制' },
     },
@@ -118,6 +140,7 @@ export const SPEC_CHANNELS = {
   teams: {
     label: 'Microsoft Teams',
     desc: 'Teams Workflows Incoming Webhook (Adaptive Card)',
+    ssrfGuard: true, // S-02：webhook 地址用户可配
     fields: {
       webhook: { required: true, secret: true, desc: 'Teams Workflows Incoming Webhook URL：团队频道 → 管理 → 连接器/工作流 → 「将 webhook 请求发布到频道」创建后复制' },
     },
@@ -148,6 +171,7 @@ export const SPEC_CHANNELS = {
   ntfy: {
     label: 'ntfy',
     desc: 'ntfy push (public/self-hosted, topic)',
+    ssrfGuard: true, // S-02：server 用户可配；内网自托管 ntfy 需 allowPrivateNetwork: true
     fields: {
       server: { default: 'https://ntfy.sh', desc: 'ntfy 服务器地址，默认公共站 ntfy.sh，自托管填自己的地址' },
       topic: { required: true, desc: '订阅 topic 名（手机 App 里订阅同名 topic 即可收到；自建服务器建议配 auth）' },
@@ -176,6 +200,7 @@ export const SPEC_CHANNELS = {
   gotify: {
     label: 'Gotify',
     desc: 'Gotify push (self-hosted, app token)',
+    ssrfGuard: true, // S-02：server 用户可配；内网自托管 Gotify 需 allowPrivateNetwork: true
     fields: {
       server: { required: true, desc: 'Gotify 服务器地址，如 https://gotify.example.com（自托管，官方演示站 gotify.net 亦可）' },
       appToken: { required: true, secret: true, desc: '应用 token：Gotify Web → APPS → CREATE APPLICATION 后复制' },
@@ -215,6 +240,7 @@ export const SPEC_CHANNELS = {
   chanify: {
     label: 'Chanify',
     desc: 'Chanify push (iOS)',
+    ssrfGuard: true, // S-02：baseUrl 用户可配
     fields: {
       baseUrl: { default: 'https://api.chanify.net/v1/sender', desc: 'Chanify 服务地址，默认公共服务，自托管填自己的' },
       token: { required: true, secret: true, desc: '设备 token：Chanify iOS App → 通道 → 复制 Send Token' },
@@ -233,6 +259,7 @@ export const SPEC_CHANNELS = {
   pushdeer: {
     label: 'PushDeer',
     desc: 'PushDeer push (iOS/macOS)',
+    ssrfGuard: true, // S-02：endpoint 用户可配；自建服务在内网时需 allowPrivateNetwork: true
     fields: {
       pushKey: { required: true, secret: true, desc: 'PushKey：PushDeer App → Key 页复制（自建服务配合 endpoint 使用）' },
       endpoint: { default: 'https://api2.pushdeer.com', desc: '服务地址，默认官方，自建填自己的' },
@@ -306,12 +333,16 @@ export const SPEC_CHANNELS = {
   onebot: {
     label: 'QQ OneBot 11',
     desc: 'OneBot v11 HTTP (NapCat/LLOneBot self-hosted)',
+    // S-02：baseUrl 用户可配，但渠道本质是本机/内网服务（文档默认即 http://127.0.0.1:3000，
+    // NapCat/LLOneBot 跑在同一台机器）——默认放行私网，否则开箱即用被 SSRF 闸打断。
+    ssrfGuard: 'private-ok',
     fields: {
       baseUrl: { required: true, desc: 'OneBot 实现（NapCat/LLOneBot/go-cqhttp）的 HTTP 服务地址，如 http://127.0.0.1:3000' },
       accessToken: { secret: true, desc: '可选 access token（OneBot 配置里设置的鉴权 token）' },
       messageType: { default: 'private', desc: 'private=私聊（默认）/ group=群聊' },
-      userId: { desc: '私聊目标 QQ 号（messageType: private 时必填）' },
-      groupId: { desc: '群号（messageType: group 时必填）' },
+      // type:'number'：QQ 号在 YAML/JSON 里数字与字符串两形态都常见，engine 双形态归一
+      userId: { desc: '私聊目标 QQ 号（messageType: private 时必填）', type: 'number' },
+      groupId: { desc: '群号（messageType: group 时必填）', type: 'number' },
     },
     encode: 'json',
     // v0.6.5（审查 R4-3-P2-3）：message 改用 OneBot 11 标准消息数组格式。原字符串直传
@@ -334,10 +365,11 @@ export const SPEC_CHANNELS = {
       if (resolved.messageType !== 'private' && resolved.messageType !== 'group') {
         throw new NotifyError('onebot 未配置：messageType 只能是 private（私聊）或 group（群聊）', ERROR_CODES.NOT_CONFIGURED)
       }
-      if (resolved.messageType === 'group' && resolved.groupId === '') {
+      // 数值字段缺失落 undefined（非 ''），空值判定必须双形态
+      if (resolved.messageType === 'group' && (resolved.groupId === '' || resolved.groupId === undefined)) {
         throw new NotifyError('onebot 未配置：messageType 为 group 时 groupId（群号）未填写', ERROR_CODES.NOT_CONFIGURED)
       }
-      if (resolved.messageType !== 'group' && resolved.userId === '') {
+      if (resolved.messageType !== 'group' && (resolved.userId === '' || resolved.userId === undefined)) {
         throw new NotifyError('onebot 未配置：私聊推送 userId（QQ 号）未填写', ERROR_CODES.NOT_CONFIGURED)
       }
     },

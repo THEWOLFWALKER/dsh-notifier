@@ -1,12 +1,16 @@
 #!/usr/bin/env node
-// dsh-notifier scripts/test-channel.mjs
+// dsh-notifier scripts/channel-selfcheck.mjs
 // 渠道健康自检 CLI：真机验证一个渠道配置（resolve → send 全链路）。
 // 用法：
-//   node scripts/test-channel.mjs telegram '{"botToken":"...","chatId":"..."}'
-//   node scripts/test-channel.mjs bark --config '{"key":"..."}'
-//   echo '{"key":"..."}' | node scripts/test-channel.mjs bark
-//   node scripts/test-channel.mjs bark --config-file cfg.json --message "自定义正文"
+//   node scripts/channel-selfcheck.mjs telegram '{"botToken":"...","chatId":"..."}'
+//   node scripts/channel-selfcheck.mjs bark --config '{"key":"..."}'
+//   echo '{"key":"..."}' | node scripts/channel-selfcheck.mjs bark
+//   node scripts/channel-selfcheck.mjs bark --config-file cfg.json --message "自定义正文"
 // 配置 JSON 支持 ${ENV:NAME} 引用（与插件运行时一致）。退出码 0=成功 1=失败。
+//
+// 命名说明（G-57）：原名 scripts/test-channel.mjs 的 test-* 前缀会被 Node 22 默认
+// glob（test-*）误吞进裸 `node --test` 扫描，导致基线口径被 CLI 脚本污染；本文件
+// 更名为 channel-selfcheck.mjs（CLI 语义也更准：渠道自检，不是单元测试）。
 
 import { readFileSync } from 'node:fs'
 import { runChannelTest } from '../src/health.mjs'
@@ -47,7 +51,7 @@ if (type === undefined || type === '' || configRaw === undefined || configRaw ==
 }
 
 if (type === undefined || type === '' || configRaw === undefined || configRaw === '') {
-  console.error('用法：node scripts/test-channel.mjs <channel-type> [config-json]')
+  console.error('用法：node scripts/channel-selfcheck.mjs <channel-type> [config-json]')
   console.error('  config-json 也可用 --config "<json>" / --config-file <file> / stdin 提供；支持 ${ENV:NAME} 引用')
   process.exit(1)
 }

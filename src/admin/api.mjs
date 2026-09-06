@@ -17,11 +17,12 @@
 //     绝不让底层异常裸穿到 HTTP 层；
 //   - 动作方法（testChannel/scanChannel）能力不可用抛 ApiError(501)，可用则结果原样透传；
 //   - 审计（<stateDir>/admin-audit.jsonl，append-only，§5「谁改了什么」）失败只 warn，
-//     绝不影响主流程。
+//     绝不影响主流程（appendAudit 内部吞错 + 各调用点 auditGuard 兜底双保险，G-05）。
 
 import { appendFileSync, chmodSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { CHANNEL_TYPES, channelFieldsOf } from '../config.mjs'
+import { INBOUND_CHANNELS, INBOUND_CHANNEL_SET } from '../inbound/channels-registry.mjs'
 import {
   CONTROL_OVERLAY_MAX_MEMBERS,
   CONTROL_OVERLAY_MAX_STRING,
@@ -29,10 +30,11 @@ import {
 } from '../control/session-arbiter.mjs'
 
 /**
- * 入站通道全集（与 inbound 装配一一对应；出站全集 = config.mjs 的 CHANNEL_TYPES）。
- * 逐字契约：server.mjs / ui.mjs 按此并行开发，勿改顺序与成员。
+ * 入站通道全集（单一事实来源 channels-registry；与 inbound 装配一一对应，
+ * 出站全集 = config.mjs 的 CHANNEL_TYPES）。逐字契约：server.mjs / ui.mjs 按此
+ * 并行开发，勿改顺序与成员——清单本体在 registry，本文件只转发导出。
  */
-export const INBOUND_CHANNELS = ['telegram', 'feishu', 'qq', 'wxpusher', 'wechat', 'dingtalk']
+export { INBOUND_CHANNELS } from '../inbound/channels-registry.mjs'
 
 /**
  * 双域冲突通道：既是出站 webhook 渠道（webhook/secret）又是入站机器人渠道
@@ -72,7 +74,7 @@ const DEFAULT_STATE_DIR = './state'
 
 /** 出站/入站通道集合（includes 判定用 Set，避免每行 O(n) 扫描）。 */
 const OUTBOUND_SET = new Set(CHANNEL_TYPES)
-const INBOUND_SET = new Set(INBOUND_CHANNELS)
+const INBOUND_SET = INBOUND_CHANNEL_SET
 
 /** 取「普通对象」：null / 数组 / 标量一律视为无条目（手工编辑或损坏数据防御）。 */
 function plainObjectOf(value) {
@@ -306,7 +308,8 @@ function describeBadChannelValue(key, value) {
  *   getChannels/putChannel/testChannel/scanChannel/getMembers/putMember/deleteMember/
  *   confirmPendingMember/dismissPendingMember/mintPairingCode/revokePairingCode/getAudit/
  *   getPendingQuestions/settleQuestion
- *   （appendAudit 为内部函数不外露）
+ *   （appendAudit 门面供 pairing 等外部子系统落审计；本文件内部调用点一律走
+ *   auditGuard 兜底——审计失败绝不改变主流程返回值，G-05）
  */
 export function createAdminApi(options = {}) {
   const {
@@ -392,6 +395,24 @@ export function createAdminApi(options = {}) {
   }
 
   /**
+   * G-05（2026-08-28）：内部审计统一兜底入口，本文件所有 appendAudit 调用点一律经此。
+   * appendAudit 自身虽已吞错（磁盘满/权限异常只 warn），但调用点控制流同样不得依赖
+   * 审计成功——状态写入/裁决已生效的事实不能被可观测性副作用翻成异常：HTTP 层会把
+   * 裸异常映射 500，前端引导重试，重试命中 already-handled 再报错，内外状态认知分叉。
+   * 经 api.appendAudit 门面调用（与 pairing 等外部子系统同一入口，宿主/测试可整体替换
+   * 审计后端；api 在下方声明，本函数只在方法调用期执行，届时必已初始化）。任何抛错 →
+   * warn（stderr + host logger 双出口）后继续，绝不改变主流程返回值；各调用点各自经
+   * 此入口独立兜底，互不牵连。取舍：该次审计行缺失，降级以 warn 留痕换取结果如实。
+   */
+  const auditGuard = (action, detail) => {
+    try {
+      api.appendAudit(action, detail)
+    } catch (error) {
+      warn(`审计写入失败（action=${String(action ?? 'unknown')}，主流程结果不受影响）: ${errorMessage(error)}`)
+    }
+  }
+
+  /**
    * 通道行全集（overview 与 getChannels 共用）：出站 = CHANNEL_TYPES 全量 + 入站 =
    * INBOUND_CHANNELS 全量（telegram/feishu 等双向通道各出一行，direction 区分）。
    * 出行 enabled = channelsEnabled() 含 type；configured = enabled 或 store 有
@@ -412,11 +433,14 @@ export function createAdminApi(options = {}) {
         configured: dual ? isEnabled : (hasAccount(type) || isEnabled),
         enabled: isEnabled,
         editable: !dual,
+        // G-14（W12）：出站配置视图热/投递冷——出站恒「重启后生效」（投递层只在插件
+        // 下次启动时并入运行时：YAML ⊕ store 合并），UI 据此渲染警示角标。
+        restartRequired: true,
       })
     }
     for (const channel of INBOUND_CHANNELS) {
       const configured = hasAccount(channel)
-      rows.push({ type: channel, direction: 'inbound', configured, enabled: configured, editable: true })
+      rows.push({ type: channel, direction: 'inbound', configured, enabled: configured, editable: true, restartRequired: false })
     }
     return rows
   }
@@ -611,7 +635,7 @@ export function createAdminApi(options = {}) {
         }
       }
 
-      appendAudit('putBindings', {
+      auditGuard('putBindings', {
         agents: nextAgents === null ? null : Object.keys(nextAgents),
         channels: nextChannels === null ? null : Object.keys(nextChannels),
       })
@@ -710,7 +734,7 @@ export function createAdminApi(options = {}) {
       if (!callSetter(router?.setSessionOutbound, id, normalized)) {
         throw new ApiError(500, '会话覆盖写入存储失败')
       }
-      appendAudit('patchSession', { id, diff: normalized })
+      auditGuard('patchSession', { id, diff: normalized })
       const outbound = plainObjectOf(plainObjectOf(readTable(KEY_SESSIONS)[id])?.outbound)
       return { id, outbound: outbound === null ? undefined : deepCopyPlain(outbound) }
     },
@@ -823,7 +847,7 @@ export function createAdminApi(options = {}) {
       if (!callSetter(router?.setSessionControl, id, normalized)) {
         throw new ApiError(500, '会话控制覆盖写入存储失败')
       }
-      appendAudit('setSessionControl', { id, diff: controlSummary(normalized) })
+      auditGuard('setSessionControl', { id, diff: controlSummary(normalized) })
       const control = plainObjectOf(plainObjectOf(readTable(KEY_SESSIONS)[id])?.control)
       return { id, control: controlSummary(control) }
     },
@@ -838,8 +862,9 @@ export function createAdminApi(options = {}) {
      * 声明表、手写渠道读 FIELD_HINTS、入站通道读 INBOUND_FIELDS）——空 config 的通道
      * 也能渲染表单从零新建（§9-2「UI 建通道凭证」零 YAML）。
      * @returns {Array<{ type: string, direction: 'outbound'|'inbound', configured: boolean,
-     *   enabled: boolean, editable: boolean, config: object, fields: object }>}
-     *   行集合与 overview().channels 同构同序，多 config/fields/editable 字段。
+     *   enabled: boolean, editable: boolean, restartRequired: boolean, config: object, fields: object }>}
+     *   行集合与 overview().channels 同构同序，多 config/fields/editable/restartRequired 字段
+     *   （restartRequired：出站恒 true——投递冷，配置重启后才并入运行时，UI 据此标「重启后生效」）。
      */
     getChannels() {
       const yamlTable = yamlOutboundOf()
@@ -876,7 +901,9 @@ export function createAdminApi(options = {}) {
      * 数组/原始值对象（webhook.headers、wxpusher.uids 等真实形态）。
      * @param {string} type - 通道类型，必须 ∈ CHANNEL_TYPES ∪ INBOUND_CHANNELS。
      * @param {object} config - 非空普通对象，键必须在该通道字段白名单内。
-     * @returns {{ type: string, saved: boolean }} saved=false = 存储不可用/写入失败降级（不抛）。
+     * @returns {{ type: string, saved: boolean, restartRequired: boolean }} saved=false = 存储
+     *   不可用/写入失败降级（不抛）；restartRequired=出站恒 true（投递冷，G-14：UI 保存后
+     *   即时回显但须重启才并入运行时，据此提示「重启后生效」）。
      * @throws {ApiError} 422 type 非法、config 非非空普通对象、含 webhook/未知/保留键、
      *   或字段数/值形态超限。
      */
@@ -915,8 +942,11 @@ export function createAdminApi(options = {}) {
         warn(`通道凭证写入失败: ${errorMessage(error)}`)
         return { type, saved: false }
       }
-      appendAudit('putChannel', { type }) // 审计只记通道名，绝不落凭证内容
-      return { type, saved: true }
+      auditGuard('putChannel', { type }) // 审计只记通道名，绝不落凭证内容
+      // G-14（W12）：出站配置视图热/投递冷——返回 restartRequired 供 UI 即时提示「重启后生效」。
+      // 出站渠道恒 true（投递层下次启动才并入运行时）；双域通道（feishu/dingtalk）UI 表单写的是
+      // 入站机器人凭证域（出站 webhook 只读走 YAML），语义归入站 → false。
+      return { type, saved: true, restartRequired: OUTBOUND_SET.has(type) && !DUAL_INBOUND_DOMAIN.has(type) }
     },
 
     /**
@@ -956,7 +986,7 @@ export function createAdminApi(options = {}) {
       }
       const result = await handler()
       if (plainObjectOf(result) !== null && result.saved === true) {
-        appendAudit('scanChannel', { channel }) // 只记通道名，绝不落凭证内容
+        auditGuard('scanChannel', { channel }) // 只记通道名，绝不落凭证内容
       }
       return result
     },
@@ -1035,7 +1065,7 @@ export function createAdminApi(options = {}) {
       }
       const result = identity.updateBinding(parsed.channel, parsed.userId, normalized)
       if (result.ok !== true) throw new ApiError(404, `成员不存在：${parsed.raw}`)
-      appendAudit('putMember', { key: parsed.raw, diff: normalized })
+      auditGuard('putMember', { key: parsed.raw, diff: normalized })
       return { key: parsed.raw, saved: true, record: result.record }
     },
 
@@ -1061,7 +1091,7 @@ export function createAdminApi(options = {}) {
       }
       const result = identity.removeBinding(parsed.channel, parsed.userId)
       if (result.ok !== true) throw new ApiError(404, `成员不存在：${parsed.raw}`)
-      appendAudit('deleteMember', { key: parsed.raw, role: current.role })
+      auditGuard('deleteMember', { key: parsed.raw, role: current.role })
       return { key: parsed.raw, deleted: true }
     },
 
@@ -1081,7 +1111,7 @@ export function createAdminApi(options = {}) {
         if (result.reason === 'already-bound') throw new ApiError(409, `该身份已是成员：${parsed.raw}`)
         throw new ApiError(404, `待确认绑定不存在：${parsed.raw}`)
       }
-      appendAudit('confirmPending', { key: parsed.raw })
+      auditGuard('confirmPending', { key: parsed.raw })
       return { key: parsed.raw, confirmed: true, record: result.record }
     },
 
@@ -1098,7 +1128,7 @@ export function createAdminApi(options = {}) {
       if (parsed === null) throw new ApiError(422, MEMBER_KEY_HINT)
       const result = identity.dismissPending(parsed.channel, parsed.userId)
       if (result.ok !== true) throw new ApiError(404, `待确认绑定不存在：${parsed.raw}`)
-      appendAudit('dismissPending', { key: parsed.raw })
+      auditGuard('dismissPending', { key: parsed.raw })
       return { key: parsed.raw, dismissed: true }
     },
 
@@ -1234,7 +1264,11 @@ export function createAdminApi(options = {}) {
         throw new ApiError(409, '结算未生效（内部状态不可解释）')
       }
       const auditDetail = { ref, action, handled: result.handled === true }
-      appendAudit('settleQuestion',
+      // G-05（2026-08-28）：审计是可观测性副作用——裁决已在 Control Core 内生效，磁盘满/
+      // 权限异常不得把成功裁决翻成 500（前端会引导重试，重试命中 already-handled 再报错，
+      // 内外状态认知分叉）。auditGuard 独立兜底：审计写失败只 warn（stderr + host logger），
+      // 继续按已生效结果返回；代价是该次审计行缺失，降级必须在日志里可见。
+      auditGuard('settleQuestion',
         result.ok === true
           ? { ...auditDetail, settled: true }
           : { ...auditDetail, settled: false, reason: String(result.reason ?? 'unknown') })

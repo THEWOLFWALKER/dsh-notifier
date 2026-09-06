@@ -684,3 +684,27 @@ test('阶段2A：无待决问题/空响应时面板显示空态文案，不崩',
   await rig.loadAll()
   assert.match(rig.els.get('#pendingQuestionsPanel').innerHTML, /暂无待处理远程提问/, '空面板给出空态提示')
 })
+
+// ————————————————— ⑦ G-14（W12）：出站配置视图热/投递冷 —————————————————
+
+test('G-14：通道卡片角标——出站已配置标「重启后生效」（warn），入站已配置标「已配置」（ok），未配置标「未配置」', async () => {
+  const rig = boot()
+  rig.setToken('TKN')
+  // 出站行：restartRequired=true（投递冷——重启才并入运行时）；入站行：restartRequired=false
+  const outRow = { type: 'telegram', direction: 'outbound', configured: true, enabled: true, editable: true, restartRequired: true, config: { botToken: '***' }, fields: {} }
+  const inRow = { type: 'feishu', direction: 'inbound', configured: true, enabled: true, editable: true, restartRequired: false, config: { appId: '***' }, fields: {} }
+  const noneRow = { type: 'pushplus', direction: 'outbound', configured: false, enabled: false, editable: true, restartRequired: true, config: {}, fields: {} }
+  rig.setFetch(async (url) => {
+    if (url === '/api/channels') return resp(200, [outRow, inRow, noneRow])
+    if (url === '/api/overview') return resp(200, { channels: [outRow, inRow, noneRow], sessions: {}, agents: {}, members: { total: 0 } })
+    if (url === '/api/questions') return resp(200, [])
+    return resp(200, { ok: true })
+  })
+  await rig.loadAll()
+  const html = rig.els.get('#channelCards').innerHTML
+  // 出站已配置 → 显著「重启后生效」（视图热、投递冷：保存即时回显但须重启才并入运行时）
+  assert.match(html, /badge warn">重启后生效/, `出站已配置卡片应标「重启后生效」（实际：${html.slice(0, 200)}）`)
+  // 入站已配置 → 「已配置」；未配置 → 「未配置」
+  assert.match(html, /badge ok">已配置/, '入站已配置卡片应标「已配置」')
+  assert.match(html, /badge none">未配置/, '未配置卡片应标「未配置」')
+})

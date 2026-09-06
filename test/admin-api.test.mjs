@@ -123,18 +123,18 @@ test('overview：渠道三态分类（出站 enabled/有凭证/全无；双域�
   const rows = api.overview().channels
   const byType = (type, direction) => rows.find((row) => row.type === type && row.direction === direction)
   // 出站：已启用（凭证在 YAML）→ configured=true（enabled 兜底）、enabled=true、editable=true
-  assert.deepEqual(byType('telegram', 'outbound'), { type: 'telegram', direction: 'outbound', configured: true, enabled: true, editable: true })
+  assert.deepEqual(byType('telegram', 'outbound'), { type: 'telegram', direction: 'outbound', configured: true, enabled: true, editable: true, restartRequired: true })
   // 出站：有 `<type>:account`、未启用 → configured=true、enabled=false、editable=true
-  assert.deepEqual(byType('bark', 'outbound'), { type: 'bark', direction: 'outbound', configured: true, enabled: false, editable: true })
+  assert.deepEqual(byType('bark', 'outbound'), { type: 'bark', direction: 'outbound', configured: true, enabled: false, editable: true, restartRequired: true })
   // 出站：既无凭证也未启用 → 双 false
-  assert.deepEqual(byType('pushplus', 'outbound'), { type: 'pushplus', direction: 'outbound', configured: false, enabled: false, editable: true })
+  assert.deepEqual(byType('pushplus', 'outbound'), { type: 'pushplus', direction: 'outbound', configured: false, enabled: false, editable: true, restartRequired: true })
   // 双域出站（feishu/dingtalk）：`<type>:account` 键域归入站机器人凭证 → 出站行只认
   // YAML（configured=enabled），store 有凭证也不算已配置，且 editable=false（webhook 走 YAML bootstrap）
-  assert.deepEqual(byType('feishu', 'outbound'), { type: 'feishu', direction: 'outbound', configured: false, enabled: false, editable: false })
-  assert.deepEqual(byType('dingtalk', 'outbound'), { type: 'dingtalk', direction: 'outbound', configured: false, enabled: false, editable: false })
+  assert.deepEqual(byType('feishu', 'outbound'), { type: 'feishu', direction: 'outbound', configured: false, enabled: false, editable: false, restartRequired: true })
+  assert.deepEqual(byType('dingtalk', 'outbound'), { type: 'dingtalk', direction: 'outbound', configured: false, enabled: false, editable: false, restartRequired: true })
   // 入站：有 `<channel>:account` → 双 true；无 → 双 false；editable 恒 true（扫码/表单可写）
-  assert.deepEqual(byType('feishu', 'inbound'), { type: 'feishu', direction: 'inbound', configured: true, enabled: true, editable: true })
-  assert.deepEqual(byType('qq', 'inbound'), { type: 'qq', direction: 'inbound', configured: false, enabled: false, editable: true })
+  assert.deepEqual(byType('feishu', 'inbound'), { type: 'feishu', direction: 'inbound', configured: true, enabled: true, editable: true, restartRequired: false })
+  assert.deepEqual(byType('qq', 'inbound'), { type: 'qq', direction: 'inbound', configured: false, enabled: false, editable: true, restartRequired: false })
 })
 
 test('overview：sessions active/total 与 agents.keys 计数', () => {
@@ -599,7 +599,7 @@ test('putChannel 422：双域通道携带 webhook 键 → 拒绝（键域归入�
   assert.throws(() => api.putChannel('feishu', { webhook: 'https://open.feishu.cn/hook/x' }), apiErrorOf(422))
   assert.throws(() => api.putChannel('dingtalk', { webhook: 'https://oapi.dingtalk.com/x', secret: 's' }), apiErrorOf(422))
   // 非双域渠道的 webhook 键合法（slack 本就是 webhook 型 spec 渠道）
-  assert.deepEqual(api.putChannel('slack', { webhook: 'https://hooks.slack.com/x' }), { type: 'slack', saved: true })
+  assert.deepEqual(api.putChannel('slack', { webhook: 'https://hooks.slack.com/x' }), { type: 'slack', saved: true, restartRequired: true })
   // 被拒的写入不落盘不审计：扫码凭证原样保留
   assert.deepEqual(store.get('feishu:account'), { appId: 'a', appSecret: 's' })
   assert.deepEqual(api.getAudit().map((row) => row.action), ['putChannel'])
@@ -607,7 +607,8 @@ test('putChannel 422：双域通道携带 webhook 键 → 拒绝（键域归入�
 
 test('putChannel：双域通道写机器人凭证键（appId/appKey）合法（UI 表单 → 入站扫码域同键）', () => {
   const { api, store } = makeApi()
-  assert.deepEqual(api.putChannel('dingtalk', { appKey: 'k', appSecret: 's' }), { type: 'dingtalk', saved: true })
+  // 双域通道 UI 写的是入站机器人凭证域 → restartRequired=false（出站 webhook 只读走 YAML）
+  assert.deepEqual(api.putChannel('dingtalk', { appKey: 'k', appSecret: 's' }), { type: 'dingtalk', saved: true, restartRequired: false })
   assert.deepEqual(store.get('dingtalk:account'), { appKey: 'k', appSecret: 's' })
 })
 
@@ -619,7 +620,7 @@ test('wxpusher accountId：管理台允许非密账号标识并与既有凭证�
   assert.equal(outbound.fields.accountId.secret, false)
   assert.equal(inbound.fields.accountId.required, false)
   assert.match(inbound.fields.accountId.desc, /多账号/)
-  assert.deepEqual(api.putChannel('wxpusher', { accountId: 'primary' }), { type: 'wxpusher', saved: true })
+  assert.deepEqual(api.putChannel('wxpusher', { accountId: 'primary' }), { type: 'wxpusher', saved: true, restartRequired: true })
   assert.deepEqual(store.get('wxpusher:account'), { appToken: 'tok', uids: ['u1'], accountId: 'primary' })
 })
 
@@ -650,14 +651,36 @@ test('putChannel：422（未知类型/空对象/非对象）与落盘读回（�
   assert.throws(() => api.putChannel('bark', { key: 'x'.repeat(9 * 1024) }), apiErrorOf(422)) // 值超 8KB
   assert.throws(() => api.putChannel('wechat', { token: 'w' }), apiErrorOf(422)) // 扫码专用，禁手工
   // 白名单字段（含公共端点键 timeoutMs）可写，落盘可原样读回
-  assert.deepEqual(api.putChannel('telegram', { botToken: 't', chatId: 'c', timeoutMs: 5000 }), { type: 'telegram', saved: true })
+  assert.deepEqual(api.putChannel('telegram', { botToken: 't', chatId: 'c', timeoutMs: 5000 }), { type: 'telegram', saved: true, restartRequired: true })
   assert.deepEqual(store.get('telegram:account'), { botToken: 't', chatId: 'c', timeoutMs: 5000 })
   // 双向同域通道：入站字段表同在白名单（telegram.botToken 出入站共用）
-  assert.deepEqual(api.putChannel('wxpusher', { appToken: 'a', uids: ['UID_1', 'UID_2'] }), { type: 'wxpusher', saved: true })
+  assert.deepEqual(api.putChannel('wxpusher', { appToken: 'a', uids: ['UID_1', 'UID_2'] }), { type: 'wxpusher', saved: true, restartRequired: true })
   assert.deepEqual(store.get('wxpusher:account'), { appToken: 'a', uids: ['UID_1', 'UID_2'] })
   const audit = api.getAudit()
   assert.deepEqual(audit.map((row) => row.action), ['putChannel', 'putChannel'])
   assert.deepEqual(audit[0].detail, { type: 'wxpusher' }) // 审计只记通道名，不落凭证
+})
+
+// ———————— G-14（W12）：出站配置视图热/投递冷 ————————
+
+test('G-14：getChannels 出站行恒 restartRequired=true、入站行 false（UI 据此标「重启后生效」）', () => {
+  const { api } = makeApi({ enabled: ['telegram'] })
+  const rows = api.getChannels()
+  const byType = (type, direction) => rows.find((row) => row.type === type && row.direction === direction)
+  // 出站：全部渠道（含双域出站行）恒 true——投递层只在插件下次启动并入运行时
+  for (const type of CHANNEL_TYPES) {
+    assert.equal(byType(type, 'outbound').restartRequired, true, `${type} 出站行 restartRequired 必须 true`)
+  }
+  // 入站：恒 false——凭证保存即下次启动启用/重连，语义近似热
+  for (const channel of INBOUND_CHANNELS) {
+    assert.equal(byType(channel, 'inbound').restartRequired, false, `${channel} 入站行 restartRequired 必须 false`)
+  }
+})
+
+test('G-14：putChannel 返回值带 restartRequired——出站 true、双域入站凭证域 false', () => {
+  const { api } = makeApi()
+  assert.deepEqual(api.putChannel('bark', { key: 'k' }), { type: 'bark', saved: true, restartRequired: true })
+  assert.deepEqual(api.putChannel('feishu', { appId: 'a', appSecret: 's' }), { type: 'feishu', saved: true, restartRequired: false })
 })
 
 // ———————— testChannel / scanChannel ————————

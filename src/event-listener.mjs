@@ -3,6 +3,7 @@
 // 统一走 notifyAll 广播。防抖：turn/end 按 session 做尾沿 10s 合并（同 session 不刷屏）；
 // approval/asked 与 agent/error 即时推送。dedup：按 session.id:seq / agent.id:turn:step 去重（24h）。
 
+import { createHash } from 'node:crypto'
 import { basename } from 'node:path'
 import { createKeywordFilter, createGraceQueue } from './rules.mjs'
 import { createHostEventRegistrar, normalizeSessionEventArgs } from './host-events.mjs'
@@ -10,11 +11,18 @@ import { createHostEventRegistrar, normalizeSessionEventArgs } from './host-even
 import { createTurnTracker } from './status/turn-tracker.mjs'
 import { normalizeInbound, buildActionPayload } from './inbound/_contract.mjs'
 import { guardTargets } from './inbound/target-guard.mjs'
+// S-05（CWE-200）出站片段脱敏：minimal（默认）打码密钥形态 + 摘录降为 80 字符
+import { maskSecrets, normalizeRedaction, MINIMAL_EXCERPT_CHARS } from './redact.mjs'
 
 /** 取会话所属工作区名：cwd 末段，否则 session id。 */
 export function workspaceNameOf(session) {
   const cwd = session?.header?.cwd
   return cwd !== undefined && typeof cwd === 'string' && cwd.length > 0 ? basename(cwd) : String(session?.id ?? '')
+}
+
+/** G-18：6 位十六进制负载摘要（dedup 键追加用，与 wxpusher hash6 同法）。 */
+function hash6(value) {
+  return createHash('sha256').update(String(value ?? '')).digest('hex').slice(0, 6)
 }
 
 /** 取会话日志里最后一条 assistant/message 的文本块。 */
@@ -90,12 +98,24 @@ export function intentOfAgentError(payload = {}) {
   return { event: 'agent/error', kind: 'error', headline: '❌ Agent 执行出错', level: 'timeSensitive', detail }
 }
 
-/** 组装最终通知消息：标题前缀 + 正文截断（summaryMaxChars）。 */
+/**
+ * 组装最终通知消息：标题前缀 + 正文截断（summaryMaxChars）。
+ * S-05：redaction: 'minimal'（默认）下，宿主会话数据片段（assistantText 摘录 / 错误全文）
+ * 先打码密钥形态、摘录压到 MINIMAL_EXCERPT_CHARS（80）；'extended' 维持原行为。
+ * 摘录上限只作用于「宿主数据片段」，intent.detail（自家文案）不额外截短——
+ * 总正文仍受 summaryMaxChars（默认 500）钳制。
+ */
 export function intentToMessage(intent, { assistantText = '', config = {} } = {}) {
   const prefix = typeof config.titlePrefix === 'string' ? config.titlePrefix.trim() : ''
   const title = `${prefix.length > 0 ? `${prefix} ` : ''}${intent.headline}`
+  const minimal = normalizeRedaction(config.redaction) === 'minimal'
+  let excerpt = assistantText
+  if (minimal && excerpt.length > MINIMAL_EXCERPT_CHARS) {
+    excerpt = excerpt.slice(-MINIMAL_EXCERPT_CHARS) // 尾沿：结论通常在最后
+  }
   let content = intent.detail
-  if (assistantText.length > 0) content = content.length > 0 ? `${content}\n\n---\n${assistantText}` : assistantText
+  if (excerpt.length > 0) content = content.length > 0 ? `${content}\n\n---\n${excerpt}` : excerpt
+  if (minimal) content = maskSecrets(content)
   const maxChars = typeof config.summaryMaxChars === 'number' && Number.isFinite(config.summaryMaxChars)
     ? Math.max(0, Math.trunc(config.summaryMaxChars))
     : 500
@@ -302,7 +322,11 @@ export function createEventListener(ctx, notifier, resolvedConfig, wiring = {}) 
     if (intent.event === 'stall') {
       lines.push('长工具执行可能误报；可回复 /stop 取消，或调大 events.stall.afterMs')
     } else {
-      const excerpt = lastAssistantText(session).slice(-200).trim()
+      // S-05：minimal（默认）摘录 200→80 + 密钥形态打码；extended 维持原文
+      const minimal = normalizeRedaction(resolvedConfig.redaction) === 'minimal'
+      const cap = minimal ? MINIMAL_EXCERPT_CHARS : 200
+      let excerpt = lastAssistantText(session).slice(-cap).trim()
+      if (minimal) excerpt = maskSecrets(excerpt)
       if (excerpt !== '') lines.push(`最近输出：${excerpt}`)
       lines.push('回复 /stop 取消')
     }
@@ -423,7 +447,11 @@ export function createEventListener(ctx, notifier, resolvedConfig, wiring = {}) 
     const intent = intentOfSessionEvent(event)
     if (intent === undefined) return
     if (!eventAllowed(intent)) return
-    const key = `${session.id ?? '(anon)'}:${event.seq ?? 0}`
+    // G-18：approval/asked 即时推送键追加负载摘要（hash6(detail)——detail 由 toolName/
+    // reason 构成）。宿主重放（同 session 同 seq）但负载不同（先请 toolA 后请 toolB）时
+    // 不再互吞；turn 类维持现状——同 seq 即同一事件，负载不参与判定。
+    const base = `${session.id ?? '(anon)'}:${event.seq ?? 0}`
+    const key = intent.event === 'approval/asked' ? `${base}:${hash6(intent.detail)}` : base
     if (!dedup.test(key)) return
     if (intent.event === 'turn/end' || intent.event === 'turn/start') {
       // turn/end 与 turn/start 共用同一防抖 key（session.id）：10s 内 start→end 连续

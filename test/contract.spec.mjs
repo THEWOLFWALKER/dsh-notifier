@@ -15,6 +15,10 @@ import { dirname, join } from 'node:path'
 import { ADAPTERS, normalizeMessage, maskChannelConfig } from '../src/config.mjs'
 import { NotifyError } from '../src/adapters/_shared.mjs'
 
+// S-02：urlguard DNS 恒公网夹具——契约 fixture 用 .example.com 假域名（保留 TLD 永不
+// 解析），不夹具则契约测试打真网 ENOTFOUND。夹具后域名路径稳定解析公网，fetch 仍是本文件的 mock。
+import './helpers/urlguard-public.mjs'
+
 const fixturesDir = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'channels')
 // 只取「渠道契约测试形状」的 fixture：倒数第二章节固定要求 type + validConfig + 等实现字段。
 // test/fixtures/channels/ 同目录还存放 protocol-preflight 的纯协议证据片段（无 type / 无

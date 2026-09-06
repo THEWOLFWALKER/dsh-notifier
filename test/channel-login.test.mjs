@@ -203,6 +203,16 @@ test('feishuRegister：成功 → ok + appId + openId + feishu:account 落盘含
   assert.deepEqual(options.addons.callbacks, { items: ['card.action.trigger'] })
 })
 
+test('feishuRegister：timeoutMs 非法（-5）不再静默变「立即超时」——回退默认 480s 并出声（G-55）', async () => {
+  const store = makeStore()
+  const fake = makeFakeSdk()
+  const logs = []
+  const result = await feishuRegister({ store, sdkLoader: fake.loader, timeoutMs: -5, log: (m) => logs.push(m) })
+  assert.equal(result.status, 'ok', '用户手填配置非法不炸 CLI：成功路径照常走完')
+  assert.ok(logs.some((line) => line.includes('扫码超时配置非法')), '必须出声指出配置问题')
+  assert.ok(logs.some((line) => line.includes('480s')), '说明已回退默认值')
+})
+
 test('feishuRegister：缺包（loader reject Cannot find package）→ missing-sdk + 安装指引', async () => {
   const store = makeStore()
   const loader = async () => { throw moduleMissingError('@larksuiteoapi/node-sdk') }

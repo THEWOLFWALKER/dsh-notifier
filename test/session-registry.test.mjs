@@ -285,6 +285,74 @@ test('定时兜底：dispose 后 ttl 到期点自动回收（短 ttl 注入）',
   registry.dispose()
 })
 
+// ---- G-47（W12）：出站覆盖行 30d TTL + 摘除保留出站覆盖字段 ----
+
+test('G-47 线 1：无 disposedAt 的出站覆盖行——30d 不活跃即清；30d 内与宿主活跃的覆盖绝不误删', () => {
+  // 基准用真实 epoch 毫秒量级：lastActiveAt = t - 31d 必须仍是正数（负时间戳会被
+  // 实现当作「无时间戳」走首见兜底，30d 判定不成立——见 sweepAll 的 ageAt 分支）
+  const t = 1_700_000_000_000
+  const DAY = 24 * 60 * 60 * 1000
+  const seeded = makeStore({
+    'route:sessions': {
+      // /quiet、管理台覆盖配置的落点：会话已不存在（无 disposedAt），仅剩 outbound 覆盖行
+      staleOverlay: { outbound: { channels: ['bark'], quiet: true }, createdAt: t - 31 * DAY, lastActiveAt: t - 31 * DAY },
+      recentOverlay: { outbound: { channels: ['qq'], quiet: true }, createdAt: t - 10 * DAY, lastActiveAt: t - 10 * DAY },
+      liveOverlay: { outbound: { channels: ['feishu'], quiet: true }, createdAt: t - 31 * DAY, lastActiveAt: t - 31 * DAY },
+      activeSession: { inherit: 'w', workspace: 'w', createdAt: t - 5 * DAY, lastActiveAt: t - 5 * DAY },
+    },
+  })
+  const { registry, clock } = makeRegistry({ store: seeded, agents: [{ id: 'liveOverlay' }], sweepEveryMs: Number.MAX_SAFE_INTEGER })
+  clock.t = t // 基准时钟推到播种时间域：nowMs - ageAt 才是真实年龄（注册表时钟默认 1e6 会算出负年龄）
+  assert.deepEqual(registry.sweep(), ['staleOverlay'], '仅回收 30d 不活跃的覆盖行')
+  assert.equal(registry.getSession('staleOverlay'), undefined)
+  assert.ok(registry.getSession('recentOverlay') !== undefined, '30d 内活跃：保留')
+  assert.ok(registry.getSession('liveOverlay') !== undefined, '宿主 agents.list 活跃：绝不误删（护栏）')
+  assert.ok(registry.getSession('activeSession') !== undefined, '无 outbound 的普通会话：永不触碰')
+})
+
+test('G-47 线 1 兜底：无时间戳纯覆盖行（agent-router 直写形态）首见登记起算 30d，到期回收', () => {
+  const t = 1_700_000_000_000
+  const DAY = 24 * 60 * 60 * 1000
+  const seeded = makeStore({
+    'route:sessions': {
+      bareOverlay: { outbound: { quiet: true } }, // agent-router 直写：无 createdAt/lastActiveAt
+    },
+  })
+  const { registry, clock } = makeRegistry({ store: seeded, sweepEveryMs: Number.MAX_SAFE_INTEGER })
+  assert.ok(registry.getSession('bareOverlay') !== undefined, '首见只登记起算点，不立即清')
+  clock.t += 31 * DAY
+  assert.deepEqual(registry.sweep(), ['bareOverlay'])
+  assert.equal(registry.getSession('bareOverlay'), undefined)
+})
+
+test('G-47 线 2：disposed 会话到期摘除但保留出站覆盖字段——行瘦身为纯覆盖行，静默配置不随回收丢失', () => {
+  const t = 1_700_000_000_000
+  const DAY = 24 * 60 * 60 * 1000
+  const seeded = makeStore({
+    'route:sessions': {
+      gone: {
+        inherit: 'w', workspace: 'w', createdAt: 0, lastActiveAt: 0, disposedAt: t - 40_000,
+        outbound: { channels: ['bark'], quiet: true }, // 用户的静默配置：不得随会话回收丢失
+      },
+    },
+  })
+  const { registry, clock, raw } = makeRegistry({ store: seeded, ttlHours: 0.01, sweepEveryMs: Number.MAX_SAFE_INTEGER })
+  clock.t = t // 基准时钟推到播种时间域：disposedAt = t-40s 才落在 ttl（36s）之外（默认 1e6 会算成未到期）
+  assert.deepEqual(registry.sweep(), ['gone'], '会话到期从台账摘除（返回值含该 id）')
+  const slim = raw().gone
+  assert.deepEqual(slim.outbound, { channels: ['bark'], quiet: true }, '出站覆盖字段保留')
+  assert.equal(slim.disposedAt, undefined, '会话字段（disposedAt）已摘除')
+  assert.equal(slim.workspace, undefined, '会话字段（workspace）已摘除')
+  assert.equal(slim.inherit, undefined, '会话字段（inherit）已摘除')
+  const view = registry.getSession('gone')
+  assert.deepEqual(view.outbound, { channels: ['bark'], quiet: true }, '台账视角：剩余纯覆盖行仍可读')
+  assert.equal(view.disposedAt, undefined)
+  // 瘦身后的纯覆盖行再走线 1 的 30d 覆盖行 TTL：时钟推过 30d → 第二次 sweep 清干净
+  clock.t += 31 * DAY
+  assert.deepEqual(registry.sweep(), ['gone'], '纯覆盖行 30d 后回收')
+  assert.equal(raw().gone, undefined)
+})
+
 // ---- inbound 挂钩 ----
 
 test('attachInbound/detachInbound：去重追加、移除、摘空删键、未知会话惰性建档', () => {

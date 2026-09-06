@@ -2,13 +2,62 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { segmentText, countCodepoints, sendSegmented } from '../src/inbound/segment.mjs'
+import { segmentText, countCodepoints, sendSegmented, splitByCodePoints } from '../src/inbound/segment.mjs'
+
+// 孤立代理项探测器（实现无关，纯 Unicode 断言）：高代理后无低代理 / 低代理前无高代理。
+// 注意第二个字符类区间是 \uDC00-\uDFFF（低代理区）。
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/
 
 test('countCodepoints：代理对按 1 计（😀 = 1 码点）', () => {
   assert.equal(countCodepoints('abc'), 3)
   assert.equal(countCodepoints('你好'), 2)
   assert.equal(countCodepoints('a😀b'), 3) // 不是 4（UTF-16 两个 code unit）
   assert.equal(countCodepoints(null), 0)
+})
+
+test('splitByCodePoints：星体平面字符（🀄/𝕏）按码点切块，块边界绝不产生孤立代理项', () => {
+  // 🀄=U+1F004、𝕏=U+1D54F 均为星体平面（UTF-16 代理对）。size=2 时旧码元 slice
+  // 会在第 2/4 码元处切开代理对（'a🀄b𝕏c'.slice(0,2) = 'a' + 孤立高代理）。
+  const chunks = splitByCodePoints('a🀄b𝕏c', 2)
+  assert.deepEqual(chunks, ['a🀄', 'b𝕏', 'c'])
+  assert.equal(chunks.join(''), 'a🀄b𝕏c')
+  for (const chunk of chunks) {
+    assert.equal(LONE_SURROGATE.test(chunk), false, `块含孤立代理项: ${JSON.stringify(chunk)}`)
+  }
+})
+
+test('splitByCodePoints：任意块大小逐块扫描——拼接无损且无孤立代理项（属性式）', () => {
+  const text = '🀄'.repeat(9) + '𝕏'.repeat(3) + '中🙂文'
+  for (let size = 1; size <= 12; size += 1) {
+    const chunks = splitByCodePoints(text, size)
+    assert.equal(chunks.join(''), text, `size=${size} 拼接必须无损`)
+    for (const chunk of chunks) {
+      assert.equal(LONE_SURROGATE.test(chunk), false, `size=${size} 块含孤立代理项: ${JSON.stringify(chunk)}`)
+      assert.ok(Array.from(chunk).length <= size, `size=${size} 块超预算`)
+    }
+  }
+})
+
+test('splitByCodePoints：ZWJ 序列（🏳️‍🌈）跨界拆成完整码点——可接受降级且不产生非法序列', () => {
+  const flag = '🏳️‍🌈' // U+1F3F3 U+FE0F U+200D U+1F308 = 4 个码点
+  assert.equal(countCodepoints(flag), 4)
+  const chunks = splitByCodePoints(flag + flag + flag, 5) // 边界必然落在序列中间
+  assert.equal(chunks.join(''), flag + flag + flag)
+  for (const chunk of chunks) {
+    assert.equal(LONE_SURROGATE.test(chunk), false, 'ZWJ 序列被拆也不得产生孤立代理项（拆的是完整码点）')
+  }
+})
+
+test('splitByCodePoints：边界语义——空串 []、短文整段、非法步长退化整段（绝不死循环）', () => {
+  assert.deepEqual(splitByCodePoints('', 10), [])
+  assert.deepEqual(splitByCodePoints(null, 3), [])
+  assert.deepEqual(splitByCodePoints('abc', 10), ['abc'])
+  assert.deepEqual(splitByCodePoints('abc', 3), ['abc'])
+  // size=0 在旧码元循环（i += size）是死循环；helper 退化为整段（与 segmentText 退化语义一致）
+  assert.deepEqual(splitByCodePoints('abc', 0), ['abc'])
+  assert.deepEqual(splitByCodePoints('abc', -2), ['abc'])
+  assert.deepEqual(splitByCodePoints('abc', undefined), ['abc'])
+  assert.deepEqual(splitByCodePoints('abc', 2.9), ['ab', 'c'], '非整数步长向下取整')
 })
 
 test('segmentText：短文本单段返回且不加前缀（零开销）', () => {

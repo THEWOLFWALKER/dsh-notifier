@@ -52,4 +52,4 @@ The repository archive may include contributor-only files such as `HANDOFF.md`, 
 - Run the full test suite and update `dshQuality.testCount` only from the actual runner summary.
 - Synchronize README release badges/body and `HANDOFF.md` release count references; label any unreleased development baseline separately.
 - Run the release guard and channel matrix check.
-- Record the final commit, package version, npm registry version, and any real-device gap in `docs/memory/project-state.md`.
+- Record the final commit, package version, npm registry version, and any real-device gap in `HANDOFF.md` or `CHANGELOG.md`.

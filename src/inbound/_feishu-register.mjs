@@ -9,6 +9,8 @@
 // missing-sdk + 中文指引，绝不 throw（与 feishu-bot.mjs 缺包降级模式一致）；
 // 结果对象形态由 scripts/channel-login.mjs 的 loginFeishu 消费（status/appId/openId/message）。
 
+import { normalizeTtlMs } from '../adapters/_tokens.mjs'
+
 const SDK_PACKAGE = '@larksuiteoapi/node-sdk'
 const MIN_SDK_VERSION = '1.61.1'
 const ACCOUNT_KEY = 'feishu:account'
@@ -156,9 +158,18 @@ export async function feishuRegister({ store, onQr, timeoutMs = 480000, logger, 
     return { status: 'ok', appId, openId }
   })()
 
+  // G-55：本地配置超时与上游 TTL 同一归一方向——非法值（非有限/≤0）不再静默变
+  // 「立即超时」（Math.max(0, x || 0) 的老坑）。这里是用户手填的配置而非上游响应，
+  // 不抛错炸 CLI：回退默认 480s 并出声，钳制 [1s, 7d]。
+  let scanTimeoutMs = 480000
+  try {
+    scanTimeoutMs = normalizeTtlMs(timeoutMs, 'timeoutMs')
+  } catch (error) {
+    emitLog(`扫码超时配置非法（${error instanceof Error ? error.message : String(error)}），已回退默认 480s`)
+  }
   let timer = null
   const timeout = new Promise((resolve) => {
-    timer = setTimeout(() => { timedOut = true; resolve(null) }, Math.max(0, Number(timeoutMs) || 0))
+    timer = setTimeout(() => { timedOut = true; resolve(null) }, scanTimeoutMs)
   })
   try {
     // race 先到先得；work 的迟到 rejection 由 race 内部吸收，不会产生 unhandledRejection

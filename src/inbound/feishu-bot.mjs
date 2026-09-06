@@ -13,9 +13,17 @@
 
 import { buildApprovalAction, buildQuestionAction, parseApprovalAction, parseActionPayload, parseQuestionAction } from './_contract.mjs'
 import { resolveNotifyTargets } from './target-guard.mjs'
+import { stripCommandMention, stripLeadingMention } from './commands.mjs'
+import { verdictFailureText } from './verdict-text.mjs'
 
 const DEFAULT_DOMAIN = 'https://open.feishu.cn'
 const SDK_PACKAGE = '@larksuiteoapi/node-sdk'
+
+// G-17：飞书卡片 TTL 兜底（对齐 TG refs DEFAULT_TTL_MS 15min）。升级前在途卡片缺
+// srcChat/iat 时兼容放行——TG 侧由 ref TTL 15min 天然封顶，飞书侧此前无等价约束，
+// 旧卡片可被无限转发点击（跨会话裁决窗口无上限）。卡片 value 增带 iat 后窗口封顶，
+// 两渠道强度对称。
+const CARD_TTL_MS = 15 * 60 * 1000
 
 /**
  * 解析并校验 inbound.feishu 配置。
@@ -44,12 +52,43 @@ export function resolveFeishuInboundConfig(raw, { envRefs = (v) => v, credential
   }
 }
 
-/** 从文本消息 content 里提取净文本（剥 @提及占位 @_user_N）。 */
-function extractText(content) {
+/**
+ * 从文本消息 content 里提取净文本（G-25：@提及占位 @_user_N 依据事件 mentions 映射「还原」为 @名字）。
+ *
+ * 飞书文本消息把 @提及 压成不透明占位符 @_user_N，真名放在事件 message.mentions[] 里
+ * （官方《接收消息内容结构》：mentions[].key = '@_user_N'，mentions[].name = 展示名；
+ * id 为 open_id 对象或字符串两种 schema 均有，此处只用 key/name）。旧实现把占位符
+ * 直接删成空串：
+ *   - '帮我提醒 @_user_2 开会' → '帮我提醒  开会'（连续双空格 + 谁被 @ 的语义全丢）
+ *   - '/pair @_user_1 code'    → '/pair  code'（占位符虽被 parseCommand 的 \s+ 分词吸收，
+ *     但消息里 @ 了谁这一信息彻底丢失）
+ *
+ * 【还原 vs 剥离——与 TG/钉钉的策略差异】飞书是「还原语义」不是「剥离」：TG/钉钉的 @ 是
+ * 字面文本、渠道不带任何元数据，只能按形态剥（stripCommandMention/stripLeadingMention）；
+ * 飞书有结构化 mentions 映射，能把不透明占位符还原成可读 '@名字'，保住「谁被提到」的语义，
+ * 双空格随之消失。还原后才做通用的「行首机器人提及 = 寻址噪音」剥离（见 handleMessage）——
+ * 那是所有渠道共用的寻址噪音规则，与这里的还原不冲突。
+ *
+ * mentions 缺失或该占位符不在映射里 → 退回旧行为（删成空串）：事件不带 mentions 时无从
+ * 还原，宁可丢名字也不留 '@_user_1' 这种对用户无意义的占位符残片。
+ *
+ * @param {string} content - message.content（JSON 字符串，形如 {"text":"@_user_1 hi"}）
+ * @param {Array<{key?: string, name?: string}>} [mentions] - 事件 message.mentions
+ * @returns {string} 还原/剥离占位符后的净文本（trim 过）
+ */
+function extractText(content, mentions = []) {
   try {
     const parsed = JSON.parse(content ?? '')
     const text = typeof parsed?.text === 'string' ? parsed.text : ''
-    return text.replace(/@_user_\d+/g, '').trim()
+    if (text === '') return ''
+    const byKey = new Map()
+    for (const mention of Array.isArray(mentions) ? mentions : []) {
+      const key = String(mention?.key ?? '')
+      const name = String(mention?.name ?? '').trim()
+      if (key !== '' && name !== '') byKey.set(key, `@${name}`)
+    }
+    if (byKey.size === 0) return text.replace(/@_user_\d+/g, '').trim()
+    return text.replace(/@_user_\d+/g, (placeholder) => byKey.get(placeholder) ?? '').trim()
   } catch {
     return ''
   }
@@ -84,13 +123,13 @@ function buildCard({ title, content, approvalKey, token, chatId }) {
             tag: 'button',
             text: { tag: 'plain_text', content: '✅ 批准（本次）' },
             type: 'primary',
-            value: { act: buildApprovalAction('allowed-once', approvalKey, token), srcChat: String(chatId ?? '') },
+            value: { act: buildApprovalAction('allowed-once', approvalKey, token), srcChat: String(chatId ?? ''), iat: Date.now() },
           },
           {
             tag: 'button',
             text: { tag: 'plain_text', content: '❌ 拒绝' },
             type: 'danger',
-            value: { act: buildApprovalAction('rejected', approvalKey, token), srcChat: String(chatId ?? '') },
+            value: { act: buildApprovalAction('rejected', approvalKey, token), srcChat: String(chatId ?? ''), iat: Date.now() },
           },
         ],
       },
@@ -143,7 +182,7 @@ function buildQuestionCard({ title, content, qKey, token, options = [], chatId }
     tag: 'button',
     text: { tag: 'plain_text', content: `${idx + 1}. ${String(label).slice(0, 30)}` },
     type: 'default',
-    value: { act: buildQuestionAction(qKey, String(idx), token), srcChat: String(chatId ?? '') },
+    value: { act: buildQuestionAction(qKey, String(idx), token), srcChat: String(chatId ?? ''), iat: Date.now() },
   }))
   return {
     config: { wide_screen_mode: true },
@@ -170,7 +209,7 @@ function buildActionCard({ title, content, actions: buttons = [], chatId }) {
       text: { tag: 'plain_text', content: button.label },
       type: 'danger',
       // v0.8.4 F-08：动作卡同样嵌入来源会话（srcChat），callback 侧比对点击会话
-      value: { act: button.data, srcChat: String(chatId ?? '') },
+      value: { act: button.data, srcChat: String(chatId ?? ''), iat: Date.now() },
     }))
   return {
     config: { wide_screen_mode: true },
@@ -250,9 +289,22 @@ export function createFeishuInbound({ config, bus, fallbackTargets = [], logger 
       const openId = String(data?.sender?.sender_id?.open_id ?? '')
       const messageId = String(message.message_id ?? '')
       if (messageId === '' || openId === '') return
-      const text = String(message.message_type ?? '') === 'text'
-        ? extractText(message.content)
-        : `[不支持的消息类型：${message.message_type ?? 'unknown'}]`
+      const isText = String(message.message_type ?? '') === 'text'
+      if (!isText) {
+        // G-26：非文本消息静默忽略 + 回执，不再注入占位符文本——占位符会进 agent
+        // 语境被当指令解读（注入面）。回执尽力而为，失败只 warn。
+        const chatId = String(message.chat_id ?? openId)
+        if (client !== null) {
+          client.im.v1.message.create({
+            params: { receive_id_type: receiveIdTypeOf(chatId) },
+            data: { receive_id: chatId, msg_type: 'text', content: JSON.stringify({ text: '暂不支持该消息类型' }) },
+          }).catch((error) => {
+            warn(`非文本回执发送失败: ${error instanceof Error ? error.message : String(error)}`)
+          })
+        }
+        return
+      }
+      const text = stripCommandMention(stripLeadingMention(extractText(message.content, message.mentions)))
       if (text === '') return
       // bus 白名单 + 去重在 bus 层完成；本层只负责规范化 envelope。
       // v0.7：chat_type 透传（/pair 私聊判定）；accept 返回值消费——拒绝/命令回执不再已读不回
@@ -398,6 +450,17 @@ export function createFeishuInbound({ config, bus, fallbackTargets = [], logger 
     try {
       const value = data?.action?.value ?? {}
       const raw = typeof value.act === 'string' ? value.act : ''
+      // G-17：卡片 TTL 校验（与 TG refs 15min 对称）。带 iat 的新卡超过窗口即拒绝——
+      // 转发点击跨会话裁决的兼容放行窗口封顶；缺 iat（升级前在途）warn 后兼容放行，
+      // 与 srcChat 缺省策略一致（升级瞬间的在途卡片最多 15min 内自然衰减）。
+      if (typeof value.iat === 'number') {
+        if (Date.now() - value.iat > CARD_TTL_MS) {
+          warn(`卡片已过期（iat=${value.iat}，TTL=${CARD_TTL_MS}ms）: ${raw.slice(0, 48)}`)
+          return { toast: { type: 'info', content: '该操作已处理或已过期（请回桌面处理）' } }
+        }
+      } else {
+        warn('卡片回调缺少签发时间（iat），跳过 TTL 校验（升级前在途卡片兼容）')
+      }
       const action = parseActionPayload(raw)
       // v0.5 动作按钮：ac:<actionKey>:<token>（actions 注入时才处理）
       if (action !== null) {
@@ -414,7 +477,7 @@ export function createFeishuInbound({ config, bus, fallbackTargets = [], logger 
           chatId: clickedChatOf(data),
           chatType: data?.context?.open_chat_type ?? data?.chat_type,
         })
-        const text = result?.message ?? '该操作已处理或已过期'
+        const text = result?.message ?? verdictFailureText(result?.reason, 'approval', '该操作已处理或已过期')
         patchResolvedCard(data, buildActionResolvedCard(`${text}（来源：飞书用户 ${data?.operator?.open_id ?? '?'}）`), `${text}（来源：飞书用户 ${data?.operator?.open_id ?? '?'}）`)
         return { toast: { type: result?.ok === true ? 'success' : 'info', content: text } }
       }
@@ -442,7 +505,7 @@ export function createFeishuInbound({ config, bus, fallbackTargets = [], logger 
           userId: String(data?.operator?.open_id ?? '(unknown)'),
           chatId: clickedChatOf(data),
         })
-        const text = verdict?.message ?? (verdict?.status === 'accepted' ? '✅ 已作答' : '该提问已回答或已过期')
+        const text = verdict?.message ?? (verdict?.status === 'accepted' ? '✅ 已作答' : verdictFailureText(verdict?.reason, 'question', '该提问已回答或已过期'))
         patchResolvedCard(data, buildQuestionResolvedCard(`${text}（来源：飞书用户 ${data?.operator?.open_id ?? '?'}）`), `${text}（来源：飞书用户 ${data?.operator?.open_id ?? '?'}）`)
         return { toast: { type: verdict?.ok === true || verdict?.status === 'accepted' ? 'success' : 'info', content: text } }
       }
@@ -468,9 +531,10 @@ export function createFeishuInbound({ config, bus, fallbackTargets = [], logger 
         userId: String(data?.operator?.open_id ?? '(unknown)'),
         chatId: clickedChatOf(data),
       })
+      // G-54：失败话术按 reason 分层，与 TG 同源（verdict-text.mjs），不再一律「已处理或已过期」。
       const text = verdict.ok
         ? (approvalAction.decision === 'allowed-once' ? '✅ 已批准（单次有效）' : '❌ 已拒绝')
-        : '该审批已处理或已过期（token 单次核销）'
+        : (verdict.message ?? verdictFailureText(verdict.reason, 'approval'))
       // 卡片改成终态（patch 覆盖按钮，防过期按钮二次点击）；不 await，3s 内先回 toast
       patchResolvedCard(data, buildResolvedCard(`${text}（来源：飞书用户 ${data?.operator?.open_id ?? '?'}）`), `${text}（来源：飞书用户 ${data?.operator?.open_id ?? '?'}）`)
       return { toast: { type: (verdict.ok === true || verdict.status === 'accepted') ? 'success' : 'info', content: text } }

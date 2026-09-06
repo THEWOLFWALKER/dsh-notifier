@@ -536,6 +536,41 @@ test('长轮询：message 文本走 bus.accept（白名单+去重由 bus 负责�
   assert.deepEqual(updates[0].body.allowed_updates, ['message', 'callback_query'])
 })
 
+test('G-06 群聊命令 @ 后缀：入站 envelope 构造处剥离（/cmd@BotName args → /cmd args）', async () => {
+  const accepted = []
+  const bus = makeBus({ accept: (env) => accepted.push(env) })
+  const updates = [
+    // 群聊对指定机器人发命令的规范形态：命令词带 botname 后缀
+    { update_id: 21, message: { message_id: 51, text: '/pair@MyNotifierBot ABCD-1234', from: { id: 42 }, chat: { id: -100200, type: 'supergroup' } } },
+    // 含点号/下划线的 botname（贪心剥除覆盖）；无参命令同样剥
+    { update_id: 22, message: { message_id: 52, text: '/status@My.Notifier_Bot', from: { id: 42 }, chat: { id: -100200, type: 'supergroup' } } },
+    // 正文里的 @（非行首命令词）不剥
+    { update_id: 23, message: { message_id: 53, text: '看这个 /etc/passwd@host 一下', from: { id: 42 }, chat: { id: 42, type: 'private' } } },
+    // '/@bot'（命令词剥完为空）保留原样，交由 parseCommand 判非命令
+    { update_id: 24, message: { message_id: 54, text: '/@bot code', from: { id: 42 }, chat: { id: -100200, type: 'supergroup' } } },
+  ]
+  let i = 0
+  const { fetchImpl } = makeFetch({
+    getUpdates: () => {
+      if (i >= updates.length) return { ok: true, result: [] }
+      const out = { ok: true, result: [updates[i]] }
+      i += 1
+      return out
+    },
+  })
+  const tg = createTelegramInbound({ config: CONFIG, bus, vault: createTokenVault(), fetchImpl, errorBackoffMs: 10 })
+  tg.start()
+  await new Promise((resolve) => setTimeout(resolve, 90))
+  await tg.stop()
+  assert.equal(accepted.length, 4)
+  // 命令词 @ 后缀剥除：args（码面）不含 @ 残片
+  assert.equal(accepted[0].text, '/pair ABCD-1234')
+  assert.equal(accepted[0].chatType, 'supergroup')
+  assert.equal(accepted[1].text, '/status')
+  assert.equal(accepted[2].text, '看这个 /etc/passwd@host 一下', '正文 @ 与句中路径不剥')
+  assert.equal(accepted[3].text, '/@bot code', '命令词剥完为空的形态保留原文')
+})
+
 test('长轮询：callback_query 携带合法 token → bus.decide；二次点击已失效', async () => {
   const decisions = []
   const bus = { accept: () => {}, decide: (p) => { decisions.push(p); return { ok: decisions.length === 1 } } }

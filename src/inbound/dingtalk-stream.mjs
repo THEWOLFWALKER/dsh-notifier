@@ -2,26 +2,32 @@
 // 钉钉企业内部机器人 Stream 入站（v0.3.1）：官方 Stream 长连接裸协议，零 SDK 依赖
 //（结构照抄 qq-gw.mjs：resolve 函数 / 契约方法 / start-stop / 重连退避 / notifyTargets /
 //  sendApprovalCard 编号回复文案；凭证回退与熔断用法照抄 wechat-ilink.mjs）。
-// 协议事实（逐字段对照 dingtalk-stream-sdk-nodejs client.ts 核对）：
+// 协议事实（仲裁源：dingtalk-stream 官方 SDK 2.1.4 / 2.1.6-beta.1 / 2.1.7-beta.1 三版
+// dist/client.mjs 源码核对；未经真机验证，证据登记 docs/protocol-preflight/dingtalk.md）：
 //  1. token：GET {oapi}/gettoken?appkey=&appsecret= → { errcode:0, access_token, expires_in }
 //  2. 网关：POST {api}/v1.0/gateway/connections/open（Content-Type/Accept 均 application/json），
 //     body { clientId, clientSecret, subscriptions:[{type:'CALLBACK',topic:'/v1.0/im/bot/messages/get'}],
-//     uesrAgent } → { endpoint, ticket }。uesrAgent 是官方 SDK 的拼写错误字段名，服务端认的
-//     就是它——照抄勿改。
+//     ua } → { endpoint, ticket }。字段名就是 ua：三版 SDK getEndpoint 全系
+//     `ua: this.config.ua`，「官方 SDK 拼写错误字段 uesrAgent、服务端认它」一说经三版源码
+//     核对查无实据（G-10，勿再改回）。
 //  3. WS：new WebSocket(`${endpoint}?ticket=${encodeURIComponent(ticket)}`)；帧为 JSON 字符串
-//     { headers, data, path, messageId }，data 本身又是 JSON 字符串（需二次 parse）。
-//  4. ack：每条服务端消息回帧 { code:200, headers:{contentType:'application/json',
-//     requestId:messageId}, messageId, data:'ack' }；未 ack 服务端 60s 重推
+//     { specVersion, type, headers, data }——messageId 只存在于 headers.messageId（顶层无该
+//     字段），data 本身又是 JSON 字符串（需二次 parse；parse 失败 warn 可观测后丢弃，G-42）。
+//  4. ack：每条业务帧回 { code:200, headers:{ contentType:'application/json',
+//     messageId:frame.headers.messageId }, data: JSON.stringify('OK') }（G-01：头字段名是
+//     messageId 不是 requestId，data 是 JSON 字符串 '"OK"'）；未 ack 服务端 60s 重推
 //     （msgId 去重 Map + 60s 窗口吸收；bus 侧 24h 持久去重再兜一层）。
-//  5. 心跳：WS 协议层 ping/pong——服务端 8s 发 ping、原生 WebSocket 自动回 pong；本实现
-//     不发自定义心跳帧（原生 WebSocket 客户端无法主动发 ping，与官方 SDK keepAlive:false
-//     同态），onclose 即退避重连。
+//  5. 心跳分两层，不得合并处理：传输层 WS 协议 ping/pong——服务端 8s 发 ping、原生
+//     WebSocket 自动回 pong（本实现不发心跳帧，与官方 SDK keepAlive:false 同态）；应用层
+//     SYSTEM 帧子类 ping——须原样回显 headers+data（data 含必须回显的 opaque）；
+//     disconnect/KEEPALIVE/REGISTERED 等 SYSTEM 子类记 debug 日志后返回，不进业务路径（G-02）。
 //  6. 业务消息：{ conversationId, msgId, senderStaffId, senderNick, sessionWebhook,
 //     sessionWebhookExpiredTime, robotCode, msgtype, text:{content} }；非 msgtype==='text'
-//     静默忽略；content 首尾 trim。
+//     静默忽略（richText 例外，见 parseRichTextMessage，G-23）；content 首尾 trim。
 //  7. 被动回复：POST sessionWebhook，头 { content-type, x-acs-dingtalk-access-token }，
 //     body { msgparam: JSON.stringify({content}), msgKey:'sampleText' }；webhook 到期
-//     （毫秒时间戳 < now）不回复、告警，改走主动推送兜底。
+//     （毫秒时间戳 < now）不回复、告警，改走主动推送兜底；回执 messageId 合成
+//     `dt:reply-<ts36>-<seq36>`（G-24：旧 hash6(chatId:content) 在同会话同内容时必同 ID）。
 //  8. 主动推送：POST {api}/v1.0/robot/oToMessages/batchSend?robot_code=（body 为数组）；
 //     robotCode 从首条入站消息学习（store 'dingtalk:robot-code'，跨重启恢复）；未学到前
 //     主动推送失败告警；推送过 createBreaker（默认参数），任一入站消息 breaker.reset()。
@@ -30,11 +36,12 @@
 // 军规：任何异常只 warn 不抛；stop() 幂等且清干净全部定时器/连接；错误文案不含 appSecret。
 
 import { createHash } from 'node:crypto'
-import { createTokenManager } from '../adapters/_tokens.mjs'
+import { createTokenManager, normalizeTtlMs } from '../adapters/_tokens.mjs'
 import { createBreaker } from './_breaker.mjs'
 import { setBounded, createThrottledWarn } from './_bounded.mjs'
 import { resolveNotifyTargets } from './target-guard.mjs'
 import { normalizeImageAttachment } from './message.mjs'
+import { stripCommandMention, stripLeadingMention } from './commands.mjs'
 
 const DEFAULT_API_BASE = 'https://api.dingtalk.com'
 const DEFAULT_OAPI_BASE = 'https://oapi.dingtalk.com'
@@ -66,9 +73,43 @@ export function parseDingtalkImageMessage(msg) {
   return null
 }
 
-/** content → 6 位十六进制摘要（合成 messageId 用，与 wechat-ilink 同款）。 */
+/** content → 6 位十六进制摘要（batchSend 无 processQueryKey 时的合成 messageId 用）。 */
 function hash6(text) {
   return createHash('sha256').update(String(text ?? '')).digest('hex').slice(0, 6)
+}
+
+/** 被动回复合成 messageId 的模块级单调序号（G-24）：同会话同内容两次回复不再同 ID。 */
+let replySeq = 0
+
+/**
+ * richText 消息归一（G-23）。官方《机器人接收消息》文档形态：
+ * { msgtype:'richText', content:{ richText:[ { text:'…' }, { downloadCode:'…', type:'picture' } ] } }
+ * 遍历内容模块：text 段直接拼接进 text；图片段走既有 picture/image 管线
+ * （normalizeImageAttachment 白名单字段 url/downloadUrl/…）。官方 downloadCode-only 图片段
+ * 须另调「下载机器人接收消息的文件内容」接口才换得到临时 URL，本实现不发起该调用——
+ * 解析不出安全 URL 即 fail-closed 丢弃该图片段，文本段照常投递。纯文本/纯图消息
+ * （msgtype text/picture）不走本函数，行为不变。
+ * @param {object} msg - data 二次 parse 后的业务消息
+ * @returns {{ text: string, image: object | null } | null} 非 richText 消息返回 null
+ */
+function parseRichTextMessage(msg) {
+  const modules = msg?.content?.richText
+  if (!Array.isArray(modules)) return null
+  let text = ''
+  let image = null
+  for (const module of modules) {
+    if (module === null || typeof module !== 'object' || Array.isArray(module)) continue
+    if (typeof module.text === 'string') text += module.text
+    if (image === null) {
+      // 图片模块走既有 picture/image 管线：模块本体或其 picture/image 子字段，任一能归一
+      // 出安全 URL 即采用（首个命中为准）
+      const candidate = normalizeImageAttachment(module)
+        ?? normalizeImageAttachment(module.picture)
+        ?? normalizeImageAttachment(module.image)
+      if (candidate !== null) image = candidate
+    }
+  }
+  return { text, image }
 }
 
 /**
@@ -135,6 +176,12 @@ export function createDingtalkInbound(options = {}) {
     try { console.error('[dsh-notifier/inbound:dingtalk]', message) } catch { /* 控制台不可用不致命 */ }
   }
 
+  // debug 日志（G-02 SYSTEM 子类观察用）：仅宿主 logger，不双写 stderr——不是事故信号，
+  // 无 debug 通道的宿主静默丢弃即可（KEEPALIVE 可能周期性到来，刷 stderr 反成噪音）。
+  const debug = (message) => {
+    try { logger?.debug?.('[dsh-notifier/inbound:dingtalk]', message) } catch { /* 日志失败绝不致命 */ }
+  }
+
   // 主动推送熔断器（默认参数：阈值 3 / 窗口 60s / 开路 15s）；任一入站消息 reset
   const breaker = createBreaker()
 
@@ -147,7 +194,9 @@ export function createDingtalkInbound(options = {}) {
     if (Number(payload?.errcode) !== 0 || typeof payload?.access_token !== 'string' || payload.access_token === '') {
       throw new Error(`获取钉钉 access_token 失败（HTTP ${response.status}${payload?.errcode !== undefined ? ` errcode ${payload.errcode}` : ''}）：请检查 appKey/appSecret`)
     }
-    return { token: payload.access_token, expiresInMs: (Number(payload.expires_in) || 7200) * 1000 }
+    // G-55：同族归一——expires_in 非法（非有限/≤0）不再 || 7200 掩盖（同值不同命：
+    // 0 在钉钉层曾活 7200s、在 wecom 层只活 1s）
+    return { token: payload.access_token, expiresInMs: normalizeTtlMs(Number(payload.expires_in) * 1000, 'expires_in') }
   })
 
   // 运行态
@@ -198,7 +247,10 @@ export function createDingtalkInbound(options = {}) {
         clientId: config.appKey,
         clientSecret: config.appSecret,
         subscriptions: [{ type: 'CALLBACK', topic: BOT_TOPIC }],
-        uesrAgent: 'dsh-notifier', // 官方 SDK 的拼写错误字段名，服务端认它，照抄勿改
+        // G-10：字段名就是 ua。三版官方 SDK（dingtalk-stream 2.1.4 / 2.1.6-beta.1 /
+        // 2.1.7-beta.1）getEndpoint 全系 `ua: this.config.ua`；旧注释所称「官方 SDK 拼写
+        // 错误字段名 uesrAgent，服务端认的就是它，照抄勿改」经三版源码核对查无实据，勿再犯。
+        ua: 'dsh-notifier',
       }),
     })
     const payload = await response.json().catch(() => null)
@@ -215,14 +267,18 @@ export function createDingtalkInbound(options = {}) {
     try { ws.send(JSON.stringify(payload)); return true } catch { return false }
   }
 
-  /** 每条服务端消息都回执（未 ack 服务端 60s 重推）。 */
+  /**
+   * 每条业务帧都回执（未 ack 服务端 60s 重推）。
+   * G-01（三版 SDK 源码核对）：messageId 只存在于 frame.headers.messageId（DWClientDownStream
+   * 顶层无该字段）；回执头字段名就是 messageId（不是 requestId）；data 是 JSON 字符串
+   * JSON.stringify('OK') === '"OK"'（不是裸 'ack'）。
+   */
   function ackFrame(messageId) {
     if (messageId === '') return
     sendFrame({
       code: 200,
-      headers: { contentType: 'application/json', requestId: messageId },
-      messageId,
-      data: 'ack',
+      headers: { contentType: 'application/json', messageId },
+      data: JSON.stringify('OK'),
     })
   }
 
@@ -278,8 +334,18 @@ export function createDingtalkInbound(options = {}) {
     }
     // 主动推送兜底目标（batchSend 要 staffId 而非 conversationId）；同样有界
     setBounded(chatSenders, chatId, userId, CHAT_STATE_MAX)
-    const image = parseDingtalkImageMessage(msg)
-    const text = String(msg.text?.content ?? '').trim()
+    // G-23：richText 消息（msgtype:'richText'）先归一（text 段拼接、图片段走既有管线）；
+    // 非 richText 消息 parseRichTextMessage 返回 null，走原 text/picture 路径，行为不变
+    const rich = parseRichTextMessage(msg)
+    const image = rich !== null && rich.image !== null
+      ? { kind: 'image', image: rich.image }
+      : parseDingtalkImageMessage(msg)
+    // G-06：@ 机器人剥离（钉钉群消息行首 '@机器人名 ' 字面提及；命令词 @ 后缀一并剥）。
+    // 不剥会污染 agent 语境与 /pair 参数。行首只剥一处 '@名字'（名字后须有空白分隔），
+    // 正文中间的 @ 不动；剥完为空 → 走下方既有空消息分支（不投递）。
+    const text = stripCommandMention(stripLeadingMention(
+      (rich === null ? String(msg.text?.content ?? '') : rich.text).trim(),
+    ))
     if (text === '' && image === null) return
     // v0.7：conversationType 透传（'1' 单聊 / '2' 群聊，/pair 私聊判定）；
     // accept 返回值消费——拒绝/命令回执不再已读不回
@@ -300,15 +366,48 @@ export function createDingtalkInbound(options = {}) {
     }
   }
 
+  /**
+   * SYSTEM 帧分发（G-02）。SDK 三版（2.1.4/2.1.6-beta.1/2.1.7-beta.1）onSystem 均按
+   * headers.topic 分派子类：ping → 原样回显 { code:200, headers, data }（data 含必须回显的
+   * opaque）；disconnect/KEEPALIVE/REGISTERED/CONNECTED → 仅记日志，不回显、不进业务路径。
+   * 判定字段取 topic ∪ method ∪ event_type/eventType 并集：本批次仲裁结论点名
+   * method/event_type，SDK 源码用 topic，无真机帧样本可裁决，并集防御性兼容；均未命中一律
+   * 按「非 ping 的 SYSTEM 子类」处理（fail-closed，不回显不投递）。
+   * 注意：这里是应用层 SYSTEM 帧，与传输层 WS 协议 ping/pong（原生 WebSocket 自动应答）是
+   * 两码事，不得合并处理。
+   */
+  function handleSystemFrame(frame) {
+    const headers = (frame.headers !== null && typeof frame.headers === 'object') ? frame.headers : {}
+    const marker = String(headers.topic ?? headers.method ?? headers.event_type ?? headers.eventType ?? '').toLowerCase()
+    if (marker === 'ping') {
+      sendFrame({ code: 200, headers: frame.headers, data: frame.data })
+      return
+    }
+    debug(`SYSTEM 子类 ${marker === '' ? '(未标注)' : marker} 不进业务路径（messageId=${String(headers.messageId ?? '')}）`)
+  }
+
   function handleFrame(raw) {
     let frame
     try { frame = JSON.parse(typeof raw === 'string' ? raw : String(raw)) } catch { return }
     if (frame === null || typeof frame !== 'object') return
-    ackFrame(String(frame.messageId ?? '')) // 先回执再处理：处理异常也不该挨 60s 重推
+    // G-02：SYSTEM 帧独立分发（ping 回显 / 其余 debug 后返回），一律不进业务路径、不走业务 ack
+    if (frame.type === 'SYSTEM') {
+      handleSystemFrame(frame)
+      return
+    }
+    // G-01：messageId 只在 frame.headers.messageId（顶层无该字段，旧实现读顶层恒为空）
+    const messageId = String(frame.headers?.messageId ?? '')
+    ackFrame(messageId) // 先回执再处理：处理异常也不该挨 60s 重推
     if (frame.data === undefined || frame.data === null) return
     let data = frame.data // data 本身又是 JSON 字符串：二次 parse
     if (typeof data === 'string') {
-      try { data = JSON.parse(data) } catch { return }
+      try {
+        data = JSON.parse(data)
+      } catch {
+        // G-42：parse 失败不再静默——ack 已回执、服务端不会重推，丢消息至少要可观测
+        warn(`data 二次 parse 失败，本条丢弃（ack 已回执，服务端不会重推）: messageId=${messageId} type=${String(frame.type ?? '')} data=${String(frame.data).slice(0, 64)}`)
+        return
+      }
     }
     try { handleBotMessage(data) } catch (error) {
       warn(`入站消息处理异常: ${error instanceof Error ? error.message : String(error)}`)
@@ -431,7 +530,10 @@ export function createDingtalkInbound(options = {}) {
     if (target === '' || content === '') return null
     try {
       if (await replyViaWebhook(target, content) !== null) {
-        return { messageId: `dt:${hash6(`${target}:${content}`)}` }
+        // G-24：旧 hash6(`${chatId}:${content}`) 合成在同会话同内容两次回复时必然同 ID
+        // （回执关联/去重会把两次回复折叠成一条）。改为 时间戳36 + 模块级单调序号36：唯一、
+        // 可读、跨进程重启不保证唯一（重启后 seq 归零，但同一毫秒内重启两次不现实）。
+        return { messageId: `dt:reply-${Date.now().toString(36)}-${(++replySeq).toString(36)}` }
       }
     } catch (error) {
       warn(`sessionWebhook 回复失败，改走主动推送兜底: ${error instanceof Error ? error.message : String(error)}`)
