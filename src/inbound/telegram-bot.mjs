@@ -411,7 +411,7 @@ export function createTelegramInbound({ config, bus, vault, store = null, logger
     },
 
     /**
-     * v0.8 推送提问选项卡片（单选：每选项一行按钮，一选项一钮）。
+     * v0.8 推送提问选项卡片（单选：每选项一行按钮，一选项一钮 + 末行辅助双钮）。
      * @returns {Promise<{ messageId: number } | null>} 多选（暂无卡片形态）/无选项/失败
      *   返回 null，caller 降级编号回复文案——选项卡为主，编号是兜底。
      */
@@ -434,11 +434,31 @@ export function createTelegramInbound({ config, bus, vault, store = null, logger
         }
         const rows = rowEntries.map((entry) => entry.row)
         if (rows.length === 0) return null
+        // 末行辅助双钮：✍️自定义回答（optIdx 'c'：回执指引「答：」文本作答，不裁决）
+        // 与 ⏭跳过（'s'：token 校验后经 Control Core settleSkip 交还桌面）。两个
+        // handler 自 v0.8 已在 questions/router.mjs handleCardAction 就绪，此前仅
+        // 卡片未铸按钮面——「答：」自由作答对用户不可发现。辅助钮容量耗尽与选项
+        // 同判：整卡降级编号兜底并回收已铸引用，绝不发缺按钮的残卡。
+        const auxEntries = [
+          { text: '✍️ 自定义回答', optIdx: 'c' },
+          { text: '⏭ 跳过', optIdx: 's' },
+        ].map((button) => {
+          const ref = refs.mint(buildQuestionAction(qKey, button.optIdx, token), { chatId })
+          return ref === null ? { failed: true, ref: null } : { failed: false, ref, row: {
+            text: button.text,
+            callback_data: `r:${ref}`,
+          } }
+        })
+        if (auxEntries.some((entry) => entry.failed === true)) {
+          for (const entry of [...rowEntries, ...auxEntries]) if (entry.ref !== null) refs.take(entry.ref)
+          warn('提问按钮引用容量已满，本次降级为编号通知')
+          return null
+        }
         const result = await api('sendMessage', {
           chat_id: chatId,
           // P1-1：提问 context 无上游上限（ask_user 入参直传），统一过 4096 钳制
           text: clampTelegramText(`❓ ${title}\n\n${content}`),
-          reply_markup: { inline_keyboard: rows.map((row) => [row]) }, // 一选项一行，手机端可读
+          reply_markup: { inline_keyboard: [...rows.map((row) => [row]), auxEntries.map((entry) => entry.row)] }, // 一选项一行，手机端可读；末行 ✍️/⏭ 辅助双钮
         })
         return { messageId: result?.message_id }
       } catch (error) {

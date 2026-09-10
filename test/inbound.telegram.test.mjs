@@ -145,7 +145,46 @@ test('P1-1 提问卡超长 context：同样截断到 4096 内仍送达（ask_use
   assert.ok(text.includes('（内容过长，已截断）'), '截断标记可见')
   assert.ok(text.startsWith('❓'), '头部标识保留')
   const rows = calls[0].body.reply_markup.inline_keyboard
-  assert.equal(rows.length, 2, '选项按钮行不受截断影响（一选项一行）')
+  assert.equal(rows.length, 3, '选项按钮行不受截断影响（一选项一行 + 末行辅助双钮）')
+})
+
+test('提问卡末行辅助双钮：✍️自定义回答 / ⏭跳过（handler 自 v0.8 已在 handleCardAction 就绪，此处补按钮面）', async () => {
+  const { fetchImpl, calls } = makeFetch({ sendMessage: { ok: true, result: { message_id: 22 } } })
+  const vault = createTokenVault({ secret: 'k' })
+  const tg = createTelegramInbound({ config: CONFIG, bus: makeBus(), vault, fetchImpl })
+  const card = await tg.sendQuestionCard({
+    chatId: 100, title: 'q', content: 'c', qKey: 'aq:aux1',
+    token: vault.mint('aq:aux1:0'), options: ['方案 A', '方案 B'],
+  })
+  assert.deepEqual(card, { messageId: 22 })
+  const rows = calls[0].body.reply_markup.inline_keyboard
+  assert.equal(rows.length, 3, '两行选项 + 末行辅助双钮')
+  assert.equal(rows[0][0].text, '1. 方案 A')
+  assert.equal(rows[1][0].text, '2. 方案 B')
+  const aux = rows[2]
+  assert.equal(aux.length, 2, '辅助行双钮并排')
+  assert.equal(aux[0].text, '✍️ 自定义回答')
+  assert.equal(aux[1].text, '⏭ 跳过')
+  assert.ok(aux[0].callback_data.startsWith('r:'), '辅助钮同样走短引用（v0.6.2 64 字节硬限）')
+  assert.ok(aux[1].callback_data.startsWith('r:'), '辅助钮同样走短引用（v0.6.2 64 字节硬限）')
+})
+
+test('辅助钮容量耗尽：整卡降级编号兜底并回收已铸引用（含选项钮，不发残卡）', async () => {
+  const { fetchImpl, calls } = makeFetch({ sendMessage: { ok: true, result: { message_id: 23 } } }, { delayMs: 0 })
+  const vault = createTokenVault({ secret: 'k' })
+  const tg = createTelegramInbound({ config: CONFIG, bus: makeBus(), vault, fetchImpl })
+  // 默认注册表容量 256。先占 254，让 2 选项 + 2 辅助 = 4 引用的提问卡在第 3 个（辅助钮）耗尽。
+  for (let i = 0; i < 254; i += 1) {
+    assert.deepEqual(await tg.sendActionCard({ chatId: 100, title: 't', content: 'c', actions: [{ label: `a${i}`, data: `ac:${i}` }] }), { messageId: 23 })
+  }
+  const before = calls.length
+  assert.equal(await tg.sendQuestionCard({
+    chatId: 100, title: 'partial', content: 'c',
+    qKey: 'aq:aux2', token: vault.mint('aq:aux2:0'), options: ['A', 'B'],
+  }), null)
+  assert.equal(calls.length, before, '容量中途耗尽时不发送缺辅助钮的残卡')
+  assert.deepEqual(await tg.sendActionCard({ chatId: 100, title: 'reclaimed', content: 'c', actions: [{ label: 'a', data: 'ac:after' }] }), { messageId: 23 })
+  assert.equal(calls.length, before + 1, '失败卡已回收选项钮引用，下一张可正常发送')
 })
 
 test('P1-1 动作卡超长 content：同样截断到 4096 内仍送达（心跳/卡住文案防线）', async () => {
