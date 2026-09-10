@@ -27,7 +27,7 @@
 import { createHash, randomBytes } from 'node:crypto'
 import { normalizeInbound } from '../inbound/_contract.mjs'
 import { MESSAGE_PRIORITY } from '../inbound/bus.mjs'
-import { guardTargets } from '../inbound/target-guard.mjs'
+import { guardTargets, isOpenIdTarget } from '../inbound/target-guard.mjs'
 import { createEscalationChain } from '../approval/escalation.mjs'
 import { createInteractionLedger } from '../interaction/ledger.mjs'
 import { createRateLimiter, compileParameters } from '../tool-register.mjs'
@@ -136,7 +136,15 @@ export function createQuestionBridge(deps) {
         const accountMatches = (target) => target.accountId === undefined || String(target.accountId) === String(accountId ?? '')
         const userMatch = pushed.some((target) => target.channel === channel && accountMatches(target) && String(target.userId) === String(userId))
         if (userMatch) {
-          const chatMatch = pushed.some((target) => target.channel === channel && accountMatches(target) && String(target.userId) === String(userId) && String(target.chatId) === String(chatId))
+          // P2P-FIX：私聊目标下 pushedTo[].chatId 是 open_id（出站寻址用），而
+          // 消息事件只给会话 ID（`oc_…`）——沿用 chatId 严格比对会把当事人自己的回复降级成
+          // onChannel（「同用户错误 chat」），只消费不裁决，编号兜底在私聊里彻底失效
+          // （多选提问没有卡片形态，只能靠编号回复，等于完全无法作答）。
+          // 私聊会话与用户一一对应（同一 bot ↔ 同一用户只有一个 P2P 会话），因此
+          // 「目标 chatId 是 open_id 且 userId 已精确命中」即等价于原会话命中。
+          const chatMatch = pushed.some((target) =>
+            target.channel === channel && accountMatches(target) && String(target.userId) === String(userId)
+            && (String(target.chatId) === String(chatId) || isOpenIdTarget(target.chatId)))
           if (chatMatch) {
             const candidate = { key, row, evidence: 'exact' }
             if (newer(exact, candidate)) exact = candidate

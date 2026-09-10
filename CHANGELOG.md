@@ -1,5 +1,21 @@
 # Changelog
 
+## [Unreleased]
+
+真机修复（本条目证据来自真机复现 + 真机数值驱动的用例，非纯 mock）：飞书**私聊**目标的卡片裁决全部失效。
+
+### 修复：飞书私聊（`ou_`）目标的来源校验误拒真实点击
+
+- **现象**：私聊里点击提问 / 审批 / 动作卡片按钮一律 toast「请到原会话操作」，三个回调分支（`ac:`/`aq:`/`ap:`）全部失效，日志报「来源校验拒绝」。编号回复在私聊里也只消费不裁决；**多选提问没有卡片形态、只能靠编号回复，等于完全无法作答。**
+- **根因**：来源标识在两个方向上不是同一个东西。出站私聊用 open_id 寻址（`receive_id_type=open_id`），账本 `pushedTo[].chatId` 与卡片 `value.srcChat` 记的都是 `ou_…`（`target-guard.mjs` 的 `resolveNotifyTargets` 一级分支 `chatId = record.userId`）；而入站平台只回声**会话 ID**——卡片回调 `context.open_chat_id`、消息事件 `message.chat_id`，均为 `oc_…`。`ou_` 与 `oc_` 永不相等，于是 `clicked !== srcChat` 恒真 → fail-closed。此前 C1（P1-4）把「缺点击会话」收紧为拒绝，正是把这类误拒放大成了硬失败（见 0.8.7 条目登记的「主要回滚触发条件」）。
+- **修复**（新增 `isOpenIdTarget` 于 `src/inbound/target-guard.mjs`，三处判据共用）：
+  - `src/inbound/feishu-bot.mjs` `sourceChatAllowed`：`srcChat` 为 `ou_` 时不再比对会话，改判**当事人**——要求 `operator.open_id === srcChat`。这与会话比对同样能挡住「转发后由他人点击」（F-08 原意不降级，`operator.open_id` 是转发后必然变化的字段），且不依赖任何未经真机验证的负载字段（不引入 `open_chat_type` 之类新假设）。
+  - `src/inbound/feishu-bot.mjs` 新增 `sourceChatIdOf`：三个回调分支的**裁决入参**改传卡片自带 `srcChat`（与 `pushedTo[].chatId` 同口径），避免 `questions/router` 与 `actions` 两侧的记账比对二次落空。**真正的发送目标仍用 `clickedChatOf`**（那里需要真实会话 ID），未改动。
+  - `src/questions/router.mjs` `latestPendingFor`：私聊会话与用户一一对应（同一 bot ↔ 同一用户只有一个 P2P 会话），故「目标 `chatId` 是 open_id 且 `userId` 已精确命中」等价于原会话命中 → 编号回复在私聊里恢复 `exact` 证据。群聊「错误 chat → 只消费不裁决」语义不变。
+- **测试**：+5（`test/feishu-p2p-source.test.mjs`）：私聊本人点击通过且裁决入参为 `srcChat`、他人点击仍拒绝、群聊行为逐字节不变；私聊编号回复命中 `exact` 并结算、群聊错误 chat 仍不裁决；`isOpenIdTarget` 判据。**验证方式**：仅还原本次 `src` 行为改动时 3 例行为测试失败（2 例守卫测试通过），打上补丁后 5/5 通过。
+- **真机证据**：`receive_id=ou_…` 的消息发送响应实测返回 `chat_id=oc_d050461702f90155046eb7808389dfd4`，而账本记的是 `ou_…`；官方文档 `context.open_chat_id` = 「会话 ID」（示例 `oc_…`）。修复后以真实数值驱动已安装代码：本人点击 → `✅ 已作答`，他人点击 → 仍「请到原会话操作」。
+- **未变更**：`dshQuality.testCount` 与各文档计数仍是 1531（本次 +5 例，计数同步属发版轮动作，与 0.9.4 条目同惯例）。
+
 ## [0.9.5] - 2026-08-28
 
 R5「测试保真与文档」修复列车（80 项清单 W13：G-57/G-58/G-59/G-60/S-11/S-13 + mock 分层原则）。全部为 mock/contract 证据，协议类修复未经真机验证（真机缺口登记 `docs/memory/risks.md`）；`npm test` 为 1531（1531 pass，同 0.9.4——本批为测试与文档面）。

@@ -39,6 +39,26 @@ export function isValidTargetId(channel, id) {
 }
 
 /**
+ * 目标是否为私聊 open_id（`ou_`）。
+ *
+ * 飞书私聊在出站侧用 open_id 寻址（`receive_id_type=open_id`），而平台在入站侧只回声
+ * **会话 ID**（`oc_…`：卡片回调的 `context.open_chat_id`、消息事件的 `message.chat_id`）。
+ * 同一次投递在两个方向上标识不同，且 `ou_` 与 `oc_` 永不相等——所以凡是以
+ * `pushedTo[].chatId` / 卡片 `srcChat` 为基准的「来源会话比对」，在私聊目标上都必须
+ * 改判**当事人身份**（open_id），否则真实点击/回复必然被 fail-closed 挡下。
+ *
+ * 真机事故（v0.9.5）：私聊里点击提问/审批卡片按钮一律 toast「请到原会话操作」，
+ * 三个回调分支（`ac:`/`aq:`/`ap:`）全部失效；编号回复同样因 chatId 不匹配降级为
+ * `onChannel` 证据而只消费不裁决。
+ *
+ * @param {unknown} id - 目标标识（chatId 或 userId）
+ * @returns {boolean} true = 该标识是私聊 open_id
+ */
+export function isOpenIdTarget(id) {
+  return String(id ?? '').startsWith('ou_')
+}
+
+/**
  * 形状守卫：过滤掉形态不符的目标（发送前最后一道防线）。
  * S-12：未知渠道的目标整体拒绝 + warn——拼写错误的渠道键曾因 fail-open 静默放行，
  * 目标可能被投到根本不是该平台的会话 id 上。

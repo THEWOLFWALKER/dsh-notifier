@@ -12,7 +12,7 @@
 // 任何异常只 warn，绝不弄崩宿主；stop() 干净退出。
 
 import { buildApprovalAction, buildQuestionAction, parseApprovalAction, parseActionPayload, parseQuestionAction } from './_contract.mjs'
-import { resolveNotifyTargets } from './target-guard.mjs'
+import { resolveNotifyTargets, isOpenIdTarget } from './target-guard.mjs'
 import { stripCommandMention, stripLeadingMention } from './commands.mjs'
 import { verdictFailureText } from './verdict-text.mjs'
 
@@ -419,19 +419,33 @@ export function createFeishuInbound({ config, bus, fallbackTargets = [], logger 
   }
 
   /**
-   * v0.8.3 SEC-1：来源会话校验。卡片 value 里记录了发送目标会话（srcChat）；
-   * 点击会话不一致 → 拒绝（toast 提示），不进入裁决、不 patch 终态。
+   * v0.8.3 SEC-1：来源校验。卡片 value 里记录了发送目标（srcChat）；
+   * 点击来源与 srcChat 不一致 → 拒绝（toast 提示），不进入裁决、不 patch 终态。
    * 老卡片无 srcChat（升级前在途）→ 显式 warn 后跳过校验（兼容，不打历史卡片）。
    * C1（P1-4，v0.8.7）：srcChat 在场而点击会话读不到（事件形状异常/负载缺
    * open_chat_id）原为放行，等于缺关键信息即绕过校验 —— 改为 fail-closed 拒绝
    * （宪法 #7）。三个调用点（ac:/aq:/ap:）都把 false 转成 toast，不裁决、不 patch、
    * 不核销 wait，用户回到原会话即可重试（宪法 #6 不锁死）。
+   *
+   * 私聊目标（P2P-FIX）：srcChat 是 `ou_` open_id 时**不能**与点击会话比对——
+   * 私聊用 open_id 寻址，平台回声的是会话 ID（`oc_…`），两者永不相等，比对必然误拒
+   * （真机：私聊点击提问按钮 100% 回「请到原会话操作」）。此时改判**当事人身份**：
+   * 要求 `operator.open_id` 与 srcChat 相等。这与会话比对同样能挡住「转发后他人点击」
+   * （F-08 的原意）——转发到任何会话后，点击者的 open_id 都不是被投递的那个人。
    * @returns {boolean} true = 通过（可继续裁决）；false = 已拒绝
    */
   function sourceChatAllowed(value, data) {
     const srcChat = String(value?.srcChat ?? '')
     if (srcChat === '') {
       warn('卡片回调缺少来源会话元数据（srcChat），跳过来源校验（升级前在途卡片兼容）')
+      return true
+    }
+    if (isOpenIdTarget(srcChat)) {
+      const operator = String(data?.operator?.open_id ?? '')
+      if (operator === '' || String(operator) !== String(srcChat)) {
+        warn(`卡片私聊来源校验拒绝（operator=${operator === '' ? '(空)' : operator} srcChat=${srcChat}），非被投递人点击`)
+        return false
+      }
       return true
     }
     const clicked = clickedChatOf(data)
@@ -444,6 +458,18 @@ export function createFeishuInbound({ config, bus, fallbackTargets = [], logger 
       return false
     }
     return true
+  }
+
+  /**
+   * 裁决用的「来源标识」：优先取卡片自带的 srcChat（= 投递账本里 pushedTo[].chatId 的同一值），
+   * 缺省回落点击会话。私聊目标下 srcChat 是 open_id，平台只给 `oc_…` 会话 ID——把点击会话
+   * 传下去会让 `questions/router` 与 `actions` 两侧的 `pushedTo[].chatId`/`srcChats` 比对全部
+   * 落空（二次拒绝）。统一以 srcChat 为来源基准，两侧记账口径即一致。
+   * 注意：仅用于**裁决入参**；真正的发送目标仍应用 clickedChatOf(data)（那里需要真实会话 ID）。
+   */
+  function sourceChatIdOf(value, data) {
+    const srcChat = String(value?.srcChat ?? '')
+    return srcChat !== '' ? srcChat : clickedChatOf(data)
   }
 
   function handleCardAction(data) {
@@ -474,7 +500,7 @@ export function createFeishuInbound({ config, bus, fallbackTargets = [], logger 
           via: 'feishu:action',
           userId: String(data?.operator?.open_id ?? '(unknown)'),
           accountId: resolvedAccountId,
-          chatId: clickedChatOf(data),
+          chatId: sourceChatIdOf(value, data),
           chatType: data?.context?.open_chat_type ?? data?.chat_type,
         })
         const text = result?.message ?? verdictFailureText(result?.reason, 'approval', '该操作已处理或已过期')
@@ -493,7 +519,7 @@ export function createFeishuInbound({ config, bus, fallbackTargets = [], logger 
             command: 'question-answer', eventId: callbackEventIdOf(data, raw), qKey: questionAction.qKey, optIdx: questionAction.optIdx,
             token: questionAction.token, via: 'feishu:button', channel: 'feishu',
             accountId: resolvedAccountId,
-            userId: String(data?.operator?.open_id ?? ''), chatId: clickedChatOf(data),
+            userId: String(data?.operator?.open_id ?? ''), chatId: sourceChatIdOf(value, data),
             chatType: data?.context?.open_chat_type ?? data?.chat_type,
           })
           : questions.decide({
@@ -503,7 +529,7 @@ export function createFeishuInbound({ config, bus, fallbackTargets = [], logger 
           via: 'feishu:button',
           accountId: resolvedAccountId,
           userId: String(data?.operator?.open_id ?? '(unknown)'),
-          chatId: clickedChatOf(data),
+          chatId: sourceChatIdOf(value, data),
         })
         const text = verdict?.message ?? (verdict?.status === 'accepted' ? '✅ 已作答' : verdictFailureText(verdict?.reason, 'question', '该提问已回答或已过期'))
         patchResolvedCard(data, buildQuestionResolvedCard(`${text}（来源：飞书用户 ${data?.operator?.open_id ?? '?'}）`), `${text}（来源：飞书用户 ${data?.operator?.open_id ?? '?'}）`)
@@ -519,7 +545,7 @@ export function createFeishuInbound({ config, bus, fallbackTargets = [], logger 
           command: 'approval', eventId: callbackEventIdOf(data, raw), approvalKey: approvalAction.approvalKey, decision: approvalAction.decision,
           token: approvalAction.token, via: 'feishu:button', channel: 'feishu',
           accountId: resolvedAccountId,
-          userId: String(data?.operator?.open_id ?? ''), chatId: clickedChatOf(data),
+          userId: String(data?.operator?.open_id ?? ''), chatId: sourceChatIdOf(value, data),
           chatType: data?.context?.open_chat_type ?? data?.chat_type,
         })
         : bus.decide({
@@ -529,7 +555,7 @@ export function createFeishuInbound({ config, bus, fallbackTargets = [], logger 
         via: 'feishu:button',
         accountId: resolvedAccountId,
         userId: String(data?.operator?.open_id ?? '(unknown)'),
-        chatId: clickedChatOf(data),
+        chatId: sourceChatIdOf(value, data),
       })
       // G-54：失败话术按 reason 分层，与 TG 同源（verdict-text.mjs），不再一律「已处理或已过期」。
       const text = verdict.ok
