@@ -10,15 +10,15 @@ Snapshot date: 2026-09-13. Current release line **v0.10.1** (`codex/notification
 - The loopback Web/admin console is the only control console (`127.0.0.1` + Bearer). It supports personal-mode setup, pairing, channel test sends, masked question listing, and Control-Core choose/reject settlement. YAML remains an advanced/automation entry.
 - Desktop `ask_user` has no safe host interface. Desktop fallback is the fail-closed outcome for timeout/error; do not claim desktop settlement or dual-end parity.
 - Control Core, session arbiter, bounded approval members, session control overlay persistence, provider facades, callback capacity, and public notifier facade limits are code/contract-tested.
-- Public discovery metadata is aligned with v0.10.0; Awesome DSH refresh is tracked by PR #3490, and dshfind consumes the repository metadata on its scheduled sync.
+- Public discovery metadata is aligned with v0.10.1; the Awesome DSH listing refresh is tracked by PR #4981 (adds phone task takeover, images into session, bilingual messages), and dshfind consumes the repository metadata on its scheduled sync.
 - QQ C2C buttons, QQ GROUP text fallback, and QQ/WeChat iLink/DingTalk image envelopes are contract-tested only. Media/file support and provider-specific payload/reconnect behavior remain `declared` or unverified.
 - `allowUsers` is retained as one-shot `inbound:migrated` compatibility import; optional Feishu/QQ SDK lifecycle seams are documented in [compatibility-matrix.md](../compatibility-matrix.md).
 
 ## Validation evidence
 
-- `npm test`: 1605 total (1605 pass), 2026-09-12 (v0.10.0 publication baseline); focused Telegram 117 pass, focused QQ 45 pass.
-- `node scripts/verify-release.mjs`: release guard compares package `0.10.0` with its documented 1605-test contract (badge / test text / homepage metadata / HANDOFF).
+- `npm test`: 1616 total (1616 pass), 2026-09-13 (v0.10.1 publication baseline); focused Telegram 117 pass, focused QQ 45 pass.
+- `node scripts/verify-release.mjs`: release guard compares package `0.10.1` with its documented 1616-test contract (badge / test text / homepage metadata / HANDOFF).
 
 ## Next release gate
 
-v0.10.0 is queued for `main`. The next gate reuses the same checklist: run `npm pack --dry-run --json` and a registry-artifact disposable-profile smoke (registry install in a disposable profile, not a `file:` install). Validate startup, one outbound test, one inbound command, and the `ask_user` assembly boundary. Real-device, provider, and DSH-host validation remains an external gate; see [risks.md](risks.md).
+v0.10.1 is published and on `main`. The next gate reuses the same checklist: run `npm pack --dry-run --json` and a registry-artifact disposable-profile smoke (registry install in a disposable profile, not a `file:` install). Validate startup, one outbound test, one inbound command, and the `ask_user` assembly boundary. Real-device, provider, and DSH-host validation remains an external gate; see [risks.md](risks.md).

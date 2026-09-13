@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.10.2] - 2026-09-13（文档清理与收录状态收口）
+
+文档维护发布，无功能/行为变更：
+
+- 删除 2026-08 审查修复线历史文档（80 项问题已全部核销并随 v0.9.1~v0.10.1 发布）：`docs/01-修复计划.md`、`docs/02-问题清单总表.md`、`docs/修复接手包-README.md`，以及引用它们的 14 个已收口 `.agents/workstreams/` 历史记录（保留 `TEMPLATE.md` 规范）。
+- 生态收录状态同步：`docs/KNOWLEDGE_BASE.md` 与 `docs/memory/project-state.md` 的 Awesome DSH 收录条目更新为 v0.10.1 刷新（PR #4981），dshfind 按仓库元数据周期同步。
+- README 首屏说明精简（dev 先行），版本历史叙事并入当前能力陈述。
+
 ## [0.10.1] - 2026-09-13（codex/notification-lang-setting + PR #22 Telegram 辅助钮并排收口）
 
 新增配置项 `lang: 'zh' | 'en'`（默认 zh，零行为变化）：全部手机可见文案改为从 `src/strings.mjs` 文案表取词，`lang: 'en'` 时输出英文。覆盖面：自动推送（turn/end · approval/asked · agent/error · longRunning/stall 的 headline/detail/正文模板 + 「⏹ 停止任务」动作卡片按钮）、审批卡片与裁决回执（approval/router）、ask_user 提问卡片与编号回复（questions/router）、裁决失败话术（verdict-text）、身份命令回执（/pair /whoami /unpair，commands.mjs）、会话命令族与远程对话回执（/status /agent /bind /unbind /stop /route /quiet，conversation.mjs，含 /route 入站来源标签与 `、` 连接符）、动作按钮回执（actions.mjs）、bus 白名单拒绝回执与 decide 来源话术、各渠道适配器回执（TG 按钮 / 飞书卡片 / QQ·钉钉·WxPusher 文本回执 / wechat 文本审批）、晨报（ledger.mjs，classifyTitle zh/en 双标记匹配 + composeDigest 取词）、notify_test 渠道自检推送（health.mjs）。助手摘录、错误原文、面向 agent 的工具文本、管理台文案、agent 会话信封标记不翻译（它们本就是会话语言或宿主侧数据）。非法 `lang` 值回落 zh（与 `redaction` 归一化同法），`stringsOf` 做 own-property 校验（`__proto__`/`constructor` 等继承键不命中表）。文案表中 zh 条目与硬编码逐字节一致（程序化审计 + 全量测试）。

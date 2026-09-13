@@ -27,13 +27,13 @@
 ![沉默](https://img.shields.io/badge/%E6%B2%89%E9%BB%98-%E6%B0%B8%E4%B8%8D%E6%89%B9%E5%87%86-9C27B0?style=flat-square)
 ![推送](https://img.shields.io/badge/push%20it-real%20good-FF4081?style=flat-square)
 
-包元数据：`dsh-notifier@0.10.1` · 1616 个自动化契约测试（1616 通过）· MIT 许可。
+包元数据：`dsh-notifier@0.10.2` · 1616 个自动化契约测试（1616 通过）· MIT 许可。
 
 把 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) agent 带到你平时使用的地方。dsh-notifier 用一个极简 `notify()` API 接住 27 个渠道，再提供手机审批、手机提问、会话控制和清爽的本机管理台——无需额外部署第二套运行时。
 
 [快速上手](docs/guide.md) · [升级指南](docs/upgrade-guide.md) · [插件接入契约](PLUGINS.md)
 
-你的 agent 和宿主本身都能经它推送：会话事件（`turn/end` · `approval/asked` · `agent/error`）自动通知，模型可直接调用 `notify` 工具，六条入站通道把审批与对话从手机带回。QQ 控制入站带来源标记：C2C 表示单聊，GROUP、缺失 `chatType` 或未知来源元数据均 fail-closed；`conversation` 的 `routeUnsafe` 旁路已堵。v0.3 加入本机网页控制台与多 agent 路由，v0.4 加入系统桌面通知，v0.5 把手机升级成指挥中心——长任务心跳、疑似卡住提醒、通知卡片自带停止按钮，v0.7 把「谁是家里人」从不透明 YAML 字符串升级为运行时身份体系——配对码准入、复合键绑定、管理台成员页，v0.8 让 agent 直接在手机上向你发起选择题（`ask_user`：选项卡片 + 编号兜底，超时永不代答）——全程零运行时依赖。
+你的 agent 和宿主本身都能经它推送：会话事件（`turn/end` · `approval/asked` · `agent/error`）自动通知，模型可直接调用 `notify` 工具，六条入站通道把审批、对话和选择题（`ask_user`）从手机带回。裁决均单次有效且 fail-closed——未知来源与 QQ GROUP 控制一律拒绝。长任务发心跳与卡住提醒、卡片带一键停止；身份用运行时配对码与绑定，不再是 YAML 字符串——全程零运行时依赖。
 
 ## 工作原理
 

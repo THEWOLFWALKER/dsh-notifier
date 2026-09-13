@@ -27,13 +27,13 @@
 ![silence](https://img.shields.io/badge/silence%20never-approves-9C27B0?style=flat-square)
 ![push](https://img.shields.io/badge/push%20it-real%20good-FF4081?style=flat-square)
 
-Package metadata: `dsh-notifier@0.10.1` · 1616 automated contract tests (1616 pass) · MIT licensed.
+Package metadata: `dsh-notifier@0.10.2` · 1616 automated contract tests (1616 pass) · MIT licensed.
 
 Bring your [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) agent to the places you already use. dsh-notifier puts one minimal `notify()` API in front of 27 channels, then adds phone-friendly approvals, questions, session controls, and a calm local console — with no second runtime to deploy.
 
 [Get started](docs/guide.md) · [Upgrade guide](docs/upgrade-guide.en.md) · [Plugin integration](PLUGINS.md)
 
-Your agent and the harness itself both push through it: session events (`turn/end` · `approval/asked` · `agent/error`) auto-notify, the model calls a `notify` tool directly, and six inbound channels bring approvals and conversations back from your phone. QQ control ingress is source-marked: C2C is single-chat, while GROUP, missing `chatType`, and unknown source metadata fail closed; the conversation `routeUnsafe` bypass is blocked. v0.3 adds a local web console and multi-agent routing; v0.4 adds native desktop notifications; v0.5 turns your phone into a command center — long-task heartbeats, stall alerts, and a stop button riding the notification itself; v0.7 upgrades "who counts as family" from opaque YAML strings into a runtime identity system — pairing codes, composite-key bindings, and a members page in the admin console; v0.8 lets the agent ask you multiple-choice questions straight from your phone (`ask_user`: option cards + numbered-reply fallback, timeout never fabricates an answer) — all with zero runtime dependencies.
+Your agent and the harness itself both push through it: session events (`turn/end` · `approval/asked` · `agent/error`) auto-notify, the model calls a `notify` tool directly, and six inbound channels carry approvals, conversations, and multiple-choice questions (`ask_user`) back from your phone. Decisions are single-use and fail-closed — unknown sources and QQ GROUP control are rejected by default. Long tasks send heartbeats and stall alerts with a one-click stop button; identity is runtime pairing codes and bindings, not YAML strings — all with zero runtime dependencies.
 
 ## How it works
 

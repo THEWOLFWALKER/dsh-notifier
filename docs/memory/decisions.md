@@ -18,7 +18,7 @@ Tracked `.agents/` workstreams and `docs/memory/` are the authority for collabor
 
 ## Repository Roles And Relay Cadence
 
-The private `dsh-notifier-dev` repository is the canonical serial development workspace for all tools and machines. The public `THEWOLFWALKER/dsh-notifier` repository is a release/source mirror. Every agent completion records identity, scope, files, tests, review, risks, next step, and commit in its workstream, then refreshes the consolidated current handoff snapshot in `HANDOFF.md`; `docs/memory/` carries only durable facts and decisions.
+The single repository `THEWOLFWALKER/dsh-notifier` hosts two branches with distinct jobs: `dev` for development and `main` for releases. Every agent completion records identity, scope, files, tests, review, risks, next step, and commit in its workstream, then refreshes the consolidated current handoff snapshot in `HANDOFF.md`; `docs/memory/` carries only durable facts and decisions.
 
 ## Security Defaults
 

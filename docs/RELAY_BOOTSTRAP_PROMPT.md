@@ -15,16 +15,15 @@
 一、仓库接管
 
 1. 确认当前目录是 dsh-notifier 工程仓库。
-2. 如果当前目录不是仓库，从私有仓库拉取：
-   https://github.com/THEWOLFWALKER/dsh-notifier-dev
-   公共仓库 https://github.com/THEWOLFWALKER/dsh-notifier 只是发布/公开源码镜像，不是日常开发源。
+2. 如果当前目录不是仓库，从公开仓库的 dev 分支拉取：
+   https://github.com/THEWOLFWALKER/dsh-notifier （单仓库：dev 分支开发、main 分支发布）
 3. 执行并记录：
    git status --short --branch
    git log --oneline -5
    git fetch --prune
    git pull --ff-only
 4. 读取 AGENTS.md、docs/KNOWLEDGE_BASE.md、docs/memory/README.md、docs/memory/、相关 .agents/workstreams/ 和 HANDOFF.md。
-5. 从私有 main 创建目的明确的 codex/<topic> 分支；禁止直接在 main/master 上开发。若工作区有未提交改动，先记录并保护它们，不得擅自丢弃。
+5. 从 dev 分支创建目的明确的 codex/<topic> 分支；禁止直接在 main 上开发。若工作区有未提交改动，先记录并保护它们，不得擅自丢弃。
 
 二、必须遵守的工程原则
 
@@ -83,6 +82,6 @@
 ## 使用规则
 
 - 每次接力都使用上面的整段作为新 agent 的第一条消息，并填写四个身份字段。
-- agent 的持久状态以私有仓库中的 `AGENTS.md`、`HANDOFF.md`、`.agents/workstreams/` 和 `docs/memory/` 为准。
+- agent 的持久状态以仓库中的 `AGENTS.md`、`HANDOFF.md`、`.agents/workstreams/` 和 `docs/memory/` 为准。
 - `HANDOFF.md` 每次接力都要更新当前快照；workstream 保留每个 agent 的详细身份和工作记录。
 - 任何 agent 都必须在推送后确认工作区干净，下一位 agent 再执行 `git pull --ff-only` 接续。
