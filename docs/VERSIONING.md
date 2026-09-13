@@ -44,45 +44,35 @@ Restart DSH and verify the UI version, startup assembly markers, one outbound te
 
 The repository archive may include contributor-only files such as `HANDOFF.md`, `ADAPTER.md`, design notes, screenshots, and CI. The npm package intentionally excludes those. Compare manifests and hashes before release, but do not make the npm archive the source of truth.
 
-## Dev → Public Mirror Release Flow
+## Single-Repo Release Flow (main + dev)
 
-Two repositories exist with different jobs:
+One repository `THEWOLFWALKER/dsh-notifier` hosts two branches with different jobs:
 
-- `THEWOLFWALKER/dsh-notifier-dev` — private canonical dev workspace (branch `main` + `codex/*`). Engineered and authored here.
-- `THEWOLFWALKER/dsh-notifier` — public release/source mirror (branch `main`). Read-only reference for consumers; never develop here.
+- `dev` — development branch. Active engineering happens here (features, `codex/*` topics); every change lands on `dev` first.
+- `main` — release branch. Only reviewed, published versions live here; tagged at each release; npm publishes from this branch's tree.
 
-The public mirror is a *filtered* snapshot, not a byte-for-byte copy. The filter boundary (owner rule, 2026-09-12):
+Never develop on `main`. The npm payload is governed independently by `package.json.files` — agent/tool directories (`.agents/`, `.claude/`, `.codex/`, `.opencode/`) and contributor-only files (`HANDOFF.md`, `ADAPTER.md`) never enter the npm archive.
 
-- `.agents/` is project-level collaboration knowledge (skills, workstreams, references) — **it is public-mirror content and must be synced to the mirror**. Do not treat it as an engineering-only directory.
-- `.opencode/`, `.codex/`, `.claude/` are tool-specific or personal agent pointer/config dirs — **always excluded from the mirror** (and from any future tool config dir).
-- Also excluded from the mirror: `package-lock.json`, secrets/state/logs, `node_modules/`, generated local artifacts, and temporary workstream debris.
-- The npm payload is governed independently by `package.json.files`: `.agents/` staying in the mirror does NOT put `.agents/` into the npm archive. Keep agent/tool directories out of `package.json.files`.
-- Everything else (`src/ test/ scripts/`, `package.json`, `README.md` + `README.zh-CN.md`, `CHANGELOG.md`, `LICENSE`, `THIRD_PARTY_NOTICES.md`, `PLUGINS.md`, `cordis.patch.yml`, `docs/`, `HANDOFF.md`, `ADAPTER.md`, `.github/workflows/ci.yml`) syncs as-is.
-
-The npm payload (`package.json.files`) is smaller still and independent of the mirror.
-
-Recommended publish procedure (do not develop in the mirror):
+Recommended publish procedure:
 
 ```text
-# 1. dev main must be green and clean
+# 1. dev must be green and clean
+git checkout dev
 git status --short --branch        # clean
 npm test
 node scripts/verify-release.mjs
 node scripts/gen-channel-matrix.mjs --check
 
-# 2. refresh a filtered staging clone of the public mirror
-#    (copy from dev, excluding the engineering-only files above)
-
-# 3. in the staging copy: sanity-check the README screenshots resolve
-git status --short
-git diff -- name-only            # review what moved
-git commit -am "release: sync dev main to <version>" 
-
-# 4. push the filtered snapshot to the public mirror main
-git push origin main
+# 2. bring main forward to the reviewed dev head, tag, and publish
+git checkout main
+git merge --ff-only dev            # keep main pinned to a reviewed dev head
+node scripts/verify-release.mjs
+git tag v<version>
+git push origin main --tags
+npm publish
 ```
 
-Keep the public `main` pointer pinned to reviewed dev `main`. Never force-push over published history; if drift appears, reconcile from dev `main` forward.
+Keep `main` pinned to a reviewed `dev` head. Never force-push over published history; if drift appears, reconcile forward from `dev`.
 
 ## Version Bump Checklist
 

@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]（codex/notification-lang-setting）
+## [0.10.1] - 2026-09-13（codex/notification-lang-setting + PR #22 Telegram 辅助钮并排收口）
 
 新增配置项 `lang: 'zh' | 'en'`（默认 zh，零行为变化）：全部手机可见文案改为从 `src/strings.mjs` 文案表取词，`lang: 'en'` 时输出英文。覆盖面：自动推送（turn/end · approval/asked · agent/error · longRunning/stall 的 headline/detail/正文模板 + 「⏹ 停止任务」动作卡片按钮）、审批卡片与裁决回执（approval/router）、ask_user 提问卡片与编号回复（questions/router）、裁决失败话术（verdict-text）、身份命令回执（/pair /whoami /unpair，commands.mjs）、会话命令族与远程对话回执（/status /agent /bind /unbind /stop /route /quiet，conversation.mjs，含 /route 入站来源标签与 `、` 连接符）、动作按钮回执（actions.mjs）、bus 白名单拒绝回执与 decide 来源话术、各渠道适配器回执（TG 按钮 / 飞书卡片 / QQ·钉钉·WxPusher 文本回执 / wechat 文本审批）、晨报（ledger.mjs，classifyTitle zh/en 双标记匹配 + composeDigest 取词）、notify_test 渠道自检推送（health.mjs）。助手摘录、错误原文、面向 agent 的工具文本、管理台文案、agent 会话信封标记不翻译（它们本就是会话语言或宿主侧数据）。非法 `lang` 值回落 zh（与 `redaction` 归一化同法），`stringsOf` 做 own-property 校验（`__proto__`/`constructor` 等继承键不命中表）。文案表中 zh 条目与硬编码逐字节一致（程序化审计 + 全量测试）。
 
@@ -16,6 +16,7 @@
 - `src/health.mjs`：`runChannelTest` 自检推送 title/正文取词（`TEST_MESSAGE` 改由表导出，zh 逐字节一致）。
 - `src/tool-register.mjs`：notify_test 推送取词（notify 工具描述等 agent-facing 文本不在范围）。
 - `src/assembly/inbound-channels.mjs`：`strings` 透传六个渠道 attach。
+- PR #22 最新更新（`src/inbound/telegram-bot.mjs`）：Telegram ask_user 提问卡末行「✍️自定义回答 / ⏭跳过」双钮由分列改为并排（一选项一行 + 末行辅助双钮）；按钮短引用容量中途耗尽时整卡降级编号兜底并回收本次已铸的选项钮引用（绝不发缺辅助钮的残卡）；README 架构图与「远程提问」表补辅助钮说明。评测：`test/inbound.telegram.test.mjs` 增「提问卡末行辅助双钮」「辅助钮容量耗尽」两项 focused。
 - 测试：`test/lang-strings.test.mjs` 9 项 focused（默认逐字节 deepEqual / en 切换 / 未知与继承键回落 / zh-en 表 key 形状一致防单边漂移 / 错误原文不翻译 / titlePrefix 组合 / createEventListener en 状态正文 / commands·actions·适配器段英文防 zh 副本回潮）。并入库 `lang` 归一与移植后的全量回归。
 
 已知影响（记录，不在本次修）：管理台内部文案与 `notify` 工具结果文本仍为中文（agent/桌面侧，非手机面）；后续如做全量 i18n 可顺带迁移。

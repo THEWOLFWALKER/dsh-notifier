@@ -10,7 +10,7 @@
 - Tracked `.agents/` workstreams and `docs/memory/` are the only collaboration-state authority; chat messages are not durable project state. Runtime truth remains `src/` and `test/`.
 - The npm package archive is an output. It never overrides the engineering tree.
 - Every task completion or milestone handoff must read and execute the project-local `.agents/skills/neat-freak/SKILL.md` checklist before the final response. Its canonical copy lives under `.agents/skills/neat-freak/`; tool-specific skill directories contain pointers only.
-- Private-development/public-release split: the private canonical Git remote is the only serial relay workspace; `https://github.com/THEWOLFWALKER/dsh-notifier` is the public release/source mirror. Do not develop from the public mirror.
+- Single-repo two-branch model: `https://github.com/THEWOLFWALKER/dsh-notifier` is the canonical repository. Develop on `dev`, release on `main`; there is no separate private dev or public mirror repository to juggle.
 
 ## Hard Boundaries
 
@@ -38,13 +38,13 @@
 ## Working Tree And Branches
 
 - Start every task with `git status --short --branch` and `git log --oneline -5`.
-- Work on `codex/<topic>` branches. Do not develop directly on `main` or `master`.
+- Work on `codex/<topic>` branches off `dev`. Do not develop directly on `main` (the release branch) or `master`; merge to `main` only when cutting a release.
 - Keep the first baseline commit immutable. Group each follow-up by one logical concern.
 - Do not mix source, release metadata, and unrelated cleanup in one commit.
 - Before handoff, the working tree must be clean, the branch must identify its purpose, and the final commit list must be reported.
 - Relay handoff cadence: every agent completion must commit and push before leaving a machine, update its detailed `.agents/workstreams/<topic>.md` identity/status/tests/review/commit record, and refresh the current handoff snapshot in `HANDOFF.md`. Do not append chat transcripts; consolidate the snapshot so it stays readable.
 - Never commit `node_modules/`, `package-lock.json`, credentials, state files, `.log` files, or generated local artifacts.
-- Release packing must never include development-tool directories: `.claude/`, `.codex/`, `.opencode/` (and any future agent config), or the npm payload would expose personal tool config. Keep these out of `package.json.files` and the npm archive. The npm payload boundary is independent of the mirror boundary: tracked `.agents/` (project collaboration knowledge) syncs to the public mirror but stays out of the npm archive — see `docs/VERSIONING.md`.
+- Release packing must never include development-tool directories: `.claude/`, `.codex/`, `.opencode/` (and any future agent config), or the npm payload would expose personal tool config. Keep these out of `package.json.files` and the npm archive. The npm payload boundary is independent of the git branch: tracked `.agents/` (project collaboration knowledge) lives in the repo but stays out of the npm archive — see `docs/VERSIONING.md`.
 
 ## Multi-Agent Protocol
 

@@ -9,7 +9,7 @@ node scripts/gen-channel-matrix.mjs --check
 node --check src/index.mjs
 ```
 
-The current release baseline is `1605` tests (`1605` pass) on the v0.10.0 line (mobile-task-loop). The preceding v0.9.7 line closed at `1548`, v0.9.6 at `1544`, v0.9.5 at `1531`, v0.9.0 used `1352`, and the v0.8.6 artifact historically records `909`. Do not change `package.json`'s release count to make these baselines look identical. The public GitHub source mirror (`main`) is synced to v0.10.0. Desktop/host and provider protocol behavior still require real-device validation where noted below.
+The current release baseline is `1616` tests (`1616` pass) on the v0.10.1 line (notification-lang-setting + PR #22 Telegram aux buttons). The preceding v0.10.0 line closed at `1605`, v0.9.7 at `1548`, v0.9.6 at `1544`, v0.9.5 at `1531`, v0.9.0 used `1352`, and the v0.8.6 artifact historically records `909`. Do not change `package.json`'s release count to make these baselines look identical. The GitHub repository `main` branch is synced to v0.10.1. Desktop/host and provider protocol behavior still require real-device validation where noted below.
 
 The project has no install step for runtime tests. Optional packages are needed only for the corresponding real inbound flows: Feishu SDK, QQ connector, or QR terminal rendering.
 
@@ -47,35 +47,25 @@ QQ single-chat native buttons, QQ group text fallback, and QQ/WeChat iLink/DingT
 
 Before publishing, use a clean checkout or clean working tree, run `npm test`, run the release guard, regenerate the channel matrix in check mode, and compare the generated package manifest with the repository files. Then install the registry artifact in a disposable DSH profile, restart once, and verify the package version, `ask_user` assembly log, one outbound test, and one inbound command.
 
-## Public Mirror Sync
+## Branch Push Flow (dev → main)
 
-The public release mirror `THEWOLFWALKER/dsh-notifier` is a filtered snapshot of dev `main`; it is not a byte-for-byte copy and is never a development target. See `docs/VERSIONING.md → Dev → Public Mirror Release Flow` for the keep/exclude inventory and the gate checklist. The exclude list intentionally keeps engineering-only files (`.agents/` skills, `.claude/ .codex/ .opencode/` pointers, `HANDOFF.md`, `ADAPTER.md`) out of the public repo while preserving the README-referenced `docs/screenshots/` so the console previews render.
+The repository `THEWOLFWALKER/dsh-notifier` uses a single-repo two-branch model: `dev` for development, `main` for releases. See `docs/VERSIONING.md → Single-Repo Release Flow` for the gate checklist. The npm payload is governed independently by `package.json.files` — agent/tool directories (`.agents/`, `.claude/`, `.codex/`, `.opencode/`) and contributor-only files (`HANDOFF.md`, `ADAPTER.md`) stay out of the npm archive regardless of branch.
 
-Walkthrough for an operator backing a filtered staging copy:
+Walkthrough for cutting a release:
 
 ```text
-# fresh filtered staging clone of the public mirror
-git clone https://github.com/THEWOLFWALKER/dsh-notifier.git release-staging
-cd release-staging
+git checkout dev
+git status --short --branch        # clean
+npm test
+node scripts/verify-release.mjs
+node scripts/gen-channel-matrix.mjs --check
 
-# sync changed files from dev main (keep .agents/ etc. out; keep docs/screenshots in)
-cp -r ../dsh-notifier-dev/src ./
-cp -r ../dsh-notifier-dev/test ./
-cp -r ../dsh-notifier-dev/scripts ./
-cp ../dsh-notifier-dev/package.json ../dsh-notifier-dev/README.md \
-   ../dsh-notifier-dev/README.zh-CN.md ../dsh-notifier-dev/CHANGELOG.md \
-   ../dsh-notifier-dev/LICENSE ../dsh-notifier-dev/THIRD_PARTY_NOTICES.md \
-   ../dsh-notifier-dev/PLUGINS.md ../dsh-notifier-dev/cordis.patch.yml ./
-cp -r ../dsh-notifier-dev/docs/guide.md ../dsh-notifier-dev/docs/upgrade-guide.md \
-   ../dsh-notifier-dev/docs/upgrade-guide.en.md ../dsh-notifier-dev/docs/VERSIONING.md \
-   ../dsh-notifier-dev/docs/OPERATIONS.md ../dsh-notifier-dev/docs/screenshots ./docs/
-
-git status --short                # review exactly what moved
-git diff --stat
-git commit -am "release: sync dev main to v0.9.x"
-
-# publish the filtered snapshot (negotiate auth per machine)
-git push origin main
+git checkout main
+git merge --ff-only dev
+node scripts/verify-release.mjs
+git tag v0.10.1
+git push origin main --tags
+npm publish
 ```
 
-Keep the public `main` pointer aligned to a reviewed dev `main`. Never force-push over published history; reconcile drift forward from dev `main`. After the push, confirm the mirror head matches dev `main` for the kept files before declaring the release.
+Keep `main` aligned to a reviewed `dev` head. Never force-push over published history; reconcile drift forward from `dev`. After the push, confirm `main` matches `dev` for the release files before declaring the release.

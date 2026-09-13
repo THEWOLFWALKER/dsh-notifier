@@ -2,6 +2,8 @@
 
 > **你的 agent，装进口袋。** —— 通知、审批、遥控，全在你的手机里。
 
+> **维护公告（Maintenance notice）**：至 **2026-10-01** 前，作者因考试无法及时维护项目、查看与回复 PR / Issue，回复会有延迟，非常抱歉；逾期事项将在考试结束后尽快处理。Until **2026-10-01** the author is taking exams and cannot promptly maintain the project or review PRs/issues — replies will be delayed. Sorry for the inconvenience.
+
 [**English**](README.md) · **简体中文**
 
 ![DSH](https://img.shields.io/badge/DSH-DeepSeek%20Harness-1F6FEB?style=flat-square)
@@ -13,7 +15,7 @@
 ![渠道](https://img.shields.io/badge/channels-27-00B4D8?style=flat-square)
 
 ![npm version](https://img.shields.io/npm/v/dsh-notifier?style=flat-square&logo=npm&logoColor=white)
-![tests](https://img.shields.io/badge/tests-1605-brightgreen?style=flat-square)
+![tests](https://img.shields.io/badge/tests-1616-brightgreen?style=flat-square)
 ![license](https://img.shields.io/badge/license-MIT-brightgreen?style=flat-square)
 ![awesome-dsh-plugin](https://img.shields.io/badge/awesome--dsh--plugin-%E5%AE%98%E6%96%B9%E6%94%B6%E5%BD%95-00B4D8?style=flat-square)
 ![omdsh workshop](https://img.shields.io/badge/omdsh-workshop-7C3AED?style=flat-square)
@@ -25,7 +27,7 @@
 ![沉默](https://img.shields.io/badge/%E6%B2%89%E9%BB%98-%E6%B0%B8%E4%B8%8D%E6%89%B9%E5%87%86-9C27B0?style=flat-square)
 ![推送](https://img.shields.io/badge/push%20it-real%20good-FF4081?style=flat-square)
 
-包元数据：`dsh-notifier@0.10.0` · 1605 个自动化契约测试（1605 通过）· MIT 许可。
+包元数据：`dsh-notifier@0.10.1` · 1616 个自动化契约测试（1616 通过）· MIT 许可。
 
 把 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) agent 带到你平时使用的地方。dsh-notifier 用一个极简 `notify()` API 接住 27 个渠道，再提供手机审批、手机提问、会话控制和清爽的本机管理台——无需额外部署第二套运行时。
 
@@ -40,7 +42,7 @@ DSH Agent ─notify() 工具───────┐
                                ├─▶ notifier 核心 ─▶ 27 个渠道（IM webhook / 推送 App / 国内生态）
 DSH 会话事件 ─自动推送──────────┘   分级路由 · 分档重试 · 长消息分段 · 防打扰 · 账本
                                    心跳 ⏱ / 卡住 ⚠（v0.5）──▶ 卡片自带 ⏹ 停止按钮
-你的手机 ─6 条入站通道──────────▶   远程审批（按钮 · 回复 1/2） · 远程会话（followup/inject/steer） · 远程提问（选项卡，v0.8）
+你的手机 ─6 条入站通道──────────▶   远程审批（按钮 · 回复 1/2） · 远程会话（followup/inject/steer） · 远程提问（选项卡 + 自定义/跳过辅助钮，v0.8）
 ```
 
 每条消息都走同一条链路解析 —— 分级（`timeSensitive` / `active` / `passive`）→ 路由（多 agent 矩阵）→ 渠道适配器（`resolve(cfg)` + `send(msg)`）。两条触发线喂入核心：宿主自动推送会话事件（防抖、去重），模型直接调用 `notify` 工具。六条入站通道反向复用同一核心，承接审批与对话——v0.5 起出站线也会回报：长任务发心跳、静默任务报卡住，Telegram / 飞书通知带一键停止动作。
@@ -221,7 +223,7 @@ src/
   ledger.mjs          JSONL 账本 + 每日摘要
   rules.mjs           防打扰闸门（事件 / 关键词 / 宽限窗）
 scripts/              channel-login.mjs · channel-selfcheck.mjs · route.mjs · gen-channel-matrix.mjs
-test/                 1605 个测试（1605 通过，0.10.0 发布线）；历史 0.8.6 包为 909 个测试。
+test/                 1616 个测试（1616 通过，0.10.1 发布线）；历史 0.8.6 包为 909 个测试。
 ```
 
 设计准则：纯 ESM（`.mjs`）、零运行时依赖、绝大多数渠道走声明式 spec 引擎、适配器薄而诚实、无构建步骤。
@@ -237,10 +239,10 @@ test/                 1605 个测试（1605 通过，0.10.0 发布线）；历�
 
 ## 开发
 
-> 进行活跃开发与贡献请使用私有开发仓库 `THEWOLFWALKER/dsh-notifier-dev`。本公开镜像只是发布/源码快照——请勿在此开发。
+> 开发在本仓库的 `dev` 分支进行，`main` 是发布分支（发布版本 + 标签 + npm 发布）；在 `dev` 上开发、发版时并入 `main`。
 
 ```bash
-npm test          # 0.10.0 发布线：1605（1605 通过）
+npm test          # 0.10.1 发布线：1616（1616 通过）
 ```
 
 新增渠道：在 `src/adapters/` 实现适配器接口（`resolve(cfg)` + `send(msg)`），并在 `src/config.mjs` 注册；上方渠道矩阵由 `node scripts/gen-channel-matrix.mjs` 自动重生成。
