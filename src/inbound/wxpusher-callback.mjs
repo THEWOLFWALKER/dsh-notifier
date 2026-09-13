@@ -15,6 +15,7 @@ import { createHash } from 'node:crypto'
 import { createRateGate } from '../adapters/_tokens.mjs'
 import { startHttpCallback } from './http-callback.mjs'
 import { resolveNotifyTargets } from './target-guard.mjs'
+import { stringsOf } from '../strings.mjs'
 
 const SEND_ENDPOINT = 'https://wxpusher.zjiecode.com/api/send/message'
 const DEFAULT_PORT = 8103
@@ -95,9 +96,13 @@ export function resolveWxpusherInboundConfig(raw, { randomPath } = {}) {
  * @param {typeof fetch} [options.fetchImpl] - fetch 注入（测试用）
  * @param {(options: object) => Promise<{ port: number, close: () => Promise<void> }>} [options.serverStarter]
  *        - HTTP server 启动器注入（测试用；默认 startHttpCallback）
+ * @param {object} [options.strings] - stringsOf(lang) 全文案表（读 `wxpusher` 节，跨节复用
+ *   approval.fallbackText；缺省回落 zh——须先在 strings.mjs 落 `wxpusher` 节）
  */
 export function createWxpusherInbound(options = {}) {
   const { config, bus, store = null, fallbackTargets = [], logger = null, identity = null } = options
+  const STRINGS = options.strings ?? stringsOf()
+  const t = STRINGS.wxpusher
   const fetchImpl = options.fetchImpl ?? globalThis.fetch?.bind(globalThis)
   const startServer = options.serverStarter ?? startHttpCallback
   const allowedIps = Array.isArray(config.allowedIps) ? config.allowedIps.map(String) : []
@@ -293,7 +298,7 @@ export function createWxpusherInbound(options = {}) {
     /** 推审批文本通知（无按钮，回复 1/2 裁决）；失败 null 降级纯通知。 */
     async sendApprovalCard({ chatId, title, content }) {
       try {
-        const messageId = await pushToUid(chatId, `${title}\n${content}\n\n回复 1 批准 / 2 拒绝`)
+        const messageId = await pushToUid(chatId, STRINGS.approval.fallbackText(title, content))
         return messageId !== null ? { messageId } : null
       } catch (error) {
         warn(`审批通知发送失败: ${error instanceof Error ? error.message : String(error)}`)
@@ -305,7 +310,7 @@ export function createWxpusherInbound(options = {}) {
     async editResolved(target, text) {
       if (target?.chatId === undefined || String(target.chatId) === '') return
       try {
-        await pushToUid(target.chatId, `[审批结果] ${text}`)
+        await pushToUid(target.chatId, t.resultLine(text))
       } catch (error) {
         warn(`审批结果回执失败: ${error instanceof Error ? error.message : String(error)}`)
       }

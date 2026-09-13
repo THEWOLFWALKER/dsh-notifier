@@ -42,6 +42,7 @@ import { setBounded, createThrottledWarn } from './_bounded.mjs'
 import { resolveNotifyTargets } from './target-guard.mjs'
 import { normalizeImageAttachment } from './message.mjs'
 import { stripCommandMention, stripLeadingMention } from './commands.mjs'
+import { stringsOf } from '../strings.mjs'
 
 const DEFAULT_API_BASE = 'https://api.dingtalk.com'
 const DEFAULT_OAPI_BASE = 'https://oapi.dingtalk.com'
@@ -157,9 +158,13 @@ export function resolveDingtalkInboundConfig(raw, { credentials } = {}) {
  * @param {typeof WebSocket} [options.webSocketImpl] - WebSocket 构造器注入（测试用；默认 globalThis.WebSocket）
  * @param {number} [options.reconnectBaseMs=1000] - 重连退避基数
  * @param {number} [options.reconnectCapMs=60000] - 重连退避上限
+ * @param {object} [options.strings] - stringsOf(lang) 全文案表（读 `dingtalk` 节，跨节复用
+ *   approval.fallbackText；缺省回落 zh——须先在 strings.mjs 落 `dingtalk` 节）
  */
 export function createDingtalkInbound(options = {}) {
   const { config, bus, store = null, fallbackTargets = [], logger = null, identity = null } = options
+  const STRINGS = options.strings ?? stringsOf()
+  const t = STRINGS.dingtalk
   // 防御性兜底：绕过 resolveDingtalkInboundConfig 直接构造时也保证两个 base 可用
   const apiBase = (String(config?.apiBase ?? '').trim() || DEFAULT_API_BASE).replace(/\/+$/, '')
   const oapiBase = (String(config?.oapiBase ?? '').trim() || DEFAULT_OAPI_BASE).replace(/\/+$/, '')
@@ -585,7 +590,7 @@ export function createDingtalkInbound(options = {}) {
 
     /** 推审批文本通知（无按钮，回复 1/2 裁决）；失败 null 降级纯通知。 */
     async sendApprovalCard({ chatId, title, content }) {
-      const text = `${title}\n${content}\n\n回复 1 批准 / 2 拒绝`
+      const text = STRINGS.approval.fallbackText(title, content)
       try {
         return await sendReply(chatId, text)
       } catch (error) {
@@ -598,7 +603,7 @@ export function createDingtalkInbound(options = {}) {
     async editResolved(target, text) {
       if (target?.chatId === undefined || String(target.chatId) === '') return
       try {
-        await sendReply(String(target.chatId), `[审批结果] ${text}`)
+        await sendReply(String(target.chatId), t.resultLine(text))
       } catch (error) {
         warn(`审批结果回执失败: ${error instanceof Error ? error.message : String(error)}`)
       }

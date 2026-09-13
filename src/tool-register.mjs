@@ -3,7 +3,7 @@
 // compileParameters DSL 模式照搬 dsh-dingtalk：作者 DSL -> 原生 JSON Schema（wire 请求逐字携带）。
 
 import { CHANNEL_TYPES } from './config.mjs'
-import { TEST_MESSAGE } from './health.mjs'
+import { stringsOf } from './strings.mjs'
 import { workspaceOf } from './routing/session-registry.mjs'
 
 /**
@@ -207,7 +207,8 @@ export function registerNotifyTestTool(ctx, notifier, options = {}) {
       if (notifier.channelCount === 0) {
         return { ok: false, skipped: true, channel: args.channel, delivered: [], failed: [] }
       }
-      const message = { title: 'dsh-notifier 自检', content: TEST_MESSAGE, level: 'active' }
+      const health = options.strings?.health ?? stringsOf().health
+      const message = { title: health.title, content: health.testMessage, level: 'active' }
       if (typeof args.channel === 'string' && args.channel.trim() !== '') {
         const result = await notifier.notify(args.channel.trim(), message)
         if (result.skipped === true) {

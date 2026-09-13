@@ -13,6 +13,8 @@ import { normalizeInbound, buildActionPayload } from './inbound/_contract.mjs'
 import { guardTargets } from './inbound/target-guard.mjs'
 // S-05（CWE-200）出站片段脱敏：minimal（默认）打码密钥形态 + 摘录降为 80 字符
 import { maskSecrets, normalizeRedaction, MINIMAL_EXCERPT_CHARS } from './redact.mjs'
+// lang: 'zh' | 'en' 自动推送文案表（未知值回落 zh）
+import { stringsOf } from './strings.mjs'
 
 /** 取会话所属工作区名：cwd 末段，否则 session id。 */
 export function workspaceNameOf(session) {
@@ -44,44 +46,47 @@ export function lastAssistantText(session) {
   return ''
 }
 
-/** turn/end reason.kind -> 文案/级别。kind 不在官方六值内（插件扩展）返回 undefined 保持沉默。 */
+/** turn/end reason.kind -> 级别（文案来自 strings 表）。kind 不在官方六值内（插件扩展）返回 undefined 保持沉默。 */
 const TURN_END_META = {
-  completed: { headline: '✅ 任务完成', level: 'active' },
-  error: { headline: '❌ 任务出错', level: 'timeSensitive' },
-  blocked: { headline: '🚫 任务被阻塞', level: 'timeSensitive' },
-  aborted: { headline: '⏹ 任务已中止', level: 'passive' },
-  'max-tokens': { headline: '⚠️ 达到 Token 上限', level: 'timeSensitive' },
-  interrupted: { headline: '⏸ 任务异常中断', level: 'timeSensitive' },
+  completed: { level: 'active' },
+  error: { level: 'timeSensitive' },
+  blocked: { level: 'timeSensitive' },
+  aborted: { level: 'passive' },
+  'max-tokens': { level: 'timeSensitive' },
+  interrupted: { level: 'timeSensitive' },
 }
 
-/** 把 session/event 映射为可推送意图；不可推送返回 undefined。 */
-export function intentOfSessionEvent(event) {
+/** 把 session/event 映射为可推送意图；不可推送返回 undefined。
+ *  strings 可选（缺省 zh 文案表）——既有调用方零感知，lang 路径显式传入。 */
+export function intentOfSessionEvent(event, strings = stringsOf()) {
   switch (event?.type) {
     // v0.5 任务开始（默认关，events.turnStart.enabled === true 才放行）。
     // detail 留空：workspace 由 push 侧组装（intent 是纯函数，不持有 session）。
     case 'turn/start':
-      return { event: 'turn/start', kind: 'start', headline: '🚀 任务开始', level: 'passive', detail: '' }
+      return { event: 'turn/start', kind: 'start', headline: strings.turnStart, level: 'passive', detail: '' }
     case 'turn/end': {
       const kind = event.data?.reason?.kind
       const meta = TURN_END_META[kind]
       if (meta === undefined) return undefined
       let detail = ''
-      if (kind === 'error') detail = event.data.reason?.error?.message ?? '任务执行出错'
-      else if (kind === 'blocked') detail = '任务被阻塞，等待你处理'
-      else if (kind === 'max-tokens') detail = '某一步骤达到输出 Token 上限'
-      else if (kind === 'interrupted') detail = '会话被异常中断，等待恢复'
-      return { event: 'turn/end', kind, headline: meta.headline, level: meta.level, detail }
+      if (kind === 'error') detail = event.data.reason?.error?.message ?? strings.turnEndDetail.error
+      else if (kind === 'blocked') detail = strings.turnEndDetail.blocked
+      else if (kind === 'max-tokens') detail = strings.turnEndDetail['max-tokens']
+      else if (kind === 'interrupted') detail = strings.turnEndDetail.interrupted
+      return { event: 'turn/end', kind, headline: strings.turnEndHeadline[kind], level: meta.level, detail }
     }
     case 'approval/asked': {
       const data = event.data ?? {}
-      const tool = typeof data.toolName === 'string' && data.toolName !== '' ? `工具 ${data.toolName}` : '一个操作'
-      const reason = typeof data.reason === 'string' && data.reason !== '' ? `：${data.reason}` : ''
+      const tool = typeof data.toolName === 'string' && data.toolName !== ''
+        ? strings.approval.toolName(data.toolName)
+        : strings.approval.toolFallback
+      const reason = typeof data.reason === 'string' && data.reason !== '' ? `${strings.approval.reasonPrefix}${data.reason}` : ''
       return {
         event: 'approval/asked',
         kind: 'approval',
-        headline: '🔐 需要你批准',
+        headline: strings.approval.headline,
         level: 'timeSensitive',
-        detail: `${tool} 需要授权${reason}`,
+        detail: strings.approval.detail(tool, reason),
       }
     }
     default:
@@ -89,13 +94,13 @@ export function intentOfSessionEvent(event) {
   }
 }
 
-/** 把 agent/error 总线负载映射为推送意图。 */
-export function intentOfAgentError(payload = {}) {
+/** 把 agent/error 总线负载映射为推送意图。strings 可选（缺省 zh 文案表）。 */
+export function intentOfAgentError(payload = {}, strings = stringsOf()) {
   const error = payload.error
   const detail = error instanceof Error
     ? error.message
-    : (typeof error === 'string' ? error : (error?.message ?? 'agent 执行出错'))
-  return { event: 'agent/error', kind: 'error', headline: '❌ Agent 执行出错', level: 'timeSensitive', detail }
+    : (typeof error === 'string' ? error : (error?.message ?? strings.agentError.detailFallback))
+  return { event: 'agent/error', kind: 'error', headline: strings.agentError.headline, level: 'timeSensitive', detail }
 }
 
 /**
@@ -236,6 +241,8 @@ export function createTrailingDebounce(windowMs = 10000, { maxKeys = 256, onOver
  */
 export function createEventListener(ctx, notifier, resolvedConfig, wiring = {}) {
   const enabled = resolvedConfig.enabled !== false
+  // lang 文案表：resolvedConfig.lang 已归一（未知值回落 zh），此处不再兜底
+  const strings = stringsOf(resolvedConfig.lang)
   const events = resolvedConfig.events ?? { turnEnd: { enabled: true, kinds: {} }, approval: true, agentError: true }
   const router = wiring.router ?? null
   const registry = wiring.registry ?? null
@@ -317,18 +324,18 @@ export function createEventListener(ctx, notifier, resolvedConfig, wiring = {}) 
     const sid = String(session?.id ?? '')
     const lines = sid !== '' && sid !== workspace ? [`${workspace} / ${sid.slice(0, 8)}`] : [workspace]
     if (intent.info !== undefined && intent.info !== null) {
-      lines.push(`已运行 ${formatDuration(intent.info.elapsedMs)}，最近活动 ${formatDuration(intent.info.idleMs)} 前`)
+      lines.push(strings.status.runtimeLine(formatDuration(intent.info.elapsedMs), formatDuration(intent.info.idleMs)))
     }
     if (intent.event === 'stall') {
-      lines.push('长工具执行可能误报；可回复 /stop 取消，或调大 events.stall.afterMs')
+      lines.push(strings.status.stallHint)
     } else {
       // S-05：minimal（默认）摘录 200→80 + 密钥形态打码；extended 维持原文
       const minimal = normalizeRedaction(resolvedConfig.redaction) === 'minimal'
       const cap = minimal ? MINIMAL_EXCERPT_CHARS : 200
       let excerpt = lastAssistantText(session).slice(-cap).trim()
       if (minimal) excerpt = maskSecrets(excerpt)
-      if (excerpt !== '') lines.push(`最近输出：${excerpt}`)
-      lines.push('回复 /stop 取消')
+      if (excerpt !== '') lines.push(`${strings.status.recentOutputPrefix}${excerpt}`)
+      lines.push(strings.status.stopHint)
     }
     return lines.join('\n')
   }
@@ -368,7 +375,7 @@ export function createEventListener(ctx, notifier, resolvedConfig, wiring = {}) 
           chatId: target.chatId,
           title: message.title,
           content: message.content,
-          actions: [{ label: '⏹ 停止任务', data }],
+          actions: [{ label: strings.status.stopActionLabel, data }],
         })).then((card) => {
           if (card === null || card === undefined) {
             try { dispatcher.unmarkSource(minted.key, inbound.channel, String(target.chatId)) } catch { /* 撤销失败不致命 */ }
@@ -396,8 +403,8 @@ export function createEventListener(ctx, notifier, resolvedConfig, wiring = {}) 
     ...trackerOverrides,
     heartbeat: heartbeatCfg,
     stall: stallCfg,
-    onHeartbeat: (session, info) => push(statusIntent('longRunning', '⏱ 任务进行中', 'passive', info), session),
-    onStall: (session, info) => push(statusIntent('stall', '⚠️ 疑似卡住', 'timeSensitive', info), session),
+    onHeartbeat: (session, info) => push(statusIntent('longRunning', strings.status.longRunningHeadline, 'passive', info), session),
+    onStall: (session, info) => push(statusIntent('stall', strings.status.stallHeadline, 'timeSensitive', info), session),
   })
 
   const push = (intent, session) => {
@@ -444,7 +451,7 @@ export function createEventListener(ctx, notifier, resolvedConfig, wiring = {}) 
       grace.activity()
       return
     }
-    const intent = intentOfSessionEvent(event)
+    const intent = intentOfSessionEvent(event, strings)
     if (intent === undefined) return
     if (!eventAllowed(intent)) return
     // G-18：approval/asked 即时推送键追加负载摘要（hash6(detail)——detail 由 toolName/
@@ -470,7 +477,7 @@ export function createEventListener(ctx, notifier, resolvedConfig, wiring = {}) 
     if (agentId === undefined || agentId === null) return
     const key = `agent:${agentId}:${payload.turn ?? 0}:${payload.step ?? 0}`
     if (!dedup.test(key)) return
-    push(intentOfAgentError(payload), agent?.session)
+    push(intentOfAgentError(payload, strings), agent?.session)
   }
 
   const hostEvents = createHostEventRegistrar(ctx, warn)

@@ -13,12 +13,12 @@ import { resolveNotifyTargets } from './target-guard.mjs'
 import { buildQuestionAction } from './_contract.mjs'
 import { stripCommandMention } from './commands.mjs'
 import { verdictFailureText, cardMissingText } from './verdict-text.mjs'
+import { stringsOf } from '../strings.mjs'
 
 const DEFAULT_API_BASE = 'https://api.telegram.org'
 const POLL_TIMEOUT_S = 25
 const POLL_ABORT_MS = (POLL_TIMEOUT_S + 10) * 1000
 const DEFAULT_ERROR_BACKOFF_MS = 5000
-const TERMINAL_FALLBACK_SUFFIX = '（按钮失效）'
 
 // P1-1 协议盲区护栏（2026-08-20，Trae1）：TG sendMessage 的 text 硬限 4096 字符，
 // 超限必 400 "message is too long"。审批 reason / 提问 context 上游无长度上限
@@ -29,22 +29,6 @@ const TERMINAL_FALLBACK_SUFFIX = '（按钮失效）'
 // = 2 码元——只按码点数截到 4096 的全 emoji 文本实际 8192 码元，真机仍 400）；
 // 切口回退到码点边界，绝不劈开 surrogate pair。
 const TG_TEXT_LIMIT = 4096
-const TG_TEXT_TRUNCATE_MARK = '…（内容过长，已截断）'
-
-/** 卡片文本护栏：按 UTF-16 码元把 text 钳到 TG 4096 硬限内；超限截断并追加可见标记。 */
-function clampTelegramText(text) {
-  const s = String(text ?? '')
-  if (s.length <= TG_TEXT_LIMIT) return s
-  const markUnits = TG_TEXT_TRUNCATE_MARK.length
-  let cut = TG_TEXT_LIMIT - markUnits
-  // 切口若落在代理对中间（前一码元是高代理且后一码元是低代理），回退一位保码点完整
-  if (cut > 0
-    && s.charCodeAt(cut - 1) >= 0xD800 && s.charCodeAt(cut - 1) <= 0xDBFF
-    && s.charCodeAt(cut) >= 0xDC00 && s.charCodeAt(cut) <= 0xDFFF) {
-    cut -= 1
-  }
-  return `${s.slice(0, Math.max(0, cut))}${TG_TEXT_TRUNCATE_MARK}`
-}
 
 /**
  * 创建 Telegram 入站通道。
@@ -61,8 +45,12 @@ function clampTelegramText(text) {
  * @param {typeof fetch} [options.fetchImpl] - 测试注入
  * @param {number} [options.errorBackoffMs=5000] - 轮询异常退避（测试可缩短）
  * @param {number} [options.callbackTtlMs] - 按钮短引用有效期（缺省 15min，略长于 token TTL）
+ * @param {object} [options.strings] - stringsOf(lang) 全文案表（读 `telegram` 节，跨节复用
+ *   verdict/actions/questions；缺省回落 zh——须先在 strings.mjs 落 `telegram` 节）
  */
-export function createTelegramInbound({ config, bus, vault, store = null, logger = null, fetchImpl, errorBackoffMs, actions = null, callbackTtlMs, identity = null, questions = null, control = null, accountId = null } = {}) {
+export function createTelegramInbound({ config, bus, vault, store = null, logger = null, fetchImpl, errorBackoffMs, actions = null, callbackTtlMs, identity = null, questions = null, control = null, accountId = null, strings = null } = {}) {
+  const STRINGS = strings ?? stringsOf()
+  const t = STRINGS.telegram
   const apiBase = (config.apiBase || DEFAULT_API_BASE).replace(/\/+$/, '')
   const botToken = String(config.botToken ?? '')
   const backoffMs = Math.max(0, Number(errorBackoffMs) || DEFAULT_ERROR_BACKOFF_MS)
@@ -81,9 +69,26 @@ export function createTelegramInbound({ config, bus, vault, store = null, logger
     try { console.error('[dsh-notifier/inbound:telegram]', message) } catch { /* 控制台不可用不致命 */ }
   }
 
+  /** 卡片文本护栏：按 UTF-16 码元把 text 钳到 TG 4096 硬限内；超限截断并追加可见标记
+   *  （可见标记随 lang 解析，代理对保护逻辑见文件头 P1-1 注释）。 */
+  const clampTelegramText = (text) => {
+    const mark = t.truncateMark
+    const s = String(text ?? '')
+    if (s.length <= TG_TEXT_LIMIT) return s
+    const markUnits = mark.length
+    let cut = TG_TEXT_LIMIT - markUnits
+    // 切口若落在代理对中间（前一码元是高代理且后一码元是低代理），回退一位保码点完整
+    if (cut > 0
+      && s.charCodeAt(cut - 1) >= 0xD800 && s.charCodeAt(cut - 1) <= 0xDBFF
+      && s.charCodeAt(cut) >= 0xDC00 && s.charCodeAt(cut) <= 0xDFFF) {
+      cut -= 1
+    }
+    return `${s.slice(0, Math.max(0, cut))}${mark}`
+  }
+
   const makeTerminalFallbackText = (text) => {
     const base = String(text ?? '')
-    return base === '' ? TERMINAL_FALLBACK_SUFFIX : `${base}\n${TERMINAL_FALLBACK_SUFFIX}`
+    return base === '' ? t.terminalFallbackSuffix : `${base}\n${t.terminalFallbackSuffix}`
   }
 
   const api = async (method, body = {}) => {
@@ -127,7 +132,7 @@ export function createTelegramInbound({ config, bus, vault, store = null, logger
     if (parts[0] === 'r' && parts.length === 2) {
       const peeked = refs.peek(parts[1])
       if (peeked === null) {
-        await api('answerCallbackQuery', { callback_query_id: query.id, text: '该操作已处理或已过期（按钮单次有效）' }).catch(() => {})
+        await api('answerCallbackQuery', { callback_query_id: query.id, text: t.refExpired }).catch(() => {})
         return
       }
       // SEC-1：卡片铸 ref 时记录了发送目标 chatId；点击所在 chat 不一致 → 直接拒绝，
@@ -147,16 +152,16 @@ export function createTelegramInbound({ config, bus, vault, store = null, logger
         warn('按钮短引用缺少来源会话元数据（origin.chatId），跳过来源校验（升级前在途卡片兼容，ref TTL 内有效）')
       } else if (clickedChat === null || clickedChat === undefined) {
         warn(`按钮回调缺少点击会话（message.chat.id），来源校验拒绝（origin=${originChat}；不消费引用，原会话仍可点击）`)
-        await api('answerCallbackQuery', { callback_query_id: query.id, text: '请到原会话操作' }).catch(() => {})
+        await api('answerCallbackQuery', { callback_query_id: query.id, text: STRINGS.verdict.sourceChatMismatch }).catch(() => {})
         return
       } else if (String(clickedChat) !== String(originChat)) {
         warn(`按钮点击会话与原会话不一致（clicked=${clickedChat} origin=${originChat}），来源校验拒绝（不消费引用）`)
-        await api('answerCallbackQuery', { callback_query_id: query.id, text: '请到原会话操作' }).catch(() => {})
+        await api('answerCallbackQuery', { callback_query_id: query.id, text: STRINGS.verdict.sourceChatMismatch }).catch(() => {})
         return
       }
       const expanded = refs.take(parts[1])
       if (expanded === null) {
-        await api('answerCallbackQuery', { callback_query_id: query.id, text: '该操作已处理或已过期（按钮单次有效）' }).catch(() => {})
+        await api('answerCallbackQuery', { callback_query_id: query.id, text: t.refExpired }).catch(() => {})
         return
       }
       await handleCallbackData(query, expanded)
@@ -170,13 +175,13 @@ export function createTelegramInbound({ config, bus, vault, store = null, logger
         const result = actions.dispatch({ actionKey, token, via: 'telegram:action', userId: query.from?.id, accountId: resolvedAccountId, chatId: query.message?.chat?.id, ...(query.message?.chat?.type !== undefined ? { chatType: query.message.chat.type } : {}) })
         const actionText = result?.ok === true
           ? result.message
-          : (result?.message ?? '该操作已处理或已过期')
+          : (result?.message ?? STRINGS.actions.alreadyHandledOrExpired)
         await api('answerCallbackQuery', { callback_query_id: query.id, text: actionText }).catch(() => {})
         if (query.message?.chat?.id !== undefined) {
           await api('editMessageText', {
             chat_id: query.message.chat.id,
             message_id: query.message.message_id,
-            text: `${actionText}\n（来源：telegram user ${query.from?.id ?? '?'}）`,
+            text: `${actionText}\n${t.sourceNote(query.from?.id ?? '?')}`,
           }).catch(() => {})
         }
         return
@@ -206,13 +211,13 @@ export function createTelegramInbound({ config, bus, vault, store = null, logger
         const verdict = control !== null
           ? control.handle({ command: 'question-answer', eventId: String(query.id ?? ''), qKey, optIdx, token, via: 'telegram', channel: 'telegram', accountId: resolvedAccountId, userId: String(query.from?.id ?? ''), chatId: String(query.message?.chat?.id ?? ''), chatType: query.message?.chat?.type })
           : questions.decide({ qKey, optIdx, token, via: 'telegram', accountId: resolvedAccountId, userId: query.from?.id, chatId: query.message?.chat?.id })
-        const text = verdict?.message ?? (verdict?.status === 'accepted' ? '✅ 已作答' : '该提问已回答或已过期')
+        const text = verdict?.message ?? (verdict?.status === 'accepted' ? t.answeredShort : STRINGS.questions.answeredOrExpired)
         await api('answerCallbackQuery', { callback_query_id: query.id, text: String(text).slice(0, 200) }).catch(() => {})
         if (query.message?.chat?.id !== undefined) {
           await api('editMessageText', {
             chat_id: query.message.chat.id,
             message_id: query.message.message_id,
-            text: `${text}\n（来源：telegram user ${query.from?.id ?? '?'}）`,
+            text: `${text}\n${t.sourceNote(query.from?.id ?? '?')}`,
           }).catch(() => {})
         }
         return
@@ -242,16 +247,16 @@ export function createTelegramInbound({ config, bus, vault, store = null, logger
         // already-resolved/expired 各自文案），不再一律「已处理或已过期」误导排障方向。
         // 卡片承载缺失（query.message 空 = 原消息被删）用专用话术，不落「请到原会话」。
         const text = verdict.ok === true || verdict.status === 'accepted'
-          ? (decision === 'allowed-once' ? '✅ 已批准（单次有效）' : '❌ 已拒绝')
+          ? (decision === 'allowed-once' ? t.approvedOnce : t.rejected)
           : (query.message === undefined || query.message?.chat === undefined
-            ? cardMissingText()
-            : (verdict.message ?? verdictFailureText(verdict.reason, 'approval')))
+            ? cardMissingText(STRINGS)
+            : (verdict.message ?? verdictFailureText(verdict.reason, 'approval', undefined, STRINGS)))
         await api('answerCallbackQuery', { callback_query_id: query.id, text }).catch(() => {})
         if (query.message?.chat?.id !== undefined) {
           await api('editMessageText', {
             chat_id: query.message.chat.id,
             message_id: query.message.message_id,
-            text: `${text}\n（来源：telegram user ${query.from?.id ?? '?'}）`,
+            text: `${text}\n${t.sourceNote(query.from?.id ?? '?')}`,
           }).catch(() => {})
         }
       }
@@ -379,8 +384,8 @@ export function createTelegramInbound({ config, bus, vault, store = null, logger
           text: clampTelegramText(`🔐 ${title}\n\n${content}\n\n_decision: ${approvalKey}_`),
           reply_markup: {
             inline_keyboard: [[
-              { text: '✅ 批准（本次）', callback_data: `r:${allowRef}` },
-              { text: '❌ 拒绝', callback_data: `r:${rejectRef}` },
+              { text: t.approveButton, callback_data: `r:${allowRef}` },
+              { text: t.rejectButton, callback_data: `r:${rejectRef}` },
             ]],
           },
         })
@@ -462,8 +467,8 @@ export function createTelegramInbound({ config, bus, vault, store = null, logger
         return null
       }
       const rows = optionEntries.map((entry) => [entry.row])
-      rows.push([{ text: '✍️ 自定义回答', callback_data: `r:${customRef}` }])
-      rows.push([{ text: '⏭ 跳过', callback_data: `r:${skipRef}` }])
+      rows.push([{ text: t.customAnswerButton, callback_data: `r:${customRef}` }])
+      rows.push([{ text: t.skipButton, callback_data: `r:${skipRef}` }])
       try {
         const result = await api('sendMessage', {
           chat_id: chatId,
@@ -510,7 +515,7 @@ export function createTelegramInbound({ config, bus, vault, store = null, logger
         } catch (error2) {
           warn(`终态失效兜底再次失败，改发独立文本: ${error2 instanceof Error ? error2.message : String(error2)}`)
           try {
-            await api('sendMessage', { chat_id: chatId, text: clampTelegramText(`${text}\n（操作已完成；原消息可能已删除）`) })
+            await api('sendMessage', { chat_id: chatId, text: clampTelegramText(`${text}\n${t.editFallbackNote}`) })
           } catch { /* 最后的兜底也失败则静默——总比二次报错强 */ }
         }
       }

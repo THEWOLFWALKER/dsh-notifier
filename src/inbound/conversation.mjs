@@ -13,6 +13,7 @@
 // 任何投递异常只回执用户，绝不弄崩宿主。
 
 import { randomUUID } from 'node:crypto'
+import { stringsOf } from '../strings.mjs'
 import { workspaceOf } from '../routing/session-registry.mjs'
 import { projectTasks } from '../routing/task-projection.mjs'
 import { CHANNEL_TYPES } from '../config.mjs'
@@ -26,13 +27,8 @@ const SUMMARY_MAX_CHARS = 120
 /** 各 P0 通道图片-only 占位正文（wechat/qq 沿用）；投递时不得把它当真实文本交给视觉模型。 */
 const IMAGE_PLACEHOLDER_TEXT = '[图片消息]'
 
-/** 入站解析来源层的展示标签（/route 入站段用，与 agent-router 的 source 值一一对应）。 */
-const INBOUND_SOURCE_LABELS = {
-  bind: '显式绑定（/bind 或 /agent use）',
-  'channel-default': '通道默认 agent',
-  'single-agent': '唯一 agent 兜底',
-  latest: '最近活跃（默认兜底）',
-}
+// 入站解析来源层的展示标签随 lang 在使用点解析（t.inboundSourceLabels，与
+// agent-router 的 source 值一一对应）。
 
 /** 组装宿主 UserMessage（source.kind = 'plugin'，与 call-me 同构）。图片走 OpenAI 风格
  * image_url 内容块（DeepSeek/DSH 兼容格式；合同测试锁定，真机 schema 待验证）。
@@ -52,6 +48,9 @@ function buildUserMessage(text, image = null, plugin = 'dsh-notifier') {
   }
 }
 
+/** zh 兜底（strings 未注入时的回落）：单一事实源 = stringsOf().conversation（无内联副本）。 */
+const ZH_FALLBACK = stringsOf().conversation
+
 /**
  * 注册会话路由器。
  * @param {object} deps
@@ -67,15 +66,18 @@ function buildUserMessage(text, image = null, plugin = 'dsh-notifier') {
  *   - 会话台账（/agent 命令族数据源、活跃信号 touch、入站对话挂钩维护）；缺省时命令族降级提示
  * @param {() => string[]} [deps.channelTypes] - 全局已启用渠道类型（v0.3.2 出站解析的兜底池
  *   与过滤白名单）；缺省回落 config.mjs 的 CHANNEL_TYPES 全量（乐观池）
- * @param {ReturnType<typeof import('../routing/task-selection.mjs').createTaskSelection>} [deps.taskSelection]
+* @param {ReturnType<typeof import('../routing/task-selection.mjs').createTaskSelection>} [deps.taskSelection]
  *   - v0.10 任务选择（歧义前置）；非空时多活跃任务无绑定先下发选择卡
  * @param {(id: string) => boolean} [deps.attentionOf] - v0.10 待关注判定器（/tasks ⚠）
  * @param {(url: string) => Promise<object|null>} [deps.downloadImage] - v0.10 图片受控下载原语
  *   （测试替身/渠道专用下载器注入点；缺省回落 message.mjs downloadInboundImage）
+ * @param {object} [strings] - stringsOf(lang) 全文案表（本函数读 conversation 节；
+ *   缺省回落 ZH_FALLBACK）。装配层注入 stringsOf(config.lang) 全表；缺省路径输出与既有硬编码逐字节一致。
  * @returns {() => void} 反注册函数
  */
-export function registerConversationRouter(deps) {
+export function registerConversationRouter(deps, strings) {
   const { ctx, bus, store } = deps
+  const t = strings?.conversation ?? ZH_FALLBACK
   const reply = typeof deps.reply === 'function' ? deps.reply : () => {}
   const cfg = deps.config ?? {}
   const router = deps.router ?? null
@@ -228,46 +230,28 @@ export function registerConversationRouter(deps) {
     const cmd = rawCmd.toLowerCase()
     const say = (message) => reply(envelope.channel, envelope.chatId, message)
     if (cmd === 'help') {
-      say([
-        '命令集：',
-        '  /status — 查看绑定与 agent 状态',
-        '  /agent — 活跃会话分组视图（workspace | sid | 状态 | 出站通道 | quiet）',
-        '  /agent use <workspace|sid 前缀> — 本对话切到该会话（智能绑定）',
-        '  /agent back — 解除本对话绑定，回通道默认',
-        '  /tasks — 活跃任务列表（taskRef | workspace | 状态 | 待关注）',
-        '  /use <workspace|sid 前缀> — 选择任务（等价 /agent use；歧义选择卡时投递原消息）',
-        '  /bind <sessionId> — 绑定到指定会话（sid 级精确操作）',
-        '  /unbind — 解绑（回到通道默认路由：通道默认 agent，未配置则最近活跃）',
-        '  /stop — 取消当前 turn',
-        '  /route — 查看当前双向解析（会话→通道 / 通道→会话）',
-        '  /quiet <workspace|sid> — 静默该会话的出站推送（远程对话不受影响）',
-        '  /unquiet <workspace|sid> — 恢复该会话的出站推送',
-        '  /help — 本帮助',
-        '',
-        '直接发文本 = 对话；! 前缀 = 纠偏（steer）；.. 结尾 = 立即发送（合并窗内）。',
-        '长任务自动心跳（默认 15min 起）与疑似卡住提醒（默认 10min 无事件）；卡片通道可点按钮停止，其余 /stop。',
-      ].join('\n'))
+say(t.helpLines.join('\n'))
       return true
     }
     if (cmd === 'status') {
       const bound = boundSession(envelope)
       const agent = bound !== null ? agentOf(bound) : undefined
       say([
-        `绑定：${store.get(bindingKey(envelope)) ?? '（未显式绑定：走通道默认路由）'}`,
-        `目标：${bound ?? '（无活跃会话，先 /bind 或等 agent 启动）'}`,
-        `状态：${agent !== undefined ? agent.status : '未找到'}`,
-        `活跃会话：${agentsOf().map((agent) => `${agent.id}(${agent.status})`).join('、') || '（无）'}`,
+        `${t.statusBindLabel}${store.get(bindingKey(envelope)) ?? t.bindUnset}`,
+        `${t.statusTargetLabel}${bound ?? t.targetUnset}`,
+        `${t.statusStateLabel}${agent !== undefined ? agent.status : t.statusNotFound}`,
+        `${t.activeSessionsLabel}${agentsOf().map((agent) => `${agent.id}(${agent.status})`).join(t.joiner) || t.activeSessionsNone}`,
       ].join('\n'))
       return true
     }
     if (cmd === 'bind') {
       const target = args[0]
       if (target === undefined || target === '') {
-        say('用法：/bind <sessionId>（可先用 /status 查看活跃会话）')
+        say(t.bindUsage)
         return true
       }
       if (agentOf(target) === undefined) {
-        say(`会话 ${target} 不存在（用 /status 查看活跃会话）`)
+        say(t.bindMissingSession(target))
         return true
       }
       // G-48：覆盖绑定先摘旧会话的入站挂钩。否则 store 换了目标，registry 反查表里同一
@@ -283,7 +267,7 @@ export function registerConversationRouter(deps) {
       // v0.3.2：同步维护台账入站挂钩与活跃信号（防御壳内降级，不影响绑定本身）
       registryCall('attachInbound', target, inboundBindingOf(envelope))
       registryCall('touch', target)
-      say(`已绑定 ${target}`)
+      say(t.boundReceipt(target))
       return true
     }
     if (cmd === 'unbind') {
@@ -294,7 +278,7 @@ export function registerConversationRouter(deps) {
       if (typeof old === 'string' && old !== '') {
         registryCall('detachInbound', old, inboundBindingOf(envelope))
       }
-      say('已解绑（回到通道默认路由）')
+      say(t.unboundReceipt)
       return true
     }
     if (cmd === 'stop' && args.length === 0) {
@@ -303,13 +287,13 @@ export function registerConversationRouter(deps) {
       // 落到函数尾部的未知命令路径：回执「未识别的命令」+ 按普通文本投递。
       const bound = boundSession(envelope)
       const agent = bound !== null ? agentOf(bound) : undefined
-      if (agent === undefined) { say('当前没有可停止的会话'); return true }
+      if (agent === undefined) { say(t.stopNone); return true }
       try {
         agent.cancel('remote-stop')
-        say(`已请求取消 ${bound} 的当前 turn`)
+        say(t.stopRequested(bound))
       } catch (error) {
         warn(`/stop 失败: ${error instanceof Error ? error.message : String(error)}`)
-        say('取消失败（agent 可能已空闲）')
+        say(t.stopFailed)
       }
       return true
     }
@@ -330,12 +314,12 @@ export function registerConversationRouter(deps) {
         say(renderAgentList())
         return true
       }
-      say('用法：/agent（活跃会话列表）| /agent use <workspace|sid 前缀> | /agent back')
+      say(t.agentUsage)
       return true
     }
     if (cmd === 'route') {
       if (router === null) {
-        say('路由引擎未装配（v0.3.2 router 缺失）：/route 暂不可用；/status 仍可查看会话与绑定。')
+        say(t.routeUnavailable)
         return true
       }
       say(renderRoute(envelope))
@@ -354,26 +338,26 @@ export function registerConversationRouter(deps) {
     if (cmd === 'quiet' || cmd === 'unquiet') {
       const quiet = cmd === 'quiet'
       if (router === null) {
-        say('路由引擎未装配（v0.3.2 router 缺失）：/quiet 暂不可用；/status 仍可查看会话与绑定。')
+        say(t.quietUnavailable)
         return true
       }
       const target = args[0]
       if (typeof target !== 'string' || target.trim() === '') {
-        say(`用法：/${cmd} <workspace 名 | sessionId | sid 前缀（≥4 位）>`)
+        say(t.quietUsage(cmd))
         return true
       }
       const matched = matchSessionByNeedle(target.trim())
       if (matched.sid === null) { say(matched.message); return true }
       const ok = routerCall('setSessionOutbound', matched.sid, { quiet })
       if (ok !== true) {
-        say(`/${cmd} 写入失败（路由状态存储不可用），请稍后再试`)
+        say(t.quietWriteFailed(cmd))
         return true
       }
       const workspace = workspaceOfSid(matched.sid)
-      const label = workspace === '' ? '(未知 workspace)' : workspace
+      const label = workspace === '' ? t.unknownWorkspace : workspace
       say([
-        `${quiet ? '🔇 已静默' : '🔔 已恢复'} ${label} / ${matched.sid}（${matched.matchedBy}）的出站推送`,
-        quiet ? '（远程审批与对话不受影响；/unquiet <workspace|sid> 恢复）' : '',
+        t.quietReceipt(quiet ? t.quietMarkMuted : t.quietMarkResumed, label, matched.sid, matched.matchedBy),
+        quiet ? t.quietHint : '',
       ].filter((line) => line !== '').join('\n'))
       return true
     }
@@ -381,7 +365,7 @@ export function registerConversationRouter(deps) {
     // 附言形态落到此路径——若只静默按普通文本投递，用户会误以为命令已被执行（回执黑洞）。
     // 回执仅告知未识别，「当普通文本处理（避免吞消息）」的既有语义保持不变
     // （若下方投递失败，routeUnsafe 还会另有回执）。
-    say(`未识别的命令 /${cmd}（用 /help 查看命令集）`)
+    say(t.unknownCommand(cmd))
     return false // 未知命令：当普通文本处理（避免吞消息）
   }
 
@@ -394,34 +378,34 @@ export function registerConversationRouter(deps) {
    */
   function renderAgentList() {
     if (router === null) {
-      return '路由引擎未装配（v0.3.2 router 缺失）：/agent 列表暂不可用；/status 仍可查看会话与绑定。'
+      return t.agentListUnavailable
     }
     const { infos } = activeSessionInfos()
-    const lines = ['活跃会话分组视图（workspace | sid | 状态 | 出站通道 | quiet）：']
+    const lines = [t.agentListHeader]
     if (registry === null) {
-      lines.push('（会话台账 registry 未装配：按宿主 agent 列表降级展示，活跃排序不可用）')
+      lines.push(t.agentListDegraded)
     }
     if (infos.length === 0) {
-      lines.push('  （无活跃会话：先在宿主开一个会话，或 /bind <sessionId>）')
+      lines.push(t.agentListEmpty)
     }
     const groups = new Map() // workspace -> 该组行（保持活跃降序；组顺序 = 最近活跃组的 workspace 在前）
     for (const info of infos) {
-      const key = info.workspace === '' ? '(未知 workspace)' : info.workspace
+      const key = info.workspace === '' ? t.unknownWorkspace : info.workspace
       if (!groups.has(key)) groups.set(key, [])
       groups.get(key).push(info)
     }
     for (const [workspace, rows] of groups) {
       for (const info of rows) {
-        const status = agentOf(info.id)?.status ?? '未知'
+        const status = agentOf(info.id)?.status ?? t.statusUnknown
         const outbound = routerCall('resolveOutbound', info.id, info.workspace, globalTypes())
         const channels = outbound !== undefined && Array.isArray(outbound.channelTypes)
           ? `[${outbound.channelTypes.join(', ')}]`
-          : '(解析不可用)'
+          : t.outboundUnavailable
         const quiet = outbound?.quiet === true ? 'quiet' : '-'
         lines.push(`  ${workspace} | ${info.id.slice(0, 8)} | ${status} | ${channels} | ${quiet}`)
       }
     }
-    lines.push('（/agent use <workspace|sid 前缀> 切换；/agent back 回通道默认；/route 查看双向解析）')
+    lines.push(t.agentListFooter)
     return lines.join('\n')
   }
 
@@ -511,24 +495,24 @@ export function registerConversationRouter(deps) {
     const ofWorkspace = infos.filter((info) => info.workspace !== '' && info.workspace === needle)
     if (ofWorkspace.length > 0) {
       const sid = pickLatest(ofWorkspace, activitySorted) // 同 workspace 多活跃会话 → 最近活跃者（§0.5-4）
-      if (sid !== null) return { sid, matchedBy: `workspace=${needle}` }
+      if (sid !== null) return { sid, matchedBy: t.matchedByWorkspace(needle) }
     }
-    if (infos.some((info) => info.id === needle)) return { sid: needle, matchedBy: 'sessionId 精确匹配' }
+    if (infos.some((info) => info.id === needle)) return { sid: needle, matchedBy: t.matchedBySessionId }
     if (needle.length >= 4) {
       const hits = infos.filter((info) => info.id.startsWith(needle)).map((info) => info.id)
-      if (hits.length === 1) return { sid: hits[0], matchedBy: 'sid 前缀唯一命中' }
+      if (hits.length === 1) return { sid: hits[0], matchedBy: t.matchedBySidPrefix }
       if (hits.length > 1) {
         return {
           sid: null,
           message: [
-            `前缀 ${needle} 命中 ${hits.length} 个活跃会话，请精确指定：`,
+            t.prefixAmbiguous(needle, hits.length),
             ...hits.map((id) => `  ${id}`),
-            '（或用 workspace 名精确匹配）',
+            t.prefixHint,
           ].join('\n'),
         }
       }
     }
-    return { sid: null, message: `未匹配到会话 ${needle}（用 /agent 查看活跃会话；sid 前缀匹配需至少 4 位）` }
+    return { sid: null, message: t.noMatch(needle) }
   }
 
   /**
@@ -538,7 +522,7 @@ export function registerConversationRouter(deps) {
    */
   function handleAgentUse(envelope, target, say) {
     if (typeof target !== 'string' || target.trim() === '') {
-      say('用法：/agent use <workspace 名 | sessionId | sid 前缀（≥4 位）>')
+      say(t.agentUseUsage)
       return
     }
     const matched = matchSessionByNeedle(target.trim())
@@ -553,7 +537,7 @@ export function registerConversationRouter(deps) {
     }
     registryCall('attachInbound', sid, inboundBindingOf(envelope))
     registryCall('touch', sid)
-    say(`已绑定 ${workspace === '' ? '(未知 workspace)' : workspace} / ${sid}（${matched.matchedBy}；/agent back 回通道默认）`)
+    say(t.agentUseBound(workspace === '' ? t.unknownWorkspace : workspace, sid, matched.matchedBy))
   }
 
   /** /agent back：读旧绑定 → 删 bind 键 + registry.detachInbound，回到通道默认路由。 */
@@ -563,9 +547,9 @@ export function registerConversationRouter(deps) {
     if (typeof old === 'string' && old !== '') {
       store.delete(key)
       registryCall('detachInbound', old, inboundBindingOf(envelope))
-      say(`已回到通道默认（解除与 ${old} 的绑定）`)
+      say(t.agentBackBound(old))
     } else {
-      say('当前没有显式绑定（本就走通道默认路由）')
+      say(t.agentBackUnbound)
     }
   }
 
@@ -577,22 +561,22 @@ export function registerConversationRouter(deps) {
   function renderRoute(envelope) {
     const resolved = resolveTarget(envelope)
     const sid = resolved.sessionId
-    const lines = ['【出站】当前会话 → 通道（逐层解析）']
+    const lines = [t.routeOutboundHeader]
     if (sid === null) {
-      lines.push('  当前无目标会话（无绑定且无活跃会话可兜底）')
+      lines.push(t.routeNoTarget)
     } else {
       const described = routerCall('describe', sid, workspaceOfSid(sid), globalTypes())
       for (const line of String(described ?? '').split('\n')) lines.push(`  ${line}`)
     }
-    lines.push('', '【入站】本通道 → 会话（当前解析）')
-    lines.push(`  来源：${INBOUND_SOURCE_LABELS[resolved.source] ?? String(resolved.source)}`)
-    lines.push(`  目标：${sid ?? '（无）'}`)
-    lines.push(`  歧义：${resolved.ambiguous ? '是（多活跃会话，已按最近活跃投递）' : '否'}`)
+    lines.push('', t.routeInboundHeader)
+    lines.push(t.routeSourceLine(t.inboundSourceLabels?.[resolved.source] ?? String(resolved.source)))
+    lines.push(t.routeTargetLine(sid))
+    lines.push(t.routeAmbiguousLine(resolved.ambiguous))
     if (resolved.ambiguous && Array.isArray(resolved.candidates) && resolved.candidates.length > 0) {
-      lines.push(`  候选：${resolved.candidates.join('、')}`)
+      lines.push(t.routeCandidatesLine(resolved.candidates.join(t.joiner)))
     }
     const channelDefault = routerCall('getChannelDefault', envelope.channel)
-    lines.push(`  通道默认 agent（${envelope.channel}）：${channelDefault ?? '未配置'}`)
+    lines.push(t.routeChannelDefaultLine(envelope.channel, channelDefault))
     return lines.join('\n')
   }
 
@@ -705,19 +689,19 @@ export function registerConversationRouter(deps) {
       // begin 返回 null（候选被过滤空 / 触发文本为空）：回退旧「投最近活跃 + 消歧回执」。
     }
     if (bound === null) {
-      reply(envelope.channel, envelope.chatId, '没有活跃会话可投递（用 /bind <sessionId> 绑定，或 /status 查看）')
+      reply(envelope.channel, envelope.chatId, t.noActiveSession)
       return
     }
     const agent = agentOf(bound)
     if (agent === undefined) {
-      reply(envelope.channel, envelope.chatId, `会话 ${bound} 不存在或已退出（用 /status 查看）`)
+      reply(envelope.channel, envelope.chatId, t.sessionGone(bound))
       return
     }
     const outcome = deliver(agent, text, image, () => {
       reply(envelope.channel, envelope.chatId, '图片获取失败（已按纯文本投递，图片未随附）')
     })
     if (outcome === 'error') {
-      reply(envelope.channel, envelope.chatId, '投递失败（详见宿主日志）')
+      reply(envelope.channel, envelope.chatId, t.deliverFailed)
     } else if (outcome === 'empty') {
       // 空文本（如只有 !）：静默忽略
     } else {
@@ -725,8 +709,7 @@ export function registerConversationRouter(deps) {
       registryCall('touch', bound)
       if (resolved.ambiguous === true) {
         const count = Array.isArray(resolved.candidates) ? resolved.candidates.length : 1
-        reply(envelope.channel, envelope.chatId,
-          `已投 ${bound}（该 workspace 有 ${count} 个活跃会话，用 /agent use 或 /bind 精确指定）`)
+        reply(envelope.channel, envelope.chatId, t.deliveredAmbiguous(bound, count))
       }
     }
   }
@@ -744,8 +727,8 @@ export function registerConversationRouter(deps) {
     // when no session is resolved; consume with a receipt instead.
     if (String(envelope.channel ?? '').toLowerCase() === 'qq' && chatScopeOf(envelope) !== 'private') {
       reply(envelope.channel, envelope.chatId, chatScopeOf(envelope) === 'group'
-        ? '群聊不允许远程控制，请回原私聊会话操作'
-        : '远程控制来源无法确认，请回原私聊会话操作')
+        ? t.groupControlDenied
+        : t.controlSourceUnverified)
       return
     }
     const target = resolveTarget(envelope)
@@ -766,10 +749,10 @@ export function registerConversationRouter(deps) {
       settle: () => { routeUnsafe(envelope, text, image); return true },
     })
     if (receipt.status === 'accepted') return
-    if (receipt.reason === 'conversation_disabled') reply(envelope.channel, envelope.chatId, '远程对话默认关闭，请在 session policy 中显式开启')
-    else if (receipt.reason === 'group_chat_disabled') reply(envelope.channel, envelope.chatId, '群聊不允许远程控制，请回原私聊会话操作')
-    else if (receipt.reason === 'not_paired') reply(envelope.channel, envelope.chatId, '请先完成配对后再操作')
-    else reply(envelope.channel, envelope.chatId, '远程控制被拒绝，请回桌面确认')
+    if (receipt.reason === 'conversation_disabled') reply(envelope.channel, envelope.chatId, t.conversationDisabled)
+    else if (receipt.reason === 'group_chat_disabled') reply(envelope.channel, envelope.chatId, t.groupControlDenied)
+    else if (receipt.reason === 'not_paired') reply(envelope.channel, envelope.chatId, t.notPaired)
+    else reply(envelope.channel, envelope.chatId, t.controlRejected)
   }
 
   // G-31：会话路由是消费链末位兜底（priority 100）——前面审批/提问未消费的消息才进 agent 会话。

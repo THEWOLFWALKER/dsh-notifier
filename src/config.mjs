@@ -197,7 +197,7 @@ export function maskChannelConfig(type, cfg) {
 
 /**
  * 解析并归一化 channels[] 配置。
- * 返回 { enabled, debounceMs, summaryMaxChars, titlePrefix, channels }：
+ * 返回 { enabled, debounceMs, summaryMaxChars, titlePrefix, lang, channels }：
  *   channels = [{ type, config }] 已 resolve 的可发送渠道；
  *   skipped   = [{ type, reason }] 未配置/禁用/未知类型的渠道（调用方负责 warn）。
  * 绝不 throw：任何单渠道问题都只是跳过，不弄崩启动。
@@ -216,6 +216,8 @@ export function resolveConfig(config = {}) {
   // extended = 维持原文（用户显式选择向第三方 IM 外发完整片段，README 已声明数据流向）。
   // 非法值一律回落 minimal：安全配置的非法值不配得到宽松解释。
   const redaction = raw.redaction === 'extended' ? 'extended' : 'minimal'
+  // 自动推送文案语言：'zh'（默认）| 'en'。未知值回落 zh，归一化与 redaction 同法。
+  const lang = raw.lang === 'en' ? 'en' : 'zh'
 
   // 事件粒度开关（阶段 2 规则引擎）：默认全开。turnEnd 支持两种写法：
   //   turnEnd: false                     → 整类关闭
@@ -376,6 +378,7 @@ export function resolveConfig(config = {}) {
     summaryMaxChars,
     titlePrefix,
     redaction,
+    lang,
     events,
     toolRateLimitPerMinute,
     questions,

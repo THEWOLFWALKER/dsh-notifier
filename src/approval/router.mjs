@@ -10,6 +10,7 @@
 //  - observe 模式只旁观：推完卡片立即 next()，桌面照常决定
 
 import { createEscalationChain } from './escalation.mjs'
+import { stringsOf } from '../strings.mjs'
 import { normalizeInbound, parseApprovalAction } from '../inbound/_contract.mjs'
 import { MESSAGE_PRIORITY } from '../inbound/bus.mjs'
 import { guardTargets } from '../inbound/target-guard.mjs'
@@ -24,28 +25,22 @@ const OUTCOME_ALLOWED = 'allowed-once'
 const OUTCOME_REJECTED = 'rejected'
 const INTERACTIVE_ALIASES = Object.freeze({ 'qq-bot': 'qq' })
 
-// 通道名 → 用户可读名（广播文案用；统一从 capability-matrix.mjs 读取，单一事实来源）
-const DISPLAY_NAMES = {
-  get telegram() { return displayNameOf('telegram') },
-  get feishu() { return displayNameOf('feishu') },
-  get qq() { return displayNameOf('qq') },
-  get wxpusher() { return displayNameOf('wxpusher') },
-  get wechat() { return displayNameOf('wechat') },
-  get dingtalk() { return displayNameOf('dingtalk') },
-}
 
-// 升级链默认节奏：30s / 60s 各再提醒一轮（timeoutMs 默认 120s 内完成两轮升级）
+// 升级链默认节奏：30s / 60s 各再提醒一轮（timeoutMs 默认 120s 内完成两轮升级）。
+// note 不在此处定死——默认节奏的提醒文案随 lang 在装配点注入（t.approval.escStageNote1/2）。
 const DEFAULT_ESCALATION_STAGES = [
-  { afterMs: 30_000, level: 'timeSensitive', note: '第 1 次升级提醒' },
-  { afterMs: 60_000, level: 'timeSensitive', note: '第 2 次升级提醒' },
+  { afterMs: 30_000, level: 'timeSensitive' },
+  { afterMs: 60_000, level: 'timeSensitive' },
 ]
 
 // G-34（D5）：卡片/编号裁决成功后，同 key 文本线（广播、升级链）5min 抑制窗口——
 // 双路径（事件线文本 + 交互线卡片）通知双响封口：用户点过卡片后不再收到"仍在等待批准"。
 const TEXT_SUPPRESS_WINDOW_MS = 5 * 60 * 1000
 
-// G-16（D4）：重启残留审批的失效告知文案（补发给 pushedTo 目标）。
-const STALE_APPROVAL_NOTICE = '该审批因宿主重启已失效，请回桌面处理'
+// G-16（D4）：重启残留审批的失效告知文案（补发给 pushedTo 目标）——文案取自 strings 表。
+
+// strings 未接线时的 zh 兜底（单一事实源 = stringsOf()；wiring 统一传 stringsOf(lang)）。
+const ZH_FALLBACK = stringsOf()
 
 /**
  * 注册 approval/request 处理器。
@@ -70,9 +65,21 @@ const STALE_APPROVAL_NOTICE = '该审批因宿主重启已失效，请回桌面�
  *   - v0.3.2 审批分流：request.agent 可解析时，审批只发该 agent 绑定的通道（替代全局广播）。
  *     审批不受 quiet 影响——静音审批 = 审批永远超时回落桌面，违背「沉默永不批准」的可预期性。
  * @returns {() => void} 反注册函数
+ * @param {object} [strings] - 文案表（wiring 传 stringsOf(lang)；缺省 zh 兜底）
  */
-export function registerApprovalHandler(deps) {
+export function registerApprovalHandler(deps, strings) {
   const { ctx, notifier, bus, vault, store, identity } = deps
+  const t = strings ?? ZH_FALLBACK
+  // 通道名 → 用户可读名（广播文案用；随 lang 解析：strings.commands.channelNames
+  // 已按 lang 取词，缺失渠道回落 capability-matrix 的 displayNameOf）。
+  const DISPLAY_NAMES = {
+    get telegram() { return t.commands?.channelNames?.telegram ?? displayNameOf('telegram') },
+    get feishu() { return t.commands?.channelNames?.feishu ?? displayNameOf('feishu') },
+    get qq() { return t.commands?.channelNames?.qq ?? displayNameOf('qq') },
+    get wxpusher() { return t.commands?.channelNames?.wxpusher ?? displayNameOf('wxpusher') },
+    get wechat() { return t.commands?.channelNames?.wechat ?? displayNameOf('wechat') },
+    get dingtalk() { return t.commands?.channelNames?.dingtalk ?? displayNameOf('dingtalk') },
+  }
   const router = deps.router ?? null
   const approvalConfig = deps.approvalConfig ?? {}
   const mode = approvalConfig.mode === 'answer' ? 'answer' : 'observe'
@@ -90,7 +97,11 @@ export function registerApprovalHandler(deps) {
     : {}
   const escalationStages = Array.isArray(escalationCfg.stages) && escalationCfg.stages.length > 0
     ? escalationCfg.stages
-    : DEFAULT_ESCALATION_STAGES
+    // 默认节奏的提醒文案随 lang 在此处注入（自定义 stages 的 note 仍完全由用户控制）
+    : DEFAULT_ESCALATION_STAGES.map((stage, index) => ({
+      ...stage,
+      note: index === 0 ? t.approval.escStageNote1 : t.approval.escStageNote2,
+    }))
   const escalation = createEscalationChain({
     stages: escalationCfg.enabled === false ? [] : escalationStages,
     logger: deps.logger,
@@ -263,11 +274,11 @@ export function registerApprovalHandler(deps) {
   }
 
   async function pushApproval(key, token, request, channelTypes, targetsByChannel) {
-    const title = `需要批准：${request.toolName}`
+    const title = t.approval.cardTitle(request.toolName)
     // S-05：reason 是 agent 生成文本，minimal（默认）打码密钥形态后外发
-    const rawReason = typeof request.reason === 'string' && request.reason !== '' ? request.reason : 'agent 请求执行一个需要授权的操作'
+    const rawReason = typeof request.reason === 'string' && request.reason !== '' ? request.reason : t.approval.reasonFallback
     const reason = redaction === 'minimal' ? maskSecrets(rawReason) : rawReason
-    const content = `${reason}\n\n批准将仅对本次调用生效（token 单次核销）。`
+    const content = t.approval.content(reason)
     const pushedTo = []
     const hintTargets = []
     const buttonChannels = []
@@ -283,7 +294,7 @@ export function registerApprovalHandler(deps) {
         if (row !== undefined) store.set(key, { ...row, pushedTo: [...pushedTo], hintTargets: [...hintTargets] })
       } catch { /* 增量落账失败不致命，末尾还有一次整体落账兜底 */ }
     }
-    const fallbackText = `${title}\n${content}\n\n回复 1 批准 / 2 拒绝`
+    const fallbackText = t.approval.fallbackText(title, content)
     for (const [channel, kept] of targetsByChannel) {
       const inbound = interactiveByChannel.get(channel)
       if (inbound === undefined) continue
@@ -322,8 +333,8 @@ export function registerApprovalHandler(deps) {
     // 按钮渠道提示可点；无按钮渠道提示编号回复——单向广播渠道（bark 等）同样
     // 依赖「回复 1 批准 / 2 拒绝」兜底，因此按钮场景也保留该提示（v0.2.0 文案契约）。
     const channelNotes = []
-    if (buttonChannels.length > 0) channelNotes.push(`${buttonChannels.join('、')} 已发可点按钮`)
-    if (textChannels.length > 0) channelNotes.push(`${textChannels.join('、')} 已发审批通知`)
+    if (buttonChannels.length > 0) channelNotes.push(t.approval.sentButtonNote(buttonChannels))
+    if (textChannels.length > 0) channelNotes.push(t.approval.sentNoticeNote(textChannels))
     const outbound = new Set(Array.isArray(notifier?.channels) ? notifier.channels : [])
     const carded = new Set(pushedTo.map((target) => String(target.channel)))
     const broadcastTypes = channelTypes === null
@@ -338,9 +349,9 @@ export function registerApprovalHandler(deps) {
     if (textLineSuppressed(key)) return { pushedTo, hintTargets }
     await notifier.notifyAll({
       title,
-      content: channelNotes.length > 0
-        ? `${content}\n\n（${channelNotes.join('；')}；无按钮渠道可回复 1 批准 / 2 拒绝）`
-        : `${content}\n\n（本渠道无按钮：回复 1 批准 / 2 拒绝）`,
+      content: `${content}\n\n${channelNotes.length > 0
+        ? t.approval.broadcastWithNotes(channelNotes)
+        : t.approval.broadcastNoButtons}`,
       level: 'timeSensitive',
     }, broadcastTypes !== null ? { channelTypes: broadcastTypes } : {}).catch(() => {})
     return { pushedTo, hintTargets }
@@ -375,7 +386,7 @@ export function registerApprovalHandler(deps) {
       if (inbound !== undefined) void inbound.sendText(envelope.chatId, message).catch(() => {})
     }
     if (row === undefined || row.status !== 'pending') {
-      reply('该审批已被处理或已失效，此次点击无效')
+      reply(t.approval.alreadyResolved)
       return true
     }
     const targets = (Array.isArray(row.pushedTo) ? row.pushedTo : []).filter((target) => String(target.channel) === String(envelope.channel) && (target.accountId === undefined || String(target.accountId) === String(envelope.accountId ?? '')))
@@ -389,16 +400,16 @@ export function registerApprovalHandler(deps) {
     if (!targets.some((target) => String(target.userId) === String(envelope.userId))) {
       if (targets.length === 0) {
         warn(`审批按钮来源无法核验（无投递记录）：${key}（channel ${envelope.channel}，user ${envelope.userId}）`)
-        reply('未找到该审批的投递记录，无法核验回复来源，请回桌面处理')
+        reply(t.approval.noDeliveryRecord)
       } else {
-        reply('仅审批接收人可点击裁决')
+        reply(t.approval.receiverOnly)
       }
       return true
     }
     // v0.8.7：accountId 缺失时不得用 channel 名伪造——fail-closed 交还桌面。
     // 旧客户端回调可能不含 accountId，此时无法证明来源账号，不能放行。
     if (envelope.accountId === undefined || envelope.accountId === null || String(envelope.accountId) === '') {
-      reply('审批回调缺少账号来源，无法裁决（请升级客户端）')
+      reply(t.approval.missingAccountCallback)
       return true
     }
     const verdict = deps.control !== null && deps.control !== undefined
@@ -409,8 +420,8 @@ export function registerApprovalHandler(deps) {
         accountId: String(envelope.accountId), userId: envelope.userId,
         chatId: envelope.chatId, chatType: envelope.chatType,
       })
-      : { ok: false, message: 'Control Core 未接线，审批不可用' }
-    if (!(verdict.ok === true || verdict.status === 'accepted')) reply(verdict.message ?? '该审批已被处理或已失效，此次点击无效')
+      : { ok: false, message: t.approval.controlNotWired }
+    if (!(verdict.ok === true || verdict.status === 'accepted')) reply(verdict.message ?? t.approval.alreadyResolved)
     return true
   }
 
@@ -433,7 +444,7 @@ export function registerApprovalHandler(deps) {
       warn(`编号回复归属拒绝 ${pending.key}（evidence=${pending.evidence}，user ${envelope.userId} 非 owner）`)
       const inbound = interactiveByChannel.get(envelope.channel)
       if (inbound !== undefined) {
-        void inbound.sendText(envelope.chatId, '此审批不是发给你的(无权裁决)').catch(() => {})
+        void inbound.sendText(envelope.chatId, t.approval.notForYou).catch(() => {})
       }
       return true
     }
@@ -441,12 +452,12 @@ export function registerApprovalHandler(deps) {
     // v0.8.7：编号回复同样要求 accountId 来源——缺失时 fail-closed。
     if (envelope.accountId === undefined || envelope.accountId === null || String(envelope.accountId) === '') {
       const inbound = interactiveByChannel.get(envelope.channel)
-      if (inbound !== undefined) void inbound.sendText(envelope.chatId, '审批回复缺少账号来源，无法裁决').catch(() => {})
+      if (inbound !== undefined) void inbound.sendText(envelope.chatId, t.approval.missingAccountReply).catch(() => {})
       return true
     }
     const verdict = deps.control !== null && deps.control !== undefined
       ? deps.control.handle({ eventId: String(envelope.messageId ?? ''), command: 'approval', approvalKey: pending.key, channel: envelope.channel, accountId: String(envelope.accountId), chatId: envelope.chatId, chatType: envelope.chatType, userId: envelope.userId, via: `${envelope.channel}:reply`, decision, trusted: true })
-      : { ok: false, message: 'Control Core 未接线，审批不可用' }
+      : { ok: false, message: t.approval.controlNotWired }
     if (verdict.ok === true || verdict.status === 'accepted') {
       warn(`编号回复裁决 ${pending.key} → ${decision}（user ${envelope.userId}）`)
       return true
@@ -455,7 +466,7 @@ export function registerApprovalHandler(deps) {
     // 不把裸 '1'/'2' 漏进对话路由（对齐 questions/router.mjs:316-318 既有姿态）。
     const inbound = interactiveByChannel.get(envelope.channel)
     if (inbound !== undefined) {
-      void inbound.sendText(envelope.chatId, '该审批已被处理（首达采纳，此次回复无效）').catch(() => {})
+      void inbound.sendText(envelope.chatId, t.approval.alreadyDecidedRace).catch(() => {})
     }
     warn(`编号回复落空 ${pending.key}（已决竞态，user ${envelope.userId}）`)
     return true
@@ -529,7 +540,7 @@ export function registerApprovalHandler(deps) {
         store.set(key, { ...row, pushedTo, hintTargets: delivery.hintTargets })
       }
       if (ledger.get(key)?.decision === 'terminated') {
-        await markRemoteResolved(pushedTo, '⏹ 已终止：agent 会话已结束，审批取消')
+        await markRemoteResolved(pushedTo, t.approval.terminatedCard)
         return next()
       }
 
@@ -549,19 +560,19 @@ export function registerApprovalHandler(deps) {
             if (decision !== null) finish({ kind: 'remote', decision })
             else {
               ledger.resolve(key, ledger.get(key)?.decision === 'terminated' ? 'terminated' : 'timeout')
-              void markRemoteResolved(pushedTo, '⏱ 手机端等待结束：请到桌面处理（按钮已失效）').catch(() => {})
+              void markRemoteResolved(pushedTo, t.approval.parallelTimeout).catch(() => {})
             }
           }).catch(() => {})
           desktopAsk.then((result) => finish({ kind: 'desktop', result }), () => finish({ kind: 'desktop', result: undefined }))
         })
         if (race.kind === 'remote') {
           ledger.resolve(key, race.decision.decision)
-          await markRemoteResolved(pushedTo, race.decision.decision === OUTCOME_ALLOWED ? '✅ 已远程批准（本次）' : '❌ 已远程拒绝')
+          await markRemoteResolved(pushedTo, race.decision.decision === OUTCOME_ALLOWED ? t.approval.remoteApproved : t.approval.remoteRejected)
           return race.decision.decision
         }
         try { bus.abandon?.(key, 'desktop-first') } catch { }
         try { ledger.terminate(key) } catch { }
-        await markRemoteResolved(pushedTo, '🖥️ 已在桌面处理（手机按钮已失效）')
+        await markRemoteResolved(pushedTo, t.approval.desktopHandled)
         return race.result
       }
 
@@ -572,8 +583,8 @@ export function registerApprovalHandler(deps) {
         // （escalation.stop 在裁决后调用，这里兜住 stop 前的已触发 stage 竞态）。
         if (textLineSuppressed(key)) return
         notifier.notifyAll({
-          title: `${request?.toolName ?? '操作'} 仍在等待批准`,
-          content: `${stage.note ?? '仍在等待批准'}（已等待 ${Math.round((Date.now() - startedAt) / 1000)}s）。\n回复 1 批准 / 2 拒绝${cardChannelNames !== '' ? `，或点击 ${cardChannelNames} 卡片按钮` : ''}。`,
+          title: t.approval.escStillWaiting(request?.toolName),
+          content: t.approval.escContent(stage.note ?? t.approval.escNoteFallback, Math.round((Date.now() - startedAt) / 1000), cardChannelNames),
           level: stage.level ?? 'timeSensitive',
         }, channelTypes !== null ? { channelTypes } : {}).catch(() => {})
       })
@@ -581,16 +592,16 @@ export function registerApprovalHandler(deps) {
       const decision = await decisionPromise
       escalation.stop(key)
       if (ledger.get(key)?.decision === 'terminated') {
-        await markRemoteResolved(pushedTo, '⏹ 已终止：agent 会话已结束，审批取消')
+        await markRemoteResolved(pushedTo, t.approval.terminatedCard)
         return next()
       }
       if (decision === null) {
         ledger.resolve(key, 'timeout')
-        await markRemoteResolved(pushedTo, '⏱ 超时未响应：已交还桌面处理（按钮失效）')
+        await markRemoteResolved(pushedTo, t.approval.timeoutResolved)
         return next() // 静默永不批准
       }
       ledger.resolve(key, decision.decision)
-      await markRemoteResolved(pushedTo, decision.decision === OUTCOME_ALLOWED ? '✅ 已远程批准（本次）' : '❌ 已远程拒绝')
+      await markRemoteResolved(pushedTo, decision.decision === OUTCOME_ALLOWED ? t.approval.remoteApproved : t.approval.remoteRejected)
       warn(`${key} 裁决：${decision.decision}（via ${decision.via}）`)
       return decision.decision
     } catch (error) {
@@ -622,7 +633,7 @@ export function registerApprovalHandler(deps) {
       for (const target of targets) {
         const inbound = interactiveByChannel.get(target.channel)
         if (inbound === undefined) continue
-        void inbound.sendText(target.chatId, STALE_APPROVAL_NOTICE).catch((error) => {
+        void inbound.sendText(target.chatId, t.approval.staleNotice).catch((error) => {
           warn(`重启失效补发失败(${key} → ${target.channel}/${target.chatId}): ${error instanceof Error ? error.message : String(error)}`)
         })
       }

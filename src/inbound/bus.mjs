@@ -15,6 +15,7 @@
 //  - 注册面命令（/whoami /pair /unpair + 引导态 /help）在业务扇出前拦截并消费。
 
 import { createCommandHandler, getChannelName, parseCommand } from './commands.mjs'
+import { stringsOf } from '../strings.mjs'
 
 const DEFAULT_DEDUP_WINDOW_MS = 24 * 60 * 60 * 1000
 /** G-46：合成 messageId（内容哈希兜底键）短去重窗——只兜平台 HTTP 重投（秒级），
@@ -52,6 +53,7 @@ export const MESSAGE_PRIORITY = Object.freeze({
  * @param {object} [options.vault] - createTokenVault 实例
  * @param {number} [options.dedupWindowMs] - 去重窗口，默认 24h（平台原生 messageId）
  * @param {number} [options.syntheticDedupWindowMs] - 合成 messageId 去重窗口，默认 60s（G-46）
+ * @param {object} [options.strings] - stringsOf(lang) 全文案表（bus 白名单回执 + decide 话术取词；缺省 zh）
  * @param {object} [options.logger] - cordis logger
  * @param {() => void} [options.onBootstrapRemint] - 引导码重铸回调（stderr 展示）
  */
@@ -69,7 +71,7 @@ export function createInboundBus(options = {}) {
     try { console.error('[dsh-notifier/inbound]', message) } catch { /* 控制台不可用不致命 */ }
   }
   const commands = identity !== null && pairing !== null
-    ? createCommandHandler({ identity, pairing, logger: options.logger, onBootstrapRemint: options.onBootstrapRemint })
+    ? createCommandHandler({ identity, pairing, logger: options.logger, onBootstrapRemint: options.onBootstrapRemint }, options.strings)
     : null
 
   // 双层去重：内存 FIFO（快速路径）+ store（重启恢复）。
@@ -222,10 +224,9 @@ export function createInboundBus(options = {}) {
       remember(envelope)
       // 拒绝回执（引导态文案带配对指引；普通态带联系管理员指引）
       if (identity !== null && shouldReply(envelope.channel, envelope.userId)) {
-        const idLine = `你的${getChannelName(envelope.channel)}身份是 ${envelope.userId}。`
-        const reply = guided
-          ? `${idLine}\n当前为引导模式（白名单为空）。发送 /pair <配对码> 完成绑定（首位绑定者成为 owner），配对码见宿主启动日志；/whoami 查看你的身份。`
-          : `${idLine}\n你不在白名单中。请联系管理员生成配对码，然后发送 /pair <配对码> 绑定。`
+        const bt = options.strings?.bus ?? stringsOf().bus
+        const idLine = bt.identityLine(getChannelName(envelope.channel, options.strings), envelope.userId)
+        const reply = guided ? bt.guidedReply(idLine) : bt.whitelistReply(idLine)
         warn(`拒绝入站消息：${envelope.channel} user ${envelope.userId} 不在白名单${guided ? '（引导态）' : ''}`)
         return { ok: false, reason: guided ? 'guided' : 'whitelist', reply }
       }
@@ -332,7 +333,7 @@ export function createInboundBus(options = {}) {
         if (!chatProvided || !scopeProvided) {
           // 缺点击会话或缺来源范围：无法确证来源 → 显式拒绝，不核销 wait。
           warn(`decide ${approvalKey} 来源校验失败（chatId 提供:${chatProvided}，allowChats:${scopeProvided}）`)
-          return { ok: false, reason: 'source-chat-mismatch', message: '请到原会话操作' }
+          return { ok: false, reason: 'source-chat-mismatch', message: (options.strings?.verdict ?? stringsOf().verdict).sourceChatMismatch }
         }
         const channel = String(via ?? '').split(':')[0]
         const chatSet = entry.allowChats.get(channel)

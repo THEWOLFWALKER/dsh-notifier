@@ -5,46 +5,52 @@
 // 「昨晚 3 条通知：✅ x2、❌ x1」——不用翻手机通知流。
 
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+// lang 文案表：晨报正文取词；分类标记 zh/en 双语都匹配（与推送语言无关）
+import { stringsOf } from './strings.mjs'
 
-/** 标题 → 事件种类（intentToMessage 的标题前缀约定；含 titlePrefix 也能子串命中）。 */
+/** 标题 → 事件种类（intentToMessage 的标题前缀约定；含 titlePrefix 也能子串命中）。
+ *  zh/en 双标记都匹配：分类与推送语言无关（lang:'en' 时英文 headline 也入正确桶）。 */
 const KIND_PATTERNS = [
-  ['digest', '通知摘要'],
-  ['completed', '任务完成'],
-  ['error', '任务出错'],
-  ['agentError', 'Agent 执行出错'],
-  ['blocked', '任务被阻塞'],
-  ['aborted', '任务已中止'],
-  ['maxTokens', '达到 Token 上限'],
-  ['interrupted', '任务异常中断'],
-  ['approval', '需要你批准'],
+  ['digest', ['通知摘要', 'Notification digest']],
+  ['completed', ['任务完成', 'Task complete']],
+  ['error', ['任务出错', 'Task failed']],
+  ['agentError', ['Agent 执行出错', 'Agent error']],
+  ['blocked', ['任务被阻塞', 'Task blocked']],
+  ['aborted', ['任务已中止', 'Task aborted']],
+  ['maxTokens', ['达到 Token 上限', 'Output token limit reached']],
+  ['interrupted', ['任务异常中断', 'Task interrupted']],
+  ['approval', ['需要你批准', 'Approval needed']],
 ]
 
 /** 从通知标题推断事件种类；未知回 'other'（用户/工具自定义通知）。 */
 export function classifyTitle(title) {
   const value = typeof title === 'string' ? title : ''
-  for (const [kind, marker] of KIND_PATTERNS) {
-    if (value.includes(marker)) return kind
+  for (const [kind, markers] of KIND_PATTERNS) {
+    for (const marker of markers) {
+      if (value.includes(marker)) return kind
+    }
   }
   return 'other'
 }
 
-/** 组装摘要正文（中文，一行统计 + 失败渠道提示）。 */
-export function composeDigest(summary) {
+/** 组装摘要正文（一行统计 + 失败渠道提示；strings 缺省 zh 文案表，既有调用方零感知）。 */
+export function composeDigest(summary, strings = stringsOf()) {
   const { from, to, counts, failedDeliveries } = summary
-  const lines = [`时间窗：${from} ~ ${to}，共 ${counts.total} 条通知`]
+  const d = strings.digest
+  const lines = [d.windowLine(from, to, counts.total)]
   const parts = []
-  if (counts.completed > 0) parts.push(`✅完成 x${counts.completed}`)
-  if (counts.error > 0) parts.push(`❌出错 x${counts.error}`)
-  if (counts.agentError > 0) parts.push(`❌agent出错 x${counts.agentError}`)
-  if (counts.blocked > 0) parts.push(`🚫阻塞 x${counts.blocked}`)
-  if (counts.aborted > 0) parts.push(`⏹中止 x${counts.aborted}`)
-  if (counts.maxTokens > 0) parts.push(`⚠️token上限 x${counts.maxTokens}`)
-  if (counts.interrupted > 0) parts.push(`⏸中断 x${counts.interrupted}`)
-  if (counts.approval > 0) parts.push(`🔐审批 x${counts.approval}`)
-  if (counts.other > 0) parts.push(`其他 x${counts.other}`)
-  if (parts.length > 0) lines.push(parts.join('、'))
-  if (failedDeliveries > 0) lines.push(`另有 ${failedDeliveries} 条渠道投递失败（详见日志）`)
-  if (counts.total === 0) return `时间窗：${from} ~ ${to}，无通知记录`
+  if (counts.completed > 0) parts.push(d.completed(counts.completed))
+  if (counts.error > 0) parts.push(d.error(counts.error))
+  if (counts.agentError > 0) parts.push(d.agentError(counts.agentError))
+  if (counts.blocked > 0) parts.push(d.blocked(counts.blocked))
+  if (counts.aborted > 0) parts.push(d.aborted(counts.aborted))
+  if (counts.maxTokens > 0) parts.push(d.maxTokens(counts.maxTokens))
+  if (counts.interrupted > 0) parts.push(d.interrupted(counts.interrupted))
+  if (counts.approval > 0) parts.push(d.approval(counts.approval))
+  if (counts.other > 0) parts.push(d.other(counts.other))
+  if (parts.length > 0) lines.push(parts.join(d.joiner))
+  if (failedDeliveries > 0) lines.push(d.failedLine(failedDeliveries))
+  if (counts.total === 0) return d.empty(from, to)
   return lines.join('\n')
 }
 

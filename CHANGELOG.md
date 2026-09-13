@@ -1,5 +1,25 @@
 # Changelog
 
+## [Unreleased]（codex/notification-lang-setting）
+
+新增配置项 `lang: 'zh' | 'en'`（默认 zh，零行为变化）：全部手机可见文案改为从 `src/strings.mjs` 文案表取词，`lang: 'en'` 时输出英文。覆盖面：自动推送（turn/end · approval/asked · agent/error · longRunning/stall 的 headline/detail/正文模板 + 「⏹ 停止任务」动作卡片按钮）、审批卡片与裁决回执（approval/router）、ask_user 提问卡片与编号回复（questions/router）、裁决失败话术（verdict-text）、身份命令回执（/pair /whoami /unpair，commands.mjs）、会话命令族与远程对话回执（/status /agent /bind /unbind /stop /route /quiet，conversation.mjs，含 /route 入站来源标签与 `、` 连接符）、动作按钮回执（actions.mjs）、bus 白名单拒绝回执与 decide 来源话术、各渠道适配器回执（TG 按钮 / 飞书卡片 / QQ·钉钉·WxPusher 文本回执 / wechat 文本审批）、晨报（ledger.mjs，classifyTitle zh/en 双标记匹配 + composeDigest 取词）、notify_test 渠道自检推送（health.mjs）。助手摘录、错误原文、面向 agent 的工具文本、管理台文案、agent 会话信封标记不翻译（它们本就是会话语言或宿主侧数据）。非法 `lang` 值回落 zh（与 `redaction` 归一化同法），`stringsOf` 做 own-property 校验（`__proto__`/`constructor` 等继承键不命中表）。文案表中 zh 条目与硬编码逐字节一致（程序化审计 + 全量测试）。
+
+实现模式：相关工厂函数末尾可选 `strings` 参数（stringsOf(lang) 全表），内部按节取词（`strings?.<section> ?? stringsOf().<section>`）；未传 strings 的既有调用方保持逐字节 zh 输出，全部既有默认路径测试原样通过。升级链默认节奏的提醒文案随 lang 在装配点注入（自定义 stages 的 note 仍完全由用户控制，note 缺失回落 escNoteFallback）。渠道显示名以 strings 表 `commands.channelNames` 为用户文案事实源（capability-matrix `displayNameOf(channel, lang)` 本就支持 en，approval 路由 getters 以表优先、matrix 兜底）。
+
+- `src/strings.mjs`（新增）：zh/en 双语文案表（17 节）+ `stringsOf(lang)`（未知值回落 zh，own-property 校验）。
+- `src/config.mjs`：`resolveConfig` 归一化 `lang`（仅接受 `'en'`，其余回落 `'zh'`）。
+- `src/event-listener.mjs`：`TURN_END_META` 只留级别，headline/detail 取自文案表；`intentOfSessionEvent` / `intentOfAgentError` 增加可选 `strings` 参数（缺省 zh，既有调用方零感知）；`composeStatusBody`、longRunning/stall headline、turn/start headline、动作卡片按钮 label 走文案表。
+- `src/approval/router.mjs` / `src/questions/router.mjs`：卡片、编号回复、裁决回执、升级提醒取词；默认升级 stages 文案注入点从模块常量移入工厂（随 lang）；`STALE_APPROVAL_NOTICE` 与 `INBOUND_SOURCE_LABELS` 同法迁入表。
+- `src/inbound/conversation.mjs` / `src/inbound/commands.mjs` / `src/actions.mjs` / `src/inbound/bus.mjs` / `src/inbound/verdict-text.mjs`：各自可见文案取词；zh 兜底统一 `stringsOf()`（单一事实源，无内联副本）。
+- `src/inbound/telegram-bot.mjs` / `feishu-bot.mjs` / `qq-gw.mjs` / `dingtalk-stream.mjs` / `wxpusher-callback.mjs` / `src/channels/wechat-ilink/legacy-core.mjs`：适配器回执/卡片/toast 取词；feishu 卡片构造器带 `t`；群聊敏感文本闸（isSensitiveControlText）改为从 `approval.cardTitle('')` / `questions.cardTitle('')` 派生前缀，lang:'en' 下闸仍生效（zh 前缀逐字节一致）。
+- `src/ledger.mjs`：晨报 `classifyTitle` zh/en 双标记匹配（英文 headline 亦入正确统计桶），`composeDigest(summary, strings)` 取词。
+- `src/health.mjs`：`runChannelTest` 自检推送 title/正文取词（`TEST_MESSAGE` 改由表导出，zh 逐字节一致）。
+- `src/tool-register.mjs`：notify_test 推送取词（notify 工具描述等 agent-facing 文本不在范围）。
+- `src/assembly/inbound-channels.mjs`：`strings` 透传六个渠道 attach。
+- 测试：`test/lang-strings.test.mjs` 9 项 focused（默认逐字节 deepEqual / en 切换 / 未知与继承键回落 / zh-en 表 key 形状一致防单边漂移 / 错误原文不翻译 / titlePrefix 组合 / createEventListener en 状态正文 / commands·actions·适配器段英文防 zh 副本回潮）。并入库 `lang` 归一与移植后的全量回归。
+
+已知影响（记录，不在本次修）：管理台内部文案与 `notify` 工具结果文本仍为中文（agent/桌面侧，非手机面）；后续如做全量 i18n 可顺带迁移。
+
 ## [0.10.0] - 2026-09-12（codex/mobile-task-loop-v010 收口）
 
 「手机接管 DSH 任务」闭环特性线：宿主能力桥（能力快照 + 事件实证 + 生命周期诊断）、经 `ctx.userQuestions` 公开 seam 桥接原生提问、Web-first 远程延迟升级、移动任务路由（任务投影 / 任务选择 / 歧义前置）、图片进入 DSH 会话、管理台暴露 DSH 连接与任务状态。`npm test` 为 **1605**（1605 pass，较 0.9.7 基线 1548 净 +57）。全部为 mock/contract/fixture 证据；原生提问桥与 QQ 图片解析未经真机复验，缺口见 `docs/memory/risks.md`。

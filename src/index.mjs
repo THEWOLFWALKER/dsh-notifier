@@ -41,6 +41,8 @@ import { createAdminServer } from './admin/server.mjs'
 import { ADMIN_UI_HTML } from './admin/ui.mjs'
 import { createScanHandlers } from './admin/scan.mjs'
 import { runChannelTest } from './health.mjs'
+// lang 文案表：入站回执 / 晨报标题等手机可见文案取词（未知 lang 已在 resolveConfig 归一回落 zh）
+import { stringsOf } from './strings.mjs'
 
 export const name = 'dsh-notifier'
 export const inject = ['tools', 'agents']
@@ -48,6 +50,7 @@ export const inject = ['tools', 'agents']
 /** 返回已解析配置（供测试与其它插件复用）。 */
 export function apply(ctx, config = {}) {
   const resolved = resolveConfig(config)
+  const strings = stringsOf(resolved.lang)
   const logger = ctx?.logger
   const warn = (message) => {
     try { logger?.warn?.('[dsh-notifier]', message) } catch { /* 日志失败绝不致命 */ }
@@ -301,7 +304,7 @@ export function apply(ctx, config = {}) {
   let hostEventsRegistrar = null
   let conversationRouterActive = false
   const questionsForChannels = {
-    decide: (payload) => questionsBridge?.decide(payload) ?? { ok: false, message: '提问服务未就绪' },
+    decide: (payload) => questionsBridge?.decide(payload) ?? { ok: false, message: strings.index.questionsNotReady },
   }
   disposers.push(createEventListener(ctx, notifier, resolved, {
     router,
@@ -317,7 +320,7 @@ export function apply(ctx, config = {}) {
     channelTypes: () => resolved.channels.map((entry) => entry.type),
   })
   if (disposeTool != null) disposers.push(disposeTool)
-  const disposeTestTool = registerNotifyTestTool(ctx, notifier, { rateLimitPerMinute: resolved.toolRateLimitPerMinute })
+  const disposeTestTool = registerNotifyTestTool(ctx, notifier, { rateLimitPerMinute: resolved.toolRateLimitPerMinute, strings })
   if (disposeTestTool != null) disposers.push(disposeTestTool)
 
   // 启动期晨报：昨日有记录且今天还没发过 → 推一次摘要（passive 级，走正常路由）。
@@ -327,7 +330,7 @@ export function apply(ctx, config = {}) {
       if (ledger.lastDigestDate() !== window.dateStr) {
         const summary = ledger.summarize(window.fromMs, window.toMs, { fromLabel: window.fromLabel, toLabel: window.toLabel })
         if (summary.counts.total > 0) {
-          notifier.notifyAll({ title: '📊 通知摘要', content: ledger.compose(summary), level: 'passive' })
+          notifier.notifyAll({ title: strings.digest.title, content: ledger.compose(summary, strings), level: 'passive' })
             .catch(() => { /* 摘要推送失败不影响启动 */ })
           ledger.markDigestDone(window.dateStr)
         }
@@ -472,6 +475,7 @@ export function apply(ctx, config = {}) {
       store,
       vault,
       logger,
+      strings, // lang 文案表：身份命令回执（/pair /whoami /unpair）经 bus 传入 commandHandler
       // 引导码过期后首个 /pair 触发重铸（自愈：用户迟到不必重启宿主），stderr 再展示
       onBootstrapRemint: showBootstrap,
     })
@@ -483,20 +487,20 @@ export function apply(ctx, config = {}) {
 
     // v0.5 动作分发器：vault/store 之后创建（无环），telegram/feishu 按钮回调消费。
     // 内置白名单仅 turn/cancel——权限面与 /stop 命令完全等价（永无任意代码执行）。
-    const actions = createActionDispatcher({ vault, store, logger, control })
+    const actions = createActionDispatcher({ vault, store, logger, control }, strings)
     actions.register('turn/cancel', ({ payload }) => {
       const sessionId = typeof payload?.sessionId === 'string' ? payload.sessionId : ''
-      if (sessionId === '') return { ok: false, message: '无效会话' }
+      if (sessionId === '') return { ok: false, message: strings.stop.invalidSession }
       let agent = null
-      try { agent = ctx.agents.get(sessionId) } catch { return { ok: false, message: '会话查询失败' } }
+      try { agent = ctx.agents.get(sessionId) } catch { return { ok: false, message: strings.stop.queryFailed } }
       if (agent === undefined || agent === null) {
-        return { ok: false, message: '会话不存在（任务可能已结束）' }
+        return { ok: false, message: strings.stop.notFound }
       }
       try {
         agent.cancel('remote-action')
-        return { ok: true, message: '✅ 已停止任务' }
+        return { ok: true, message: strings.stop.stopped }
       } catch {
-        return { ok: false, message: '取消失败（agent 可能已空闲）' }
+        return { ok: false, message: strings.stop.cancelFailed }
       }
     })
     actionsRef = actions
@@ -525,6 +529,7 @@ export function apply(ctx, config = {}) {
       actions,
       questions: questionsForChannels,
       control,
+      strings, // lang 文案表：透传给各渠道适配器（回执/卡片文案随 lang）
       allowUsers,
       guidedBoot,
       telegramReadyMessage: () => `inbound 已启动：telegram 长轮询（绑定 ${identity.size()} 人${guidedBoot ? '，引导态：等待 /pair 配对' : ''}；审批模式 ${approvalRaw.mode === 'answer' ? 'answer（远程可决）' : approvalWanted ? 'observe（只旁观）' : '未配置'}）`,
@@ -551,7 +556,7 @@ export function apply(ctx, config = {}) {
         router, // v0.3.2 审批分流：request.agent 可解析时只发绑定通道（quiet 对审批不生效）
         redaction: resolved.redaction, // S-05：审批推送 reason 按 minimal/extended 决定是否打码
         logger,
-      })
+      }, strings)
       disposers.push(disposeApproval)
     } catch (error) {
       warn(`approval 路由装配失败，已跳过（inbound 通道不受影响）: ${error instanceof Error ? error.message : String(error)}`)
@@ -577,7 +582,7 @@ export function apply(ctx, config = {}) {
           interactive: () => interactiveRaw, // 惰性 getter：桥体每次裁决取最新实例表
           logger,
           config: resolved.questions,
-        })
+        }, strings)
         const disposeAskTool = registerAskUserTool(ctx, questionsBridge, {
           rateLimitPerMinute: resolved.questions.rateLimitPerMinute,
           defaultTimeoutMs: resolved.questions.timeoutMs,
@@ -622,7 +627,7 @@ export function apply(ctx, config = {}) {
         taskSelection,
         attentionOf,
         logger,
-      })
+      }, strings)
       disposers.push(disposeConversation)
       conversationRouterActive = true // 提交7：会话路由（含图片投递）已装配 → 管理台图片入站标 available
     } catch (error) {
@@ -667,6 +672,7 @@ export function apply(ctx, config = {}) {
         channelTest: (type, rawConfig) => runChannelTest({
           type,
           rawConfig: rawConfig !== undefined && rawConfig !== null ? rawConfig : testRawConfigOf(type),
+          strings,
         }),
         // 零配置首访：YAML 原始出站行表（type → raw row 含 type/enabled 元键，api 层自剔除）——
         // testOutboundChannel 的即时真测合并基底（raw 原文重新 resolve，不用启动快照）。

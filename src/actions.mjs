@@ -8,6 +8,7 @@
 // 「不发出卡片」，绝不影响通知文本主链路（文本 hint「回复 /stop 取消」全通道兜底）。
 
 import { randomBytes } from 'node:crypto'
+import { stringsOf } from './strings.mjs'
 import { createInteractionLedger } from './interaction/ledger.mjs'
 
 // CRACK-001（破甲轮 P0）：缺来源元数据的动作卡的升级迁移宽限窗，上界对齐 token TTL
@@ -25,6 +26,9 @@ function graceSourceAllowed(row) {
   return Date.now() - row.createdAt <= LEGACY_SOURCE_GRACE_MS
 }
 
+// strings 未接线时的 zh 兜底（逐字节等于原字面量；wiring 统一传 stringsOf(lang) 后可移除）。
+const ZH_FALLBACK = stringsOf()
+
 /**
  * 创建动作分发器。
  * @param {object} options
@@ -32,8 +36,10 @@ function graceSourceAllowed(row) {
  *   一次性 token 铸造/核销（与审批共用同一 vault，key 命名空间 act: 隔离）。
  * @param {import('./inbound/store.mjs').store} [options.store] 动作账本（持久化跨重启）。
  * @param {object} [options.logger]
+ * @param {object} [strings] - 文案表（wiring 传 stringsOf(lang)；缺省 zh 兜底）
  */
-export function createActionDispatcher({ vault = null, store = null, logger = null, control = null } = {}) {
+export function createActionDispatcher({ vault = null, store = null, logger = null, control = null } = {}, strings) {
+  const t = strings ?? ZH_FALLBACK
   const handlers = new Map() // kind -> handler({ actionKey, payload, via, userId }) -> { ok?, message? }
   const warn = (message) => {
     try { logger?.warn?.('[dsh-notifier/actions]', message) } catch { /* 日志失败绝不致命 */ }
@@ -171,37 +177,37 @@ export function createActionDispatcher({ vault = null, store = null, logger = nu
           return {
             ok: receipt.status === 'accepted', reason: receipt.reason,
             message: receipt.status === 'accepted'
-              ? (settlement?.message ?? '✅ 已执行')
-              : '该操作已处理或已过期',
+              ? (settlement?.message ?? t.actions.executed)
+              : t.actions.alreadyHandledOrExpired,
           }
         }
         if (typeof actionKey !== 'string' || actionKey === '') {
-          return { ok: false, reason: 'malformed', message: '无效操作' }
+          return { ok: false, reason: 'malformed', message: t.actions.invalidAction }
         }
         if (vault === null || typeof vault.verify !== 'function') {
-          return { ok: false, reason: 'no-vault', message: '该操作已失效' }
+          return { ok: false, reason: 'no-vault', message: t.actions.expiredNoVault }
         }
         let verdict = null
         try {
           verdict = vault.verify(token)
         } catch (error) {
           warn(`token 核验异常: ${error instanceof Error ? error.message : String(error)}`)
-          return { ok: false, reason: 'verify-error', message: '该操作已失效' }
+          return { ok: false, reason: 'verify-error', message: t.actions.expiredNoVault }
         }
         if (verdict?.ok !== true) {
           const reason = String(verdict?.reason ?? 'bad-signature')
-          return { ok: false, reason, message: '该操作已处理或已过期（token 单次核销）' }
+          return { ok: false, reason, message: t.actions.alreadyHandledToken }
         }
         if (verdict.key !== actionKey) {
-          return { ok: false, reason: 'key-mismatch', message: '该操作已处理或已过期（token 单次核销）' }
+          return { ok: false, reason: 'key-mismatch', message: t.actions.alreadyHandledToken }
         }
         const row = ledger.get(actionKey)
         if (row === undefined) {
           // 账本行缺失（重启清账 / 极旧卡片）：按过期处理，绝不执行
-          return { ok: false, reason: 'unknown-action', message: '该操作已过期' }
+          return { ok: false, reason: 'unknown-action', message: t.actions.expired }
         }
         if (row.status !== 'pending') {
-          return { ok: false, reason: 'already-resolved', message: '该操作已处理' }
+          return { ok: false, reason: 'already-resolved', message: t.actions.alreadyHandled }
         }
         // v0.8.4 F-08：来源会话校验（对齐 SEC-1 / questions.decide 的 chatId 比对）。
         // 账本无来源元数据（undefined/null）→ CRACK-001 fail-closed：仅升级宽限窗内
@@ -214,11 +220,11 @@ export function createActionDispatcher({ vault = null, store = null, logger = nu
           const allowed = Array.isArray(srcChats[clickVia]) ? srcChats[clickVia] : []
           if (chatId === undefined || chatId === null || String(chatId) === '') {
             // 新卡必须携带点击会话；缺失时无法确证来源，从严拒绝（含跨通道转发）。
-            return { ok: false, reason: 'source-chat-required', message: '请到原会话操作' }
+            return { ok: false, reason: 'source-chat-required', message: t.actions.useOriginalChat }
           }
           if (!allowed.includes(String(chatId))) {
             warn(`动作 ${actionKey} 点击会话拒绝（via ${clickVia}，chatId ${String(chatId)} 不在来源集合）`)
-            return { ok: false, reason: 'source-chat-mismatch', message: '请到原会话操作' }
+            return { ok: false, reason: 'source-chat-mismatch', message: t.actions.useOriginalChat }
           }
         } else {
           // CRACK-001：缺来源元数据(undefined/null)或异常形状（数组等）一律 fail-closed，
@@ -227,14 +233,14 @@ export function createActionDispatcher({ vault = null, store = null, logger = nu
             warn(`动作 ${actionKey} 缺来源会话元数据(srcChats)，按升级宽限窗口放行(仅限升级后10min内)`)
           } else {
             warn(`动作 ${actionKey} 缺来源会话元数据(srcChats)，拒绝(fail-closed: 无来源授权)`)
-            return { ok: false, reason: 'source-chat-mismatch', message: '请到原会话操作' }
+            return { ok: false, reason: 'source-chat-mismatch', message: t.actions.useOriginalChat }
           }
         }
         const handler = handlers.get(row.kind)
         if (handler === undefined) {
           // 先落终态再反馈：防未知 kind 的重试风暴
           try { ledger.resolve(actionKey, 'unknown-kind', { via }) } catch { /* 账本失败不致命 */ }
-          return { ok: false, reason: 'unknown-kind', message: '未知操作类型' }
+          return { ok: false, reason: 'unknown-kind', message: t.actions.unknownKind }
         }
         // 首达采纳：先落 resolved 再执行（并发双击只执行一次）
         try { ledger.resolve(actionKey, 'executing', { via }) } catch { /* 账本失败不致命 */ }
@@ -243,7 +249,7 @@ export function createActionDispatcher({ vault = null, store = null, logger = nu
           const ok = result.ok !== false
           const message = typeof result.message === 'string' && result.message !== ''
             ? result.message
-            : (ok ? '✅ 已执行' : '操作未生效')
+            : (ok ? t.actions.executed : t.actions.notEffective)
           // S-14（W12）：账本已终态不翻转，终局落地走 claimedSettle 显式逃生门——
           // 'executing' 是同一执行的中段占位，允许在此落定终态裁决（done/declined/error）。
           try { ledger.resolve(actionKey, ok ? 'done' : 'handler-declined', { via }, { claimedSettle: true }) } catch { /* 账本失败不致命 */ }
@@ -253,11 +259,11 @@ export function createActionDispatcher({ vault = null, store = null, logger = nu
           const reason = error instanceof Error ? error.message : String(error)
           try { ledger.resolve(actionKey, 'handler-error', { via }, { claimedSettle: true }) } catch { /* 账本失败不致命 */ }
           warn(`动作 handler 异常（已核销）: ${reason}`)
-          return { ok: true, message: '动作已核销，但执行异常（任务状态请以 /agent 为准）' }
+          return { ok: true, message: t.actions.handlerErrorReceipt }
         }
       } catch (error) {
         warn(`dispatch 异常: ${error instanceof Error ? error.message : String(error)}`)
-        return { ok: false, reason: 'error', message: '处理异常，请重试' }
+        return { ok: false, reason: 'error', message: t.actions.dispatchError }
       }
     },
 

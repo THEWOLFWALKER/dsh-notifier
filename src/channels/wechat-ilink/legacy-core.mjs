@@ -27,6 +27,7 @@ import { resolveNotifyTargets } from '../../inbound/target-guard.mjs'
 import { splitByCodePoints } from '../../inbound/segment.mjs'
 import { DEFAULT_INBOUND_MEDIA_TIMEOUT_MS, MAX_INBOUND_IMAGE_BYTES } from '../../inbound/message.mjs'
 import { normalizeInboundMessage, normalizeUpdateBatch, boundedCursor, validAccountId } from './protocol.mjs'
+import { stringsOf } from '../../strings.mjs'
 
 const SYNC_BUF_KEY = 'wechat:sync_buf'
 const ACCOUNT_KEY = 'wechat:account'
@@ -104,9 +105,12 @@ export function resolveWechatInboundConfig(raw, { credentials } = {}) {
  * @param {typeof fetch} [options.fetchImpl] - fetch 注入（测试用）
  * @param {() => number} [options.now] - 时钟注入（测试用；默认 Date.now）
  * @param {(ms: number) => Promise<void>} [options.sleep] - sleep 注入（测试用）
+ * @param {object} [options.strings] - stringsOf(lang) 全文案表（本文件手机可见文案仅审批
+ *   编号回复，跨节复用 approval.fallbackText；缺省回落 zh，零行为变化）
  */
 export function createWechatIlinkInbound(options = {}) {
   const { config, bus, store = null, fallbackTargets = [], logger = null, identity = null } = options
+  const STRINGS = options.strings ?? stringsOf()
   // 新 provider slice 通过 accountScoped 开启账号命名空间；旧入口默认保留历史键名。
   const accountScoped = options.accountScoped === true
   const accountPrefix = accountScoped ? `wechat:${String(config?.accountId ?? '').trim()}:` : 'wechat:'
@@ -469,7 +473,7 @@ export function createWechatIlinkInbound(options = {}) {
 
     /** 推审批文本通知（无按钮，回复 1/2 裁决）；失败 null 降级纯通知。 */
     async sendApprovalCard({ chatId, title, content }) {
-      const text = `${title}\n${content}\n\n回复 1 批准 / 2 拒绝`
+      const text = STRINGS.approval.fallbackText(title, content)
       try {
         return (await sendTextInternal(chatId, text)) ? { messageId: `wx:${hash6(text)}` } : null
       } catch (error) {

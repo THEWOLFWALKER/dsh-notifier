@@ -53,6 +53,7 @@ export function createInboundChannelRegistry(deps = {}) {
     wechatWanted = false, wechatRaw = {},
     dingtalkOk = false, dingtalkResolved = null,
     bus, vault, store, identity, actions = null, questions = null, control,
+    strings = null, // lang 文案表（stringsOf(lang)）：透传给各渠道适配器
     allowUsers = [], telegramReadyMessage = () => 'inbound 已启动：telegram 长轮询', logger = null,
     warn = () => {}, factories = {}, resolveWechat = resolveWechatInboundConfig,
   } = deps
@@ -96,25 +97,25 @@ export function createInboundChannelRegistry(deps = {}) {
         notifyChatIds,
         accountId: tgRaw.accountId,
       },
-      bus, vault, store, logger, identity, actions, questions, control,
+      bus, vault, store, logger, identity, actions, questions, control, strings,
     }, telegramReadyMessage)
   }
 
   if (feishuOk) {
     attach('feishu', factory.feishu, {
-      config: feishuResolved.config, bus, fallbackTargets: allowUsers, identity, logger, actions, questions, control,
+      config: feishuResolved.config, bus, fallbackTargets: allowUsers, identity, logger, actions, questions, control, strings,
     }, () => 'inbound 已启动：feishu WebSocket 长连接（卡片审批 + 命令回执）')
   }
 
   if (qqOk) {
     attach('qq', factory.qq, {
-      config: qqResolved.config, bus, fallbackTargets: allowUsers, identity, logger,
+      config: qqResolved.config, bus, fallbackTargets: allowUsers, identity, logger, strings,
     }, () => 'inbound 已启动：qq WebSocket 网关（文本审批通知 + 编号回复裁决）')
   }
 
   if (wxOk) {
     attach('wxpusher', factory.wxpusher, {
-      config: wxResolved.config, bus, store, fallbackTargets: allowUsers, identity, logger,
+      config: wxResolved.config, bus, store, fallbackTargets: allowUsers, identity, logger, strings,
     }, () => 'inbound 已启动：wxpusher HTTP 回调（密径鉴权 + 编号回复裁决）')
   }
 
@@ -129,14 +130,14 @@ export function createInboundChannelRegistry(deps = {}) {
       if (wechatResolved !== null) warn(`inbound.wechat 跳过: ${wechatResolved.reason}`)
     } else {
       attach('wechat', factory.wechat, {
-        config: wechatResolved.config, bus, store, fallbackTargets: allowUsers, identity, logger,
+        config: wechatResolved.config, bus, store, fallbackTargets: allowUsers, identity, logger, strings,
       }, () => 'inbound 已启动：wechat iLink 长轮询（文本审批通知 + 编号回复裁决）')
     }
   }
 
   if (dingtalkOk) {
     attach('dingtalk', factory.dingtalk, {
-      config: dingtalkResolved.config, bus, store, fallbackTargets: allowUsers, identity, logger,
+      config: dingtalkResolved.config, bus, store, fallbackTargets: allowUsers, identity, logger, strings,
     }, () => 'inbound 已启动：dingtalk Stream 长连接（文本审批通知 + 编号回复裁决）')
   }
 

@@ -23,6 +23,7 @@ import { resolveNotifyTargets } from './target-guard.mjs'
 import { buildApprovalAction, parseApprovalAction, buildQuestionAction, parseQuestionAction } from './_contract.mjs'
 import { parseQQImageMessage } from './message.mjs'
 import { splitByCodePoints } from './segment.mjs'
+import { stringsOf } from '../strings.mjs'
 
 const TOKEN_URL = 'https://bots.qq.com/app/getAppAccessToken'
 const DEFAULT_API_BASE = 'https://api.sgroup.qq.com'
@@ -129,9 +130,13 @@ function stripMention(content) {
  * @param {typeof WebSocket} [options.webSocketImpl] - WebSocket 构造器注入（测试用；默认 globalThis.WebSocket）
  * @param {number} [options.reconnectBaseMs=1000] - 重连退避基数
  * @param {number} [options.reconnectCapMs=30000] - 重连退避上限
+ * @param {object} [options.strings] - stringsOf(lang) 全文案表（读 `qq` 节，跨节复用
+ *   approval.fallbackText；缺省回落 zh——须先在 strings.mjs 落 `qq` 节）
  */
 export function createQqInbound(options = {}) {
   const { config, bus, fallbackTargets = [], logger = null, identity = null } = options
+  const STRINGS = options.strings ?? stringsOf()
+  const t = STRINGS.qq
   // 防御性兜底：绕过 resolveQqInboundConfig 直接构造时也保证 apiBase 可用
   const apiBase = (String(config?.apiBase ?? '').trim() || DEFAULT_API_BASE).replace(/\/+$/, '')
   const fetchImpl = options.fetchImpl ?? globalThis.fetch?.bind(globalThis)
@@ -680,13 +685,13 @@ export function createQqInbound(options = {}) {
             content: {
               rows: [
                 { buttons: [
-                  button('btn_approve', '✅ 批准', '已批准', 1, 'allowed-once'),
-                  button('btn_reject', '❌ 拒绝', '已拒绝', 2, 'rejected'),
+                  button('btn_approve', t.approveLabel, t.approveVisited, 1, 'allowed-once'),
+                  button('btn_reject', t.rejectLabel, t.rejectVisited, 2, 'rejected'),
                 ] },
               ],
             },
           }
-          const markdown = `${title}\n${content}\n\n点击按钮完成裁决${isUserTarget ? '（仅你本人可点）' : ''}：`
+          const markdown = `${title}\n${content}\n\n${t.markdownFooter(isUserTarget)}`
           const messageId = await postMarkdownWithKeyboard(chatId, markdown, keyboard)
           if (messageId !== null) return { messageId }
         } catch (error) {
@@ -694,7 +699,7 @@ export function createQqInbound(options = {}) {
         }
       }
       try {
-        const text = `${title}\n${content}\n\n回复 1 批准 / 2 拒绝`
+        const text = STRINGS.approval.fallbackText(title, content)
         const messageId = await postMessage(chatId, text)
         return messageId !== null ? { messageId } : null
       } catch (error) {
@@ -709,11 +714,11 @@ export function createQqInbound(options = {}) {
         if (!isUserTarget) return null // 群聊不展示可操作提问卡，避免成员间信息/权限泄漏
         const buttons = options.slice(0, 5).map((label, index) => ({
           id: `q_${index}`,
-          render_data: { label: `${index + 1}. ${String(label).slice(0, 40)}`, visited_label: '已选择', style: 0 },
+          render_data: { label: `${index + 1}. ${String(label).slice(0, 40)}`, visited_label: t.selectedVisited, style: 0 },
           action: { type: 1, click_limit: 1, data: buildQuestionAction(qKey, String(index), token),
             ...(isUserTarget ? { permission: { type: 2, specify_user_ids: [String(chatId)] } } : {}) },
         }))
-        buttons.push({ id: 'q_custom', render_data: { label: '✍️ 自定义回答', visited_label: '已选择', style: 0 }, action: { type: 1, click_limit: 1, data: buildQuestionAction(qKey, 'c', token), permission: { type: 2, specify_user_ids: [String(chatId)] } } })
+        buttons.push({ id: 'q_custom', render_data: { label: t.customAnswerLabel, visited_label: t.selectedVisited, style: 0 }, action: { type: 1, click_limit: 1, data: buildQuestionAction(qKey, 'c', token), permission: { type: 2, specify_user_ids: [String(chatId)] } } })
         const messageId = await postMarkdownWithKeyboard(chatId, `${title}\n${content}`, { content: { rows: buttons.map((button) => ({ buttons: [button] })) } })
         return messageId === null ? null : { messageId }
       } catch (error) {
@@ -726,7 +731,7 @@ export function createQqInbound(options = {}) {
     async editResolved(target, text) {
       if (target?.chatId === undefined || String(target.chatId) === '') return
       try {
-        await postMessage(target.chatId, `[审批结果] ${text}`)
+        await postMessage(target.chatId, t.resultLine(text))
       } catch (error) {
         warn(`审批结果回执失败: ${error instanceof Error ? error.message : String(error)}`)
       }
