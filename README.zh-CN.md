@@ -27,7 +27,7 @@
 ![沉默](https://img.shields.io/badge/%E6%B2%89%E9%BB%98-%E6%B0%B8%E4%B8%8D%E6%89%B9%E5%87%86-9C27B0?style=flat-square)
 ![推送](https://img.shields.io/badge/push%20it-real%20good-FF4081?style=flat-square)
 
-包元数据：`dsh-notifier@0.10.1` · 1616 个自动化契约测试（1616 通过）· MIT 许可。
+包元数据：`dsh-notifier@0.10.2` · 1616 个自动化契约测试（1616 通过）· MIT 许可。
 
 把 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) agent 带到你平时使用的地方。dsh-notifier 用一个极简 `notify()` API 接住 27 个渠道，再提供手机审批、手机提问、会话控制和清爽的本机管理台——无需额外部署第二套运行时。
 

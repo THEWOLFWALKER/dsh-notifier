@@ -27,7 +27,7 @@
 ![silence](https://img.shields.io/badge/silence%20never-approves-9C27B0?style=flat-square)
 ![push](https://img.shields.io/badge/push%20it-real%20good-FF4081?style=flat-square)
 
-Package metadata: `dsh-notifier@0.10.1` · 1616 automated contract tests (1616 pass) · MIT licensed.
+Package metadata: `dsh-notifier@0.10.2` · 1616 automated contract tests (1616 pass) · MIT licensed.
 
 Bring your [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) agent to the places you already use. dsh-notifier puts one minimal `notify()` API in front of 27 channels, then adds phone-friendly approvals, questions, session controls, and a calm local console — with no second runtime to deploy.
 
