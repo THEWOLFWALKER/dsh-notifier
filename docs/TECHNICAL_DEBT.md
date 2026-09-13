@@ -1,6 +1,6 @@
 # Technical debt and release gates
 
-状态更新：2026-09-12。v0.10.0 收口（codex/mobile-task-loop-v010：宿主能力桥 / 原生提问桥 / Web-first 远程升级 / 移动任务路由 / 图片进入会话 / 管理台任务与宿主状态，`npm test` 为 `1605`，1605 pass）。上一线 v0.9.7（Telegram PR #22 + QQ Issue #23 修复收口，1548 pass）、v0.9.6（零配置首访，1544 pass）。此前的 R1–R5 修复列车于 R5（v0.9.5，W13）2026-09-05 收口，基线 `1531`。剩余事项只是真机/宿主验证和外部目录缓存刷新，不应被误读为待实现的新功能。
+状态更新：2026-09-13。v0.10.1 收口（codex/notification-lang-setting + PR #22：双语 i18n `lang: 'zh' | 'en'` 与 Telegram 提问卡辅助钮并排，`npm test` 为 `1616`，1616 pass）。上一线 v0.10.0（codex/mobile-task-loop-v010，1605 pass）、v0.9.7（Telegram PR #22 + QQ Issue #23 修复收口，1548 pass）、v0.9.6（零配置首访，1544 pass）。此前的 R1–R5 修复列车于 R5（v0.9.5，W13）2026-09-05 收口，基线 `1531`。剩余事项只是真机/宿主验证和外部目录缓存刷新，不应被误读为待实现的新功能。
 
 ### 已知工具面坑（2026-08-28 登记）
 
@@ -17,7 +17,7 @@
 
 - 真机/协议：Telegram 4096 边界、Feishu WS、QQ gateway/按钮 ACK、DingTalk stream、WeChat iLink QR/长轮询、WxPusher 回调、图片/文件 payload 与各 provider 限制。
 - 宿主/桌面：DSH 真实事件装配、真实浏览器管理台操作、重启读取持久化 overlay、Windows BurntToast/PowerShell toast。桌面 `ask_user` 没有安全宿主接口，不能宣称可用或双端共享。
-- 发布：npm `0.9.0` 已完成认证并发布；后续可执行 registry artifact disposable profile 安装、启动/出站/入站 smoke。
+- 发布：npm `0.10.1` 已完成认证并发布；后续可执行 registry artifact disposable profile 安装、启动/出站/入站 smoke。
 
 ## 维护规则
 
