@@ -23,6 +23,8 @@ import { appendFileSync, chmodSync, mkdirSync, readFileSync, renameSync, statSyn
 import { dirname, join } from 'node:path'
 import { CHANNEL_TYPES, channelFieldsOf } from '../config.mjs'
 import { INBOUND_CHANNELS, INBOUND_CHANNEL_SET } from '../inbound/channels-registry.mjs'
+import { tasksSnapshot } from '../routing/task-projection.mjs'
+import { createHostCapabilitySnapshot } from '../host/capability.mjs'
 import {
   CONTROL_OVERLAY_MAX_MEMBERS,
   CONTROL_OVERLAY_MAX_STRING,
@@ -322,6 +324,10 @@ export function createAdminApi(options = {}) {
     router, registry, store, notifier, channelsEnabled, outboundConfigs, channelTest, scanHandlers,
     identity, pairing, guidedProbe = null, stateDir, logger, questions = null, control = null,
     yamlRawConfigs = null,
+    // v0.10 提交7「管理台暴露 DSH 连接与任务状态」：宿主上下文 + 任务投影注入 + 宿主
+    // 能力快照注入（全部只读；缺失一律安全降级，绝不抛）。
+    ctx = null, attentionOf = null, hostSnapshot = null,
+    questionsFallbackEnabled = false, webLocal = 'unknown', imageInput = 'unknown',
   } = options ?? {}
 
   const warn = (message) => {
@@ -520,6 +526,53 @@ export function createAdminApi(options = {}) {
         agents: { keys: agentKeys },
         members: { total: memberTotal, owners: memberOwners, guided },
         audit: api.getAudit().slice(0, 20),
+      }
+    },
+
+    // ---------- v0.10 提交7：管理台暴露 DSH 连接与任务状态 ----------
+    /**
+     * 任务状态只读快照（管理台 /tasks 数据源；与手机 /tasks、歧义选择卡同一投影源）。
+     * 单条仅含 { taskRef, workspace, status, attention, lastActivityAt, boundChannels }——
+     * 无正文 / 凭证 / 回答 / 绑定身份（task-projection 冻结的红线）。查询绝不抛。
+     * @returns {{ count: number, activitySorted: boolean, tasks: Array<object> }}
+     */
+    getTasks() {
+      try {
+        return tasksSnapshot({
+          registry,
+          router,
+          ctx,
+          channelTypes: enabledTypes(),
+          attentionOf,
+        })
+      } catch {
+        // 投影层按字段逐一降级，理论上不抛；此处是最后一道兜底（宿主对象代理 trap 等极端场景）。
+        return { count: 0, activitySorted: false, tasks: [] }
+      }
+    },
+
+    /**
+     * 宿主（DSH）连接与能力快照（管理台 /host 数据源）：只描述公开 seam 的特性检测
+     * （版本 / 事件模式 / 提问模式 / 会话模式 / 图片入站 / 本机管理台可用），绝不带
+     * sessionId / token / chatId / userId / provider 凭证（capability 冻结的红线）。
+     * hostSnapshot() 提供 registrar.snapshot() 的产物（events/context/scope），缺失按空。
+     * @returns {{ host: object, events: object, questions: object, conversation: object, media: object }}
+     */
+    getHostCapabilities() {
+      const events = (() => {
+        try { return typeof hostSnapshot === 'function' ? hostSnapshot() : null } catch { return null }
+      })()
+      try {
+        return createHostCapabilitySnapshot({
+          ctx,
+          events,
+          questionsFallbackEnabled: questionsFallbackEnabled === true,
+          webLocal,
+          imageInput,
+        })
+      } catch {
+        // 查询方法红线：绝不抛（宿主 ctx 可能是抛错代理/getter）。降级为全 unknown 的安全最小快照。
+        return createHostCapabilitySnapshot({ ctx: {}, events: null })
       }
     },
 

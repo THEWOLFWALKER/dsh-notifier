@@ -271,6 +271,11 @@ export function resolveConfig(config = {}) {
   // v0.8 远程提问（ask_user 工具）：默认启用；超时默认 5 分钟（30s-30min 钳制在
   // questions/router 的 validateAskArgs），限流默认 6 次/分钟（提问比通知更稀缺）。
   const rawQuestions = (raw.questions !== null && typeof raw.questions === 'object') ? raw.questions : {}
+  // v0.10 Web-first 远程升级（任务书 3.3/8）：Stage 0（pending，Web 立即可见）→ Stage 1
+  // 推主绑定 IM 的延迟默认 20s；Stage 2 备用目标提醒默认 60s（从 t=0）。显式 0 关闭 Web-first
+  // （立即推送）。remoteEnabled=false 只保留 Web 可见、永不推 IM（关闭远程推送不破坏原生 Web 提问）。
+  const questionsWebFirstRaw = Number(rawQuestions.webFirstMs)
+  const questionsReminderRaw = Number(rawQuestions.reminderMs)
   const questions = {
     enabled: rawQuestions.enabled !== false,
     timeoutMs: typeof rawQuestions.timeoutMs === 'number' && Number.isFinite(rawQuestions.timeoutMs) && rawQuestions.timeoutMs > 0
@@ -279,6 +284,9 @@ export function resolveConfig(config = {}) {
     rateLimitPerMinute: typeof rawQuestions.rateLimitPerMinute === 'number' && Number.isFinite(rawQuestions.rateLimitPerMinute)
       ? Math.max(0, Math.trunc(rawQuestions.rateLimitPerMinute))
       : 6,
+    webFirstMs: Number.isFinite(questionsWebFirstRaw) ? Math.max(0, Math.trunc(questionsWebFirstRaw)) : 20_000,
+    reminderMs: Number.isFinite(questionsReminderRaw) ? Math.max(0, Math.trunc(questionsReminderRaw)) : 60_000,
+    remoteEnabled: rawQuestions.remoteEnabled !== false,
   }
 
   // 空闲宽限窗（阶段 2 规则引擎）：turn 结束后等 N 秒，期间用户在页面/终端输入即取消打扰。

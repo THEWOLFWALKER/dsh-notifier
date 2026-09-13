@@ -21,6 +21,7 @@ import { createInboundChannelRegistry } from './assembly/inbound-channels.mjs'
 import { disposeAll } from './assembly/lifecycle.mjs'
 import { registerApprovalHandler } from './approval/router.mjs'
 import { createQuestionBridge, registerAskUserTool } from './questions/router.mjs'
+import { createNativeQuestionBridge } from './host/native-questions.mjs'
 import { registerConversationRouter } from './inbound/conversation.mjs'
 // v0.5：动作闭环（通知按钮 → 内置处置动作）
 import { createActionDispatcher } from './actions.mjs'
@@ -30,6 +31,8 @@ import { createPublicFacade, composeOnSend, deepFreeze, redactAuditRecord } from
 // v0.3.2：路由引擎（双向解析链 + 会话台账，src/routing/*.mjs）
 import { createAgentRouter } from './routing/agent-router.mjs'
 import { createSessionRegistry } from './routing/session-registry.mjs'
+// v0.10 移动任务选择（歧义前置）：多活跃任务无绑定先下发选择卡；待决状态经 store 持久化
+import { createTaskSelection } from './routing/task-selection.mjs'
 // v0.3.3：Web 管理台（HTTP 壳 + API 函数层 + 单文件 UI + 扫码流机 + 连通性自检）
 import { createAdminApi, INBOUND_CHANNELS } from './admin/api.mjs'
 // v0.4.0：通知事件 hub（SSE 数据源）
@@ -267,6 +270,21 @@ export function apply(ctx, config = {}) {
     if (migrated > 0) warn(`route:sessions 迁移：为旧 bind 绑定补建 ${migrated} 条会话记录`)
   } catch { /* 迁移失败静默：绝不弄崩启动 */ }
   disposers.push(() => registry.dispose())
+  // v0.10 任务选择状态机（歧义前置）：候选惰性过滤为「仍活跃会话」，待决经 store 持久化
+  // （taskselect:* 键域，重启不丢）。dispose 只清内存态（盘上待决由 TTL 惰性回收）。
+  const taskSelection = createTaskSelection({
+    store,
+    isActive: ({ sessionId }) => { try { return registry.isActive(sessionId) === true } catch { return false } },
+    logger,
+  })
+  // v0.10 待关注事项判定器（任务投影 attention + /tasks ⚠ 标记）：question 待决即标 attention。
+  // questionsBridge 晚装配（questions.enabled 块），本闭包惰性读取，装配前恒 false。
+  const attentionOf = (taskRef) => {
+    try {
+      const ids = questionsBridge?.pendingAgentIds?.()
+      return ids instanceof Set && ids.has(String(taskRef))
+    } catch { return false }
+  }
 
   // v0.5 动作闭环的装配时序（架构审查修正，设计稿 §6）：eventListener 装配早于
   // inbound 白名单块（vault/store/通道在其后才创建），直传实例不可行——用惰性
@@ -277,6 +295,11 @@ export function apply(ctx, config = {}) {
   let interactiveRaw = []
   let busRef = null
   let questionsBridge = null
+  let nativeBridge = null
+  // v0.10 提交7：宿主事件 registrar 快照（管理台 /host 的 events.received 视图）
+  // 与图片入站能力标记（会话路由装配成功即 available）。惰性读取，装配前为 null/false。
+  let hostEventsRegistrar = null
+  let conversationRouterActive = false
   const questionsForChannels = {
     decide: (payload) => questionsBridge?.decide(payload) ?? { ok: false, message: '提问服务未就绪' },
   }
@@ -286,6 +309,7 @@ export function apply(ctx, config = {}) {
     bus: () => busRef,
     actions: () => actionsRef,
     interactive: () => interactiveRaw,
+    onHostEvents: (registrar) => { hostEventsRegistrar = registrar }, // 诊断快照外泄（提交7）
   }))
   const disposeTool = registerNotifyTool(ctx, notifier, {
     rateLimitPerMinute: resolved.toolRateLimitPerMinute,
@@ -561,7 +585,13 @@ export function apply(ctx, config = {}) {
         if (disposeAskTool !== null) disposers.push(disposeAskTool)
         questionsBridge.attach()
         disposers.push(() => questionsBridge.dispose())
-        warn(`远程提问已启用：ask_user 工具（限流 ${resolved.questions.rateLimitPerMinute} 次/分钟，超时 ${Math.round(resolved.questions.timeoutMs / 1000)}s 不代答）；飞书/Telegram 单选选项卡 + 全渠道编号兜底`)
+        // v0.10 宿主原生提问桥（任务书 3.2）：仅经 ctx.userQuestions 公开 seam 桥接
+        // 原生 ask_user_question；seam 缺失/被占用时安全降级（nativeBridge.capabilities()
+        // 反映降级，管理台据此展示）。绝不伪造原生桥。
+        nativeBridge = createNativeQuestionBridge({ ctx, questionBridge: questionsBridge, logger })
+        const nativeAttached = nativeBridge.attach()
+        disposers.push(() => nativeBridge.dispose())
+        warn(`远程提问已启用：ask_user 工具（限流 ${resolved.questions.rateLimitPerMinute} 次/分钟，超时 ${Math.round(resolved.questions.timeoutMs / 1000)}s 不代答）；飞书/Telegram 单选选项卡 + 全渠道编号兜底；宿主原生提问桥 ${nativeAttached ? '已 attach（provider-chain）' : `未 attach（seam=${nativeBridge.capabilities().seam}，降级 unsupported）`}`)
       } catch (error) {
         warn(`questions 桥装配失败，已跳过（其余能力不受影响）: ${error instanceof Error ? error.message : String(error)}`)
       }
@@ -588,9 +618,13 @@ export function apply(ctx, config = {}) {
         registry, // 会话台账（/agent 命令族数据源、活跃信号、入站对话挂钩）
         control,
         channelTypes: () => resolved.channels.map((entry) => entry.type), // 全局渠道池快照（分流过滤白名单）
+        // v0.10 移动任务路由（任务书提交5）：歧义前置选择卡 + /tasks ⚠ 待关注标记
+        taskSelection,
+        attentionOf,
         logger,
       })
       disposers.push(disposeConversation)
+      conversationRouterActive = true // 提交7：会话路由（含图片投递）已装配 → 管理台图片入站标 available
     } catch (error) {
       warn(`会话路由装配失败，已跳过（inbound 通道与审批不受影响）: ${error instanceof Error ? error.message : String(error)}`)
     }
@@ -645,6 +679,14 @@ export function apply(ctx, config = {}) {
         logger,
         questions: questionsBridge, // 路线图阶段 2A：远程提问管理台裁决（脱敏查询 + 受保护结算）
         control, // 结算必须经 Control Core 唯一裁决（注入同一实例，缺线即 fail-closed）
+        // v0.10 提交7：暴露 DSH 连接与任务状态——宿主上下文 + 任务投影关注判定 + 宿主
+        // 事件 registrar 快照 + 会话/提问/图片能力信号（全只读，装配期惰性闭包）。
+        ctx,
+        attentionOf,
+        hostSnapshot: () => (hostEventsRegistrar !== null ? hostEventsRegistrar.snapshot() : null),
+        questionsFallbackEnabled: questionsBridge !== null, // 插件自有 ask_user 工具已注册
+        webLocal: 'available', // 管理台本机回环（此 API 自身已在本机运行）
+        imageInput: conversationRouterActive ? 'available' : 'unknown', // 图片入站随会话路由装配
       })
       // v0.7：接通配对审计晚绑定（inbound 阶段积压的事件此刻转发 admin-audit.jsonl）
       try {
@@ -720,6 +762,7 @@ export { createWechatIlinkInbound, resolveWechatInboundConfig } from './channels
 export { registerApprovalHandler } from './approval/router.mjs'
 export { createEscalationChain } from './approval/escalation.mjs'
 export { createQuestionBridge, registerAskUserTool } from './questions/router.mjs'
+export { createNativeQuestionBridge } from './host/native-questions.mjs'
 export { registerConversationRouter } from './inbound/conversation.mjs'
 export { segmentText, countCodepoints, sendSegmented } from './inbound/segment.mjs'
 // v0.6：开放事件源（供测试与其它插件复用）

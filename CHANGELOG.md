@@ -1,5 +1,48 @@
 # Changelog
 
+## [0.10.0] - 2026-09-12（codex/mobile-task-loop-v010 收口）
+
+「手机接管 DSH 任务」闭环特性线：宿主能力桥（能力快照 + 事件实证 + 生命周期诊断）、经 `ctx.userQuestions` 公开 seam 桥接原生提问、Web-first 远程延迟升级、移动任务路由（任务投影 / 任务选择 / 歧义前置）、图片进入 DSH 会话、管理台暴露 DSH 连接与任务状态。`npm test` 为 **1605**（1605 pass，较 0.9.7 基线 1548 净 +57）。全部为 mock/contract/fixture 证据；原生提问桥与 QQ 图片解析未经真机复验，缺口见 `docs/memory/risks.md`。
+
+### 宿主能力桥（`src/host/capability.mjs`）
+
+- 新增 `detectEventsMode` / `detectQuestionsMode` / `detectConversationMode` / `detectHostVersion`，把宿主能力归一为可观测的 `supported` / `unsupported` / `unknown` 三态，不读私有字段。
+- 新增 `createHostCapabilitySnapshot`：派生式能力视图（事件 / 提问 / 会话 / 媒体四个维度），只暴露支持状态与模式，绝不泄漏 sessionId / 正文 / token / 凭证。
+- 新增 `receivedEventsView`：对 `receivedEvents` 做脱敏摘要（事件 key + 计数上限 `MAX_RECEIVED_EVENT_KEYS`），供管理台诊断。
+
+### 经公开 seam 桥接宿主原生提问（`src/host/native-questions.mjs`）
+
+- `createNativeQuestionBridge` 只经宿主唯一公开 seam `registerProvider` 把 `ctx.userQuestions` 的 `ask_user_question` 桥进现有 `aq:` 账本与 Control Core，使原生提问、Web、手机共用同一首达结算闭环。
+- `normalizeOptions` 将 `AskUserQuestionOption` 归一为 aq 桥选项标签，`description` 并入上下文避免丢信息；`attach` / `pending` / `settle` / `snapshot` / `dispose` 构成窄接口。
+- 红线：不读私有字段、不覆盖未公开 singleton、不 monkey patch；seam 不可用或已被占用时安全降级 `unsupported`，保留插件自有 `ask_user` fallback，绝不伪造「已桥接」。宿主提问与 provider 异常只返回空答案，绝不让宿主被静默吞掉。
+
+### Web-first 远程延迟升级（`src/questions/router.mjs`）
+
+- 通知投递改为分级升级：Stage 0 Web 优先、Stage 1 延迟 IM、Stage 2 提醒（可选），各阶段延迟可配，并在用户作答后取消未触发定时器，跨端终态同步。
+- 计时器取消与终态同步保障 Web 与 IM 双端首达采纳一致；延迟参数加入 `src/config.mjs` 默认值。
+
+### 移动任务路由（`src/routing/task-projection.mjs` / `task-selection.mjs` + `src/inbound/conversation.mjs`）
+
+- `projectTasks` / `tasksSnapshot` 提供只读任务视图（taskRef / workspace / status / attention / lastActiveAt / boundChannels），聚合会话注册表与 agent 状态，不暴露敏感数据。
+- `createTaskSelection` 处理多任务歧义：选择卡（selection card）+ pending 状态（`state.json` + 内存优先），用户显式选定后才投递，杜绝错投。
+- 会话路由接入 `/tasks`（列任务）与 `/use`（切换目标）命令，歧义前置与省事选择回执收进统一入站处理链。
+
+### 图片进入 DSH 会话（`src/inbound/message.mjs`）
+
+- 统一入站消息模型补 `image`/`file` 附件归一：结构化 `{ url, width?, height? }` 与 `{ name?, url?, size? }`；缺 url / 未知结构 fail-closed。
+- `normalizeInboundMessage` 保留既有 text + 合法图片双载，不再因「有文字」丢图；`normalizeImageUrl` 做受控下载校验（永拒主机名/后缀、私有/回环/链路本地/ULA IPv6，含 IPv4-mapped IPv6 的 SSRF 绕过防护、尺寸与类型上限、超时）。
+- 图片受控下载失败不阻塞文字投递，经 `onImageFailure` 给用户失败回执（见对抗性 review 修正）。
+
+### 管理台暴露 DSH 连接与任务状态（`src/admin/api.mjs` / `server.mjs`）
+
+- 新增 `GET /api/tasks`：返回当前任务投影快照（脱敏只读视图）；`GET /api/host`：返回宿主能力快照。
+- 查询方法红线：绝不抛——宿主 `ctx` 是抛错代理 / getter 时降级为全 `unknown` 的安全最小快照，不让异常冒泡到 HTTP 层。
+
+### 对抗性 review 修正（v0.10）
+
+- 修图片 URL SSRF 绕过：IPv4-mapped IPv6（如 `::ffff:127.0.0.1`）此前只走 IPv6 前缀判断漏过，现提取内嵌 IPv4 后按私有/回环/链路本地区间拒绝。
+- 管理台 `getHostCapabilities` 增防御 try/catch，宿主上下异常时返回安全默认快照。
+
 ## [0.9.7] - 2026-09-12（codex/pr22-issue23-fix 收口）
 
 入站交互可靠性修复线：Telegram `ask_user` 单选卡片补「自定义回答 / 跳过」按钮并修 ref 泄漏与来源校验缺口（PR #22），QQ 网关心跳时序死循环修复（Issue #23）。`npm test` 为 **1548**（1548 pass，较 0.9.6 基线 1544 净 +4；Telegram/QQ 心跳与点击链 focused 回归 117 + 45 项全绿）。两项修复均为 mock/contract 证据；Issue #23 依据真机 A/B 证据（网关只对 READY/RESUMED 之后的心跳回 ACK）实现，但**未在本代码库重跑真机 soak**——真机验证缺口见 `docs/memory/risks.md`。

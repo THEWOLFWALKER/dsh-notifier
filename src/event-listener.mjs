@@ -474,6 +474,12 @@ export function createEventListener(ctx, notifier, resolvedConfig, wiring = {}) 
   }
 
   const hostEvents = createHostEventRegistrar(ctx, warn)
+  // v0.10 提交7：把宿主事件 registrar 的只读诊断快照外泄给装配层（管理台 /host 的
+  // events.received 视图）。快照只含计数+context/scope 状态，无正文/标识符/凭证。
+  // 回调接线失败绝不致命（诊断能力降级，事件订阅主链路不受影响）。
+  if (typeof wiring.onHostEvents === 'function') {
+    try { wiring.onHostEvents(hostEvents) } catch { /* 诊断接线失败不致命 */ }
+  }
   const disposeSession = hostEvents.on('session/event', (...args) => {
     const normalized = normalizeSessionEventArgs(args)
     if (normalized === undefined) {

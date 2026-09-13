@@ -95,9 +95,23 @@ export function createQuestionBridge(deps) {
   }
 
   const escalationCfg = (config.escalation !== null && typeof config.escalation === 'object') ? config.escalation : {}
+  // v0.10 Web-first 远程升级（任务书 3.3）：webFirstMs 控制 Stage 0（pending 立账、Web
+  // 管理台立即可见）到 Stage 1（推送主绑定 IM）的延迟；remoteEnabled=false 时永不推 IM，
+  // 只保留 Web 可见（任务书「关闭远程推送不破坏原生 Web 提问」）。模块级默认 0 = 立即推送，
+  // 保持 createQuestionBridge 直调（存量测试/消费方）行为逐字节不变；Web-first 默认值由
+  // config.mjs 的 resolveConfig 注入（20s）。
+  const webFirstMsNumber = Number(config.webFirstMs)
+  const webFirstMs = Number.isFinite(webFirstMsNumber) ? Math.max(0, Math.trunc(webFirstMsNumber)) : 0
+  const remoteEnabled = config.remoteEnabled !== false
+  // reminderMs（Stage 2 备用目标提醒，从 t=0 起算）：提供且 > webFirstMs 时，把升级链
+  // 推导为单次「push 后 reminderMs - webFirstMs」提醒；否则用默认 30s/60s 两段节奏。
+  const reminderMsNumber = Number(config.reminderMs)
+  const reminderMs = Number.isFinite(reminderMsNumber) ? Math.max(webFirstMs, Math.trunc(reminderMsNumber)) : null
   const escalationStages = Array.isArray(escalationCfg.stages) && escalationCfg.stages.length > 0
     ? escalationCfg.stages
-    : DEFAULT_ESCALATION_STAGES
+    : (reminderMs !== null && reminderMs > webFirstMs
+      ? [{ afterMs: reminderMs - webFirstMs, level: 'timeSensitive', note: '提问仍在等待作答（备用目标提醒）' }]
+      : DEFAULT_ESCALATION_STAGES)
   const escalation = createEscalationChain({
     stages: escalationCfg.enabled === false ? [] : escalationStages,
     logger,
@@ -585,6 +599,19 @@ export function createQuestionBridge(deps) {
     ledger.resolve(key, 'skipped', { via, userId })
     return { ok: true, message: '已驳回该提问：交还桌面处理', answers: [] }
   }
+  /** 当前待决问题归属的 agentId 集合（供任务投影 attention 与装配层判定「待关注」；
+   *  只用于装配-内部同进程判定，绝不进入 admin/UI/日志快照——raw agentId 不外泄）。 */
+  function pendingAgentIds() {
+    const ids = new Set()
+    for (const key of core.scanKeys()) {
+      if (!key.startsWith(KEY_PREFIX)) continue
+      const row = core.get(key)
+      if (!core.isPending(row)) continue
+      const agentId = String(row?.agentId ?? '')
+      if (agentId !== '') ids.add(agentId)
+    }
+    return ids
+  }
   /** 当前待决问题汇总（读快照，绝不抛）。无任何待决返回空数组。 */
   function adminPending() {
     const rows = []
@@ -879,6 +906,16 @@ export function createQuestionBridge(deps) {
       }
       const qKey = `${KEY_PREFIX}${randomBytes(4).toString('hex')}`
       let outcome = null
+      // v0.10 Web-first 分级状态机（提升到 try 外，catch 分支也能统一清理）：
+      // pushTimer = Stage 0→1 延迟推卡定时器；deliverySettled = 终态已到（answer/skip/
+      // timeout/error/host-disposed 任一），后续不再启动 Stage 2 升级。
+      let pushTimer = null
+      let deliverySettled = false
+      const cancelDelivery = () => {
+        deliverySettled = true
+        if (pushTimer !== null) { clearTimeout(pushTimer); pushTimer = null }
+        try { escalation.stop(qKey) } catch { /* 清理不致命 */ }
+      }
       try {
         const token = vault.mint(qKey)
         ledger.add(qKey, {
@@ -899,21 +936,44 @@ export function createQuestionBridge(deps) {
           onAbandon: () => { try { ledger.terminate(qKey) } catch { } },
           allowChats,
         })
-        const { pushedTo, hintTargets, escalationTargets } = await pushQuestion(qKey, token, question, allowChats)
-        const row = ledger.get(qKey)
-        if (row !== undefined) store.set(qKey, { ...row, pushedTo, hintTargets })
-        const startedAt = Date.now()
-        escalation.start(qKey, (_key, stage) => {
-          const text = `提问仍在等待作答：${String(question.question ?? '').slice(0, 40)}\n${stage.note ?? '仍在等待作答'}（已等待 ${Math.round((Date.now() - startedAt) / 1000)}s）。请点击选项卡片按钮作答；无卡片渠道可回复选项编号。`
-          // 升级提醒必须逐目标发送。按 channelTypes 调 notifyAll 仍会覆盖同渠道的
-          // 其他 chat/user；没有精确目标时 fail-closed，不向全局渠道广播。
-          const sends = Array.isArray(escalationTargets) ? escalationTargets.map(async ({ inbound, target }) => {
-            try { await inbound.sendText(target.chatId, text) } catch { /* 单目标失败不影响其他目标 */ }
-          }) : []
-          Promise.all(sends).catch(() => {})
-        })
+        // v0.10 Stage 0→Stage 1 投递。Stage 0 已立账（pending，Web 管理台立即可见）。
+        // remoteEnabled=false 永不推 IM（纯 Web 作答/超时）；webFirstMs>0 延迟推送主绑定 IM；
+        // webFirstMs=0 立即推送（存量直调行为）。
+        let pushedTo = []
+        let hintTargets = []
+        let escalationTargets = []
+        const runPush = async () => {
+          const pushResult = await pushQuestion(qKey, token, question, allowChats)
+          // 临界窗口：终态先到（用户在 webFirstMs 边缘作答）——pushedTo 仍落账，供
+          // markResolved 更新已推卡片；但不再启动 Stage 2 升级。
+          pushedTo = pushResult.pushedTo
+          hintTargets = pushResult.hintTargets
+          const rowNow = ledger.get(qKey)
+          if (rowNow !== undefined) store.set(qKey, { ...rowNow, pushedTo, hintTargets })
+          if (deliverySettled) return
+          escalationTargets = pushResult.escalationTargets
+          const startedAt = Date.now()
+          escalation.start(qKey, (_key, stage) => {
+            const text = `提问仍在等待作答：${String(question.question ?? '').slice(0, 40)}\n${stage.note ?? '仍在等待作答'}（已等待 ${Math.round((Date.now() - startedAt) / 1000)}s）。请点击选项卡片按钮作答；无卡片渠道可回复选项编号。`
+            // 升级提醒必须逐目标发送。按 channelTypes 调 notifyAll 仍会覆盖同渠道的
+            // 其他 chat/user；没有精确目标时 fail-closed，不向全局渠道广播。
+            const sends = Array.isArray(escalationTargets) ? escalationTargets.map(async ({ inbound, target }) => {
+              try { await inbound.sendText(target.chatId, text) } catch { /* 单目标失败不影响其他目标 */ }
+            }) : []
+            Promise.all(sends).catch(() => {})
+          })
+        }
+        if (remoteEnabled) {
+          if (webFirstMs > 0) {
+            pushTimer = setTimeout(() => {
+              runPush().catch((error) => warn(`Stage 1 推送异常: ${error instanceof Error ? error.message : String(error)}`))
+            }, webFirstMs)
+          } else {
+            await runPush()
+          }
+        }
         outcome = await waitPromise
-        escalation.stop(qKey)
+        cancelDelivery()
         const rowAfterWait = ledger.get(qKey)
         if (rowAfterWait?.decision === 'terminated') {
           await markResolved(rowAfterWait?.pushedTo ?? pushedTo ?? [], '⏹ 已终止：agent 会话已结束，提问取消')
@@ -935,7 +995,7 @@ export function createQuestionBridge(deps) {
         }
       } catch (error) {
         warn(`提问推送/等待异常（交还桌面语义）: ${error instanceof Error ? error.message : String(error)}`)
-        try { escalation.stop(qKey) } catch { /* 清理不致命 */ }
+        cancelDelivery()
         try { bus.abandon(qKey) } catch { /* 清理不致命 */ }
         try { ledger.resolve(qKey, 'error') } catch { /* 账本失败不致命 */ }
         outcome = { __error: true }
@@ -972,7 +1032,7 @@ export function createQuestionBridge(deps) {
     escalation.dispose()
   }
 
-  return { askQuestions, decide, decideTrusted, adminPending, adminSettle, attach, dispose, handleCardAction }
+  return { askQuestions, decide, decideTrusted, adminPending, adminSettle, pendingAgentIds, attach, dispose, handleCardAction }
 }
 
 /** 校验并归一 ask_user 工具参数；违规返回 { ok:false, reason }。 */

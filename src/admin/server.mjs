@@ -52,9 +52,10 @@ function apiStatusOf(error) {
  * 创建 Web 管理台服务器（构造即建 server，listen 由 start() 触发）。
  * @param {object} options
  * @param {object} options.api - 管理台 API（overview/getBindings/putBindings/getSessions/patchSession/
- *                               getChannels/putChannel/testChannel/scanChannel/getMembers/
+ *                               patchSessionControl/getChannels/putChannel/testChannel/scanChannel/getMembers/
  *                               putMember/deleteMember/confirmPendingMember/dismissPendingMember/
- *                               mintPairingCode/revokePairingCode/getAudit）
+ *                               mintPairingCode/revokePairingCode/getPendingQuestions/settleQuestion/
+ *                               getAudit/getTasks/getHostCapabilities）
  * @param {(token: string) => boolean} options.verifyToken - Bearer token 校验（严格 === true 才放行）
  * @param {string} [options.host='127.0.0.1'] - 只绑本机回环（红线：永不绑公网）
  * @param {number} [options.port=8104] - 监听端口；0 = 随机可用端口（测试用）
@@ -160,6 +161,9 @@ export function createAdminServer({ api, verifyToken, host = '127.0.0.1', port =
     // POST :ref/settle 走收件人识别的受保护结算（授权在 Control Core + bearer 层）
     { method: 'GET', segments: ['api', 'questions'], handler: () => api.getPendingQuestions() },
     { method: 'POST', segments: ['api', 'questions', ':ref', 'settle'], handler: ({ params, body }) => api.settleQuestion({ ...(body ?? {}), ref: params.ref }) },
+    // v0.10 提交7：管理台暴露 DSH 连接与任务状态（只读；数据源 = 任务投影 + 宿主能力快照）
+    { method: 'GET', segments: ['api', 'tasks'], handler: () => api.getTasks() },
+    { method: 'GET', segments: ['api', 'host'], handler: () => api.getHostCapabilities() },
     { method: 'GET', segments: ['api', 'events'], sse: true }, // v0.4.0 通知事件流（handle 内特判）
   ]
 

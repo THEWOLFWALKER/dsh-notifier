@@ -72,7 +72,7 @@ export function normalizeAgentLifecyclePayload(payload) {
  * Safe, bounded host-event registration diagnostics. Snapshot values contain
  * counts and context states only; no session content, identifiers, or secrets.
  */
-export function createHostEventRegistrar(ctx, warn = () => {}) {
+export function createHostEventRegistrar(ctx, warn = () => {}, now = Date.now) {
   const target = selectHostEventContext(ctx)
   const stats = new Map()
   const rowOf = (event) => {
@@ -99,6 +99,7 @@ export function createHostEventRegistrar(ctx, warn = () => {}) {
       try {
         const disposer = target.ctx.on(event, (...args) => {
           row.received = increment(row.received)
+          try { row.lastAt = now() } catch { /* 时间源异常不吞宿主回调 */ }
           try { return listener(...args) } catch (error) {
             report(`宿主事件处理失败: ${event}（${error instanceof Error ? error.name : 'unknown'}）`)
             return undefined

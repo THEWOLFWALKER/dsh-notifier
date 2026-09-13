@@ -13,7 +13,7 @@
 ![Channels](https://img.shields.io/badge/channels-27-00B4D8?style=flat-square)
 
 ![npm version](https://img.shields.io/npm/v/dsh-notifier?style=flat-square&logo=npm&logoColor=white)
-![tests](https://img.shields.io/badge/tests-1548-brightgreen?style=flat-square)
+![tests](https://img.shields.io/badge/tests-1605-brightgreen?style=flat-square)
 ![license](https://img.shields.io/badge/license-MIT-brightgreen?style=flat-square)
 ![awesome-dsh-plugin](https://img.shields.io/badge/awesome--dsh--plugin-listed-00B4D8?style=flat-square)
 ![omdsh workshop](https://img.shields.io/badge/omdsh-workshop-7C3AED?style=flat-square)
@@ -25,7 +25,7 @@
 ![silence](https://img.shields.io/badge/silence%20never-approves-9C27B0?style=flat-square)
 ![push](https://img.shields.io/badge/push%20it-real%20good-FF4081?style=flat-square)
 
-Package metadata: `dsh-notifier@0.9.7` · 1548 automated contract tests (1548 pass) · MIT licensed.
+Package metadata: `dsh-notifier@0.10.0` · 1605 automated contract tests (1605 pass) · MIT licensed.
 
 Bring your [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) agent to the places you already use. dsh-notifier puts one minimal `notify()` API in front of 27 channels, then adds phone-friendly approvals, questions, session controls, and a calm local console — with no second runtime to deploy.
 
@@ -223,7 +223,7 @@ src/
   ledger.mjs          JSONL ledger + daily digest
   rules.mjs           anti-disturb gates (event / keyword / grace)
 scripts/              channel-login.mjs · channel-selfcheck.mjs · route.mjs · gen-channel-matrix.mjs
-test/                 1548 tests (1548 pass) in the 0.9.7 release line; historical 0.8.6 package carried 909 tests.
+test/                 1605 tests (1605 pass) in the 0.10.0 release line; historical 0.8.6 package carried 909 tests.
 ```
 
 Design rules: pure ESM (`.mjs`), zero runtime dependencies, a declarative spec engine for the bulk of channels, thin honest adapters, no build step.
@@ -242,7 +242,7 @@ Pin discipline (S-13): optional ranges are locked to the reviewed versions (the 
 > For active development and contributor work, use the private dev repository `THEWOLFWALKER/dsh-notifier-dev`. This public mirror is a release/source snapshot only — do not develop here.
 
 ```bash
-npm test          # 0.9.7 release line: 1548 (1548 pass)
+npm test          # 0.10.0 release line: 1605 (1605 pass)
 ```
 
 To add a channel: implement the adapter interface (`resolve(cfg)` + `send(msg)`) in `src/adapters/` and register it in `src/config.mjs`; the channel matrix above self-regenerates via `node scripts/gen-channel-matrix.mjs`.

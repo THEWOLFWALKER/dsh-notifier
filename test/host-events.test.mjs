@@ -43,11 +43,15 @@ test('host events: scoped child registers only host listeners on a feature-detec
   registrar.on('session/event', (...args) => received.push(args))
   listeners['session/event'][0]({ id: 's1' }, { type: 'turn/end' })
   assert.equal(received.length, 1)
-  assert.deepEqual(registrar.snapshot(), {
-    context: 'root',
-    scope: 'untagged',
-    events: { 'session/event': { attempts: 1, registered: 1, failures: 0, received: 1 } },
-  })
+  const snapshot = registrar.snapshot()
+  assert.equal(snapshot.context, 'root')
+  assert.equal(snapshot.scope, 'untagged')
+  const row = snapshot.events['session/event']
+  assert.equal(row.attempts, 1)
+  assert.equal(row.registered, 1)
+  assert.equal(row.failures, 0)
+  assert.equal(row.received, 1)
+  assert.equal(typeof row.lastAt, 'number')
 })
 
 test('host events: a non-Cordis root-shaped service is not used as an event context', () => {
