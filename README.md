@@ -2,6 +2,8 @@
 
 > **Your agent, in your pocket.** — 通知、审批、遥控，全在你的手机里。
 
+> **Maintenance notice (维护公告)**: until **2026-10-01**, the author is taking exams and cannot promptly maintain the project or review PRs/issues — replies will be delayed. Apologies for the inconvenience; outstanding items will be picked up after that. 至 **2026-10-01** 前作者因考试无法及时维护与查看 PR/Issue，回复会延迟，非常抱歉。
+
 **English** · [**简体中文**](README.zh-CN.md)
 
 ![DSH](https://img.shields.io/badge/DSH-DeepSeek%20Harness-1F6FEB?style=flat-square)
@@ -13,7 +15,7 @@
 ![Channels](https://img.shields.io/badge/channels-27-00B4D8?style=flat-square)
 
 ![npm version](https://img.shields.io/npm/v/dsh-notifier?style=flat-square&logo=npm&logoColor=white)
-![tests](https://img.shields.io/badge/tests-1605-brightgreen?style=flat-square)
+![tests](https://img.shields.io/badge/tests-1616-brightgreen?style=flat-square)
 ![license](https://img.shields.io/badge/license-MIT-brightgreen?style=flat-square)
 ![awesome-dsh-plugin](https://img.shields.io/badge/awesome--dsh--plugin-listed-00B4D8?style=flat-square)
 ![omdsh workshop](https://img.shields.io/badge/omdsh-workshop-7C3AED?style=flat-square)
@@ -25,7 +27,7 @@
 ![silence](https://img.shields.io/badge/silence%20never-approves-9C27B0?style=flat-square)
 ![push](https://img.shields.io/badge/push%20it-real%20good-FF4081?style=flat-square)
 
-Package metadata: `dsh-notifier@0.10.0` · 1605 automated contract tests (1605 pass) · MIT licensed.
+Package metadata: `dsh-notifier@0.10.1` · 1616 automated contract tests (1616 pass) · MIT licensed.
 
 Bring your [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) agent to the places you already use. dsh-notifier puts one minimal `notify()` API in front of 27 channels, then adds phone-friendly approvals, questions, session controls, and a calm local console — with no second runtime to deploy.
 
@@ -40,7 +42,7 @@ DSH agent ──notify() tool─────────┐
                                   ├─▶ notifier core ─▶ 27 channels (IM webhooks / push apps / China apps)
 DSH session events ──auto push────┘   level routing · tiered retries · segmentation · anti-disturb · ledger
                                       heartbeat ⏱ / stall ⚠ (v0.5) ──▶ cards with a ⏹ stop button
-your phone ──6 inbound channels───▶   remote approval (buttons · reply 1/2) · remote conversation (followup/inject/steer) · remote questions (option cards, v0.8)
+your phone ──6 inbound channels───▶   remote approval (buttons · reply 1/2) · remote conversation (followup/inject/steer) · remote questions (option cards + custom/skip aux buttons, v0.8)
 ```
 
 Every message resolves through one chain — level (`timeSensitive` / `active` / `passive`) → routing (multi-agent matrix) → channel adapter (`resolve(cfg)` + `send(msg)`). Two trigger lines feed it: the harness auto-pushes session events (debounced, deduped), and the model calls the `notify` tool. Six inbound channels ride the same core in reverse for approvals and conversation — and since v0.5 the outbound line reports back too: long-running turns send heartbeats, silent turns raise stall alerts, and Telegram/Feishu notifications carry a one-click stop action.
@@ -223,7 +225,7 @@ src/
   ledger.mjs          JSONL ledger + daily digest
   rules.mjs           anti-disturb gates (event / keyword / grace)
 scripts/              channel-login.mjs · channel-selfcheck.mjs · route.mjs · gen-channel-matrix.mjs
-test/                 1605 tests (1605 pass) in the 0.10.0 release line; historical 0.8.6 package carried 909 tests.
+test/                 1616 tests (1616 pass) in the 0.10.1 release line; historical 0.8.6 package carried 909 tests.
 ```
 
 Design rules: pure ESM (`.mjs`), zero runtime dependencies, a declarative spec engine for the bulk of channels, thin honest adapters, no build step.
@@ -239,10 +241,10 @@ Pin discipline (S-13): optional ranges are locked to the reviewed versions (the 
 
 ## Development
 
-> For active development and contributor work, use the private dev repository `THEWOLFWALKER/dsh-notifier-dev`. This public mirror is a release/source snapshot only — do not develop here.
+> Development happens on the `dev` branch of this repository; `main` is the release branch (published versions + tags + npm releases). Work on `dev`, then merge to `main` when cutting a release.
 
 ```bash
-npm test          # 0.10.0 release line: 1605 (1605 pass)
+npm test          # 0.10.1 release line: 1616 (1616 pass)
 ```
 
 To add a channel: implement the adapter interface (`resolve(cfg)` + `send(msg)`) in `src/adapters/` and register it in `src/config.mjs`; the channel matrix above self-regenerates via `node scripts/gen-channel-matrix.mjs`.

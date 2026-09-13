@@ -467,14 +467,17 @@ export function createTelegramInbound({ config, bus, vault, store = null, logger
         return null
       }
       const rows = optionEntries.map((entry) => [entry.row])
-      rows.push([{ text: t.customAnswerButton, callback_data: `r:${customRef}` }])
-      rows.push([{ text: t.skipButton, callback_data: `r:${skipRef}` }])
+      // PR #22：✍️自定义回答 / ⏭跳过 双钮并排于末行（一选项一行 + 末行辅助双钮）
+      rows.push([
+        { text: t.customAnswerButton, callback_data: `r:${customRef}` },
+        { text: t.skipButton, callback_data: `r:${skipRef}` },
+      ])
       try {
         const result = await api('sendMessage', {
           chat_id: chatId,
           // P1-1：提问 context 无上游上限（ask_user 入参直传），统一过 4096 钳制
           text: clampTelegramText(`❓ ${title}\n\n${content}`),
-          reply_markup: { inline_keyboard: rows }, // 一选项一行 + 辅助按钮各一行
+          reply_markup: { inline_keyboard: rows }, // 一选项一行，手机端可读；末行 ✍️/⏭ 辅助双钮
         })
         return { messageId: result?.message_id }
       } catch (error) {
