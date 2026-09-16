@@ -81,3 +81,25 @@ test('host events: registration errors and zero-event diagnostics stay observabl
   idle.reportZeroEvents()
   assert.ok(idleLines.some((line) => /未收到载荷.*session\/event/.test(line)))
 })
+
+test('host events: every host subscription opts into `global` so a scope carrier cannot drop it', () => {
+  // DSH dispatches `session/event` through dsh-scope's `scopeTarget`, which admits
+  // an untagged listener globally but a TAGGED one only for the dispatch key or its
+  // ancestors. Without `global: true` a session whose owner scope is unrelated to
+  // this plugin's ctx silently loses its events (upstream issue #16).
+  const seen = []
+  const root = {
+    on(event, listener, options) {
+      seen.push({ event, options })
+      return () => {}
+    },
+  }
+  root.root = root
+  const registrar = createHostEventRegistrar(root)
+  registrar.on('session/event', () => {})
+  registrar.on('agent/error', () => {})
+  assert.equal(seen.length, 2)
+  for (const entry of seen) {
+    assert.deepEqual(entry.options, { global: true }, `${entry.event} must subscribe globally`)
+  }
+})
