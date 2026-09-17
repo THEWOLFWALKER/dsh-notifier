@@ -344,3 +344,30 @@ test('late card after a CUSTOM answer shows answeredCustom wording on both cards
     assert.notEqual(edit.text, stringsOf().questions.timeoutResolvedText)
   }
 })
+
+test('direct path (webFirstMs=0): held target never blocks settlement return; late card reconciles', async () => {
+  // 直投与定时器路径同款后台化：卡 B 挂起时结算照常返回，B 迟到成功后按真实终态和解。
+  const gt = gatedTwoTargets()
+  const rig = makeRig({ timeoutMs: 5000, webFirstMs: 0, escalation: { enabled: false } }, gt)
+  const pending = rig.bridge.askQuestions({ questions: [SINGLE] })
+  await gt.firstStarted.promise
+  gt.gates[0].resolve({ messageId: 1 }) // 卡 A 送达
+  await gt.secondStarted.promise // 卡 B 发送挂起中
+  const ref = rig.bridge.adminPending()[0].ref
+  const settled = rig.bridge.adminSettle({ ref, action: 'choose', options: [0] })
+  assert.equal(settled.ok, true, 'adminSettle（桥级结算，落账 answered）')
+  const result = await Promise.race([
+    pending,
+    sleep(2000).then(() => { throw new Error('askQuestions 被挂起的直投卡阻塞（终态后必须返回）') }),
+  ])
+  assert.equal(result.results[0].answered, true)
+  assert.deepEqual(result.results[0].answers, ['测试环境'])
+  gt.gates[1].resolve({ messageId: 2 }) // 卡 B 迟到成功
+  await rig.waitForEdits(3) // A 作答编辑 + 迟到收尾对 A/B 的编辑
+  const answerText = stringsOf().questions.answeredWithLabelsVia(['测试环境'], 'admin:web')
+  assertBothCardsEdited(rig.edits)
+  for (const edit of rig.edits) {
+    assert.equal(edit.text, answerText, '每张卡的每次编辑都是已答话术')
+    assert.notEqual(edit.text, stringsOf().questions.timeoutResolvedText)
+  }
+})

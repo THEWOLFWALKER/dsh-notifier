@@ -980,7 +980,7 @@ export function createQuestionBridge(deps, strings) {
           allowChats,
         })
         // 拦截器范围取消信号——注册必须先于任何投递启动
-        // （webFirstMs=0 的直投路径 await runPush() 之前就要挂好）。abort 时：清延迟推卡/
+        // （webFirstMs=0 的直投路径 launchPush() 之前就要挂好）。abort 时：清延迟推卡/
         // 停升级（cancelDelivery）、**先**终结账本行（bus.abandon 默认 manual reason 不
         // 触发 onAbandon——必须显式 terminate）、再 abandon 等待。
         // 取消保证（诚实表述）：取消后不再「发起」任何新投递（卡/广播/编号话术）；
@@ -1034,14 +1034,17 @@ export function createQuestionBridge(deps, strings) {
             Promise.all(sends).catch(() => {})
           })
         }
+        // 投递统一后台化（直投与定时器路径同款）：pushQuestion 逐目标串行 await，
+        // 直投若等它完成再进入 wait，任一目标挂起会拖住终态后的返回（作答/超时/取消
+        // 均已结算，askQuestions 却回不去）。后台化后：终态由 cancelDelivery 封口后续
+        // 投递，迟到成功由 runPush 收尾路径按行终态和解；推送异常只告警不代答，问题
+        // 仍由 Web/超时路径收束（与延迟推送一致的 fail-closed）。
+        const launchPush = () => {
+          runPush().catch((error) => warn(`Stage 1 推送异常: ${error instanceof Error ? error.message : String(error)}`))
+        }
         if (remoteEnabled) {
-          if (webFirstMs > 0) {
-            pushTimer = setTimeout(() => {
-              runPush().catch((error) => warn(`Stage 1 推送异常: ${error instanceof Error ? error.message : String(error)}`))
-            }, webFirstMs)
-          } else {
-            await runPush()
-          }
+          if (webFirstMs > 0) pushTimer = setTimeout(launchPush, webFirstMs)
+          else launchPush()
         }
         outcome = await waitPromise
         if (onAbort !== null) {
