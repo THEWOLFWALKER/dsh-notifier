@@ -91,3 +91,23 @@ test('host capability: provider-chain seam wins over fallback in the snapshot', 
   assert.equal(snapshot.questions.mode, 'provider-chain')
   assert.equal(snapshot.questions.webLocal, 'available')
 })
+// ---------- #27 readUserQuestions 防御读 ----------
+
+test('capability: readUserQuestions prefers non-throwing ctx.get and maps absence to null', async () => {
+  const { readUserQuestions } = await import('../src/host/capability.mjs')
+  const service = { ask() {} }
+  assert.equal(readUserQuestions({ get: (name, strict) => (name === 'userQuestions' ? service : undefined) }), service)
+  assert.equal(readUserQuestions({ get: () => undefined }), null)
+  // 代理宿主（#27 现场）：直读抛错且无 get → null，不炸
+  const proxyCtx = new Proxy({}, { get(target, prop) { if (prop === 'userQuestions') throw new Error('cannot get property "userQuestions" without inject'); return target[prop] } })
+  assert.equal(readUserQuestions(proxyCtx), null)
+  // 普通桩：无 get 直读属性
+  assert.equal(readUserQuestions({ userQuestions: service }), service)
+  assert.equal(readUserQuestions({}), null)
+})
+
+test('capability: detectQuestionsMode survives the #27 throwing proxy ctx', async () => {
+  const { detectQuestionsMode } = await import('../src/host/capability.mjs')
+  const proxyCtx = new Proxy({}, { get(target, prop) { if (prop === 'userQuestions') throw new Error('cannot get property "userQuestions" without inject'); return target[prop] } })
+  assert.equal(detectQuestionsMode(proxyCtx), 'unsupported')
+})

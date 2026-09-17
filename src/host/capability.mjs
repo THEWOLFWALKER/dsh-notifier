@@ -28,13 +28,36 @@ export function detectEventsMode(ctx) {
 }
 
 /**
+ * 防御读取宿主 userQuestions 服务（#27）。
+ * cordis 4.0.2 的 ctx 代理对未在 inject 声明的服务做属性读取会直接抛
+ * `cannot get property "userQuestions" without inject`——本插件不在静态 inject
+ * 里声明该服务（改用 index.mjs 的 ctx.inject 运行时可选依赖），因此这里必须：
+ * 1) 优先走非抛错的 `ctx.get(name, false)`（服务不存在返回 undefined 而非抛错）；
+ * 2) 无 get 的宿主/测试桩回落直读属性，并吞掉代理抛错（按「无服务」处理）。
+ * 绝不让能力探测把整个 questions 装配炸掉。
+ * @returns {object|null} 服务对象，或 null（缺失/不可读）。
+ */
+export function readUserQuestions(ctx) {
+  try {
+    if (typeof ctx?.get === 'function') {
+      const service = ctx.get('userQuestions', false)
+      return service === undefined || service === null ? null : service
+    }
+  } catch { /* get 异常按无服务处理，不致命 */ }
+  try {
+    const service = ctx?.userQuestions
+    return service === undefined || service === null ? null : service
+  } catch { return null }
+}
+
+/**
  * 原生提问 seam 模式（仅描述宿主公开能力，不含插件 fallback）。
  * - provider-chain: ctx.userQuestions 同时暴露 ask 与 registerProvider
- * - native-event: 仅 ask（理论上的事件 + 回答接口形态）
+ * - native-event: 仅 ask（宿主事件 + 回答接口形态；waterfall 拦截器以此为接缝）
  * - unsupported: 无 ctx.userQuestions
  */
 export function detectQuestionsMode(ctx) {
-  const uq = ctx?.userQuestions
+  const uq = readUserQuestions(ctx)
   if (isRecord(uq) && typeof uq.ask === 'function') {
     return typeof uq.registerProvider === 'function' ? 'provider-chain' : 'native-event'
   }
