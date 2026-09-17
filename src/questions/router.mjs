@@ -273,7 +273,7 @@ export function createQuestionBridge(deps, strings) {
   }
 
   /** 推一个问题：选项卡片为主（单选按钮），编号文案只发卡片未送达的渠道（兜底）。 */
-  async function pushQuestion(qKey, token, question, allowChats = null) {
+  async function pushQuestion(qKey, token, question, allowChats = null, isCancelled = null) {
     const title = t.cardTitle(String(question.question).slice(0, 60))
     const context = String(question.context ?? '').trim()
     const content = [
@@ -296,8 +296,10 @@ export function createQuestionBridge(deps, strings) {
       } catch { /* 增量落账失败不致命，末尾整体落账兜底 */ }
     }
     for (const inbound of interactiveEntries()) {
+      if (typeof isCancelled === 'function' && isCancelled() === true) break // 取消/终态后不再投下一目标
       const { kept } = guardTargets(inbound.channel, inbound.notifyTargets(), warn)
       for (const target of kept) {
+        if (typeof isCancelled === 'function' && isCancelled() === true) break
         // 多选暂无卡片形态（飞书表单回调未实测，规划书风险项）：通道返回 null → 编号兜底
         const card = await inbound.sendQuestionCard({
           chatId: target.chatId,
@@ -339,7 +341,7 @@ export function createQuestionBridge(deps, strings) {
     const allTypes = Array.isArray(notifier?.channels) ? notifier.channels : []
     const textTypes = allTypes.filter((type) => !deliveredTypes.has(type))
     let deliveredTextTypes = []
-    if (textTypes.length > 0) {
+    if (textTypes.length > 0 && !(typeof isCancelled === 'function' && isCancelled() === true)) {
       const outcome = await notifier.notifyAll({
         title,
         content: `${content}\n\n${numberedHint(options, isMulti, t)}`,
@@ -359,9 +361,13 @@ export function createQuestionBridge(deps, strings) {
     const hintText = `${title}\n${content}\n\n${numberedHint(options, isMulti, t)}`
     const hintedTargets = []
     for (const entry of hintedInbound) {
+      // 取消/终态后不再补发编号话术（含 await 恢复后的下一轮 entry）。
+      if (typeof isCancelled === 'function' && isCancelled() === true) break
       const coveredByOutbound = isCoveredByOutbound(entry.channel, deliveredTextTypes)
       const hintSends = []
       for (const target of entry.targets) {
+        // 每次实际发送前复查：在途 await 返回后进入下一目标时同样拦截。
+        if (typeof isCancelled === 'function' && isCancelled() === true) break
         const targetKey = `${entry.channel}\u0000${target.chatId}\u0000${target.userId}`
         if (!escalationTargetKeys.has(targetKey)) {
           escalationTargetKeys.add(targetKey)
@@ -385,6 +391,27 @@ export function createQuestionBridge(deps, strings) {
     // 只有送达确认的 (channel, chatId, userId) 才能通过编号回复命中兜底路径。
     // 旧 hintChannels 字符串数组不再写入新行；旧行无 hintTargets 字段 → fail-closed。
     return { pushedTo, hintTargets: hintedTargets, escalationTargets }
+  }
+
+  /**
+   * 终态呈现话术的单一事实源：按已决行还原终态文案，常规收尾与迟到收尾共用。
+   * 迟到投递收尾（runPush 的 deliverySettled 出口）与常规分支共享同一映射——
+   * 绝不把「已作答/跳过」误标成超时，也绝不把超时标成终止。
+   * answered+custom → answeredCustom；answered → answeredWithLabelsVia；
+   * skipped/terminated/timeout 各归其位；未知（error 等）保守回落超时话术。
+   */
+  function finalTextOf(row) {
+    const decision = row?.decision
+    if (decision === 'answered') {
+      const answers = Array.isArray(row?.answers) ? row.answers.map(String) : []
+      const via = String(row?.via ?? 'unknown')
+      return row?.custom === true && answers.length > 0
+        ? t.answeredCustom(answers[0])
+        : t.answeredWithLabelsVia(answers, via)
+    }
+    if (decision === 'skipped') return t.skippedResolvedText
+    if (decision === 'terminated') return t.terminatedText
+    return t.timeoutResolvedText
   }
 
   /** 把送达过的卡片全部改成终态（超时/已答；editTarget 按 pushedTo 行的 kind 选卡片形态）。 */
@@ -546,7 +573,7 @@ export function createQuestionBridge(deps, strings) {
     }
     const verdict = bus.settle(qKey, { kind: 'aq-text', idxs: [], text: safe.text }, `${envelope.channel}:text`, envelope.userId)
     if (!verdict.ok) return { ok: false, message: t.alreadyAnsweredFirstWin }
-    ledger.resolve(qKey, 'answered', { answers: [safe.text], via: `${envelope.channel}:text`, userId: String(envelope.userId) })
+    ledger.resolve(qKey, 'answered', { answers: [safe.text], via: `${envelope.channel}:text`, userId: String(envelope.userId), custom: true })
     warn(`${qKey} 自定义作答（via ${envelope.channel}:text）`)
     return { ok: true, message: t.answeredCustom(safe.text), answers: [safe.text] }
   }
@@ -915,7 +942,7 @@ export function createQuestionBridge(deps, strings) {
     let allAnswered = true
     const agentId = execContext?.agent?.id ?? execContext?.agent?.session?.id ?? execContext?.session?.id ?? null
     for (const question of questions) {
-      if (disposed) {
+      if (disposed || execContext.signal?.aborted === true) {
         results.push({ question: String(question?.question ?? ''), answered: false, reason: 'stopped' })
         allAnswered = false
         continue
@@ -952,6 +979,23 @@ export function createQuestionBridge(deps, strings) {
           onAbandon: () => { try { ledger.terminate(qKey) } catch { } },
           allowChats,
         })
+        // 拦截器范围取消信号——注册必须先于任何投递启动
+        // （webFirstMs=0 的直投路径 await runPush() 之前就要挂好）。abort 时：清延迟推卡/
+        // 停升级（cancelDelivery）、**先**终结账本行（bus.abandon 默认 manual reason 不
+        // 触发 onAbandon——必须显式 terminate）、再 abandon 等待。
+        // 取消保证（诚实表述）：取消后不再「发起」任何新投递（卡/广播/编号话术）；
+        // 在途 HTTP 发送不可撤回，迟到成功的投递由 runPush 收尾路径按终态 best-effort 编辑。
+        let onAbort = null
+        const signal = execContext.signal
+        if (signal !== undefined && signal !== null && typeof signal.addEventListener === 'function') {
+          onAbort = () => {
+            cancelDelivery()
+            try { ledger.terminate(qKey) } catch { /* 已终结则忽略 */ }
+            try { bus.abandon(qKey) } catch { /* 已终结则忽略 */ }
+          }
+          if (signal.aborted) onAbort()
+          else signal.addEventListener('abort', onAbort, { once: true })
+        }
 // v0.10 Stage 0→Stage 1 投递。Stage 0 已立账（pending，Web 管理台立即可见）。
         // remoteEnabled=false 永不推 IM（纯 Web 作答/超时）；webFirstMs>0 延迟推送主绑定 IM；
         // webFirstMs=0 立即推送（存量直调行为）。
@@ -959,14 +1003,25 @@ export function createQuestionBridge(deps, strings) {
         let hintTargets = []
         let escalationTargets = []
         const runPush = async () => {
-          const pushResult = await pushQuestion(qKey, token, question, allowChats)
+          if (deliverySettled) return // 取消/终态后不再启动投递
+          const pushResult = await pushQuestion(qKey, token, question, allowChats, () => deliverySettled)
           // 临界窗口：终态先到（用户在 webFirstMs 边缘作答）——pushedTo 仍落账，供
           // markResolved 更新已推卡片；但不再启动 Stage 2 升级。
           pushedTo = pushResult.pushedTo
           hintTargets = pushResult.hintTargets
           const rowNow = ledger.get(qKey)
           if (rowNow !== undefined) store.set(qKey, { ...rowNow, pushedTo, hintTargets })
-          if (deliverySettled) return
+          if (deliverySettled) {
+            // 迟到成功投递与终态和解——wait 结算时这些卡还不在 pushedTo，
+            // 早先的 markResolved 没见过它们。按行终态选话术补一次卡片编辑（best-effort；
+            // 取消保证的诚实表述：取消后不再「发起」新投递，迟到成功则尽力收尾）。
+            if (Array.isArray(pushedTo) && pushedTo.length > 0) {
+              // 与常规收尾共享 finalTextOf —— 迟到卡按真实终态呈现（已答/跳过/
+              // 终止/超时各归其位），绝不把成功作答覆盖成超时话术。
+              try { await markResolved(pushedTo, finalTextOf(ledger.get(qKey))) } catch { /* 迟到收尾失败不致命 */ }
+            }
+            return
+          }
           escalationTargets = pushResult.escalationTargets
           const startedAt = Date.now()
           escalation.start(qKey, (_key, stage) => {
@@ -989,23 +1044,26 @@ export function createQuestionBridge(deps, strings) {
           }
         }
         outcome = await waitPromise
+        if (onAbort !== null) {
+          try { signal.removeEventListener('abort', onAbort) } catch { /* 移除失败不致命 */ }
+        }
         cancelDelivery()
         const rowAfterWait = ledger.get(qKey)
         if (rowAfterWait?.decision === 'terminated') {
-          await markResolved(rowAfterWait?.pushedTo ?? pushedTo ?? [], t.terminatedText)
+          await markResolved(rowAfterWait?.pushedTo ?? pushedTo ?? [], finalTextOf(rowAfterWait))
           results.push({ question: String(question.question ?? ''), answered: false, reason: 'terminated' })
           allAnswered = false
           continue
         }
         if (outcome?.decision?.kind === 'aq-skip') {
-          await markResolved(ledger.get(qKey)?.pushedTo ?? [], t.skippedResolvedText)
+          await markResolved(ledger.get(qKey)?.pushedTo ?? [], finalTextOf(ledger.get(qKey)))
           results.push({ question: String(question.question ?? ''), answered: false, reason: 'skipped-by-user' })
           allAnswered = false
           continue
         }
         if (outcome?.decision?.kind === 'aq-text') {
           const answer = String(outcome.decision.text ?? '')
-          await markResolved(ledger.get(qKey)?.pushedTo ?? [], t.answeredCustom(answer))
+          await markResolved(ledger.get(qKey)?.pushedTo ?? [], finalTextOf(ledger.get(qKey)))
           results.push({ question: String(question.question ?? ''), answered: true, answers: [answer], via: outcome.via })
           continue
         }
@@ -1019,7 +1077,7 @@ export function createQuestionBridge(deps, strings) {
       if (outcome === null) {
         // P2 超时永不代答：唯一产物是 answered=false
         ledger.resolve(qKey, 'timeout')
-        await markResolved(ledger.get(qKey)?.pushedTo ?? [], t.timeoutResolvedText)
+        await markResolved(ledger.get(qKey)?.pushedTo ?? [], finalTextOf(ledger.get(qKey)))
         results.push({ question: String(question.question ?? ''), answered: false })
         allAnswered = false
         continue
@@ -1029,12 +1087,12 @@ export function createQuestionBridge(deps, strings) {
         allAnswered = false
         continue
       }
-      // outcome = bus.wait 的裁决信封 { decision: settle 载荷 {kind:'aq', idxs}, via, userId }
+      // outcome = bus.wait 的裁决信封 { decision: settle 载荷 {kind:'aq', idxs}, via, userId }。
+      // answers/via 以已决行为准（settle 已同步落账 answers），与 finalTextOf 同源。
       const row = ledger.get(qKey)
-      const idxs = Array.isArray(outcome?.decision?.idxs) ? outcome.decision.idxs : []
-      const answers = idxs.map((idx) => row?.options?.[idx]).filter((label) => label !== undefined)
-      await markResolved(row?.pushedTo ?? [], t.answeredWithLabelsVia(answers, outcome?.via ?? 'unknown'))
-      results.push({ question: String(question.question ?? ''), answered: true, answers, via: outcome?.via })
+      await markResolved(row?.pushedTo ?? [], finalTextOf(row))
+      const answeredLabels = Array.isArray(row?.answers) ? row.answers.map(String) : []
+      results.push({ question: String(question.question ?? ''), answered: true, answers: answeredLabels, via: outcome?.via })
     }
     return { ok: true, answered: allAnswered, results }
   }
