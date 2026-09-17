@@ -233,6 +233,7 @@ export function createNativeQuestionBridge(deps = {}) {
         return false
       }
       attachMode = 'provider'
+      attachError = null // 重放成功：清掉上一次失败残留的错误码
       return true
     }
     // 宿主真实形态（dsh-user-questions 0.1.5-rc.x）：只有 ask()，无 registerProvider。
@@ -253,6 +254,7 @@ export function createNativeQuestionBridge(deps = {}) {
       return false
     }
     attachMode = 'waterfall'
+    attachError = null // 重放成功：清掉上一次失败残留的错误码
     return true
   }
 

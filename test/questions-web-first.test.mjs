@@ -66,7 +66,7 @@ function makeRig(config, overrides = {}) {
         return { messageId: cards.length }
       },
       async editResolved(target, text) { edits.push({ target, text }); while (editWaiters.length) editWaiters.shift()() },
-      async sendText(chatId, text) { texts.push({ chatId, text }); return true },
+      async sendText(chatId, text) { texts.push({ chatId, text }); if (overrides.sendText !== undefined) return overrides.sendText(chatId, text); return true },
     },
   }]
   const bridge = createQuestionBridge({
@@ -370,4 +370,26 @@ test('direct path (webFirstMs=0): held target never blocks settlement return; la
     assert.equal(edit.text, answerText, '每张卡的每次编辑都是已答话术')
     assert.notEqual(edit.text, stringsOf().questions.timeoutResolvedText)
   }
+})
+
+test('hinted numbered text: held first send + abort — second target never starts', async () => {
+  // 编号话术兜底逐目标串行：第一目标在途时取消，第二目标绝不发起发送。
+  const gates = []
+  const firstStarted = deferred()
+  const rig = makeRig(
+    { timeoutMs: 5000, webFirstMs: 0, escalation: { enabled: false } },
+    {
+      notifyTargets: () => [{ chatId: '100', userId: '100' }, { chatId: '101', userId: '101' }],
+      sendQuestionCard: async () => null, // 卡片不可用 → hinted 编号话术兜底
+      sendText: async () => { const g = deferred(); gates.push(g); if (gates.length === 1) firstStarted.resolve(); return g.promise },
+    },
+  )
+  const controller = new AbortController()
+  const pending = rig.bridge.askQuestions({ questions: [SINGLE] }, { signal: controller.signal })
+  await firstStarted.promise // 第一条编号话术真正在途（挂起中）
+  controller.abort() // GUI 先答
+  gates[0].resolve(true) // 在途发送随后成功返回
+  const result = await pending
+  assert.equal(result.results[0].reason, 'terminated')
+  assert.equal(gates.length, 1, '第二目标的编号话术绝不启动（串行发送 + 取消复查）')
 })

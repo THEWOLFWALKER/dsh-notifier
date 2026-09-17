@@ -364,26 +364,20 @@ export function createQuestionBridge(deps, strings) {
       // 取消/终态后不再补发编号话术（含 await 恢复后的下一轮 entry）。
       if (typeof isCancelled === 'function' && isCancelled() === true) break
       const coveredByOutbound = isCoveredByOutbound(entry.channel, deliveredTextTypes)
-      const hintSends = []
       for (const target of entry.targets) {
-        // 每次实际发送前复查：在途 await 返回后进入下一目标时同样拦截。
+        // 编号话术逐目标串行：上一目标在途返回后才决定是否发起下一目标——
+        // 取消/终态后绝不启动新发送（与卡片投递同款取消闸）。
         if (typeof isCancelled === 'function' && isCancelled() === true) break
         const targetKey = `${entry.channel}\u0000${target.chatId}\u0000${target.userId}`
         if (!escalationTargetKeys.has(targetKey)) {
           escalationTargetKeys.add(targetKey)
           escalationTargets.push({ inbound: entry.inbound, target })
         }
-        if (!coveredByOutbound) {
-          hintSends.push(entry.inbound.sendText(target.chatId, hintText).then((ok) => ok === true).catch(() => false))
-        }
-      }
-      if (!coveredByOutbound) {
-        const outcomes = await Promise.all(hintSends)
+        if (coveredByOutbound) continue
         // 只记录 sendText 成功的目标（per-chat 送达证据，Control Core Step 1）
-        for (let i = 0; i < entry.targets.length; i++) {
-          if (outcomes[i] === true) {
-            hintedTargets.push({ channel: entry.channel, ...(entry.inbound.accountId === undefined ? {} : { accountId: String(entry.inbound.accountId ?? '') }), chatId: entry.targets[i].chatId, userId: entry.targets[i].userId })
-          }
+        const delivered = await entry.inbound.sendText(target.chatId, hintText).then((ok) => ok === true).catch(() => false)
+        if (delivered) {
+          hintedTargets.push({ channel: entry.channel, ...(entry.inbound.accountId === undefined ? {} : { accountId: String(entry.inbound.accountId ?? '') }), chatId: target.chatId, userId: target.userId })
         }
       }
     }

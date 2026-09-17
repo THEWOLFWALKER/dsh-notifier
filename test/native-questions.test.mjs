@@ -70,6 +70,32 @@ test('native questions: duplicate provider degrades to unsupported and records t
   assert.equal(bridge.capabilities().error, 'DUPLICATE_PROVIDER')
 })
 
+test('native questions: successful re-attach clears the stale error of the failed attempt', () => {
+  // 重放场景：首次 attach 失败（seam 抛错）记录错误码；服务重建后重放成功——
+  // 两条成功路径（provider / waterfall）都必须清掉旧失败码，capabilities 不残留。
+  const failing = {
+    registerProvider() { const error = new Error('occupied'); error.code = 'DUPLICATE_PROVIDER'; throw error },
+    ask() {},
+  }
+  const ctx = { userQuestions: failing }
+  const bridge = createNativeQuestionBridge({ ctx, questionBridge: fakeQuestionBridge() })
+  assert.equal(bridge.attach(), false)
+  assert.equal(bridge.capabilities().error, 'DUPLICATE_PROVIDER')
+  // 服务重建：registerProvider 恢复可用 → provider 路径成功
+  ctx.userQuestions = fakeUserQuestions()
+  assert.equal(bridge.attach(), true)
+  assert.equal(bridge.capabilities().attached, true)
+  assert.equal(bridge.capabilities().error, null, 'provider 路径成功后清空旧失败码')
+  // 服务再次重建为 ask-only → waterfall 路径成功，同样不得残留
+  ctx.userQuestions = { ask() {} }
+  ctx.on = () => () => {}
+  assert.equal(bridge.attach(), true)
+  const caps = bridge.capabilities()
+  assert.equal(caps.attached, true)
+  assert.equal(caps.mode, 'waterfall')
+  assert.equal(caps.error, null, 'waterfall 路径成功后清空旧失败码')
+})
+
 test('native questions: missing seam degrades without throwing', () => {
   const bridge = createNativeQuestionBridge({ ctx: {}, questionBridge: fakeQuestionBridge() })
   assert.equal(bridge.attach(), false)
