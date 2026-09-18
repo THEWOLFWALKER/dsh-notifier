@@ -614,6 +614,32 @@ test('getChannels：YAML ⊕ store 合并视图（store 覆盖同名 YAML 字段
   assert.deepEqual(feishuIn.config, { appId: '***', appSecret: '***' }) // 入站行 = store 账号视图
 })
 
+// ———————— wps-bot：webhook 单字段 + msgtype 明文回显 + fixedOptions 白名单收窄 + docUrl ————————
+
+test('getChannels wps-bot：msgtype 明文回显（plain 声明），webhook 照常脱敏，docUrl 附官方文档', () => {
+  const { api } = makeApi({
+    state: { 'admin:channel:wps-bot:outbound': { webhook: 'https://365.kdocs.cn/woa/api/v1/webhook/send?key=k', msgtype: 'markdown' } },
+  })
+  const row = api.getChannels().find((r) => r.type === 'wps-bot' && r.direction === 'outbound')
+  assert.deepEqual(row.config, { webhook: '***', msgtype: 'markdown' }, 'secret 字段脱敏，plain 字段明文')
+  assert.deepEqual(Object.keys(row.fields).sort(), ['msgtype', 'webhook'], '字段表 = webhook + msgtype')
+  assert.equal(row.fields.msgtype.plain, true)
+  assert.equal(row.fields.webhook.secret, true)
+  assert.equal(row.docUrl, 'https://365.kdocs.cn/3rd/open/documents/app-integration-dev/guide/robot/webhook')
+})
+
+test('putOutboundChannel wps-bot：timeoutMs 不再可写（fixedOptions 白名单收窄），webhook/msgtype 合法', () => {
+  const { api, store } = makeApi()
+  assert.throws(() => api.putOutboundChannel('wps-bot', { webhook: 'https://woa.wps.cn/api/v1/webhook/send?key=k', timeoutMs: 5000 }), apiErrorOf(422), 'timeoutMs 已从键白名单移除')
+  assert.deepEqual(
+    api.putOutboundChannel('wps-bot', { webhook: 'https://woa.wps.cn/api/v1/webhook/send?key=k', msgtype: 'text' }),
+    { type: 'wps-bot', saved: true, direction: 'outbound' },
+  )
+  const stored = store.get('admin:channel:wps-bot:outbound')
+  assert.equal(stored.webhook, 'https://woa.wps.cn/api/v1/webhook/send?key=k')
+  assert.equal(stored.msgtype, 'text')
+})
+
 test('putChannel 422：双域通道携带 webhook 键 → 拒绝（键域归入站机器人凭证，防抹掉扫码凭证）', () => {
   const { api, store } = makeApi({ state: { 'feishu:account': { appId: 'a', appSecret: 's' } } })
   assert.throws(() => api.putChannel('feishu', { webhook: 'https://open.feishu.cn/hook/x' }), apiErrorOf(422))

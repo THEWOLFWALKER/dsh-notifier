@@ -44,6 +44,7 @@ describe('capability-matrix: 出站→入站别名', () => {
     assert.equal(OUTBOUND_TO_INBOUND_ALIAS.telegram, 'telegram')
     assert.equal(OUTBOUND_TO_INBOUND_ALIAS.wxpusher, 'wxpusher')
     assert.equal(OUTBOUND_TO_INBOUND_ALIAS.dingtalk, 'dingtalk')
+    // wps-bot 为纯出站渠道（无入站侧），别名表无 wps 条目
   })
 
   it('inboundToOutboundType 正向反向一致', () => {
@@ -237,8 +238,8 @@ describe('capability-matrix: registry 与实际 renderer 入口一致', () => {
 })
 
 describe('capability-matrix: 出站通道全集与 hasInbound', () => {
-  it('OUTBOUND_CHANNELS 数量 = 27（与 config.mjs CHANNEL_TYPES 一致）', () => {
-    assert.equal(OUTBOUND_CHANNELS.length, 27)
+  it('OUTBOUND_CHANNELS 数量 = 28（与 config.mjs CHANNEL_TYPES 一致）', () => {
+    assert.equal(OUTBOUND_CHANNELS.length, 28)
     assert.equal(OUTBOUND_CHANNELS.length, CHANNEL_TYPES.length)
   })
 
@@ -261,5 +262,6 @@ describe('capability-matrix: 出站通道全集与 hasInbound', () => {
     assert.equal(hasInbound('bark'), false)
     assert.equal(hasInbound('desktop'), false)
     assert.equal(hasInbound('webhook'), false)
+    assert.equal(hasInbound('wps-bot'), false)
   })
 })

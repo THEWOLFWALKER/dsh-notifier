@@ -616,6 +616,10 @@ function buildSetupForm() {
       : undefined
     return setupFieldRow(k, specs[k], current)
   }).join('')
+  // spec 声明 docUrl 的渠道（wps-bot）在向导表单底部附官方文档跳转
+  if (row && typeof row.docUrl === 'string' && row.docUrl !== '') {
+    html += '<p class="muted small"><a href="' + esc(row.docUrl) + '" target="_blank" rel="noopener noreferrer">官方接入文档 ↗</a></p>'
+  }
   box.innerHTML = html || '<p class="muted small">（该渠道暂无可编辑字段）</p>'
 }
 function setupSelect(type) {
@@ -1056,6 +1060,10 @@ function cardHtml(c) {
     : '<span class="badge none">未配置</span>'
   var scan = c.direction === 'inbound' && SCAN_TYPES.indexOf(c.type) >= 0
     ? '<button data-scan="' + esc(c.type) + '">扫码授权</button>' : ''
+  // spec 声明 docUrl 的渠道（wps-bot）在卡片头部附官方文档跳转
+  var docLink = c.docUrl
+    ? ' <a class="muted small" href="' + esc(c.docUrl) + '" target="_blank" rel="noopener noreferrer" title="打开官方接入文档">官方文档 ↗</a>'
+    : ''
   // 微信专属提示：iLink 机器人 = 扫码微信的专属好友（1:1），扫码那一刻即完成配对
   var wechatHint = c.type === 'wechat' && c.direction === 'inbound'
     ? '<p class="muted small">点「扫码授权」网页直接出二维码，用<b>你自己的微信</b>扫并确认：机器人会出现在你的微信好友里（专属好友，只和你聊），<b>扫码那一刻就完成配对</b>，不需要配对码。</p>'
@@ -1071,7 +1079,7 @@ function cardHtml(c) {
   var del = !ro && c.configured
     ? '<button class="danger" data-delch="' + esc(key) + '">删除配置</button>' : ''
   return '<div class="card" data-key="' + esc(key) + '">'
-    + '<div class="card-head"><span class="glyph">' + esc(glyphOf(c.type)) + '</span><b class="mono">' + esc(c.type) + '</b><span class="dir-tag">' + dir + '</span>' + badge + '</div>'
+    + '<div class="card-head"><span class="glyph">' + esc(glyphOf(c.type)) + '</span><b class="mono">' + esc(c.type) + '</b><span class="dir-tag">' + dir + '</span>' + badge + docLink + '</div>'
     + '<div class="card-body" hidden>'
     + (fields || '<p class="muted small">（该通道暂无可编辑凭证键）</p>')
     + wechatHint

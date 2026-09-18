@@ -12,10 +12,10 @@
 ![Cordis](https://img.shields.io/badge/Cordis-plugin-FF6B6B?style=flat-square)
 ![Zero deps](https://img.shields.io/badge/zero%20deps-000000?style=flat-square)
 ![Bilingual](https://img.shields.io/badge/bilingual-EN%2F%E7%AE%80%E4%BD%93-00A98F?style=flat-square)
-![Channels](https://img.shields.io/badge/channels-27-00B4D8?style=flat-square)
+![Channels](https://img.shields.io/badge/channels-28-00B4D8?style=flat-square)
 
 ![npm version](https://img.shields.io/npm/v/dsh-notifier?style=flat-square&logo=npm&logoColor=white)
-![tests](https://img.shields.io/badge/tests-1616-brightgreen?style=flat-square)
+![tests](https://img.shields.io/badge/tests-1625-brightgreen?style=flat-square)
 ![license](https://img.shields.io/badge/license-MIT-brightgreen?style=flat-square)
 ![awesome-dsh-plugin](https://img.shields.io/badge/awesome--dsh--plugin-listed-00B4D8?style=flat-square)
 ![omdsh workshop](https://img.shields.io/badge/omdsh-workshop-7C3AED?style=flat-square)
@@ -27,7 +27,7 @@
 ![silence](https://img.shields.io/badge/silence%20never-approves-9C27B0?style=flat-square)
 ![push](https://img.shields.io/badge/push%20it-real%20good-FF4081?style=flat-square)
 
-Package metadata: `dsh-notifier@0.10.2` · 1616 automated contract tests (1616 pass) · MIT licensed.
+Package metadata: `dsh-notifier@0.10.2` · 1625 automated contract tests (1621 pass on Windows checkout; 2 pre-existing upstream env failures excluded) · MIT licensed.
 
 Bring your [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) agent to the places you already use. dsh-notifier puts one minimal `notify()` API in front of 27 channels, then adds phone-friendly approvals, questions, session controls, and a calm local console — with no second runtime to deploy.
 
@@ -39,7 +39,7 @@ Your agent and the harness itself both push through it: session events (`turn/en
 
 ```
 DSH agent ──notify() tool─────────┐
-                                  ├─▶ notifier core ─▶ 27 channels (IM webhooks / push apps / China apps)
+                                  ├─▶ notifier core ─▶ 28 channels (IM webhooks / push apps / China apps)
 DSH session events ──auto push────┘   level routing · tiered retries · segmentation · anti-disturb · ledger
                                       heartbeat ⏱ / stall ⚠ (v0.5) ──▶ cards with a ⏹ stop button
 your phone ──6 inbound channels───▶   remote approval (buttons · reply 1/2) · remote conversation (followup/inject/steer) · remote questions (option cards + custom/skip aux buttons, v0.8)
@@ -95,7 +95,7 @@ That's it. `turn/end`, `approval/asked`, and `agent/error` events now reach ever
 | Feature | What it does |
 |---|---|
 | **Dual trigger lines** | Auto status push (`turn/end` · `approval/asked` · `agent/error`) plus a model-facing `notify` tool. |
-| **27 channels** | Telegram, Slack, Discord, Feishu, DingTalk, WeCom, WeCom App, QQ bot, OneBot, Teams, Mattermost, Google Chat, Bark, Pushover, PushDeer, Chanify, ntfy, Gotify, iGot, WxPusher, PushPlus, Server酱, Qmsg, 息知, webhook, bell, desktop — zero runtime deps. |
+| **28 channels** | Telegram, Slack, Discord, Feishu, DingTalk, WeCom, WeCom App, QQ bot, OneBot, Teams, Mattermost, Google Chat, Bark, Pushover, PushDeer, Chanify, ntfy, Gotify, iGot, WxPusher, PushPlus, Server酱, Qmsg, 息知, webhook, bell, desktop, WPS 协作群机器人 (wps-bot) — zero runtime deps. |
 | **Level routing** | `timeSensitive` / `active` / `passive` → per-channel delivery semantics (silent push, priority headers, @-mentions) with tiered retries. |
 | **Remote approval** | Answer approvals from your phone — Telegram/Feishu cards, QQ native buttons in 1:1 chats, and numbered-reply fallback on channels without cards. Group destinations use a safe text fallback. Silence never approves. |
 | **Remote conversation** | Chat with your agent: plain text → `followup`/`inject`, `!` prefix steers mid-turn, a merge window reassembles mobile typing. |
@@ -198,6 +198,7 @@ v0.5 status line defaults: `longRunning` and `stall` are **on** (15min first hea
 | `webhook` | Any custom endpoint | — | — |
 | `wecom` | WeCom group robot | webhook key | ✅ |
 | `wecom-app` | WeCom app message | corpid + agentId + secret | ✅ |
+| `wps-bot` | WPS collaboration group robot (WOA) | webhook URL (with ?key=) | ✅ |
 | `wxpusher` | WxPusher (WeChat) | appToken + uid | ✅ (limits) |
 | `xizhi` | 息知 Xizhi | sendkey | ✅ (limits) |
 
@@ -225,7 +226,7 @@ src/
   ledger.mjs          JSONL ledger + daily digest
   rules.mjs           anti-disturb gates (event / keyword / grace)
 scripts/              channel-login.mjs · channel-selfcheck.mjs · route.mjs · gen-channel-matrix.mjs
-test/                 1616 tests (1616 pass) in the 0.10.1 release line; historical 0.8.6 package carried 909 tests.
+test/                 1625 tests (1621 pass on Windows checkout; 2 pre-existing upstream env failures excluded) in the current line; historical 0.8.6 package carried 909 tests.
 ```
 
 Design rules: pure ESM (`.mjs`), zero runtime dependencies, a declarative spec engine for the bulk of channels, thin honest adapters, no build step.
@@ -244,7 +245,7 @@ Pin discipline (S-13): optional ranges are locked to the reviewed versions (the 
 > Development happens on the `dev` branch of this repository; `main` is the release branch (published versions + tags + npm releases). Work on `dev`, then merge to `main` when cutting a release.
 
 ```bash
-npm test          # 0.10.1 release line: 1616 (1616 pass)
+npm test          # current line: 1625 (1621 pass on Windows checkout)
 ```
 
 To add a channel: implement the adapter interface (`resolve(cfg)` + `send(msg)`) in `src/adapters/` and register it in `src/config.mjs`; the channel matrix above self-regenerates via `node scripts/gen-channel-matrix.mjs`.

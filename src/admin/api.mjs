@@ -21,7 +21,7 @@
 
 import { appendFileSync, chmodSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { CHANNEL_TYPES, channelFieldsOf } from '../config.mjs'
+import { CHANNEL_TYPES, channelFieldsOf, channelFixedOptions, channelDocUrlOf } from '../config.mjs'
 import { INBOUND_CHANNELS, INBOUND_CHANNEL_SET } from '../inbound/channels-registry.mjs'
 import { tasksSnapshot } from '../routing/task-projection.mjs'
 import { createHostCapabilitySnapshot } from '../host/capability.mjs'
@@ -146,16 +146,33 @@ const errorMessage = (error) => (error instanceof Error ? error.message : String
  * 深遍历脱敏（getChannels 用；比 config.mjs 的 maskChannelConfig 更激进——管理台凭证表单
  * 不区分 secret 字段，凡字符串值一律不可回显）：字符串值（含嵌套对象/数组里的）替换为
  * '***'，键名与非字符串值（数字/布尔/null）原样保留。
+ * plainKeys（仅顶层生效）里的键跳过脱敏——fields 声明 plain: true 的非秘密枚举字段
+ * （如 wps-bot msgtype）明文回显，脱敏成 *** 反而让用户以为配置丢了。
+ * 递归层不传 plainKeys：明文豁免只作用于 config 顶层键，嵌套同名键照常脱敏。
  */
-function maskSecrets(value) {
+function maskSecrets(value, plainKeys) {
   if (typeof value === 'string') return '***'
-  if (Array.isArray(value)) return value.map(maskSecrets)
+  if (Array.isArray(value)) return value.map((item) => maskSecrets(item))
   if (plainObjectOf(value) !== null) {
     const out = {}
-    for (const [key, item] of Object.entries(value)) out[key] = maskSecrets(item)
+    for (const [key, item] of Object.entries(value)) {
+      out[key] = plainKeys !== undefined && plainKeys.has(key) ? item : maskSecrets(item)
+    }
     return out
   }
   return value
+}
+
+/**
+ * 某通道的明文回显键集合（fields 声明 plain === true 的键，如 wps-bot msgtype）。
+ * 手写渠道与入站字段表无 plain 声明 → 空集（行为不变）。
+ */
+function plainFieldsOf(type) {
+  const out = new Set()
+  for (const [key, field] of Object.entries(channelFieldsOf(type))) {
+    if (plainObjectOf(field)?.plain === true) out.add(key)
+  }
+  return out
 }
 
 /** lastActiveAt → 毫秒时间戳（数字/ISO 字符串；缺失或非法视为 0，排序兜底）。 */
@@ -221,7 +238,11 @@ function channelKeyWhitelist(type) {
   }
   if (OUTBOUND_SET.has(type)) {
     for (const key of Object.keys(channelFieldsOf(type))) keys.add(key)
-    for (const key of COMMON_ENDPOINT_KEYS) keys.add(key)
+    // fixedOptions 渠道（wps-bot）不暴露 timeoutMs/apiBase 引擎级调优键——
+    // resolve 层本就忽略（引擎 fixedOptions 语义），白名单同步收窄防写入死配置。
+    if (!channelFixedOptions(type)) {
+      for (const key of COMMON_ENDPOINT_KEYS) keys.add(key)
+    }
   }
   if (INBOUND_SET.has(type)) {
     for (const key of Object.keys(INBOUND_FIELDS[type] ?? {})) keys.add(key)
@@ -950,7 +971,7 @@ export function createAdminApi(options = {}) {
         if (row.direction === 'inbound') {
           return {
             ...row,
-            config: maskSecrets(plainObjectOf(safeGet(`${row.type}:account`)) ?? {}),
+            config: maskSecrets(plainObjectOf(safeGet(`${row.type}:account`)) ?? {}, plainFieldsOf(row.type)),
             fields: { ...(INBOUND_FIELDS[row.type] ?? {}) },
           }
         }
@@ -963,12 +984,17 @@ export function createAdminApi(options = {}) {
         const merged = adminOutbound !== null
           ? { ...yamlConfig, ...adminOutbound }
           : { ...yamlConfig, ...account }
-        return {
+        const rowOut = {
           ...row,
-          // store 字段覆盖同名 YAML 字段（字段级浅合并；数组值整体替换，如 uids）
-          config: maskSecrets(merged),
+          // store 字段覆盖同名 YAML 字段（字段级浅合并；数组值整体替换，如 uids）；
+          // plain 声明字段（wps-bot msgtype）明文回显，其余字符串照常脱敏
+          config: maskSecrets(merged, plainFieldsOf(row.type)),
           fields: channelFieldsOf(row.type),
         }
+        // spec 声明 docUrl 的渠道附官方文档跳转（wps-bot 接入指南），未声明省略该键
+        const docUrl = channelDocUrlOf(row.type)
+        if (docUrl !== undefined) rowOut.docUrl = docUrl
+        return rowOut
       })
     },
 

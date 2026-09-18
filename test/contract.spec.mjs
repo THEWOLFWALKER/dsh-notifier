@@ -98,7 +98,7 @@ function lowerHeader(headers, key) {
 
 test('渠道 fixture 覆盖全部新渠道（spec + token 型）', () => {
   const covered = new Set(fixtures.map((fixture) => fixture.type))
-  const expected = ['slack', 'discord', 'wecom', 'mattermost', 'gchat', 'teams', 'ntfy', 'gotify', 'pushover', 'chanify', 'pushdeer', 'xizhi', 'qmsg', 'igot', 'onebot', 'qq-bot', 'wecom-app']
+  const expected = ['slack', 'discord', 'wecom', 'mattermost', 'gchat', 'teams', 'ntfy', 'gotify', 'pushover', 'chanify', 'pushdeer', 'xizhi', 'qmsg', 'igot', 'onebot', 'qq-bot', 'wecom-app', 'wps-bot']
   for (const type of expected) {
     assert.ok(covered.has(type), `缺少 fixture: ${type}`)
     assert.ok(ADAPTERS[type] !== undefined, `注册表缺少渠道: ${type}`)

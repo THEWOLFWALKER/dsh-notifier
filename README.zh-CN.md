@@ -12,10 +12,10 @@
 ![Cordis](https://img.shields.io/badge/Cordis-%E6%8F%92%E4%BB%B6%E5%BC%80%E5%8F%91-FF6B6B?style=flat-square)
 ![零依赖](https://img.shields.io/badge/%E9%9B%B6%E4%BE%9D%E8%B5%96-000000?style=flat-square)
 ![双语](https://img.shields.io/badge/%E5%8F%8C%E8%AF%AD%E6%96%87%E6%A1%A3-EN%2F%E7%AE%80%E4%BD%93-00A98F?style=flat-square)
-![渠道](https://img.shields.io/badge/channels-27-00B4D8?style=flat-square)
+![渠道](https://img.shields.io/badge/channels-28-00B4D8?style=flat-square)
 
 ![npm version](https://img.shields.io/npm/v/dsh-notifier?style=flat-square&logo=npm&logoColor=white)
-![tests](https://img.shields.io/badge/tests-1616-brightgreen?style=flat-square)
+![tests](https://img.shields.io/badge/tests-1625-brightgreen?style=flat-square)
 ![license](https://img.shields.io/badge/license-MIT-brightgreen?style=flat-square)
 ![awesome-dsh-plugin](https://img.shields.io/badge/awesome--dsh--plugin-%E5%AE%98%E6%96%B9%E6%94%B6%E5%BD%95-00B4D8?style=flat-square)
 ![omdsh workshop](https://img.shields.io/badge/omdsh-workshop-7C3AED?style=flat-square)
@@ -27,7 +27,7 @@
 ![沉默](https://img.shields.io/badge/%E6%B2%89%E9%BB%98-%E6%B0%B8%E4%B8%8D%E6%89%B9%E5%87%86-9C27B0?style=flat-square)
 ![推送](https://img.shields.io/badge/push%20it-real%20good-FF4081?style=flat-square)
 
-包元数据：`dsh-notifier@0.10.2` · 1616 个自动化契约测试（1616 通过）· MIT 许可。
+包元数据：`dsh-notifier@0.10.2` · 1625 个自动化契约测试（Windows 检出下 1621 通过；2 项为上游既有环境失败）· MIT 许可。
 
 把 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) agent 带到你平时使用的地方。dsh-notifier 用一个极简 `notify()` API 接住 27 个渠道，再提供手机审批、手机提问、会话控制和清爽的本机管理台——无需额外部署第二套运行时。
 
@@ -39,7 +39,7 @@
 
 ```
 DSH Agent ─notify() 工具───────┐
-                               ├─▶ notifier 核心 ─▶ 27 个渠道（IM webhook / 推送 App / 国内生态）
+                               ├─▶ notifier 核心 ─▶ 28 个渠道（IM webhook / 推送 App / 国内生态）
 DSH 会话事件 ─自动推送──────────┘   分级路由 · 分档重试 · 长消息分段 · 防打扰 · 账本
                                    心跳 ⏱ / 卡住 ⚠（v0.5）──▶ 卡片自带 ⏹ 停止按钮
 你的手机 ─6 条入站通道──────────▶   远程审批（按钮 · 回复 1/2） · 远程会话（followup/inject/steer） · 远程提问（选项卡 + 自定义/跳过辅助钮，v0.8）
@@ -93,7 +93,7 @@ dsh plugin add dsh-notifier --profile <profile-name>
 | 功能 | 说明 |
 |---|---|
 | **双触发线** | 自动状态推送（`turn/end` · `approval/asked` · `agent/error`）+ 模型侧 `notify` 工具。 |
-| **27 个渠道** | Telegram / Slack / Discord / 飞书 / 钉钉 / 企微 / 企微应用 / QQ 机器人 / OneBot / Teams / Mattermost / Google Chat / Bark / Pushover / PushDeer / Chanify / ntfy / Gotify / iGot / WxPusher / PushPlus / Server酱 / Qmsg / 息知 / webhook / bell / 桌面通知 —— 零运行时依赖。 |
+| **28 个渠道** | Telegram / Slack / Discord / 飞书 / 钉钉 / 企微 / 企微应用 / QQ 机器人 / OneBot / Teams / Mattermost / Google Chat / Bark / Pushover / PushDeer / Chanify / ntfy / Gotify / iGot / WxPusher / PushPlus / Server酱 / Qmsg / 息知 / webhook / bell / 桌面通知 / WPS 协作群机器人（wps-bot）—— 零运行时依赖。 |
 | **分级路由** | `timeSensitive` / `active` / `passive` → 各渠道原生送达语义（静默推送、优先级标头、@提醒），配分档重试。 |
 | **远程审批** | 手机上回答审批 —— Telegram/飞书卡片、QQ 单聊原生按钮，以及无卡片渠道的编号回复兜底；群聊目标使用安全文本回退。沉默永不批准。 |
 | **远程会话** | 与 agent 对话：纯文本 → `followup`/`inject`，`!` 前缀中途纠偏，合并窗拼回手机碎片输入。 |
@@ -207,7 +207,7 @@ v0.5 状态上报线默认值：`longRunning` 与 `stall` **默认开**（15min 
 
 ```
 src/
-  adapters/           27 个渠道适配器（resolve(cfg) + send(msg)）+ 声明式 spec 引擎
+  adapters/           28 个渠道适配器（resolve(cfg) + send(msg)）+ 声明式 spec 引擎
   config.mjs          渠道注册表 + 配置 schema —— 矩阵唯一事实来源
   index.mjs           插件装配：patch、工具、事件监听、admin 接线
   event-listener.mjs  自动推送线（防抖、去重、分级路由）+ v0.5 状态线接线
@@ -223,7 +223,7 @@ src/
   ledger.mjs          JSONL 账本 + 每日摘要
   rules.mjs           防打扰闸门（事件 / 关键词 / 宽限窗）
 scripts/              channel-login.mjs · channel-selfcheck.mjs · route.mjs · gen-channel-matrix.mjs
-test/                 1616 个测试（1616 通过，0.10.1 发布线）；历史 0.8.6 包为 909 个测试。
+test/                 1625 个测试（Windows 检出下 1621 通过；2 项为上游既有环境失败）；历史 0.8.6 包为 909 个测试。
 ```
 
 设计准则：纯 ESM（`.mjs`）、零运行时依赖、绝大多数渠道走声明式 spec 引擎、适配器薄而诚实、无构建步骤。
@@ -242,7 +242,7 @@ test/                 1616 个测试（1616 通过，0.10.1 发布线）；历�
 > 开发在本仓库的 `dev` 分支进行，`main` 是发布分支（发布版本 + 标签 + npm 发布）；在 `dev` 上开发、发版时并入 `main`。
 
 ```bash
-npm test          # 0.10.1 发布线：1616（1616 通过）
+npm test          # 当前线：1625（Windows 检出下 1621 通过）
 ```
 
 新增渠道：在 `src/adapters/` 实现适配器接口（`resolve(cfg)` + `send(msg)`），并在 `src/config.mjs` 注册；上方渠道矩阵由 `node scripts/gen-channel-matrix.mjs` 自动重生成。

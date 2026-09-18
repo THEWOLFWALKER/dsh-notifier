@@ -30,6 +30,56 @@ const is2xx = ({ status }) => status >= 200 && status < 300
 /** OneBot user_id/group_id 数字化（QQ 号是数字，字符串数字也要转 number 保持协议一致）。 */
 const qqId = (value) => (/^\d+$/.test(String(value ?? '')) ? Number(value) : String(value ?? ''))
 
+// ---- wps-bot webhook 归一助手（v0.13.1：webhookKey+webhookHost 合并为单个 webhook 字段）----
+
+/** WPS 协作群机器人官方域名白名单（S-02）：经典 WOA 两家 + WPS 协作机器人页面实际下发域名。 */
+const WPS_OFFICIAL_HOSTS = new Set(['woa.wps.cn', 'xz.wps.cn', '365.kdocs.cn'])
+/** galaxy WOA 群机器人标准路径。 */
+const WPS_WEBHOOK_PATH = '/api/v1/webhook/send'
+
+/**
+ * 旧 webhookHost 归一（存量迁移用）：origin / 机器人页面完整 URL / 裸域名三种形态统一为
+ * origin+标准路径（query 一律丢弃）。非法/非白名单返回 null（调用方决定如何报错）。
+ */
+function normalizeWpsWebhookHost(raw) {
+  let candidate = String(raw ?? '').trim()
+  if (candidate === '') return null
+  if (!/^https?:\/\//i.test(candidate)) candidate = `https://${candidate}`
+  let parsed = null
+  try { parsed = new URL(candidate) } catch { parsed = null }
+  if (parsed === null || !WPS_OFFICIAL_HOSTS.has(parsed.hostname)) return null
+  const path = parsed.pathname.includes(WPS_WEBHOOK_PATH)
+    ? parsed.pathname.replace(/\/+$/, '')
+    : WPS_WEBHOOK_PATH
+  return `${parsed.origin}${path}`
+}
+
+/**
+ * 新 webhook 字段归一：完整地址必须含 ?key=（key 即全部认证），域名白名单三家，
+ * 统一为 origin+标准路径+?key=<urlencoded>（其余 query 丢弃，防旧 key 残留）。
+ */
+function normalizeWpsWebhook(raw) {
+  const trimmed = String(raw ?? '').trim()
+  if (trimmed === '') {
+    throw new NotifyError('wps-bot 未配置：webhook（群机器人完整 webhook 地址，含 ?key=）未填写——在 WPS 协作群添加群机器人后复制', ERROR_CODES.NOT_CONFIGURED)
+  }
+  let candidate = trimmed
+  if (!/^https?:\/\//i.test(candidate)) candidate = `https://${candidate}`
+  let parsed = null
+  try { parsed = new URL(candidate) } catch { parsed = null }
+  if (parsed === null || !WPS_OFFICIAL_HOSTS.has(parsed.hostname)) {
+    throw new NotifyError('wps-bot 未配置：webhook 只允许 WPS 官方域名 woa.wps.cn / xz.wps.cn / 365.kdocs.cn（直接粘贴机器人页面的完整 webhook 地址，含 ?key=）', ERROR_CODES.NOT_CONFIGURED)
+  }
+  const key = (parsed.searchParams.get('key') ?? '').trim()
+  if (key === '') {
+    throw new NotifyError('wps-bot 未配置：webhook 缺少 ?key=——在 WPS 协作群添加群机器人后复制完整地址，?key= 后面的 32 位 key 即认证凭证', ERROR_CODES.NOT_CONFIGURED)
+  }
+  const path = parsed.pathname.includes(WPS_WEBHOOK_PATH)
+    ? parsed.pathname.replace(/\/+$/, '')
+    : WPS_WEBHOOK_PATH
+  return `${parsed.origin}${path}?key=${encodeURIComponent(key)}`
+}
+
 export const SPEC_CHANNELS = {
   // ---- IM webhook 型（URL 即凭证）----
 
@@ -372,6 +422,66 @@ export const SPEC_CHANNELS = {
       if (resolved.messageType !== 'group' && (resolved.userId === '' || resolved.userId === undefined)) {
         throw new NotifyError('onebot 未配置：私聊推送 userId（QQ 号）未填写', ERROR_CODES.NOT_CONFIGURED)
       }
+    },
+  },
+
+  // ---- WPS 协作群机器人（WOA webhook，key 即凭证）----
+  // 协议移植自 galaxy modules/woa/woa.go + modules/logs/logSystem.go 的
+  // `https://<host>/api/v1/webhook/send?key=<32位hex>`：
+  //  - key 就是全部认证：无 cookie / 无 OAuth / 无签名，key 泄露=可向该群冒发消息；
+  //  - text 类型 body 用 {msgtype:'text', text:{content}}，markdown 用
+  //    {msgtype:'markdown', markdown:{text}}（kit 差异，勿混用）；正文支持
+  //    <at user_id="-1">所有人</at> / <at email="xxx@wps.cn">名字</at> 提及语法；
+  //  - galaxy 只按 HTTP 状态判定成功（不解析业务码），这里沿用 is2xx。
+  //  - 官方域名实证三处：woa.wps.cn / xz.wps.cn（经典 WOA，galaxy 与 openapi 文档口径）、
+  //    365.kdocs.cn/woa（WPS 协作机器人页面实际下发的地址）——白名单三家全收。
+  //  - 公司真实机器人 key 在 galaxy kms/constant/woa.go（WOA_KEY_*）——那是活跃凭证，
+  //    不得外传/复用，用户须在协作群里自建机器人拿自己的 key。
+  'wps-bot': {
+    label: 'WPS 协作群机器人',
+    desc: 'WPS collaboration group robot webhook (WOA)',
+    ssrfGuard: true, // S-02：webhook 用户可配（仅放行官方三家域名，见 validate）
+    // v0.13.1（用户拍板）：官方固定端点渠道，不暴露 timeoutMs/allowPrivateNetwork 引擎
+    // 调优选项——cfg 里同名键一律忽略（引擎 fixedOptions 语义），管理台键白名单同步收窄。
+    fixedOptions: true,
+    docUrl: 'https://365.kdocs.cn/3rd/open/documents/app-integration-dev/guide/robot/webhook',
+    fields: {
+      webhook: { required: true, secret: true, desc: 'WPS 协作群机器人完整 webhook 地址（含 ?key=）：在 WPS 协作群添加群机器人后复制，形如 https://365.kdocs.cn/woa/api/v1/webhook/send?key=<32 位 key>' },
+      msgtype: { default: 'text', plain: true, desc: '消息类型：text（默认，标题+正文）或 markdown（富文本）' },
+    },
+    encode: 'json',
+    // v0.13.1 存量兼容：旧双字段 webhookKey+webhookHost（YAML/state.json 遗留）在字段提取
+    // 前合成完整 webhook URL；新 webhook 字段已配置时旧字段一律忽略（新字段优先）。
+    // 旧 webhookHost 非白名单/不可解析时原样透传——validate 给出「只允许」指引，不静默纠偏。
+    preresolve: (cfg) => {
+      const key = String(cfg?.webhookKey ?? '').trim()
+      if (key === '' || String(cfg?.webhook ?? '').trim() !== '') return cfg
+      const hostRaw = String(cfg?.webhookHost ?? '').trim()
+      const fallback = 'https://woa.wps.cn'
+      const host = normalizeWpsWebhookHost(hostRaw === '' ? fallback : hostRaw) ?? (hostRaw === '' ? fallback : hostRaw)
+      return { ...cfg, webhook: `${host}?key=${encodeURIComponent(key)}` }
+    },
+    // 单个 msgtype 分支（不超两个 if 军规）。webhook 已由 validate 归一为
+    // origin+标准路径+?key=，这里直接使用。
+    request: (cfg, msg) => {
+      const url = cfg.webhook
+      if (cfg.msgtype === 'markdown') {
+        return { url, body: { msgtype: 'markdown', markdown: { text: joinPara(msg) } } }
+      }
+      return { url, body: { msgtype: 'text', text: { content: joinText(msg) } } }
+    },
+    ok: is2xx, // galaxy 只按 HTTP 状态判定（2xx 即成功，不解析业务码）
+    fail: ({ status }) => (status === 401 || status === 403 || status === 404
+      ? 'webhook key 无效或群机器人已失效：请到 WPS 协作群重新添加机器人，复制新 webhook 地址更新 webhook 字段'
+      : ''),
+    validate: (resolved) => {
+      if (resolved.msgtype !== 'text' && resolved.msgtype !== 'markdown') {
+        throw new NotifyError('wps-bot 未配置：msgtype 只能是 text（默认）或 markdown', ERROR_CODES.NOT_CONFIGURED)
+      }
+      // 完整 webhook 地址归一并回写 resolved（send 收到同一对象）：域名白名单写死官方
+      // 三家防 key 被打到任意 host（slack hooks.slack.com 同款先例）；key 必填即认证；
+      // 其余 query 一律丢弃，防旧 key 残留。
+      resolved.webhook = normalizeWpsWebhook(resolved.webhook)
     },
   },
 }

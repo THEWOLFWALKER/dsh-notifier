@@ -1,7 +1,7 @@
 {
   "name": "dsh-notifier",
   "version": "0.10.2",
-  "description": "DSH 通知插件：一个 notify() 打通 27 个出站渠道；支持 Telegram / 飞书 / QQ / 钉钉等入站远程审批、提问与对话回传；内置本机 Web 管理台。零运行时依赖。",
+  "description": "DSH 通知插件：一个 notify() 打通 28 个出站渠道；支持 Telegram / 飞书 / QQ / 钉钉等入站远程审批、提问与对话回传；内置本机 Web 管理台。零运行时依赖。",
   "type": "module",
   "main": "src/plugin-entry.mjs",
   "exports": {
@@ -31,7 +31,7 @@
     "verify:release": "node scripts/verify-release.mjs"
   },
   "dshQuality": {
-    "testCount": 1616
+    "testCount": 1625
   },
   "dsh": {
     "bundle": {

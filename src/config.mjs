@@ -138,6 +138,23 @@ export function channelFieldsOf(type) {
 }
 
 /**
+ * 渠道是否声明 fixedOptions（官方固定端点，不暴露 timeoutMs/apiBase 等
+ * 引擎级调优键——管理台键白名单据此收窄）。未知渠道返回 false。
+ */
+export function channelFixedOptions(type) {
+  return ADAPTERS[type]?.spec?.fixedOptions === true
+}
+
+/**
+ * 渠道官方接入文档地址（spec 声明 docUrl 时返回，管理台卡片渲染跳转链接）。
+ * 非法/未声明返回 undefined（行内省略该键）。
+ */
+export function channelDocUrlOf(type) {
+  const url = ADAPTERS[type]?.spec?.docUrl
+  return typeof url === 'string' && url !== '' ? url : undefined
+}
+
+/**
  * 解析 ${ENV:NAME} 式环境变量引用（全值替换）。
  * 「通知器是密钥集中器」：让密钥可以不落 profile 明文；缺失环境变量返回空串
  * （渠道会因校验失败被跳过，reason 里带字段名与来源指引）。

@@ -40,6 +40,7 @@ const META = {
   webhook: { channel: 'Any custom endpoint', auth: '—', free: '—' },
   wecom: { channel: 'WeCom group robot', auth: 'webhook key', free: '✅' },
   'wecom-app': { channel: 'WeCom app message', auth: 'corpid + agentId + secret', free: '✅' },
+  'wps-bot': { channel: 'WPS collaboration group robot (WOA)', auth: 'webhook URL (with ?key=)', free: '✅' },
   wxpusher: { channel: 'WxPusher (WeChat)', auth: 'appToken + uid', free: '✅ (limits)' },
   xizhi: { channel: '息知 Xizhi', auth: 'sendkey', free: '✅ (limits)' },
 }
