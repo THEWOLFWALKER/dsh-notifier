@@ -529,6 +529,8 @@ export function createQqInbound(options = {}) {
   /** 发文本：超长按码点分段逐条发送（每段独立 msg_seq，服务端按 msg_id+msg_seq 去重）。
    *  G-22 同根修复：旧 slice(0, 2000) 是 UTF-16 码元语义，第 2000 码元恰落在星体平面
    *  字符（emoji/生僻字）中间时产生孤立代理项（JSON 载荷非法，平台拒收或乱码）。
+   *  分段点优先落在句末标点：硬切会把一句切成两条消息（后半截以残句开头，用户需自行
+   *  拼接）；无标点的长段落（纯 emoji、大段代码）退化为等长硬切，与历史行为一致。
    *  G-22 配额：被动回复（携带 msg_id）分段数超平台配额时 warn 出声但不阻塞（超限部分
    *  平台静默丢弃，先让丢弃可见——见 QQ_PASSIVE_REPLY_QUOTA 注释）。
    *  任一段失败即抛错（已发段不撤回，与 iLink 分块语义一致）。 */
@@ -540,7 +542,7 @@ export function createQqInbound(options = {}) {
     const url = kind === 'group'
       ? `${apiBase}/v2/groups/${target}/messages`
       : `${apiBase}/v2/users/${target}/messages`
-    const chunks = splitByCodePoints(String(content ?? ''), QQ_TEXT_MAX_CODEPOINTS)
+    const chunks = splitByCodePoints(String(content ?? ''), QQ_TEXT_MAX_CODEPOINTS, { preferSentenceBoundary: true })
     const pieces = chunks.length > 0 ? chunks : ['']
     if (msgId !== undefined) {
       const quota = kind === 'group' ? QQ_PASSIVE_REPLY_QUOTA.group : QQ_PASSIVE_REPLY_QUOTA.user

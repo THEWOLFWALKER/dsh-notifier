@@ -965,6 +965,52 @@ test('G-22 同根（码点安全）：超长星体平面回复按码点分段，
   await rig.inbound.stop()
 })
 
+test('QQ 出站长文本：分段点落在句末标点——长回复不被劈成半截句（2000 码点/段不变）', async () => {
+  const rig = makeRig()
+  await driveReady(rig)
+  // 单句 15 码点 × 140 句 = 2100 码点。旧等长硬切会在第 2000 码点处直接断开——该位置
+  // 落在第 134 句内部（133 句 = 1995 码点），首段以半截句结尾，用户收到两条需自行拼接。
+  const sentence = '这是一句测试用的中文句子内容。'
+  assert.equal(Array.from(sentence).length, 15)
+  const long = sentence.repeat(140)
+  const realSetTimeout = globalThis.setTimeout
+  globalThis.setTimeout = (fn, ms, ...rest) => realSetTimeout(fn, ms > 0 ? 0 : ms, ...rest)
+  try {
+    assert.equal(await rig.inbound.sendText('u_open', long, 'msg_sent'), true)
+  } finally {
+    globalThis.setTimeout = realSetTimeout
+  }
+  const sends = rig.calls.filter((entry) => entry.url === `${API}/v2/users/u_open/messages`)
+  assert.equal(sends.length, 2, '2100 码点按 2000 码点/段仍应 2 段（句末优先不改变段数）')
+  assert.equal(sends.map((entry) => entry.body.content).join(''), long, '分段拼接无损')
+  assert.deepEqual(sends.map((entry) => entry.body.msg_seq), [1, 2], '每段独立 msg_seq')
+  for (const [index, entry] of sends.entries()) {
+    assert.ok(Array.from(entry.body.content).length <= 2000, `第 ${index + 1} 段超码点预算`)
+  }
+  // 非末段必须以句末标点收尾（硬切会以半截句收尾，此处即回归）
+  for (let i = 0; i < sends.length - 1; i += 1) {
+    assert.ok(sends[i].body.content.endsWith('。'), `第 ${i + 1} 段应以句末标点结尾: ${JSON.stringify(sends[i].body.content.slice(-8))}`)
+  }
+  await rig.inbound.stop()
+})
+
+test('QQ 出站长文本：无句末标点的长回复（纯 emoji）仍按等长硬切，段数与段长不变', async () => {
+  const rig = makeRig()
+  await driveReady(rig)
+  const long = '🀄'.repeat(4500)
+  const realSetTimeout = globalThis.setTimeout
+  globalThis.setTimeout = (fn, ms, ...rest) => realSetTimeout(fn, ms > 0 ? 0 : ms, ...rest)
+  try {
+    assert.equal(await rig.inbound.sendText('u_open', long, 'msg_plain'), true)
+  } finally {
+    globalThis.setTimeout = realSetTimeout
+  }
+  const sends = rig.calls.filter((entry) => entry.url === `${API}/v2/users/u_open/messages`)
+  assert.deepEqual(sends.map((entry) => Array.from(entry.body.content).length), [2000, 2000, 500], '无标点长回复退化为等长硬切')
+  assert.equal(sends.map((entry) => entry.body.content).join(''), long, '分段拼接无损')
+  await rig.inbound.stop()
+})
+
 test('G-22：被动回复条数配额超限 warn（c2c 4 条/群 5 条）——不硬阻塞投递，边界内静默', async () => {
   const rig = makeRig({ config: { notifyGroups: ['g_open'] } })
   await driveReady(rig)
