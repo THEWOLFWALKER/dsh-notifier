@@ -775,3 +775,23 @@ test('B3 dispose 级联：agent/disposed 事件调 bus.abandonByAgent（裸 agen
   assert.deepEqual(disposed, ['s9', 's9'], '裸 agent 与 { agent } 容器形态都解包出 id')
   dispose()
 })
+
+test('lastAssistantText: 兼容 DSH 的 snapshotEvents()（Session 没有 events 属性）', () => {
+  const assistant = { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '来自 snapshot' }] } } }
+  const session = { id: 's1', snapshotEvents: () => [{ type: 'user/message' }, assistant] }
+  assert.equal(lastAssistantText(session), '来自 snapshot')
+  // snapshotEvents 抛错时退化为空串，绝不外抛
+  assert.equal(lastAssistantText({ id: 's2', snapshotEvents: () => { throw new Error('boom') } }), '')
+  // 非数组返回值同样安全
+  assert.equal(lastAssistantText({ id: 's3', snapshotEvents: () => undefined }), '')
+})
+
+test('intentToMessage: turn/end 正文为空时兜底，避免渠道拒收', () => {
+  // completed 的 detail 为空 + 摘录取不到 → content 曾为 ''，PushPlus 报 999「发送内容不能为空」
+  const msg = intentToMessage({ event: 'turn/end', headline: '✅ 任务完成', detail: '', level: 'active' }, { assistantText: '' })
+  assert.ok(msg.content.trim().length > 0)
+  assert.equal(msg.content, '✅ 任务完成（无正文摘要）')
+  // 有摘要时保持原样，兜底不覆盖真实内容
+  const withText = intentToMessage({ event: 'turn/end', headline: '✅ 任务完成', detail: '', level: 'active' }, { assistantText: '真实回复摘要' })
+  assert.equal(withText.content, '真实回复摘要')
+})

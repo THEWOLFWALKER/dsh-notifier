@@ -97,6 +97,17 @@ export function createHostEventRegistrar(ctx, warn = () => {}, now = Date.now) {
         return undefined
       }
       try {
+        // DSH publishes `session/event` through a scope carrier (dsh-scope
+        // `scopeTarget`): an untagged listener is admitted globally, but a
+        // TAGGED one only for the dispatch key or its ancestors. Selecting the
+        // root context does not make the registration untagged, so a session
+        // whose owner scope is unrelated to this plugin's ctx silently loses
+        // every event — the observable symptom is turn/start arriving while
+        // turn/end never does, leaving `sessions.total` at 0 and sending no
+        // "task finished" notification (upstream issue #16). `global: true`
+        // is the documented Cordis option for "receive the event regardless of
+        // context filter checks"; dsh-im subscribes to `session/event` the
+        // same way.
         const disposer = target.ctx.on(event, (...args) => {
           row.received = increment(row.received)
           try { row.lastAt = now() } catch { /* 时间源异常不吞宿主回调 */ }
@@ -104,9 +115,9 @@ export function createHostEventRegistrar(ctx, warn = () => {}, now = Date.now) {
             report(`宿主事件处理失败: ${event}（${error instanceof Error ? error.name : 'unknown'}）`)
             return undefined
           }
-        })
+        }, { global: true })
         row.registered = increment(row.registered)
-        report(`宿主事件订阅已注册: ${event}（context=${target.source}，scope=${target.scope}）`)
+        report(`宿主事件订阅已注册: ${event}（context=${target.source}，scope=${target.scope}，global=true）`)
         return typeof disposer === 'function' ? disposer : undefined
       } catch (error) {
         row.failures = increment(row.failures)

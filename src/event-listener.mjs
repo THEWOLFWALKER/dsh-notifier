@@ -29,7 +29,14 @@ function hash6(value) {
 
 /** 取会话日志里最后一条 assistant/message 的文本块。 */
 export function lastAssistantText(session) {
-  const events = session?.events
+  // DSH exposes the session log through `session.snapshotEvents()`; `session.events`
+  // is not part of the Session surface, so reading only that property returned ''
+  // and left every turn/end body blank (see intentToMessage).
+  const events = Array.isArray(session?.events)
+    ? session.events
+    : (typeof session?.snapshotEvents === 'function'
+        ? (() => { try { const snapshot = session.snapshotEvents(); return Array.isArray(snapshot) ? snapshot : [] } catch { return [] } })()
+        : [])
   if (!Array.isArray(events)) return ''
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index]
@@ -125,6 +132,15 @@ export function intentToMessage(intent, { assistantText = '', config = {} } = {}
     ? Math.max(0, Math.trunc(config.summaryMaxChars))
     : 500
   if (maxChars > 0 && content.length > maxChars) content = `${content.slice(0, maxChars)}…`
+  // Channels validate the payload before accepting it — PushPlus answers
+  // `999 发送内容不能为空` — so a turn/end whose detail is empty AND whose
+  // assistant excerpt could not be read was rejected outright instead of
+  // delivering "task finished".
+  if (content.trim().length === 0) {
+    content = intent.event === 'turn/end'
+      ? `${intent.headline}（无正文摘要）`
+      : intent.headline
+  }
   return { title, content, level: intent.level }
 }
 
