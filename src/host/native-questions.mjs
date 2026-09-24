@@ -4,11 +4,18 @@
 // 共用同一个首达结算闭环。
 //
 // 接缝选择（按宿主公开能力探测，单一能力检查、无并行双路径）：
-//  - 首选 `registerProvider` provider seam（若未来宿主提供）；
-//  - 缺失时回落 `user-questions/request` waterfall 拦截器（dsh 0.1.5-rc.x 真实公开
-//    形态：dsh-user-questions 只暴露 ask()，web GUI 亦经该 waterfall 挂 answerer）。
+//  - 当前正式 seam（DSH 0.1.7-rc.1 实测形态）：`user-questions/request` waterfall
+//    拦截器——`UserQuestionService.ask()` 内部即 `ctx.waterfall('user-questions/request',
+//    request, noAnswerer)`（rc.1 的 UserQuestionService **没有** registerProvider()），
+//    web GUI answerer 亦经该 waterfall 挂载。
 //    拦截器 `{ prepend: true, global: true }` 注册：prepend 保证先于 GUI answerer
 //    收到请求（双面同时活跃），global 绕过 scopeTarget 作用域过滤（同 #28 教训）。
+//  - `registerProvider`：**仅 future/legacy feature probe**（若未来宿主提供才走），
+//    不是当前 seam，也不作为能力宣称依据。
+//  - `ask_user_question` 工具是另一层：官方 tool package 注入 tools + userQuestions
+//    后注册，属 preset/TUI composition；「ctx.userQuestions 存在」不推出「当前 Agent
+//    看得到官方 ask_user_question」。故本插件保留自有 `ask_user` fallback，且不读
+//    ToolRuntime 私有 registry。
 //
 // 职责边界（任务书建议的窄接口）：
 //  - capabilities()  支持状态与模式，不含 sessionId/正文/token/凭证
@@ -142,7 +149,8 @@ export function createNativeQuestionBridge(deps = {}) {
   }
 
   /**
-   * `user-questions/request` waterfall 拦截器（宿主缺 registerProvider 时的接缝）。
+   * `user-questions/request` waterfall 拦截器——**DSH rc.1 当前正式 seam**
+   * （后续宿主若提供 registerProvider 才走 provider 路径，见模块头口径）。
    * 双面并发 + 首达结算：立即把问题推上 aq 桥（手机/管理台可见），与下游 GUI
    * answerer（next()）race，先答先算：
    *  - 手机/管理台先答 → 本侧答案上交宿主（下游成为输家，catch 兜底防未处理拒绝；
@@ -236,8 +244,8 @@ export function createNativeQuestionBridge(deps = {}) {
       attachError = null // 重放成功：清掉上一次失败残留的错误码
       return true
     }
-    // 宿主真实形态（dsh-user-questions 0.1.5-rc.x）：只有 ask()，无 registerProvider。
-    // 回落 waterfall 拦截器；无 ctx.on 的宿主/桩保持原降级码。
+    // DSH rc.1 当前形态（dsh-user-questions）：只有 ask()，无 registerProvider。
+    // 走 waterfall 当前 seam；无 ctx.on 的宿主/桩保持原降级码。
     const registerCtx = isRecord(subCtx) && typeof subCtx.on === 'function' ? subCtx : ctx
     if (typeof registerCtx?.on !== 'function') {
       attachError = 'no_register_provider'

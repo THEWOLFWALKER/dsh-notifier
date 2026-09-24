@@ -591,8 +591,9 @@ export function apply(ctx, config = {}) {
         questionsBridge.attach()
         disposers.push(() => questionsBridge.dispose())
         // v0.10 宿主原生提问桥（任务书 3.2）：经宿主公开 seam 桥接原生 ask_user_question；
-        // seam 缺失/被占用时安全降级（nativeBridge.capabilities() 反映降级，管理台据此展示）。
-        // 绝不伪造原生桥。
+        // 当前 DSH rc.1 的正式 seam 是 `user-questions/request` waterfall（registerProvider
+        // 仅 future/legacy feature probe）；seam 缺失/被占用时安全降级（nativeBridge.capabilities()
+        // 反映降级，管理台据此展示）。绝不伪造原生桥。
         // #27：(a) 服务读取改为防御式（ctx.get 非抛错，见 host/capability.mjs），探测不再
         // 炸装配；(b) attach 不再依赖静态 inject 声明（cordis 4.0.2 required-inject 会在
         // 宿主缺 userQuestions 服务时让整插件拒绝加载、通知全哑），改用 ctx.inject 运行时

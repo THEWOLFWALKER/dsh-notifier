@@ -53,7 +53,10 @@ export function readUserQuestions(ctx) {
 /**
  * 原生提问 seam 模式（仅描述宿主公开能力，不含插件 fallback）。
  * - provider-chain: ctx.userQuestions 同时暴露 ask 与 registerProvider
- * - native-event: 仅 ask（宿主事件 + 回答接口形态；waterfall 拦截器以此为接缝）
+ *   （future/legacy feature probe，非当前 seam）
+ * - native-event: 仅 ask——即 DSH rc.1 的当前形态，其 `UserQuestionService.ask()`
+ *   内部走 `ctx.waterfall('user-questions/request', …)`，waterfall 拦截器以此接缝
+ *   （枚举值保持 `native-event` 不改，避免破坏管理台既有展示）
  * - unsupported: 无 ctx.userQuestions
  */
 export function detectQuestionsMode(ctx) {
