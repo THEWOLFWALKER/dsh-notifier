@@ -4,6 +4,9 @@
 
 ### 修复
 
+- **Feishu P2P `ou_ / oc_` 来源标识错配（PR #20 closed-unmerged 残留，当前 dev 真实缺陷）**（`src/inbound/target-guard.mjs`、`src/inbound/feishu-bot.mjs`、`src/questions/router.mjs`、`test/feishu-p2p-source.test.mjs`）：私聊投递目标是用户 open_id（`ou_*`，发送 `receive_id_type=open_id`），而点击/回复事件的会话 id 是 P2P 会话 chat_id（`oc_*`）——两套 id 空间。此前 `sourceChatAllowed()` 拿 `oc_` 与 `ou_` 硬比恒失败，私聊审批/提问/动作按钮全被误判「请到原会话操作」，编号回复只消费不裁决。现在把「来源身份（ou_） vs 投递寻址（oc_）」分离：`target-guard` 新增窄 helper `isOpenIdTarget`（feishu `ou_` 形态）与 `feishuP2pEquivalent`（仅 feishu + 事件确为 p2p + 操作者与投递目标同人时，`ou_` 投递目标 ↔ `oc_` 事件会话视为同一私聊；其余渠道/群聊/缺 chatType/缺同人身份一律退化为直接字符串相等，群聊跨会话转发保持 fail-closed，#20 红线不泛化）；`sourceChatAllowed` 对 `ou_` srcChat 改验 `operator.open_id === srcChat`（缺 operator fail-closed）；新增 `controlChatIdOf` 让裁决入账用卡片 srcChat（与账本/pushedTo 同口径），实际补发/patch fallback 仍走点击会话 `oc_`（真实会话寻址）；`questions/router` 的 `latestPendingFor`/`isHintedTarget`/`authorize` 全部改走 P2P 等价判定，`handleNumberedReply` 两处调用补传 `envelope.chatType`（此前漏传致 P2P 编号作答仍误判 wrong-chat）。
+- 测试：新增 `test/feishu-p2p-source.test.mjs` focused suite 14 项（§3F 清单 1-12 + helper 单测：同人 p2p 等价 / 异人拒绝 / 群聊直接字符串相等与跨会话拒绝 / 缺 chatType 或缺同人身份 fail-closed / 审批 P2P 裁决成功 / 他人点击拒绝不 patch / 提问与动作卡片入账用 srcChat / 缺操作者 open_id fail-closed / patch 失败补发仍走 oc_ / P2P 编号作答 exact 命中 / 群聊跨会话编号作答仍拒 / accountId 不匹配拒绝）。
+
 - **wps-bot 出站凭证 HTTPS 收紧（PR #34 review finding）**（`src/adapters/spec-channels.mjs`、`test/config-validation.test.mjs`）：WPS webhook 的 `key` 在 URL query 里即完整发送凭证，此前显式 `http:` 地址（新 `webhook: http://woa.wps.cn/...`、legacy `webhookHost: http://xz.wps.cn`）会被原样保留为明文凭证传输。现在显式 `http:` 一律拒绝（fail-closed，不静默升级为 https——用户显式输入发生语义变化时拒绝比自动改写更可审计），裸域名补 https、legacy 双字段合成与三官方 host（woa/xz/365.kdocs.cn）行为不变。
 - 测试：`test/config-validation.test.mjs` 增 2 项 focused（新 webhook / legacy webhookHost 显式 http 拒绝 + 三官方 https host 防误伤回归；markdown send payload 精确断言 `{msgtype:'markdown', markdown:{text}}`，与既有 text 断言并列）。全量 1663 → 1665。
 

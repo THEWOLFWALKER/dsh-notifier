@@ -28,7 +28,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import { stringsOf } from '../strings.mjs'
 import { normalizeInbound } from '../inbound/_contract.mjs'
 import { MESSAGE_PRIORITY } from '../inbound/bus.mjs'
-import { guardTargets } from '../inbound/target-guard.mjs'
+import { guardTargets, feishuP2pEquivalent } from '../inbound/target-guard.mjs'
 import { createEscalationChain } from '../approval/escalation.mjs'
 import { createInteractionLedger } from '../interaction/ledger.mjs'
 import { createRateLimiter, compileParameters } from '../tool-register.mjs'
@@ -149,12 +149,15 @@ export function createQuestionBridge(deps, strings) {
    * 归属闸据此放行当事人级命中、对 hint 要求 owner。onChannel 证据在 chatId 提供时
    * 表示「同用户错误 chat」→ handleNumberedReply 消费消息但不裁决。
    */
-  const latestPendingFor = (channel, userId, chatId, accountId = undefined) => {
+  const latestPendingFor = (channel, userId, chatId, accountId = undefined, chatType = undefined) => {
     let exact = null
     let onChannel = null
     let hint = null
     const newer = (current, candidate) => current === null || Number(candidate.row.createdAt ?? 0) > Number(current.row.createdAt ?? 0)
     const hasChatId = chatId !== undefined && chatId !== null && String(chatId) !== ''
+    // P0-Feishu-P2P（#20）：同一私聊判定——target 是 ou_ 私聊投递目标、事件是 oc_ p2p 会话
+    // 且同人时视为同一会话（跨渠道/群聊/缺 chatType 一律不等价，见 target-guard）。
+    const chatEq = (targetChatId, targetUserId) => feishuP2pEquivalent(channel, targetChatId, chatId, { targetUserId, userId, chatType })
 
     for (const key of core.scanKeys()) {
       const row = core.get(key)
@@ -166,7 +169,7 @@ export function createQuestionBridge(deps, strings) {
         const accountMatches = (target) => target.accountId === undefined || String(target.accountId) === String(accountId ?? '')
         const userMatch = pushed.some((target) => target.channel === channel && accountMatches(target) && String(target.userId) === String(userId))
         if (userMatch) {
-          const chatMatch = pushed.some((target) => target.channel === channel && accountMatches(target) && String(target.userId) === String(userId) && String(target.chatId) === String(chatId))
+          const chatMatch = pushed.some((target) => target.channel === channel && accountMatches(target) && String(target.userId) === String(userId) && chatEq(target.chatId, target.userId))
           if (chatMatch) {
             const candidate = { key, row, evidence: 'exact' }
             if (newer(exact, candidate)) exact = candidate
@@ -176,13 +179,14 @@ export function createQuestionBridge(deps, strings) {
           }
         }
         // hintTargets：per-chat 编号话术证据（旧 hintChannels 字符串数组不匹配——fail-closed）
-        if (isHintedTarget(row, channel, userId, chatId, accountId)) {
+        if (isHintedTarget(row, channel, userId, chatId, accountId, chatType)) {
           const candidate = { key, row, evidence: 'hint' }
           if (newer(hint, candidate)) hint = candidate
         }
         // hintTargets 渠道匹配但 chatId 不匹配 → 错误 chat（用 onChannel 证据触发回原会话提示）
+        // #20：P2P 等价会话不算「错误 chat」
         const hinted = Array.isArray(row.hintTargets) ? row.hintTargets : []
-        if (hinted.some((t) => t.channel === channel && (t.accountId === undefined || String(t.accountId) === String(accountId ?? '')) && String(t.userId) === String(userId) && String(t.chatId) !== String(chatId))) {
+        if (hinted.some((t) => t.channel === channel && (t.accountId === undefined || String(t.accountId) === String(accountId ?? '')) && String(t.userId) === String(userId) && !chatEq(t.chatId, t.userId))) {
           const candidate = { key, row, evidence: 'onChannel' }
           if (newer(onChannel, candidate)) onChannel = candidate
         }
@@ -211,9 +215,9 @@ export function createQuestionBridge(deps, strings) {
   const ledger = { ...core, latestPendingFor }
 
   /** Control Core Step 1：per-chat hint 证据匹配（=aq 行 hintTargets）。无该字段的旧行不匹配（fail-closed）。 */
-  function isHintedTarget(row, channel, userId, chatId, accountId = undefined) {
+  function isHintedTarget(row, channel, userId, chatId, accountId = undefined, chatType = undefined) {
     if (Array.isArray(row.hintTargets)) {
-      return row.hintTargets.some((t) => t.channel === channel && (t.accountId === undefined || String(t.accountId) === String(accountId ?? '')) && String(t.userId) === String(userId) && String(t.chatId) === String(chatId))
+      return row.hintTargets.some((t) => t.channel === channel && (t.accountId === undefined || String(t.accountId) === String(accountId ?? '')) && String(t.userId) === String(userId) && feishuP2pEquivalent(channel, t.chatId, chatId, { targetUserId: t.userId, userId, chatType }))
     }
     return false
   }
@@ -242,11 +246,13 @@ export function createQuestionBridge(deps, strings) {
         // 同 channel/chat/user 是否存在带 accountId 的推送目标。存在时来源必须精确落到该账号：
         // 同一用户可能控制多个 bot 账号，token/回调仍须绑定原始账号；缺失/错误 accountId 一律
         // fail-closed，不得凭 trusted owner 兜底放开到另一账号（CRACK-004 只豁免无账号绑定的行）。
-        const bound = targets.filter((target) => String(target.channel) === event.channel && String(target.chatId) === event.chatId && (target.userId === undefined || String(target.userId) === event.userId))
+        // P0-Feishu-P2P（#20）：chat 比对走同一私聊等价（ou_ 投递目标 ↔ oc_ p2p 事件会话）
+        const chatEq = (target) => feishuP2pEquivalent(event.channel, target.chatId, event.chatId, { targetUserId: target.userId, userId: event.userId, chatType: event.chatType })
+        const bound = targets.filter((target) => String(target.channel) === event.channel && chatEq(target) && (target.userId === undefined || String(target.userId) === event.userId))
         const accountBound = bound.some((t) => t.accountId !== undefined && String(t.accountId) !== '')
         const exact = targets.some((target) => (
           String(target.channel) === event.channel
-          && String(target.chatId) === event.chatId
+          && chatEq(target)
           && (target.accountId === undefined || String(target.accountId) === event.accountId)
           && (target.userId === undefined || String(target.userId) === event.userId)
         ))
@@ -774,7 +780,9 @@ export function createQuestionBridge(deps, strings) {
     if (/^答[:：]/.test(text)) {
       const chatId = envelope.chatId !== undefined && envelope.chatId !== null ? String(envelope.chatId) : null
       // accountId 一并参与归属匹配：自定义作答不得凭 (channel,userId) 命中另一账号的待决行
-      const pending = ledger.latestPendingFor(envelope.channel, envelope.userId, chatId, envelope.accountId)
+      // #20：chatType 一并传入——feishu P2P 编号作答需以「同人 + p2p」把 ou_ 投递目标与
+      // oc_ 事件会话等价（缺 chatType 时 feishuP2pEquivalent 一律不等价，P2P 会误判 wrong-chat）
+      const pending = ledger.latestPendingFor(envelope.channel, envelope.userId, chatId, envelope.accountId, envelope.chatType)
       if (pending === null) return false
       if (chatId === null || pending.evidence !== 'exact' && pending.evidence !== 'hint') return true
       const answer = text.replace(/^答[:：]\s*/, '').trim()
@@ -850,7 +858,7 @@ export function createQuestionBridge(deps, strings) {
       return true
     }
 
-    const pending = ledger.latestPendingFor(envelope.channel, envelope.userId, chatId, envelope.accountId)
+    const pending = ledger.latestPendingFor(envelope.channel, envelope.userId, chatId, envelope.accountId, envelope.chatType)
     if (pending === null) return false
 
     const row = pending.row

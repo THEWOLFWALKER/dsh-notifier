@@ -12,7 +12,7 @@
 // 任何异常只 warn，绝不弄崩宿主；stop() 干净退出。
 
 import { buildApprovalAction, buildQuestionAction, parseApprovalAction, parseActionPayload, parseQuestionAction } from './_contract.mjs'
-import { resolveNotifyTargets } from './target-guard.mjs'
+import { resolveNotifyTargets, isOpenIdTarget } from './target-guard.mjs'
 import { stripCommandMention, stripLeadingMention } from './commands.mjs'
 import { verdictFailureText } from './verdict-text.mjs'
 import { stringsOf } from '../strings.mjs'
@@ -444,6 +444,9 @@ export function createFeishuInbound({ config, bus, fallbackTargets = [], logger 
    * open_chat_id）原为放行，等于缺关键信息即绕过校验 —— 改为 fail-closed 拒绝
    * （宪法 #7）。三个调用点（ac:/aq:/ap:）都把 false 转成 toast，不裁决、不 patch、
    * 不核销 wait，用户回到原会话即可重试（宪法 #6 不锁死）。
+   * P0-Feishu-P2P（#20）：私聊投递目标是用户 open_id（ou_*，srcChat 即 ou_），而
+   * 点击事件的会话 id 是 P2P 会话 chat_id（oc_*）——两个 id 空间硬比恒失败。
+   * 私聊改验「是不是原接收人」：operator.open_id === srcChat（缺 operator fail-closed）。
    * @returns {boolean} true = 通过（可继续裁决）；false = 已拒绝
    */
   function sourceChatAllowed(value, data) {
@@ -457,11 +460,36 @@ export function createFeishuInbound({ config, bus, fallbackTargets = [], logger 
       warn(`卡片回调缺少点击会话（open_chat_id），来源校验拒绝（srcChat=${srcChat}；不裁决、不 patch，回原会话可重试）`)
       return false
     }
+    // P0-Feishu-P2P（#20）：srcChat 是 ou_ 私聊投递目标 → 校验 operator.open_id === srcChat
+    if (isOpenIdTarget('feishu', srcChat)) {
+      const operator = String(data?.operator?.open_id ?? data?.sender?.sender_id?.open_id ?? '')
+      if (operator === '') {
+        warn(`卡片回调缺少操作者 open_id（P2P 私聊），来源校验拒绝（srcChat=${srcChat}；不裁决、不 patch，回原会话可重试）`)
+        return false
+      }
+      if (operator !== srcChat) {
+        warn(`P2P 卡片操作者与来源用户不一致（operator=${operator} srcChat=${srcChat}），来源校验拒绝`)
+        return false
+      }
+      return true
+    }
     if (String(clicked) !== String(srcChat)) {
       warn(`卡片点击会话与来源会话不一致（clicked=${clicked} srcChat=${srcChat}），来源校验拒绝`)
       return false
     }
     return true
+  }
+
+  /**
+   * P0-Feishu-P2P（#20）：裁决入账用的会话 identity——优先取卡片自身 srcChat
+   * （= 发送时的投递目标），与账本/pushedTo 同口径；缺 srcChat（旧卡）回落点击会话。
+   * 群聊 srcChat 即 oc_（与点击会话同 id，行为不变）；P2P srcChat 是 ou_，而点击
+   * 会话是 oc_——账本记的是 ou_，事件必须拿 ou_ 去比对才能命中（来源身份 vs 投递
+   * 寻址分离）。实际补发/patch fallback 仍走 clickedChatOf(data)（oc_，真实会话寻址）。
+   */
+  function controlChatIdOf(value, data) {
+    const srcChat = String(value?.srcChat ?? '')
+    return srcChat !== '' ? srcChat : clickedChatOf(data)
   }
 
   function handleCardAction(data) {
@@ -492,7 +520,8 @@ export function createFeishuInbound({ config, bus, fallbackTargets = [], logger 
           via: 'feishu:action',
           userId: String(data?.operator?.open_id ?? '(unknown)'),
           accountId: resolvedAccountId,
-          chatId: clickedChatOf(data),
+          // P0-Feishu-P2P（#20）：裁决入账用投递目标 identity（srcChat），与账本同口径
+          chatId: controlChatIdOf(value, data),
           chatType: data?.context?.open_chat_type ?? data?.chat_type,
         })
         const text = result?.message ?? verdictFailureText(result?.reason, 'approval', STRINGS.actions.alreadyHandledOrExpired, STRINGS)
@@ -512,7 +541,7 @@ export function createFeishuInbound({ config, bus, fallbackTargets = [], logger 
             command: 'question-answer', eventId: callbackEventIdOf(data, raw), qKey: questionAction.qKey, optIdx: questionAction.optIdx,
             token: questionAction.token, via: 'feishu:button', channel: 'feishu',
             accountId: resolvedAccountId,
-            userId: String(data?.operator?.open_id ?? ''), chatId: clickedChatOf(data),
+            userId: String(data?.operator?.open_id ?? ''), chatId: controlChatIdOf(value, data),
             chatType: data?.context?.open_chat_type ?? data?.chat_type,
           })
           : questions.decide({
@@ -522,7 +551,7 @@ export function createFeishuInbound({ config, bus, fallbackTargets = [], logger 
           via: 'feishu:button',
           accountId: resolvedAccountId,
           userId: String(data?.operator?.open_id ?? '(unknown)'),
-          chatId: clickedChatOf(data),
+          chatId: controlChatIdOf(value, data),
         })
         const text = verdict?.message ?? (verdict?.status === 'accepted' ? t.answeredShort : verdictFailureText(verdict?.reason, 'question', STRINGS.questions.answeredOrExpired, STRINGS))
         const sourceNote = t.sourceNote(data?.operator?.open_id ?? '?')
@@ -539,7 +568,7 @@ export function createFeishuInbound({ config, bus, fallbackTargets = [], logger 
           command: 'approval', eventId: callbackEventIdOf(data, raw), approvalKey: approvalAction.approvalKey, decision: approvalAction.decision,
           token: approvalAction.token, via: 'feishu:button', channel: 'feishu',
           accountId: resolvedAccountId,
-          userId: String(data?.operator?.open_id ?? ''), chatId: clickedChatOf(data),
+          userId: String(data?.operator?.open_id ?? ''), chatId: controlChatIdOf(value, data),
           chatType: data?.context?.open_chat_type ?? data?.chat_type,
         })
         : bus.decide({
@@ -549,7 +578,7 @@ export function createFeishuInbound({ config, bus, fallbackTargets = [], logger 
         via: 'feishu:button',
         accountId: resolvedAccountId,
         userId: String(data?.operator?.open_id ?? '(unknown)'),
-        chatId: clickedChatOf(data),
+        chatId: controlChatIdOf(value, data),
       })
       // G-54：失败话术按 reason 分层，与 TG 同源（verdict-text.mjs），不再一律「已处理或已过期」。
       const text = verdict.ok

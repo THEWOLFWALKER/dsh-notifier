@@ -39,6 +39,41 @@ export function isValidTargetId(channel, id) {
 }
 
 /**
+ * Feishu 用户 open_id 形态（ou_*，私聊投递目标；P0-Feishu-P2P #20）。
+ * 私聊发送用 receive_id_type=open_id，账本/pushedTo/卡片 srcChat 记的都是 ou_*；
+ * 而点击/回复事件的会话 id 是 P2P 会话 chat_id（oc_*）——来源身份（ou_）与投递
+ * 寻址（oc_）是两套 id 空间，判定归属时不可直接字符串比对。
+ */
+export function isOpenIdTarget(channel, id) {
+  return String(channel ?? '') === 'feishu' && /^ou_[A-Za-z0-9]+$/.test(String(id ?? ''))
+}
+
+/**
+ * Feishu P2P 会话等价（P0-Feishu-P2P #20：来源身份 vs 投递寻址分离）。
+ * 私聊投递记录的目标是用户 open_id（ou_*），事件会话 id 是 P2P 会话 chat_id
+ * （oc_*，chat_type='p2p'）。当「事件确为私聊 + 事件操作者与投递目标同人」时，
+ * 两者视为同一私聊会话。其余情况（其他渠道、群聊、缺 chatType、user 不一致）
+ * 一律退化为直接字符串相等——行为与旧实现逐字节一致，群聊跨会话转发保持 fail-closed。
+ * 该规则只用于「同一私聊」的归属判定，绝不泛化到 QQ/TG/群聊（#20 红线）。
+ * @param {string} channel
+ * @param {string} a - 投递记录里的 chatId（pushedTo / hintTargets）
+ * @param {string} b - 事件里的 chatId（envelope / 回调）
+ * @param {{ userId?: string, targetUserId?: string, chatType?: string }} [ctx]
+ *   - userId/targetUserId：事件操作者 id 与投递目标 id（P2P 同人判定的安全边界）
+ *   - chatType：事件会话类型（'p2p' 才可能等价；缺失/非 p2p 一律不等价）
+ */
+export function feishuP2pEquivalent(channel, a, b, { userId, targetUserId, chatType } = {}) {
+  const A = String(a ?? '')
+  const B = String(b ?? '')
+  if (A !== '' && A === B) return true
+  if (String(channel ?? '') !== 'feishu') return false
+  if (!A.startsWith('ou_') || !B.startsWith('oc_')) return false
+  if (String(chatType ?? '') !== 'p2p') return false
+  if (userId === undefined || targetUserId === undefined) return false
+  return String(userId) === String(targetUserId)
+}
+
+/**
  * 形状守卫：过滤掉形态不符的目标（发送前最后一道防线）。
  * S-12：未知渠道的目标整体拒绝 + warn——拼写错误的渠道键曾因 fail-open 静默放行，
  * 目标可能被投到根本不是该平台的会话 id 上。
