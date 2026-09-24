@@ -279,7 +279,7 @@ say(t.helpLines.join('\n'))
       const agent = bound !== null ? agentOf(bound) : undefined
       if (agent === undefined) { say(t.stopNone); return true }
       try {
-        agent.cancel('remote-stop')
+        agent.cancel({ kind: 'user' }) // Host P0-B：structured AgentCancelCause（远程手机用户 = {kind:'user'}）
         say(t.stopRequested(bound))
       } catch (error) {
         warn(`/stop 失败: ${error instanceof Error ? error.message : String(error)}`)

@@ -497,7 +497,7 @@ export function apply(ctx, config = {}) {
         return { ok: false, message: strings.stop.notFound }
       }
       try {
-        agent.cancel('remote-action')
+        agent.cancel({ kind: 'user' }) // Host P0-B：structured AgentCancelCause（远程手机用户 = {kind:'user'}）
         return { ok: true, message: strings.stop.stopped }
       } catch {
         return { ok: false, message: strings.stop.cancelFailed }

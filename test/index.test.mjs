@@ -304,3 +304,19 @@ test('B1-2c 启动清理：非引导态（allowUsers 非空）启动删掉上一
     await second.cleanup()
   }
 })
+
+// ————————————————— v0.11 Host P0-B：远程取消 structured AgentCancelCause —————————————————
+// 官方 deepseek-harness @ dsh-v0.1.7-rc.1：packages/core/session/src/types.ts 的
+// AgentCancelCause 为可辨识联合 {kind:'user'} | {kind:'parent'} | {kind:'hook',reason} |
+// {kind:'disposed'}；packages/core/agent-loop/src/agent.ts 的 ReactLoopAgent.cancel 把 cause
+// 直传 phase.abort.abort(cause)。远程手机按钮触发取消的语义只有 {kind:'user'}。
+// /stop 命令路径的行为断言见 test/conversation.test.mjs；此处源码级锁 index.mjs 的
+// turn/cancel 装配点（闭环内 actionsRef 不可外部触达，与 wiring.route 的源码守卫同模式）。
+test('Host P0-B：远程取消不再用字符串 cause，统一 structured {kind:"user"}', () => {
+  const indexSrc = readFileSync(new URL('../src/index.mjs', import.meta.url), 'utf8')
+  const convSrc = readFileSync(new URL('../src/inbound/conversation.mjs', import.meta.url), 'utf8')
+  assert.doesNotMatch(indexSrc, /cancel\(['"]remote-action['"]\)/, 'index 不得再用 remote-action 字符串')
+  assert.doesNotMatch(convSrc, /cancel\(['"]remote-stop['"]\)/, 'conversation 不得再用 remote-stop 字符串')
+  assert.match(indexSrc, /agent\.cancel\(\{\s*kind:\s*['"]user['"]\s*\}\)/, 'turn/cancel 装配点传 structured user cause')
+  assert.match(convSrc, /agent\.cancel\(\{\s*kind:\s*['"]user['"]\s*\}\)/, '/stop 装配点传 structured user cause')
+})

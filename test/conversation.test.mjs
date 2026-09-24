@@ -234,7 +234,7 @@ test('命令集：/stop 调 agent.cancel', async () => {
   rig.fire('agent/created', agent)
   rig.userSays('/stop')
   await sleep(20)
-  assert.deepEqual(agent.calls.cancel, ['remote-stop'])
+  assert.deepEqual(agent.calls.cancel, [{ kind: 'user' }])
   assert.ok(rig.replies.some((r) => /已请求取消/.test(r.text)))
   rig.dispose()
 })
@@ -255,7 +255,7 @@ test('G-04：/stop 附言形态不误杀长任务——不取消、回执未识�
   // 同一 rig 里裸 /stop 仍一键取消（收紧不能砍掉本义）
   rig.userSays('/stop')
   await sleep(40)
-  assert.deepEqual(agent.calls.cancel, ['remote-stop'])
+  assert.deepEqual(agent.calls.cancel, [{ kind: 'user' }])
   assert.ok(rig.replies.some((r) => /已请求取消/.test(r.text)))
   rig.dispose()
 })
@@ -275,7 +275,7 @@ test('G-04：Control Core 装配时同样收紧——/stop 附言不再以 stop 
   // 裸 /stop 仍经 Control Core 核销后取消
   rig.bus.accept({ channel: 'telegram', accountId: 'tg-app', userId: '42', chatId: '42', messageId: 'g04-cc-2', text: '/stop' })
   await sleep(20)
-  assert.deepEqual(agent.calls.cancel, ['remote-stop'])
+  assert.deepEqual(agent.calls.cancel, [{ kind: 'user' }])
   rig.dispose()
 })
 
