@@ -38,6 +38,10 @@ const QQ_MARKDOWN_MAX_CODEPOINTS = 3000
  *  超限时平台静默丢弃（无错误码、无回执）——本侧不硬阻塞投递（硬阻塞把「可能仍送达」
  *  变成「必然不送达」），仅 warn 出声让丢弃可见。主动消息（无 msg_id）不受此配额约束。 */
 const QQ_PASSIVE_REPLY_QUOTA = { user: 4, group: 5 }
+/** #26 对齐腾讯 dsh-qqbot 参考实现（`src/features/button-utils.ts` 的 BUTTON_LABEL_MAX=10）：
+ *  QQ keyboard 按钮 label 上限 ≤10 码点。按码点截断（不用 .length 的 UTF-16 语义——
+ *  emoji/星体字符按码元切会把代理项劈成两半，G-22 同根），超长取前 9 码点补省略号。 */
+const QQ_BUTTON_LABEL_MAX_CODEPOINTS = 10
 
 // WS op codes（QQ 网关协议）
 const OP_DISPATCH = 0
@@ -97,6 +101,15 @@ const MENTION_WHITELIST = [
   /^<@\d+>\s*/, // 官方占位形态二：<@数字ID>
   /^@\S+\s+/, // 纯文本形态：行首 @名字+空格（空格是「名字结束」判据，缺空格视为未知）
 ]
+
+/** QQ keyboard 按钮 label 截断（#26 对齐腾讯 dsh-qqbot `button-utils.ts` 的
+ *  BUTTON_LABEL_MAX=10）：整体 ≤10 码点，超长取前 9 码点补省略号。按码点计
+ *  不产生孤立代理项（G-22 同根）。 */
+function clampButtonLabel(label) {
+  const points = Array.from(String(label ?? '').trim())
+  if (points.length <= QQ_BUTTON_LABEL_MAX_CODEPOINTS) return points.join('')
+  return points.slice(0, QQ_BUTTON_LABEL_MAX_CODEPOINTS - 1).join('') + '…'
+}
 
 /** 剥离群消息行首的 @ 机器人占位；返回 { text, matched, mentionLike }（matched=命中
  *  白名单已剥；mentionLike=形似提及但未命中，调用方据此 debug 出声）。 */
@@ -682,7 +695,9 @@ export function createQqInbound(options = {}) {
 
     /** 推审批通知（v0.8.4）：优先 markdown+内嵌键盘——两颗回调按钮（type 1）action.data
      *  携带契约协议「ap:<decision>:<approvalKey>:<token>」，click_limit=1 防重复，
-     *  单聊场景 permission 锁定接收人。发送失败自动降级文本编号回复（无感切换）。 */
+     *  permission: { type: 2 }（对齐腾讯 dsh-qqbot approval-renderer.ts，无 specify_user_ids
+     *  ——#26 移除未经证实的 provider 字段；权限已在 Control Core 的 token/account/user/chat
+     *  + pending + 一次性裁决完成）。发送失败自动降级文本编号回复（无感切换）。 */
     async sendApprovalCard({ chatId, title, content, approvalKey, token }) {
       if (typeof approvalKey === 'string' && approvalKey !== '' && typeof token === 'string' && token !== '') {
         try {
@@ -690,13 +705,13 @@ export function createQqInbound(options = {}) {
           if (!isUserTarget) throw new Error('群聊审批仅提供文本回退，禁止可见按钮')
           const button = (id, label, visitedLabel, style, decision) => ({
             id,
-            render_data: { label, visited_label: visitedLabel, style },
+            render_data: { label: clampButtonLabel(label), visited_label: clampButtonLabel(visitedLabel), style },
             action: {
               // type 必须 1（回调按钮：点击产生 INTERACTION_CREATE 推送到本网关）。
               // type 2 是「指令按钮」——客户端会把 data 当文本消息自动发出，不产生
               // 回调事件（2026-08-23 实测踩坑：官方 overview 示例的 type:2 是指令语义）。
               type: 1,
-              ...(isUserTarget ? { permission: { type: 2, specify_user_ids: [String(chatId)] } } : {}),
+              permission: { type: 2 },
               click_limit: 1,
               data: buildApprovalAction(decision, approvalKey, token),
             },
@@ -734,11 +749,10 @@ export function createQqInbound(options = {}) {
         if (!isUserTarget) return null // 群聊不展示可操作提问卡，避免成员间信息/权限泄漏
         const buttons = options.slice(0, 5).map((label, index) => ({
           id: `q_${index}`,
-          render_data: { label: `${index + 1}. ${String(label).slice(0, 40)}`, visited_label: t.selectedVisited, style: 0 },
-          action: { type: 1, click_limit: 1, data: buildQuestionAction(qKey, String(index), token),
-            ...(isUserTarget ? { permission: { type: 2, specify_user_ids: [String(chatId)] } } : {}) },
+          render_data: { label: clampButtonLabel(`${index + 1}. ${String(label)}`), visited_label: clampButtonLabel(t.selectedVisited), style: 0 },
+          action: { type: 1, permission: { type: 2 }, click_limit: 1, data: buildQuestionAction(qKey, String(index), token) },
         }))
-        buttons.push({ id: 'q_custom', render_data: { label: t.customAnswerLabel, visited_label: t.selectedVisited, style: 0 }, action: { type: 1, click_limit: 1, data: buildQuestionAction(qKey, 'c', token), permission: { type: 2, specify_user_ids: [String(chatId)] } } })
+        buttons.push({ id: 'q_custom', render_data: { label: clampButtonLabel(t.customAnswerLabel), visited_label: clampButtonLabel(t.selectedVisited), style: 0 }, action: { type: 1, permission: { type: 2 }, click_limit: 1, data: buildQuestionAction(qKey, 'c', token) } })
         const messageId = await postMarkdownWithKeyboard(chatId, `${title}\n${content}`, { content: { rows: buttons.map((button) => ({ buttons: [button] })) } })
         return messageId === null ? null : { messageId }
       } catch (error) {

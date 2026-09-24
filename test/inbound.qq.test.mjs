@@ -893,7 +893,9 @@ test('sendApprovalCard：按钮卡片优先（msg_type=2 + keyboard 回调按钮
     assert.equal(buttons[index].action.type, 1, '必须是回调按钮（type=2 是指令语义）')
     assert.equal(buttons[index].action.click_limit, 1)
     assert.match(buttons[index].action.data, new RegExp(`^ap:${decision}:ap:rm:1:`), '契约协议 ap:<decision>:<key>:<token>')
-    assert.deepEqual(buttons[index].action.permission.specify_user_ids, ['u_open'], '单聊锁定接收人')
+    // #26：对齐腾讯 dsh-qqbot approval-renderer.ts（permission: { type: 2 }，无 specify_user_ids）
+    assert.deepEqual(buttons[index].action.permission, { type: 2 })
+    assert.equal(buttons[index].action.permission.specify_user_ids, undefined, '不再携带 specify_user_ids')
   }
   const again = await rig.inbound.sendApprovalCard({ chatId: 'u_open', title: 't', content: 'c', approvalKey: 'k', token: 't' })
   assert.ok(again !== null)
@@ -912,8 +914,32 @@ test('sendQuestionCard：群聊不发可操作按钮，单聊自定义回答也�
   const messageCall = userRig.calls.find((entry) => entry.url === `${API}/v2/users/u_open/messages`)
   assert.ok(messageCall)
   const buttons = messageCall.body.keyboard.content.rows.map((row) => row.buttons[0])
-  assert.deepEqual(buttons.at(-1).action.permission.specify_user_ids, ['u_open'])
+  // #26：permission 收敛为 { type: 2 }（对齐腾讯 dsh-qqbot question-renderer.ts）
+  for (const button of buttons) {
+    assert.deepEqual(button.action.permission, { type: 2 })
+    assert.equal(button.action.permission.specify_user_ids, undefined, '不再携带 specify_user_ids')
+  }
   await userRig.inbound.stop()
+})
+
+test('#26 按钮 label 整体 ≤10 码点：超长选项截断补省略号、emoji 不产生孤立代理项', async () => {
+  const rig = makeRig({ config: { notifyUsers: ['u_open'] } })
+  await driveReady(rig)
+  const longOption = '这是一个非常长的选项文本用于测试截断行为是否工作'
+  const emojiOption = '🚀🚀🚀🚀🚀🚀'
+  const card = await rig.inbound.sendQuestionCard({ chatId: 'u_open', title: 'q', content: 'c', qKey: 'aq:q', token: 'tk', options: [longOption, emojiOption] })
+  assert.ok(card)
+  const call = rig.calls.find((entry) => entry.url === `${API}/v2/users/u_open/messages`)
+  const buttons = call.body.keyboard.content.rows.map((row) => row.buttons[0])
+  const labelPoints = (label) => Array.from(String(label))
+  assert.equal(labelPoints(buttons[0].render_data.label).length, 10, '超长选项截断到 10 码点（含省略号）')
+  assert.equal(buttons[0].render_data.label, '1. 这是一个非常…')
+  assert.equal(labelPoints(buttons[1].render_data.label).length, 9, '纯 emoji 选项（2 前缀 + 6 emoji）在预算内不截断')
+  assert.equal(buttons[1].render_data.label, '2. 🚀🚀🚀🚀🚀🚀')
+  // 自定义回答按钮（zh `✍️ 自定义回答`）在预算内不截断；visited_label 同样经 clamp
+  assert.equal(labelPoints(buttons.at(-1).render_data.label).length <= 10, true, 'custom label ≤10 码点')
+  assert.equal(String(buttons.at(-1).render_data.label).includes('✍️'), true, 'custom label 保留语义')
+  await rig.inbound.stop()
 })
 
 test('目标类型学习：群事件后回执走 /v2/groups/；配置项 notifyGroups 也走群接口', async () => {
