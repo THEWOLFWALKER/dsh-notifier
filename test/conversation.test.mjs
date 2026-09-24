@@ -81,7 +81,7 @@ test('QQ 群 control gate：/stop 与普通文本均消费/回执，不绕过 Co
   rig.dispose()
 })
 
-test('会话路由：空闲 agent + 普通文本 → followup（plugin 来源消息）', async () => {
+test('会话路由：空闲 agent + 普通文本 → followup（dsh-notifier 来源消息）', async () => {
   const agent = makeAgent('s1', 'idle')
   const rig = makeRig({ agents: [agent] })
   rig.fire('agent/created', agent)
@@ -90,8 +90,9 @@ test('会话路由：空闲 agent + 普通文本 → followup（plugin 来源消
   assert.equal(agent.calls.followup.length, 1)
   const msg = agent.calls.followup[0]
   assert.equal(msg.role, 'user')
-  assert.equal(msg.source.kind, 'plugin')
-  assert.equal(msg.source.plugin, 'dsh-notifier')
+  assert.equal(msg.source.kind, 'dsh-notifier') // Host P0-A：淘汰 plugin kind
+  assert.equal(msg.source.plugin, undefined, '不再夹带 legacy plugin 字段')
+  assert.equal(msg.source.form, 'notice')
   assert.deepEqual(msg.content, [{ type: 'text', text: '再加一步：把结果写到 docs' }])
   assert.ok(typeof msg.id === 'string' && msg.id.length > 0)
   rig.dispose()

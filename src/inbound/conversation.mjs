@@ -9,10 +9,10 @@
 // v0.3.2 入站去向（注入 router 时，设计稿 §3）：
 //   显式 bind > 通道默认 agent（workspace 多活跃会话投最近活跃 + 消歧回执）
 //   > 唯一 agent 兜底 > 最近活跃（现状）。router 缺省时保持 v0.3.1 旧行为（bind > latest）。
-// 军规：入站文本只能以 plugin 来源进会话流（source.kind = 'plugin'），永不直接执行 shell；
-// 任何投递异常只回执用户，绝不弄崩宿主。
+// 军规：入站文本只能以 dsh-notifier 自有来源进会话流（Host P0-A：source.kind =
+// 'dsh-notifier'，淘汰 plugin kind），永不直接执行 shell；任何投递异常只回执用户，
+// 绝不弄崩宿主。
 
-import { randomUUID } from 'node:crypto'
 import { stringsOf } from '../strings.mjs'
 import { workspaceOf } from '../routing/session-registry.mjs'
 import { projectTasks } from '../routing/task-projection.mjs'
@@ -20,33 +20,15 @@ import { CHANNEL_TYPES } from '../config.mjs'
 import { chatScopeOf } from '../control/session-arbiter.mjs'
 import { bindingKey as identityBindingKey } from './identity.mjs'
 import { MESSAGE_PRIORITY } from './bus.mjs'
-import { normalizeImageAttachment, downloadInboundImage } from './message.mjs'
+import { normalizeImageAttachment, downloadInboundImageBytes } from './message.mjs'
+import { readAttachments, admitInboundImage, buildRemoteUserMessage } from '../host/messages.mjs'
 
 const DEFAULT_MERGE_WINDOW_MS = 1500
-const SUMMARY_MAX_CHARS = 120
 /** 各 P0 通道图片-only 占位正文（wechat/qq 沿用）；投递时不得把它当真实文本交给视觉模型。 */
 const IMAGE_PLACEHOLDER_TEXT = '[图片消息]'
 
 // 入站解析来源层的展示标签随 lang 在使用点解析（t.inboundSourceLabels，与
 // agent-router 的 source 值一一对应）。
-
-/** 组装宿主 UserMessage（source.kind = 'plugin'，与 call-me 同构）。图片走 OpenAI 风格
- * image_url 内容块（DeepSeek/DSH 兼容格式；合同测试锁定，真机 schema 待验证）。
- * 纯图占位正文（IMAGE_PLACEHOLDER_TEXT）不落进视觉模型：content 只带 image_url 块。 */
-function buildUserMessage(text, image = null, plugin = 'dsh-notifier') {
-  const realText = String(text ?? '')
-  const hasImage = image !== null && typeof image?.url === 'string' && image.url !== ''
-  const content = []
-  if (realText !== '' && realText !== IMAGE_PLACEHOLDER_TEXT) content.push({ type: 'text', text: realText })
-  if (hasImage) content.push({ type: 'image_url', image_url: { url: image.url } })
-  const summaryText = realText !== '' && realText !== IMAGE_PLACEHOLDER_TEXT ? realText : '(图片消息)'
-  return {
-    id: randomUUID(),
-    role: 'user',
-    content,
-    source: { kind: 'plugin', plugin, form: 'notice', summary: summaryText.slice(0, SUMMARY_MAX_CHARS) },
-  }
-}
 
 /** zh 兜底（strings 未注入时的回落）：单一事实源 = stringsOf().conversation（无内联副本）。 */
 const ZH_FALLBACK = stringsOf().conversation
@@ -69,8 +51,8 @@ const ZH_FALLBACK = stringsOf().conversation
 * @param {ReturnType<typeof import('../routing/task-selection.mjs').createTaskSelection>} [deps.taskSelection]
  *   - v0.10 任务选择（歧义前置）；非空时多活跃任务无绑定先下发选择卡
  * @param {(id: string) => boolean} [deps.attentionOf] - v0.10 待关注判定器（/tasks ⚠）
- * @param {(url: string) => Promise<object|null>} [deps.downloadImage] - v0.10 图片受控下载原语
- *   （测试替身/渠道专用下载器注入点；缺省回落 message.mjs downloadInboundImage）
+ * @param {(url: string) => Promise<{data: Uint8Array, mediaType: string, size: number}|null>} [deps.downloadImageBytes]
+ *   - Host P0-A 图片字节下载原语（测试替身注入点；缺省回落 message.mjs downloadInboundImageBytes）
  * @param {object} [strings] - stringsOf(lang) 全文案表（本函数读 conversation 节；
  *   缺省回落 ZH_FALLBACK）。装配层注入 stringsOf(config.lang) 全表；缺省路径输出与既有硬编码逐字节一致。
  * @returns {() => void} 反注册函数
@@ -87,10 +69,11 @@ export function registerConversationRouter(deps, strings) {
   const taskSelection = deps.taskSelection ?? null
   // v0.10 待关注事项判定器（/tasks ⚠ 标记与投影 attention 字段）；缺省恒 false。
   const attentionOf = typeof deps.attentionOf === 'function' ? deps.attentionOf : () => false
-  // v0.10 图片受控下载（提交6）：沿用 message.mjs downloadInboundImage（有界超时/大小/类型、
-  // 不落盘二进制）。只做可达性校验 + 失败回执，不阻断文字投递主线。可注入 downloadImage
-  // 换成测试替身/渠道专用下载器。
-  const downloadImage = typeof deps.downloadImage === 'function' ? deps.downloadImage : downloadInboundImage
+  // Host P0-A 图片字节下载（有界超时/大小/类型）：把实读字节收进内存交给 attachments
+  // 做 durable admission。可注入 downloadImageBytes 换成测试替身/渠道专用下载器。
+  const downloadImageBytes = typeof deps.downloadImageBytes === 'function' ? deps.downloadImageBytes : downloadInboundImageBytes
+  // Host P0-A attachment service：能力探测（缺失 = 图片能力降级为「正文照投 + 图片失败回执」）。
+  const attachments = readAttachments(ctx)
   // mergeWindowMs 归一：undefined/null → 默认；0 合法（README 承诺「0 = 关闭合并」，立即投递）；
   // 非数字/NaN → 默认；负数 → 0（Math.max 兜底）。注意不能用 `Number(x) || 默认`——那会把
   // 显式 0 当 falsy 回落 1500，使下方 `mergeWindowMs === 0` 的立即投递分支永不可达（v0.3.2 审查修复）。
@@ -104,6 +87,13 @@ export function registerConversationRouter(deps, strings) {
     try { deps.logger?.warn?.('[dsh-notifier/conversation]', message) } catch { /* 日志失败绝不致命 */ }
     // v0.6.1 双写 stderr：宿主 logger 不落 stdout 时告警仍可见（真机事故复盘）
     try { console.error('[dsh-notifier/conversation]', message) } catch { /* 控制台不可用不致命 */ }
+  }
+  // Host P0-A：异步投递链 fire-and-forget 统一兜底（总线 handler 同步、无法 await）。
+  // 任何未捕获 rejection 只记 warn，绝不弄崩宿主/总线。
+  const fireAsync = (promise) => {
+    if (promise !== null && typeof promise?.catch === 'function') {
+      promise.catch((error) => warn(`会话投递异步异常: ${error instanceof Error ? error.message : String(error)}`))
+    }
   }
 
   // 全局渠道池（v0.3.2 出站解析的兜底池 + 过滤白名单）。缺省回落 config 的全量渠道类型
@@ -331,7 +321,7 @@ say(t.helpLines.join('\n'))
       return true
     }
     if (cmd === 'use') {
-      handleTaskUse(envelope, args.join(' '), say)
+      fireAsync(handleTaskUse(envelope, args.join(' '), say))
       return true
     }
     // ---- v0.5 特性 C：/quiet /unquiet（设计稿 §4，目标解析复用 /agent use 智能匹配）----
@@ -437,11 +427,11 @@ say(t.helpLines.join('\n'))
   }
 
   /** 选定会话后投递原消息（恰好一次，任务书「选择成功后原消息只投一次」）；image 可选随投。 */
-  function selectAndDeliver(envelope, sessionId, originalText, say, image = null) {
+  async function selectAndDeliver(envelope, sessionId, originalText, say, image = null) {
     const agent = agentOf(sessionId)
     if (agent === undefined) { say(`会话 ${sessionId} 不存在或已退出（用 /tasks 重选）`); return false }
     applyBinding(envelope, sessionId)
-    const outcome = deliver(agent, originalText, image, () => {
+    const outcome = await deliver(agent, originalText, image, () => {
       try { say('图片获取失败（已投递正文，图片未随附）') } catch { /* 回执失败不致命 */ }
     })
     if (outcome === 'error') { say('投递失败（详见宿主日志）'); return false }
@@ -454,7 +444,7 @@ say(t.helpLines.join('\n'))
    * /use <needle>：选择任务（v0.10）。等价 /agent use 的智能绑定；若本对话有
    * 待决选择卡（歧义前置触发），则选定后把存起的原消息投一次并撤销待决。
    */
-  function handleTaskUse(envelope, target, say) {
+  async function handleTaskUse(envelope, target, say) {
     if (typeof target !== 'string' || target.trim() === '') {
       say('用法：/use <workspace 名 | sessionId | sid 前缀（≥4 位）>')
       return
@@ -463,7 +453,7 @@ say(t.helpLines.join('\n'))
     if (matched.sid === null) { say(matched.message); return }
     const pending = taskSelection !== null ? taskSelection.get(envelope) : undefined
     if (pending !== undefined) {
-      if (selectAndDeliver(envelope, matched.sid, pending.originalText, say, pending.image ?? null)) taskSelection.cancel(envelope)
+      if (await selectAndDeliver(envelope, matched.sid, pending.originalText, say, pending.image ?? null)) taskSelection.cancel(envelope)
       return
     }
     applyBinding(envelope, matched.sid)
@@ -580,18 +570,35 @@ say(t.helpLines.join('\n'))
     return lines.join('\n')
   }
 
-  /** 投递语义路由：! 前缀 steer；忙碌 inject；空闲 followup。image 可选（已在别处受控校验）。
-   *  onImageFailure（可选）：图片受控下载失败时回调（失败回执用），best-effort 不阻断投递。 */
-  function deliver(agent, text, image = null, onImageFailure = null) {
+  /**
+   * 投递语义路由：! 前缀 steer；忙碌 inject；空闲 followup。image 可选（已经受控归一）。
+   * Host P0-A：图片先「有界下载字节 → durable admission」，把 ImageAttachmentRef 放进
+   * UserMessage V4（buildRemoteUserMessage），绝不回退远程 URL；text-only 不依赖 attachments。
+   * onImageFailure（可选）：图片 admission 失败时回调（失败回执用），正文仍照投，纯图则不塞空消息。
+   * @returns {Promise<'steer'|'inject'|'followup'|'empty'|'error'>}
+   */
+  async function deliver(agent, text, image = null, onImageFailure = null) {
     const wantsSteer = text.startsWith(steerPrefix)
     const body = (wantsSteer ? text.slice(steerPrefix.length) : text).trim()
     const imagePart = image !== null && typeof image?.url === 'string' && image.url !== '' ? image : null
     if (body === '' && imagePart === null) return 'empty'
-    const payload = buildUserMessage(body, imagePart)
+    // 纯图占位正文（[图片消息]）绝不作为真实文本交给模型：剥离为真实空文本。
+    const realBody = imagePart !== null && body === IMAGE_PLACEHOLDER_TEXT ? '' : body
+
+    let imageRef = null
+    if (imagePart !== null) {
+      imageRef = await admitInboundImageRef(imagePart)
+      if (imageRef === null) {
+        if (typeof onImageFailure === 'function') { try { onImageFailure() } catch { /* 回执失败不致命 */ } }
+        else warn(`图片 admission 失败（已按纯文本投递，图片未随附）: ${imagePart.url}`)
+        if (realBody === '') return 'empty' // 纯图失败：绝不塞空消息
+      }
+    }
+
+    const payload = buildRemoteUserMessage({ text: realBody, imageRef })
     try {
       if (wantsSteer) {
         agent.steer(payload) // 空闲时宿主内部等价 followup
-        scheduleImageValidation(imagePart, onImageFailure)
         return 'steer'
       }
       const outcome = agent.status === 'running' ? 'inject' : 'followup'
@@ -600,7 +607,6 @@ say(t.helpLines.join('\n'))
       } else {
         agent.followup(payload) // 空闲：唤醒新 turn
       }
-      scheduleImageValidation(imagePart, onImageFailure)
       return outcome
     } catch (error) {
       warn(`投递失败: ${error instanceof Error ? error.message : String(error)}`)
@@ -608,23 +614,12 @@ say(t.helpLines.join('\n'))
     }
   }
 
-  /** 图片受控下载（best-effort，非阻塞）：只做可达性/类型/大小校验，不落盘。失败调用
-   *  onImageFailure() 发失败回执；onImageFailure 为 null 时仅记 warn。 */
-  function scheduleImageValidation(imagePart, onImageFailure) {
-    if (imagePart === null) return
-    const url = imagePart.url
-    void Promise.resolve()
-      .then(() => downloadImage(url))
-      .then((result) => {
-        if (result === null || result === undefined) {
-          if (typeof onImageFailure === 'function') { try { onImageFailure() } catch { /* 回执失败不致命 */ } }
-          else warn(`图片受控下载失败（已按纯文本投递）: ${url}`)
-        }
-      })
-      .catch(() => {
-        if (typeof onImageFailure === 'function') { try { onImageFailure() } catch { /* 回执失败不致命 */ } }
-        else warn(`图片受控下载异常（已按纯文本投递）: ${url}`)
-      })
+  /** 图片 → 有界字节 → durable ImageAttachmentRef；任一环节失败返回 null（fail-closed）。 */
+  async function admitInboundImageRef(imagePart) {
+    if (attachments === null) return null // 无 attachment service：图片能力不可用
+    const bytes = await downloadImageBytes(imagePart.url)
+    if (bytes === null || bytes === undefined) return null
+    return admitInboundImage(attachments, bytes.data, bytes.mediaType)
   }
 
   // 合并窗：手机上打长句常拆多条；窗口内的连续消息合并为一条再投递。
@@ -652,9 +647,9 @@ say(t.helpLines.join('\n'))
     const text = entry.parts.join('\n').trim()
     if (text === '') return
     const merged = entry.forceSteer ? `${steerPrefix}${text}` : text
-    route(envelope, merged, entry.image ?? null)
+    fireAsync(route(envelope, merged, entry.image ?? null))
   }
-  function routeUnsafe(envelope, text, image = null) {
+  async function routeUnsafe(envelope, text, image = null) {
     if (text.startsWith('/')) {
       if (handleCommand(envelope, text)) return
     }
@@ -664,7 +659,7 @@ say(t.helpLines.join('\n'))
     if (taskSelection !== null) {
       const selection = taskSelection.resolve(envelope, text)
       if (selection.ok === true) {
-        selectAndDeliver(envelope, selection.sessionId, selection.originalText,
+        await selectAndDeliver(envelope, selection.sessionId, selection.originalText,
           (message) => reply(envelope.channel, envelope.chatId, message), selection.image ?? null)
         return
       }
@@ -697,7 +692,7 @@ say(t.helpLines.join('\n'))
       reply(envelope.channel, envelope.chatId, t.sessionGone(bound))
       return
     }
-    const outcome = deliver(agent, text, image, () => {
+    const outcome = await deliver(agent, text, image, () => {
       reply(envelope.channel, envelope.chatId, '图片获取失败（已按纯文本投递，图片未随附）')
     })
     if (outcome === 'error') {
@@ -746,7 +741,7 @@ say(t.helpLines.join('\n'))
       sessionId: String(target.sessionId),
       policyVersion: '1',
       pending: { status: 'pending', sessionId: String(target.sessionId), createdAt: Date.now() - 1, expiresAt: Date.now() + 10 * 60 * 1000 },
-      settle: () => { routeUnsafe(envelope, text, image); return true },
+      settle: () => { fireAsync(routeUnsafe(envelope, text, image)); return true },
     })
     if (receipt.status === 'accepted') return
     if (receipt.reason === 'conversation_disabled') reply(envelope.channel, envelope.chatId, t.conversationDisabled)
@@ -758,14 +753,14 @@ say(t.helpLines.join('\n'))
   // G-31：会话路由是消费链末位兜底（priority 100）——前面审批/提问未消费的消息才进 agent 会话。
   const disposeMessage = bus.onMessage((envelope) => {
     // v0.10 图片（提交6）：归一图片附件随文投递。纯图（无正文）用占位正文保底，绝不静默丢弃；
-    // 占位正文在 buildUserMessage 中被剥掉，不会当真实文本交给视觉模型。
+    // 占位正文在 deliver 中被剥离（Host P0-A），不会当真实文本交给视觉模型。
     const image = normalizeImageAttachment(envelope?.image)
     const rawText = String(envelope.text ?? '').trim()
     const text = rawText === '' && image !== null ? IMAGE_PLACEHOLDER_TEXT : rawText
     if (text === '') return
     // 命令不进合并窗：立即处理
     if (text.startsWith('/')) {
-      route(envelope, text, image)
+      fireAsync(route(envelope, text, image))
       return
     }
     const key = mergeWindowKeyOf(envelope) // G-51：与 flush 同一键（含 chatId 维度）
@@ -780,7 +775,7 @@ say(t.helpLines.join('\n'))
       return
     }
     if (mergeWindowMs === 0) {
-      route(envelope, text, image)
+      fireAsync(route(envelope, text, image))
       return
     }
     const entry = pending.get(key)

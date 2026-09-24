@@ -140,6 +140,7 @@ test('/use <workspace> 选择后投原消息一次', async () => {
 
   await rig.flush('帮我看看构建')
   rig.userSays('/use alpha') // 命令不进合并窗，立即处理
+  await sleep(10) // /use 投递链现为异步（Host P0-A 图片 admission）；等待微任务/回调落定
   const followups = older.calls.followup.length + newer.calls.followup.length
   assert.equal(followups, 1, '/use 选定后原消息只投一次')
   assert.equal(rig.taskSelection.has({ channel: 'telegram', userId: '42', chatId: '42' }), false)

@@ -180,6 +180,58 @@ export async function downloadInboundImage(url, options = {}) {
 }
 
 /**
+ * 有界下载图片字节（Host P0-A：作 durable admission 的输入）。
+ * 与 downloadInboundImage 同一套 SSRF/超时/redirect:error/大小口径，但把实读字节
+ * 收进内存返回给调用方做 saveImage；上限按实读字节计，不信 Content-Length，
+ * 超限立即 cancel（红线 2.4 / 计划 §5.2「上限按实际读取字节计」）。
+ * @param {string} url
+ * @param {{ fetchImpl?: Function, maxBytes?: number, timeoutMs?: number }} [options]
+ * @returns {Promise<{ data: Uint8Array, mediaType: string, size: number } | null>}
+ */
+export async function downloadInboundImageBytes(url, options = {}) {
+  const safeUrl = normalizeImageUrl(url)
+  const fetchImpl = options.fetchImpl ?? globalThis.fetch?.bind(globalThis)
+  const maxBytes = Math.min(MAX_INBOUND_IMAGE_BYTES, Math.max(1, Number(options.maxBytes) || MAX_INBOUND_IMAGE_BYTES))
+  const timeoutMs = Math.min(60000, Math.max(1, Number(options.timeoutMs) || DEFAULT_INBOUND_MEDIA_TIMEOUT_MS))
+  if (safeUrl === '' || typeof fetchImpl !== 'function') return null
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const response = await fetchImpl(safeUrl, { signal: controller.signal, redirect: 'error' })
+    if (!response?.ok) return null
+    const declared = Number(response.headers?.get?.('content-length') ?? '')
+    if (Number.isFinite(declared) && declared > maxBytes) return null
+    const mediaType = String(response.headers?.get?.('content-type') ?? '').split(';', 1)[0].trim().toLowerCase()
+    if (!mediaType.startsWith('image/')) return null
+    const reader = response.body?.getReader?.()
+    if (reader === undefined) return null
+    const chunks = []
+    let size = 0
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      size += value?.byteLength ?? 0
+      if (size > maxBytes) {
+        await reader.cancel().catch(() => {})
+        return null
+      }
+      chunks.push(value)
+    }
+    const data = new Uint8Array(size)
+    let offset = 0
+    for (const chunk of chunks) {
+      data.set(chunk, offset)
+      offset += chunk.byteLength
+    }
+    return { data, mediaType, size }
+  } catch {
+    return null
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/**
  * 字符串化 extra（QQ 媒体事件负载）解析：JSON 字符串 → 数组。已解析的数组原样返回。
  * 解析失败/非数组返回 null。
  */
