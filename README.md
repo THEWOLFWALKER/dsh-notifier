@@ -189,7 +189,7 @@ v0.5 status line defaults: `longRunning` and `stall` are **on** (15min first hea
 | `pushdeer` | PushDeer | push key | ✅ |
 | `pushover` | Pushover | user key + app token | paid (one-time) |
 | `pushplus` | PushPlus (WeChat) | token | ✅ (limits) |
-| `qmsg` | Qmsg酱 (QQ) | key + qq number | ✅ (limits) |
+| `qmsg` | Qmsg酱 (QQ) | key (+ group 可选，v3) | ✅ (limits) |
 | `qq-bot` | QQ official bot | appId + appSecret | ✅ |
 | `serverchan` | Server酱 (WeChat) | sendkey | ✅ (limits) |
 | `slack` | Slack | incoming webhook URL | ✅ |

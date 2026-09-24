@@ -25,6 +25,41 @@ const ntfyPriority = (msg) => (msg.silent === true ? 2 : NTFY_PRIORITY[msg.level
 const GOTIFY_PRIORITY = { critical: 8, timeSensitive: 8, active: 5, passive: 3 }
 const gotifyPriority = (msg) => (msg.silent === true ? 2 : GOTIFY_PRIORITY[msg.level] ?? 4)
 
+/**
+ * Qmsg 3.0 存量迁移（owner 裁决 2026-09-24 #2-A）。
+ * v3 单聊目标由 API Key 绑定决定，「请求参数指定单聊 QQ / bot」在 v3 无等价表示——
+ * 因此不静默忽略、也不回落未文档化的旧 endpoint：
+ *  - `type=group + qq=<群号>` → `group=<群号>`（无损自动迁移，显式 group 优先）；
+ *  - 其余单聊目标语义（`type=send` / 裸 `qq` / `bot` / 未知 `type`）→ 配置阶段显式报迁移错误；
+ *  - 仅 `key`（无目标语义）→ 自然归一为 v3 默认单聊。
+ * 旧键按「是否出现」判定（YAML 里 QQ 号常被写成数字，按真假值判定会静默丢目标语义）。
+ */
+function migrateQmsgLegacy(cfg) {
+  const type = legacyTextOf(cfg.type)
+  const qq = legacyTextOf(cfg.qq)
+  const bot = legacyTextOf(cfg.bot)
+  const next = { ...cfg }
+  delete next.type
+  delete next.qq
+  delete next.bot
+  if (type === 'group') {
+    if (qq === '' && legacyTextOf(next.group) === '') {
+      throw new NotifyError('qmsg 未配置：群推送需要 group（群号）', ERROR_CODES.NOT_CONFIGURED)
+    }
+    if (legacyTextOf(next.group) === '') next.group = qq
+    return next
+  }
+  if (type !== '' || qq !== '' || bot !== '') {
+    throw new NotifyError('Qmsg 3.0 不再支持通过请求参数指定单聊 QQ / bot。请在 Qmsg 控制台绑定目标机器人和 QQ 后，删除旧 qq/bot 配置。', ERROR_CODES.NOT_CONFIGURED)
+  }
+  return next
+}
+
+/** legacy 键取值归一：数值（YAML 里 QQ 号常为数字）也视为已配置。 */
+function legacyTextOf(value) {
+  return value === undefined || value === null ? '' : String(value).trim()
+}
+
 const is2xx = ({ status }) => status >= 200 && status < 300
 
 /** OneBot user_id/group_id 数字化（QQ 号是数字，字符串数字也要转 number 保持协议一致）。 */
@@ -351,24 +386,17 @@ export const SPEC_CHANNELS = {
     desc: 'Qmsg push (QQ)',
     fields: {
       key: { required: true, secret: true, desc: 'Qmsg key：qmsg.zendee.cn QQ 登录后复制' },
-      qq: { required: true, desc: '接收消息的 QQ 号（群推送填群号并设 type: group），多个用英文逗号分隔' },
-      type: { default: 'send', desc: 'send=私聊（默认）/ group=群聊' },
-      bot: { desc: '指定发消息的机器人 QQ（可选，仅私有部署有效）' },
+      group: { desc: '群推送的群号（留空=单聊，目标由 Qmsg 控制台绑定的机器人好友决定）' },
     },
     encode: 'form',
+    preresolve: migrateQmsgLegacy,
     request: (cfg, msg) => ({
-      url: `https://qmsg.zendee.cn/${cfg.type || 'send'}/${encodeURIComponent(cfg.key)}`,
-      body: { msg: joinText(msg), qq: cfg.qq, ...(cfg.bot !== '' ? { bot: cfg.bot } : {}) },
+      url: `https://qmsg.zendee.cn/v3/send/${encodeURIComponent(cfg.key)}`,
+      body: { msg: joinText(msg), ...(cfg.group !== '' ? { group: cfg.group } : {}) },
     }),
-    // Qmsg 的 code 字段不可靠，官方建议以 success 字段判定。
+    // Qmsg 的 code 字段不可靠，官方建议以 success 字段判定；v3 失败描述字段为 message。
     ok: ({ json }) => json?.success === true,
-    fail: ({ json }) => json?.reason,
-    // v0.6.5（审查 R4-3-P3-1）：type 是 URL 路径段，白名单防拼错路径静默 404。
-    validate: (resolved) => {
-      if (resolved.type !== 'send' && resolved.type !== 'group') {
-        throw new NotifyError('qmsg 未配置：type 只能是 send（私聊）或 group（群聊）', ERROR_CODES.NOT_CONFIGURED)
-      }
-    },
+    fail: ({ json }) => json?.message,
   },
 
   igot: {

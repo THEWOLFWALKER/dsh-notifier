@@ -154,6 +154,81 @@ test('G-65 wps-bot：send 组装——markdown 走 {msgtype:"markdown", markdown
   }
 })
 
+// ---------------------------------------------------------------- P1-A qmsg 3.0 迁移（v0.11）
+
+/** qmsg 走 form-encoded；统一抓 (url, form 字段) 供精确断言。 */
+async function captureQmsg(run) {
+  const seen = []
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (url, init) => {
+    seen.push({ url: String(url), form: Object.fromEntries(new URLSearchParams(String(init?.body ?? ''))) })
+    return { ok: true, status: 200, text: async () => '{"success":true,"code":0,"message":"操作成功"}' }
+  }
+  try { await run(seen) } finally { globalThis.fetch = originalFetch }
+}
+
+test('P1-A qmsg：v3 endpoint + 单聊 body={msg}（仅 key 无目标语义→v3 默认单聊）', async () => {
+  const resolved = resolveOf('qmsg')({ key: 'qmsg-key-001' })
+  assert.equal(resolved.group, '', '缺省无群号')
+  await captureQmsg(async (seen) => {
+    await ADAPTERS.qmsg.send(resolved, { title: '构建完成', content: '全部用例通过' })
+    assert.equal(seen[0].url, 'https://qmsg.zendee.cn/v3/send/qmsg-key-001')
+    assert.deepEqual(seen[0].form, { msg: '构建完成\n全部用例通过' }, '单聊 body 只含 msg，不带旧的 qq/bot')
+  })
+})
+
+test('P1-A qmsg：v3 群聊 body={msg,group}', async () => {
+  const resolved = resolveOf('qmsg')({ key: 'qmsg-key-001', group: '10000' })
+  await captureQmsg(async (seen) => {
+    await ADAPTERS.qmsg.send(resolved, { title: '构建完成', content: '全部用例通过' })
+    assert.equal(seen[0].url, 'https://qmsg.zendee.cn/v3/send/qmsg-key-001')
+    assert.deepEqual(seen[0].form, { msg: '构建完成\n全部用例通过', group: '10000' })
+  })
+})
+
+test('P1-A qmsg：key URL encode——特殊字符不逃逸出 path，type 不再是任意 URL path', async () => {
+  const resolved = resolveOf('qmsg')({ key: 'k/../evil?a=b#c' })
+  await captureQmsg(async (seen) => {
+    await ADAPTERS.qmsg.send(resolved, { title: '', content: 'x' })
+    assert.equal(seen[0].url, 'https://qmsg.zendee.cn/v3/send/k%2F..%2Fevil%3Fa%3Db%23c', 'path segment 整体编码')
+  })
+})
+
+test('P1-A qmsg：legacy type=group+qq 无损迁移为 group（旧群配置不用重配）', () => {
+  const migrated = resolveOf('qmsg')({ key: 'k', type: 'group', qq: '10000,10001' })
+  assert.equal(migrated.group, '10000,10001')
+  assert.equal(migrated.type, undefined, '旧 type 键不再进入 resolved 状态')
+  assert.equal(migrated.qq, undefined)
+  // 显式 group 优先于 legacy qq
+  assert.equal(resolveOf('qmsg')({ key: 'k', type: 'group', qq: '10000', group: '20000' }).group, '20000')
+})
+
+test('P1-A qmsg：legacy 单聊语义（type=send / 裸 qq / bot / 未知 type）配置阶段显式拒绝', () => {
+  const migration = /Qmsg 3\.0 不再支持/
+  assert.throws(() => resolveOf('qmsg')({ key: 'k', type: 'send', qq: '10000' }), migration)
+  assert.throws(() => resolveOf('qmsg')({ key: 'k', qq: '10000' }), migration, '裸 qq 旧默认即 send')
+  assert.throws(() => resolveOf('qmsg')({ key: 'k', bot: '20000' }), migration)
+  assert.throws(() => resolveOf('qmsg')({ key: 'k', type: 'weird' }), migration, '未知 type 不再是 URL path 白名单，而是迁移错误')
+  assert.throws(() => resolveOf('qmsg')({ key: 'k', type: 'group' }), /需要 group/, 'type=group 无群号不静默降级为单聊')
+  assert.throws(() => resolveOf('qmsg')({}), /key.*未填写/, 'key 仍必填')
+  // YAML 里 QQ 号常被写成数字：按真假值判定会静默丢失目标语义，必须仍识别为 legacy。
+  assert.equal(resolveOf('qmsg')({ key: 'k', type: 'group', qq: 10000 }).group, '10000', '数字群号也能无损迁移')
+  assert.throws(() => resolveOf('qmsg')({ key: 'k', qq: 10000 }), migration, '数字裸 qq 同样拒绝，不静默变单聊')
+})
+
+test('P1-A qmsg：v3 失败描述取 message 字段（不再是 reason）', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => ({ ok: true, status: 200, text: async () => '{"success":false,"code":1,"message":"key 已失效"}' })
+  try {
+    await assert.rejects(
+      () => ADAPTERS.qmsg.send(resolveOf('qmsg')({ key: 'k' }), { title: '', content: 'x' }),
+      /key 已失效/,
+    )
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 // ---------------------------------------------------------------- G-62 pushplus 枚举统一
 
 test('G-62 pushplus：template 与 channel 两个枚举同一待遇——非空非法抛错，空值走默认', () => {
