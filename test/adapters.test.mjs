@@ -239,14 +239,16 @@ test('各 adapter 都导出 type', () => {
 function captureQq(messageResponse, tokenPayload = { access_token: 'T1', expires_in: 7200 }) {
   const originalFetch = globalThis.fetch
   const seen = []
-  globalThis.fetch = async (url) => {
+  const bodies = []
+  globalThis.fetch = async (url, init = {}) => {
     seen.push(String(url))
+    try { bodies.push(JSON.parse(String(init.body ?? 'null'))) } catch { bodies.push(null) }
     if (String(url).includes('getAppAccessToken')) {
       return { ok: true, status: 200, json: async () => tokenPayload }
     }
     return messageResponse
   }
-  return { async done() { globalThis.fetch = originalFetch; return seen } }
+  return { async done() { globalThis.fetch = originalFetch; return seen }, bodies }
 }
 
 test('qq-bot: 两段式成功投递（token 换取 + v2 消息）', async () => {
@@ -258,6 +260,52 @@ test('qq-bot: 两段式成功投递（token 换取 + v2 消息）', async () => 
   assert.match(seen[0], /getAppAccessToken/)
   assert.match(seen[1], /\/v2\/groups\/G1\/messages/)
   assert.equal(resolved._msgSeq, 1)
+})
+
+test('qq-bot #33: 默认 markdown（msg_type=2 + markdown.content），精确锁 payload', async () => {
+  const cap = captureQq({ ok: true, status: 200, json: async () => ({ id: 'msg1' }) })
+  const resolved = qqBot.resolve({ appId: 'A1', appSecret: 'S1', groupId: 'G1' })
+  assert.equal(resolved.markdown, true, '缺省必须开 markdown（所有者拍板）')
+  await qqBot.send(resolved, MSG)
+  await cap.done()
+  assert.deepEqual(cap.bodies[1], { markdown: { content: '标题\n正文 markdown **bold**' }, msg_type: 2, msg_seq: 1 })
+})
+
+test('qq-bot #33: markdown:false 显式 opt-out 回退纯文本（msg_type=0 + content）', async () => {
+  const cap = captureQq({ ok: true, status: 200, json: async () => ({ id: 'msg1' }) })
+  const resolved = qqBot.resolve({ appId: 'A1', appSecret: 'S1', groupId: 'G1', markdown: false })
+  assert.equal(resolved.markdown, false)
+  await qqBot.send(resolved, MSG)
+  await cap.done()
+  assert.deepEqual(cap.bodies[1], { content: '标题\n正文 markdown **bold**', msg_type: 0, msg_seq: 1 })
+})
+
+test('qq-bot #33: 超 3000 码点按码点分段（每段 ≤3000、msg_seq 递增、无孤立代理项）', async () => {
+  const cap = captureQq({ ok: true, status: 200, json: async () => ({ id: 'msg1' }) })
+  const resolved = qqBot.resolve({ appId: 'A1', appSecret: 'S1', groupId: 'G1' })
+  // 3200 个 emoji（每字符 2 码元）——码元切片会切出孤立代理项，码点语义不会。
+  const long = '🙂'.repeat(3200)
+  await qqBot.send(resolved, { title: '', content: long, level: 'active' })
+  const seen = await cap.done()
+  assert.equal(seen.length, 3, 'token + 2 段消息')
+  const sent = cap.bodies.slice(1)
+  assert.equal(sent.length, 2)
+  assert.deepEqual(sent.map((b) => b.msg_seq), [1, 2], '每段独立递增 msg_seq')
+  assert.deepEqual(sent.map((b) => b.msg_type), [2, 2])
+  for (const body of sent) {
+    assert.ok(Array.from(body.markdown.content).length <= 3000, '每段 ≤3000 码点')
+    assert.ok(!/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(body.markdown.content), '不得产生孤立代理项')
+  }
+  assert.equal(sent.map((b) => b.markdown.content).join(''), long, '分段拼接恒等于原文')
+  assert.equal(resolved._msgSeq, 2)
+})
+
+test('qq-bot #33: 长 markdown 中途失败不推进 msg_seq（整条重试幂等基线）', async () => {
+  const cap = captureQq({ ok: true, status: 200, json: async () => { throw new SyntaxError('bad') } })
+  const resolved = qqBot.resolve({ appId: 'A1', appSecret: 'S1', groupId: 'G1' })
+  await assert.rejects(() => qqBot.send(resolved, { title: '', content: '🙂'.repeat(3200), level: 'active' }), /非 JSON/)
+  await cap.done()
+  assert.equal(resolved._msgSeq, 0, '首段即失败：计数器不动')
 })
 
 test('qq-bot: 2xx 非 JSON（网关错误页）抛 BAD_UPSTREAM_RESPONSE，不再乐观当成功（G-56）', async () => {

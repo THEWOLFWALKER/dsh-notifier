@@ -50,6 +50,9 @@
 
 ### 新增
 
+- **QQ 机器人出站默认 markdown（#33）**（`src/adapters/qq-bot.mjs`、`src/config.mjs`）：`qq-bot` 出站主动消息由固定 `msg_type=0` 纯文本改为默认 `msg_type=2` + `markdown.content`（与 `qq-gw` 审批卡片的富文本能力对齐）；新增可选配置 `markdown`（非秘密），仅显式 `markdown: false` 才回退纯文本——**默认开启是所有者对「新能力默认关」fail-closed 惯例的明确例外，taskbook v0.11 已拍板**。单条上限按 Unicode 码点计（markdown 3000 / 文本 2000），超长复用既有 `splitByCodePoints` 码点语义分段逐条投递（码元切片会切出孤立代理项，G-22 同根），每段独立 `msg_seq` 递增、服务端按 `msg_seq`+内容去重，整条重试时每段沿用同一 `(seq, 内容)` 组合保证幂等；任一失败即抛错且不推进 `_msgSeq`。管理台字段提示同步（`markdown` 可选）。
+- 测试：`test/adapters.test.mjs` 增 4 项 focused（默认 markdown 精确锁 payload / `markdown:false` opt-out 回退纯文本 / 超 3000 码点分段且 ≤3000 码点、无孤立代理项、拼接恒等原文 / 中途失败不推进 `msg_seq`），`captureQq` 桩扩为可断言请求体；`test/fixtures/channels/qq-bot.json` 契约样本改为 markdown 形状。
+
 新增出站渠道 `wps-bot`（WPS 协作群机器人，金山协作 WOA 群 webhook 推送）：
 
 - `src/adapters/spec-channels.mjs`：注册 `wps-bot` 声明式 spec——字段 `webhook`（必填、secret，完整 webhook 地址，含 `?key=`）与 `msgtype`（`text`/`markdown` 枚举，默认 `text`，非秘密故声明 `plain: true` 供管理台明文回显）。resolve 层做 webhook 归一：官方域名白名单（`woa.wps.cn` / `xz.wps.cn` / `365.kdocs.cn`）+ 标准路径 `/api/v1/webhook/send` + key 统一 urlencode，非官方域名/缺 `?key=` 显式拒绝（fail-closed，错误带官方接入文档指引）；send 层按 msgtype 组装 `{ msgtype, text|markdown: { content } }`，HTTP 2xx 即成功，401/403/404 失败附排查指引。

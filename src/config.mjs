@@ -114,6 +114,7 @@ const FIELD_HINTS = {
     targetType: { required: false, secret: false, desc: '"user"（单聊，默认）或 "group"（群聊）' },
     userId: { required: false, secret: false, desc: '单聊目标用户 openid（targetType=user 时）' },
     groupId: { required: false, secret: false, desc: '群 open id（targetType=group 时）' },
+    markdown: { required: false, secret: false, desc: '默认 markdown（msg_type=2）；填 false 回退纯文本（msg_type=0）' },
   },
   'wecom-app': {
     corpid: { required: true, secret: true, desc: '企业 ID（企业微信管理后台「我的企业」）' },
