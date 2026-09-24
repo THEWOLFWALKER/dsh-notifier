@@ -187,6 +187,25 @@ export function createDingtalkInbound(options = {}) {
     try { logger?.debug?.('[dsh-notifier/inbound:dingtalk]', message) } catch { /* 日志失败绝不致命 */ }
   }
 
+  // #31 入站 transport 有限超时：config.timeoutMs 此前仅解析从未注入——换 token/开网关/
+  // 业务 POST 全走裸 fetchImpl（无 signal），宿主线程或网络卡死时这些调用可无限挂起。
+  // 注入 AbortController+signal（对齐 telegram-bot.mjs 先例与 _shared.mjs postJson 超时
+  // 语义）；超时 AbortError 由调用方 catch：token 失败进 token 管理器既有传播，业务 POST
+  // 走 postJsonWithToken 既有 warn+重试一次语义，不额外盲目重试（结果未知时重试会重复
+  // 投递，见 _shared.mjs G-50 同根）。数值归一（clamp [1000,60000]）由
+  // resolveDingtalkInboundConfig 负责，此处只兜底缺省值。
+  const requestTimeoutMs = Number(config?.timeoutMs) || 10000
+  function fetchWithTimeout(url, init = {}) {
+    if (fetchImpl === undefined) return Promise.reject(new Error('当前运行时无 fetch，钉钉 inbound 不可用'))
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), requestTimeoutMs)
+    return Promise.resolve(fetchImpl(url, { ...init, signal: controller.signal }))
+      .then(
+        (response) => { clearTimeout(timer); return response },
+        (error) => { clearTimeout(timer); throw error },
+      )
+  }
+
   // 主动推送熔断器（默认参数：阈值 3 / 窗口 60s / 开路 15s）；任一入站消息 reset
   const breaker = createBreaker()
 
@@ -194,7 +213,7 @@ export function createDingtalkInbound(options = {}) {
   const tokens = createTokenManager(async () => {
     if (fetchImpl === undefined) throw new Error('当前运行时无 fetch，钉钉 inbound 不可用')
     const query = new URLSearchParams({ appkey: String(config.appKey), appsecret: String(config.appSecret) })
-    const response = await fetchImpl(`${oapiBase}/gettoken?${query.toString()}`)
+    const response = await fetchWithTimeout(`${oapiBase}/gettoken?${query.toString()}`)
     const payload = await response.json().catch(() => null)
     if (Number(payload?.errcode) !== 0 || typeof payload?.access_token !== 'string' || payload.access_token === '') {
       throw new Error(`获取钉钉 access_token 失败（HTTP ${response.status}${payload?.errcode !== undefined ? ` errcode ${payload.errcode}` : ''}）：请检查 appKey/appSecret`)
@@ -245,7 +264,7 @@ export function createDingtalkInbound(options = {}) {
 
   /** 打开 Stream 网关（clientId/clientSecret 换 endpoint+ticket；此接口不走 access_token）。 */
   async function openGateway() {
-    const response = await fetchImpl(`${apiBase}/v1.0/gateway/connections/open`, {
+    const response = await fetchWithTimeout(`${apiBase}/v1.0/gateway/connections/open`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
       body: JSON.stringify({
@@ -448,7 +467,7 @@ export function createDingtalkInbound(options = {}) {
   }
 
   function postOnce(url, body, token) {
-    return fetchImpl(url, {
+    return fetchWithTimeout(url, {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-acs-dingtalk-access-token': token },
       body: JSON.stringify(body),

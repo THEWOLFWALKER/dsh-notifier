@@ -161,10 +161,28 @@ export function createQqInbound(options = {}) {
   const evictionWarn = createThrottledWarn(warn, { intervalMs: 1000 })
   const onEvict = (key) => evictionWarn((count) => `目标类型学习表达上限：淘汰 ${count} 个旧目标（最近淘汰 ${String(key).slice(0, 32)}）`)
 
+  // #31 入站 transport 有限超时：config.timeoutMs 此前仅解析从未注入——换 token/发消息/
+  // 回执/卡片全走裸 fetchImpl（无 signal），宿主线程或网络卡死时这些调用可无限挂起。
+  // 注入 AbortController+signal（对齐 telegram-bot.mjs 先例与 _shared.mjs postJson 超时
+  // 语义）；超时 AbortError 由调用方 catch：token 失败进 token 管理器既有传播，发送失败
+  // 走既有 warn+降级，不盲目重试（结果未知时重试会重复投递，见 _shared.mjs G-50 同根）。
+  // 数值归一（clamp [1000,60000]）由 resolveQqInboundConfig 负责，此处只兜底缺省值。
+  const requestTimeoutMs = Number(config?.timeoutMs) || 10000
+  function fetchWithTimeout(url, init = {}) {
+    if (fetchImpl === undefined) return Promise.reject(new Error('当前运行时无 fetch，QQ inbound 不可用'))
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), requestTimeoutMs)
+    return Promise.resolve(fetchImpl(url, { ...init, signal: controller.signal }))
+      .then(
+        (response) => { clearTimeout(timer); return response },
+        (error) => { clearTimeout(timer); throw error },
+      )
+  }
+
   // token 管理器（换 token → 缓存 → 提前刷新 → 失效作废），与出站 qq-bot 同一套逻辑
   const tokens = createTokenManager(async () => {
     if (fetchImpl === undefined) throw new Error('当前运行时无 fetch，QQ inbound 不可用')
-    const response = await fetchImpl(TOKEN_URL, {
+    const response = await fetchWithTimeout(TOKEN_URL, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ appId: config.appId, clientSecret: config.appSecret }),
@@ -557,7 +575,7 @@ export function createQqInbound(options = {}) {
       setBounded(msgSeqs, target, seq, CHAT_STATE_MAX, onEvict)
       const body = { content: piece, msg_type: 0, msg_seq: seq }
       if (msgId !== undefined) body.msg_id = msgId
-      const response = await fetchImpl(url, {
+      const response = await fetchWithTimeout(url, {
         method: 'POST',
         headers: { 'content-type': 'application/json', authorization: `QQBot ${token}` },
         body: JSON.stringify(body),
@@ -576,7 +594,7 @@ export function createQqInbound(options = {}) {
   async function ackInteraction(interactionId) {
     if (fetchImpl === undefined) return
     const token = await tokens.get()
-    await fetchImpl(`${apiBase}/interactions/${encodeURIComponent(interactionId)}`, {
+    await fetchWithTimeout(`${apiBase}/interactions/${encodeURIComponent(interactionId)}`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json', authorization: `QQBot ${token}` },
       body: JSON.stringify({ code: 0 }),
@@ -599,7 +617,7 @@ export function createQqInbound(options = {}) {
     // 同体，拆卡会重复按钮/permission；码点截断同样不产生孤立代理项（G-22 同根）。
     const markdownText = splitByCodePoints(String(markdownContent ?? ''), QQ_MARKDOWN_MAX_CODEPOINTS)[0] ?? ''
     const body = { msg_type: 2, msg_seq: seq, markdown: { content: markdownText }, keyboard }
-    const response = await fetchImpl(url, {
+    const response = await fetchWithTimeout(url, {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `QQBot ${token}` },
       body: JSON.stringify(body),

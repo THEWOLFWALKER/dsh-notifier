@@ -270,6 +270,11 @@ export function createFeishuInbound({ config, bus, fallbackTargets = [], logger 
     if (sdk?.Client === undefined || sdk?.WSClient === undefined || sdk?.EventDispatcher === undefined) {
       throw new Error(`${SDK_PACKAGE} 接口不完整（缺 Client/WSClient/EventDispatcher）`)
     }
+    // #31 入站 transport 有限超时：QQ/钉钉入站已注入 AbortController+signal，飞书走官方
+    // SDK（client.im.v1.message.create 等），其全局 request 超时注入点【待验证】——
+    // @larksuiteoapi/node-sdk@1.73.0 类型里 `timeout?` 仅存在于底层 HttpRequestOptions
+    // （per-request），Client 构造级超时字段未在公开类型面确认，不硬猜字段名；
+    // 已登记 docs/memory/risks.md（SDK 缺显式超时时长连可无限挂起的残余风险）。
     client = new sdk.Client({ appId: config.appId, appSecret: config.appSecret, domain })
     // v0.7.3（#1/#4/#6）：SDK 的 WSClient.start() → reConnect()/pullConnectConfig() 内部会调
     // this.logger.info/debug/error，传 logger: null 在 SDK 1.46+ 直接抛
