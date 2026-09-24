@@ -146,9 +146,13 @@ test('createEventListener: lang en — stall/longRunning 状态正文与 headlin
   }), {
     trackerOverrides: { now: t.now, setTimeoutFn: t.setTimeoutFn, clearTimeoutFn: t.clearTimeoutFn, minMs: 1 },
   })
-  const session = makeSession('sess-stall-en', [
-    { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: 'long test running' }] } } },
-  ])
+  // #32：assistant/message 经总线沉淀缓存，心跳摘录从缓存取
+  const session = makeSession('sess-stall-en')
+  listeners['session/event'][0](session, {
+    type: 'assistant/message',
+    seq: 0,
+    data: { message: { content: [{ type: 'text', text: 'long test running' }] } },
+  })
   listeners['session/event'][0](session, { type: 'turn/start', seq: 1 })
   t.advance(600_000)
   assert.equal(pushes.length, 1, 'stall 直推')

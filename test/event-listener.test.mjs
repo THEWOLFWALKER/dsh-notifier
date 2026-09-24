@@ -4,7 +4,8 @@ import {
   intentOfSessionEvent,
   intentOfAgentError,
   intentToMessage,
-  lastAssistantText,
+  assistantTextOf,
+  createAssistantTextCache,
   workspaceNameOf,
   createDedupLedger,
   createTrailingDebounce,
@@ -50,17 +51,40 @@ test('intentToMessage: 标题前缀 + 正文截断', () => {
   assert.equal(short.content, 'ok')
 })
 
-test('lastAssistantText 取最后一条 assistant/message 文本块', () => {
-  const session = {
-    events: [
-      { type: 'user/message', data: {} },
-      { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: ' first ' }] } } },
-      { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: 'second' }, { type: 'text', text: ' third' }] } } },
-    ],
+test('assistantTextOf 提取单条 assistant/message 的文本块', () => {
+  const event = {
+    type: 'assistant/message',
+    data: { message: { content: [{ type: 'text', text: ' first ' }, { type: 'text', text: 'second' }, { type: 'tool', text: 'ignored' }] } },
   }
-  assert.equal(lastAssistantText(session), 'second\n third')
-  assert.equal(lastAssistantText({ events: [] }), '')
-  assert.equal(lastAssistantText(null), '')
+  assert.equal(assistantTextOf(event), 'first \nsecond', '块按原文拼接后整体 trim（单个块不去空白）')
+  assert.equal(assistantTextOf({ type: 'assistant/message', data: { message: { content: [] } } }), '')
+  assert.equal(assistantTextOf({ type: 'assistant/message', data: {} }), '')
+  assert.equal(assistantTextOf({ type: 'user/message', data: {} }), '')
+  assert.equal(assistantTextOf(null), '')
+})
+
+test('createAssistantTextCache: 有界 + 按会话取最近输出，超限淘汰最旧', () => {
+  const cache = createAssistantTextCache(3)
+  assert.equal(cache.get('s1'), '', '无条目缺省空串')
+  cache.set('s1', '第一段')
+  cache.set('s1', '第二段')
+  assert.equal(cache.get('s1'), '第二段', '同会话后到覆盖')
+  assert.equal(cache.size(), 1)
+  // 空文本 / 空 id 不占条目
+  cache.set('s2', '')
+  cache.set('', 'x')
+  assert.equal(cache.size(), 1)
+  cache.set('s2', 'ok')
+  cache.set('s3', 'ok')
+  cache.set('s4', 'ok')
+  assert.equal(cache.size(), 3, '上限 3 内不淘汰')
+  cache.set('s5', 'ok')
+  assert.equal(cache.size(), 3, '超限淘汰最旧')
+  assert.equal(cache.get('s1'), '', 's1 最旧先被淘汰')
+  assert.equal(cache.get('s2'), '', 's2 次旧随后被淘汰')
+  assert.equal(cache.get('s3'), 'ok')
+  assert.equal(cache.get('s4'), 'ok')
+  assert.equal(cache.get('s5'), 'ok')
 })
 
 test('workspaceNameOf 取 cwd 末段，缺省回退 session id', () => {
@@ -631,9 +655,13 @@ test('v0.5 stall：timeSensitive 直推 + 文案含 /stop hint；心跳：passiv
   }, {
     trackerOverrides: { now: t.now, setTimeoutFn: t.setTimeoutFn, clearTimeoutFn: t.clearTimeoutFn, minMs: 1 },
   })
-  const session = makeSession('sess-stall-1234', [
-    { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '正在跑长测试' }] } } },
-  ])
+  // #32：assistant/message 经 session/event 总线沉淀缓存，心跳摘录从缓存取
+  const session = makeSession('sess-stall-1234')
+  listeners['session/event'][0](session, {
+    type: 'assistant/message',
+    seq: 0,
+    data: { message: { content: [{ type: 'text', text: '正在跑长测试' }] } },
+  })
   listeners['session/event'][0](session, { type: 'turn/start', seq: 1 })
   t.advance(600_000)
   assert.equal(pushes.length, 1, 'stall 直推（不进宽限窗）')
@@ -776,14 +804,30 @@ test('B3 dispose 级联：agent/disposed 事件调 bus.abandonByAgent（裸 agen
   dispose()
 })
 
-test('lastAssistantText: 兼容 DSH 的 snapshotEvents()（Session 没有 events 属性）', () => {
-  const assistant = { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '来自 snapshot' }] } } }
-  const session = { id: 's1', snapshotEvents: () => [{ type: 'user/message' }, assistant] }
-  assert.equal(lastAssistantText(session), '来自 snapshot')
-  // snapshotEvents 抛错时退化为空串，绝不外抛
-  assert.equal(lastAssistantText({ id: 's2', snapshotEvents: () => { throw new Error('boom') } }), '')
-  // 非数组返回值同样安全
-  assert.equal(lastAssistantText({ id: 's3', snapshotEvents: () => undefined }), '')
+test('createEventListener #32：turn/end 正文从有界缓存取（assistant/message 经总线沉淀）', async () => {
+  const { ctx, listeners } = fakeCtx()
+  const pushes = []
+  const notifier = { notifyAll: async (msg) => { pushes.push(msg); return { ok: true, delivered: [], failed: [] } }, flush: async () => {} }
+  const resolved = { enabled: true, debounceMs: 30, summaryMaxChars: 500, titlePrefix: '' }
+  const dispose = createEventListener(ctx, notifier, resolved)
+  const session = makeSession('s1')
+  // 不经总线喂事件 → 缓存无条目 → 兜底「无正文摘要」
+  listeners['session/event'][0](session, { type: 'turn/end', seq: 1, data: { reason: { kind: 'completed' } } })
+  await new Promise((resolve) => setTimeout(resolve, 80))
+  assert.equal(pushes.length, 1)
+  assert.equal(pushes[0].content, '✅ 任务完成（无正文摘要）')
+  // 经总线喂 assistant/message → turn/end 正文带上最近输出（不读 session.events/snapshotEvents）
+  const session2 = makeSession('s2')
+  listeners['session/event'][0](session2, {
+    type: 'assistant/message',
+    seq: 2,
+    data: { message: { content: [{ type: 'text', text: '来自总线沉淀' }] } },
+  })
+  listeners['session/event'][0](session2, { type: 'turn/end', seq: 3, data: { reason: { kind: 'completed' } } })
+  await new Promise((resolve) => setTimeout(resolve, 80))
+  assert.equal(pushes.length, 2)
+  assert.equal(pushes[1].content, '来自总线沉淀', '正文 = 最近一次 assistant 输出')
+  dispose()
 })
 
 test('intentToMessage: turn/end 正文为空时兜底，避免渠道拒收', () => {

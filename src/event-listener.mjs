@@ -27,30 +27,57 @@ function hash6(value) {
   return createHash('sha256').update(String(value ?? '')).digest('hex').slice(0, 6)
 }
 
-/** 取会话日志里最后一条 assistant/message 的文本块。 */
-export function lastAssistantText(session) {
-  // DSH exposes the session log through `session.snapshotEvents()`; `session.events`
-  // is not part of the Session surface, so reading only that property returned ''
-  // and left every turn/end body blank (see intentToMessage).
-  const events = Array.isArray(session?.events)
-    ? session.events
-    : (typeof session?.snapshotEvents === 'function'
-        ? (() => { try { const snapshot = session.snapshotEvents(); return Array.isArray(snapshot) ? snapshot : [] } catch { return [] } })()
-        : [])
-  if (!Array.isArray(events)) return ''
-  for (let index = events.length - 1; index >= 0; index -= 1) {
-    const event = events[index]
-    if (event?.type !== 'assistant/message') continue
-    const blocks = event.data?.message?.content
-    if (!Array.isArray(blocks)) continue
-    const text = blocks
-      .filter((block) => block?.type === 'text' && typeof block.text === 'string')
-      .map((block) => block.text)
-      .join('\n')
-      .trim()
-    if (text.length > 0) return text
+/**
+ * 从单条 assistant/message 事件提取文本块（多 text 块拼接后 trim）。
+ * 事件形态对齐官方 `packages/core/session/src/types.ts` 的
+ * `SessionEventMap['assistant/message'] = { turn, step, message: AssistantMessage, … }`
+ * （deepseek-harness master，assistant/message 为 surface 事件，data.message.content 为块数组）。
+ * 非 assistant/message / 空内容一律返回 ''（绝无异常抛出路径）。
+ */
+export function assistantTextOf(event) {
+  if (event === null || event === undefined || event?.type !== 'assistant/message') return ''
+  const blocks = event.data?.message?.content
+  if (!Array.isArray(blocks)) return ''
+  return blocks
+    .filter((block) => block?.type === 'text' && typeof block.text === 'string')
+    .map((block) => block.text)
+    .join('\n')
+    .trim()
+}
+
+/**
+ * #32 有界 assistant 文本缓存：sessionId -> 最近一次 assistant/message 的文本。
+ * DSH 0.1.2 起 `session.events` getter 已移除（issue #32），turn/end 通知正文与心跳
+ * 摘录不再读宿主 session 日志；assistant/message 事件本就流经 session/event 总线，
+ * 趁事件到达把文本沉淀进本缓存，通知组装时按 sessionId 取。
+ * 宪法#4（状态必须有界）：条目硬上限 maxEntries（缺省 256，会话并发量三个数量级余量），
+ * 超限淘汰最旧（Map 插入序）。语义只取「最近一次输出」——正文与摘录都只需要最后一段；
+ * 防抖本就按 session 合并（10s 窗），不引入 turn 键（新一轮产出只会让正文带上更新内容，
+ * 与既有「最近输出摘录」口径一致）。
+ */
+export function createAssistantTextCache(maxEntries = 256) {
+  const entries = new Map()
+  const cap = Math.max(1, Math.trunc(Number(maxEntries)) || 256)
+  return {
+    /** 记录该会话最近一次输出；空文本 / 无 id 不占条目（get 缺省即 ''，语义等价）。 */
+    set(sessionId, text) {
+      if (typeof sessionId !== 'string' || sessionId === '') return
+      if (typeof text !== 'string' || text === '') return
+      entries.set(sessionId, text)
+      if (entries.size > cap) {
+        const oldest = entries.keys().next().value
+        if (oldest !== undefined) entries.delete(oldest)
+      }
+    },
+    /** 取该会话最近一次输出；无条目返回 ''。 */
+    get(sessionId) {
+      if (typeof sessionId !== 'string' || sessionId === '') return ''
+      return entries.get(sessionId) ?? ''
+    },
+    size() {
+      return entries.size
+    },
   }
-  return ''
 }
 
 /** turn/end reason.kind -> 级别（文案来自 strings 表）。kind 不在官方六值内（插件扩展）返回 undefined 保持沉默。 */
@@ -278,6 +305,8 @@ export function createEventListener(ctx, notifier, resolvedConfig, wiring = {}) 
     onOverflow: (key, size) => warn(`宽限窗表达上限（在途 ${size} 个会话），提前推送最旧会话 ${key} 的待发通知（宽限提前收口，不丢通知）`),
   })
   const dedup = createDedupLedger()
+  // #32：turn/end 正文与心跳摘录的有界来源（见 createAssistantTextCache 注释）
+  const assistantCache = createAssistantTextCache()
   const warn = (message) => {
     try { ctx?.logger?.warn?.('[dsh-notifier]', message) } catch { /* 日志失败绝不致命 */ }
   }
@@ -348,7 +377,8 @@ export function createEventListener(ctx, notifier, resolvedConfig, wiring = {}) 
       // S-05：minimal（默认）摘录 200→80 + 密钥形态打码；extended 维持原文
       const minimal = normalizeRedaction(resolvedConfig.redaction) === 'minimal'
       const cap = minimal ? MINIMAL_EXCERPT_CHARS : 200
-      let excerpt = lastAssistantText(session).slice(-cap).trim()
+      // #32：从有界缓存取最近输出（不再读宿主 session 日志；session.events 于 DSH 0.1.2 移除）
+      let excerpt = assistantCache.get(String(session?.id ?? '')).slice(-cap).trim()
       if (minimal) excerpt = maskSecrets(excerpt)
       if (excerpt !== '') lines.push(`${strings.status.recentOutputPrefix}${excerpt}`)
       lines.push(strings.status.stopHint)
@@ -434,7 +464,8 @@ export function createEventListener(ctx, notifier, resolvedConfig, wiring = {}) 
       message = intentToMessage(intent, { assistantText: '', config: resolvedConfig })
       message.content = composeStatusBody(intent, session)
     } else {
-      const assistantText = intent.event === 'turn/end' ? lastAssistantText(session) : ''
+      // #32：turn/end 正文取有界缓存（assistant/message 事件到达时沉淀；不再读 session.events）
+      const assistantText = intent.event === 'turn/end' ? assistantCache.get(String(session?.id ?? '')) : ''
       message = intentToMessage(intent, { assistantText, config: resolvedConfig })
     }
     // 关键词规则（include 白名单 / exclude 黑名单，黑名单优先）拦下即静默跳过
@@ -462,6 +493,12 @@ export function createEventListener(ctx, notifier, resolvedConfig, wiring = {}) 
     // v0.5：永远最先喂 tracker（独立于 intent 过滤——events.turnEnd 关闭或未知
     // reason.kind 静默时，turn 生命周期的建档/清档仍需发生，否则卡住判定失真）
     tracker.observe(session, event)
+    // #32：assistant/message 事件流经同一总线——趁事件到达把文本沉淀进有界缓存，
+    // turn/end 正文与心跳摘录改从缓存取（DSH 0.1.2 起 session.events 已移除，issue #32；
+    // 有界语义见 createAssistantTextCache）。本条本身不产生推送 intent，缓存即全部作用。
+    if (event.type === 'assistant/message') {
+      assistantCache.set(String(session?.id ?? ''), assistantTextOf(event))
+    }
     // 用户活动信号：任何 user/* 事件（发消息/编辑）都证明人在键盘，取消宽限窗内待发打扰
     if (typeof event.type === 'string' && event.type.startsWith('user/')) {
       grace.activity()
