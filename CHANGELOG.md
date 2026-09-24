@@ -23,6 +23,19 @@
 - **直投路径不阻塞结算返回（CodeRabbit Major：`await runPush()` 拖住 `waitPromise`）**：`webFirstMs=0` 的直投此前要等 `await runPush()` 完成才进入 `await waitPromise`——卡片发送逐目标串行，任一目标挂起时，作答/超时/取消即便已结算，`askQuestions` 也回不去（拦截 abort 同样解不开直投在途）。现直投与定时器路径统一后台化（`runPush().catch(warn)`）：终态由 `cancelDelivery` 封口后续投递，迟到成功由 runPush 收尾路径按行终态和解。附带语义统一：直投推送异常不再立即以 `error` 交还桌面，改为告警后继续由 Web/超时收束（与延迟推送路径一致的 fail-closed）。测试 +1（直投双目标挂 B、`adminSettle` 结算后 `askQuestions` 立即返回、B 迟到成功后双卡按已答话术和解；对未修复代码确定性红——2s race 守卫）。全量 1637。
 - **复审收尾（编号话术取消闸 Major + attachError/文档 Minor）**：(1) hinted 编号话术兜底改逐目标串行 await——原实现把全部 `sendText` 同步推入数组后 `Promise.all`，首个目标在途时取消无法阻止其余目标已同步启动，违背「逐目标发送前复查取消、await 返回后进入下一目标同样拦截」的承诺；现与卡片投递同款：每次发送前复查 `isCancelled`、上一目标返回后才决定是否发起下一目标，`hintedTargets` 仍只记录 `sendText` 成功的目标。(2) `native-questions.mjs` 两条成功路径（provider 注册成功 / waterfall 监听注册成功）清空 `attachError`——服务重建重放成功后 `capabilities()` 不再残留上一次的失败码。(3) 文档收口：waterfall 拦截器条目的 GUI 先答收尾改指终稿取消语义（拦截器范围 AbortSignal；早期 `adminPending`/`adminSettle` 启发式清扫已被取代）、v0.10.1 段「唯一公开 seam」表述加注后续 waterfall 回落。测试 +2（挂起首条编号话术 + abort → 第二目标绝不启动；失败→重挂成功双路径清空错误码；编号话术回归对未修复代码确定性红）。全量 1639。
 
+### 新增
+
+新增出站渠道 `wps-bot`（WPS 协作群机器人，金山协作 WOA 群 webhook 推送）：
+
+- `src/adapters/spec-channels.mjs`：注册 `wps-bot` 声明式 spec——字段 `webhook`（必填、secret，完整 webhook 地址，含 `?key=`）与 `msgtype`（`text`/`markdown` 枚举，默认 `text`，非秘密故声明 `plain: true` 供管理台明文回显）。resolve 层做 webhook 归一：官方域名白名单（`woa.wps.cn` / `xz.wps.cn` / `365.kdocs.cn`）+ 标准路径 `/api/v1/webhook/send` + key 统一 urlencode，非官方域名/缺 `?key=` 显式拒绝（fail-closed，错误带官方接入文档指引）；send 层按 msgtype 组装 `{ msgtype, text|markdown: { content } }`，HTTP 2xx 即成功，401/403/404 失败附排查指引。
+- `src/adapters/_engine.mjs`：spec 引擎新增三个可选声明——`preresolve(cfg)` 钩子（字段提取前归一化配置，wps-bot 用它兼容存量 `webhookKey`+`webhookHost` 双字段并合成完整 webhook）、`fixedOptions: true`（官方固定端点渠道不暴露 `timeoutMs`/`allowPrivateNetwork` 引擎级调优键，恒用默认值）、字段标志 `plain: true`（非秘密枚举字段在管理台明文回显）；spec 文档注释同步。
+- `src/config.mjs`：新增 `channelFixedOptions(type)` 与 `channelDocUrlOf(type)` 查询（读 spec 声明，供管理台与键白名单消费）。
+- `src/admin/api.mjs`：`maskSecrets` 支持 `plainKeys` 顶层明文豁免（`plain: true` 字段如 `msgtype` 不再脱敏成 `***`，避免用户误以为配置丢失；递归层不豁免）；出站键白名单对 `fixedOptions` 渠道收窄（不再放行 `timeoutMs`/`apiBase` 等引擎键，防写入死配置）；`getChannels` 出站行附 spec 声明的 `docUrl`（官方接入文档链接）。
+- `src/admin/ui/client.mjs`：渠道卡片头部与首取向导表单底部渲染 `docUrl`「官方文档 ↗」跳转（`target="_blank" rel="noopener noreferrer"`）。
+- `src/inbound/capability-matrix.mjs`：`OUTBOUND_CHANNELS` 全集加入 `wps-bot`（27 → 28，与 `CHANNEL_TYPES` 测试锁死一致）。
+- `scripts/gen-channel-matrix.mjs`：META 补 `wps-bot` 行；README/README.zh-CN 渠道矩阵与角标同步（27 → 28）。
+- 测试：`test/config-validation.test.mjs` 增 6 项 focused（webhook 归一/白名单拒绝/存量双字段兼容/fixedOptions 语义/send 组装）、`test/admin-api.test.mjs` 增 2 项（msgtype 明文回显 + docUrl、fixedOptions 白名单收窄）、`test/contract.spec.mjs` fixture 覆盖清单加 `wps-bot`、`test/inbound.capability-matrix.test.mjs` 全集数量 28 锁死、`test/fixtures/channels/wps-bot.json` 契约 fixture（伪造顺序 key，非真实凭证）。
+
 ## [0.10.2] - 2026-09-13（文档清理与收录状态收口）
 
 文档维护发布，无功能/行为变更：

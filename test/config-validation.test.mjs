@@ -52,6 +52,81 @@ test('G-38 slack：非 hooks.slack.com 域名的 webhook 显式拒绝（API toke
   assert.equal(ok.webhook, 'https://hooks.slack.com/services/T000/B000/XXXXXXXX')
 })
 
+// ---------------------------------------------------------------- G-65 wps-bot webhook 单字段（v0.13.1：webhookKey+webhookHost 合并）
+
+test('G-65 wps-bot：webhook 完整地址归一——origin+标准路径+?key= 重编码，其余 query 丢弃', () => {
+  const ok = resolveOf('wps-bot')({ webhook: 'https://365.kdocs.cn/woa/api/v1/webhook/send?key=abc123&legacy=1' })
+  assert.equal(ok.webhook, 'https://365.kdocs.cn/woa/api/v1/webhook/send?key=abc123', '/woa 前缀必须保留（协作新一代地址），旧 query 不得残留')
+  const xz = resolveOf('wps-bot')({ webhook: 'https://xz.wps.cn/api/v1/webhook/send?key=k%2Bk' })
+  assert.equal(xz.webhook, `https://xz.wps.cn/api/v1/webhook/send?key=${encodeURIComponent('k+k')}`, 'key 统一 urlencoded 回写')
+})
+
+test('G-65 wps-bot：裸域名（无 scheme）补 https://；纯 origin 补标准路径但缺 ?key= 拒绝', () => {
+  const bare = resolveOf('wps-bot')({ webhook: '365.kdocs.cn/api/v1/webhook/send?key=a' })
+  assert.equal(bare.webhook, 'https://365.kdocs.cn/api/v1/webhook/send?key=a')
+  assert.throws(() => resolveOf('wps-bot')({ webhook: 'https://woa.wps.cn/api/v1/webhook/send' }), /缺少 \?key=/, '无 key 的地址拒绝（key 即全部认证）')
+})
+
+test('G-65 wps-bot：非官方域名 / 不可解析串 / 缺 key 显式拒绝（白名单三家：woa/xz/kdocs365）', () => {
+  assert.throws(() => resolveOf('wps-bot')({ webhook: 'https://evil.example.com/hook?key=k' }), /只允许/)
+  assert.throws(() => resolveOf('wps-bot')({ webhook: 'not a url' }), /只允许/)
+  assert.throws(() => resolveOf('wps-bot')({ webhook: 'https://kdocs.cn/woa/api/v1/webhook/send?key=k' }), /只允许/, '裸 kdocs.cn 不在白名单（须 365.kdocs.cn）')
+  assert.throws(() => resolveOf('wps-bot')({}), /webhook.*未填写/, 'webhook 必填')
+})
+
+test('G-65 wps-bot：存量兼容——旧双字段 webhookKey+webhookHost 在 preresolve 合成完整 webhook', () => {
+  // 仅 webhookKey：走默认 woa.wps.cn + 标准路径
+  const legacy = resolveOf('wps-bot')({ webhookKey: 'a'.repeat(32) })
+  assert.equal(legacy.webhook, `https://woa.wps.cn/api/v1/webhook/send?key=${'a'.repeat(32)}`)
+  // webhookHost 完整 URL（含旧 key query）：query 丢弃，key 取 webhookKey 字段
+  const full = resolveOf('wps-bot')({
+    webhookKey: 'a'.repeat(32),
+    webhookHost: 'https://365.kdocs.cn/woa/api/v1/webhook/send?key=deadbeef00',
+  })
+  assert.equal(full.webhook, `https://365.kdocs.cn/woa/api/v1/webhook/send?key=${'a'.repeat(32)}`, '/woa 前缀保留，旧 query 不残留')
+  // 裸域名补 scheme + 标准路径
+  const bare = resolveOf('wps-bot')({ webhookKey: 'a'.repeat(32), webhookHost: '365.kdocs.cn' })
+  assert.equal(bare.webhook, `https://365.kdocs.cn/api/v1/webhook/send?key=${'a'.repeat(32)}`)
+  // 新旧并存：新 webhook 字段优先，旧字段整体忽略
+  const both = resolveOf('wps-bot')({
+    webhook: 'https://xz.wps.cn/api/v1/webhook/send?key=new',
+    webhookKey: 'old'.padEnd(32, '0'),
+    webhookHost: 'https://woa.wps.cn',
+  })
+  assert.equal(both.webhook, 'https://xz.wps.cn/api/v1/webhook/send?key=new')
+  // 旧 webhookHost 非法：原样透传给 validate 给出「只允许」指引
+  assert.throws(() => resolveOf('wps-bot')({ webhookKey: 'a'.repeat(32), webhookHost: 'https://evil.example.com/hook' }), /只允许/)
+})
+
+test('G-65 wps-bot：fixedOptions——timeoutMs/allowPrivateNetwork 引擎选项被忽略（用户拍板去掉）', () => {
+  const resolved = resolveOf('wps-bot')({
+    webhook: 'https://woa.wps.cn/api/v1/webhook/send?key=k',
+    timeoutMs: 60000,
+    allowPrivateNetwork: true,
+  })
+  assert.equal(resolved.timeoutMs, 10000, 'cfg.timeoutMs 不再生效，恒为默认 10000')
+  assert.equal(resolved.allowPrivateNetwork, undefined, 'allowPrivateNetwork 恒不放行私网')
+})
+
+test('G-65 wps-bot：send 组装——最终 URL 即归一后的 webhook（365 /woa path + ?key=）', async () => {
+  const seen = []
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (url, init) => {
+    seen.push({ url: String(url), body: init.body ? String(init.body) : null })
+    return { ok: true, status: 200, text: async () => '{"result":"ok"}' }
+  }
+  try {
+    await ADAPTERS['wps-bot'].send(
+      resolveOf('wps-bot')({ webhook: `https://365.kdocs.cn/woa/api/v1/webhook/send?key=${'a'.repeat(32)}` }),
+      { title: 't', content: 'c' },
+    )
+    assert.equal(seen[0].url, `https://365.kdocs.cn/woa/api/v1/webhook/send?key=${'a'.repeat(32)}`)
+    assert.deepEqual(JSON.parse(seen[0].body), { msgtype: 'text', text: { content: 't\nc' } })
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 // ---------------------------------------------------------------- G-62 pushplus 枚举统一
 
 test('G-62 pushplus：template 与 channel 两个枚举同一待遇——非空非法抛错，空值走默认', () => {

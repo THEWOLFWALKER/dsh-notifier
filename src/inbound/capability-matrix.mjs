@@ -218,7 +218,7 @@ export function channelsWith(capability) {
 }
 
 /**
- * 出站适配器全集（27 个）——用于矩阵工具和文档生成。
+ * 出站适配器全集（28 个）——用于矩阵工具和文档生成。
  * 从 config.mjs ADAPTERS 动态引入会产生循环依赖风险，
  * 这里显式列出（保持与 CHANNEL_TYPES 一致，由测试锁死）。
  */
@@ -226,7 +226,7 @@ export const OUTBOUND_CHANNELS = Object.freeze([
   'bark', 'bell', 'chanify', 'desktop', 'dingtalk', 'discord', 'feishu',
   'gchat', 'gotify', 'igot', 'mattermost', 'ntfy', 'onebot', 'pushdeer',
   'pushover', 'pushplus', 'qmsg', 'qq-bot', 'serverchan', 'slack', 'teams',
-  'telegram', 'webhook', 'wecom', 'wecom-app', 'wxpusher', 'xizhi',
+  'telegram', 'webhook', 'wecom', 'wecom-app', 'wps-bot', 'wxpusher', 'xizhi',
 ])
 
 /**

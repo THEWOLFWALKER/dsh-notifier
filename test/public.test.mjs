@@ -619,7 +619,8 @@ test('PLUGINS.md：代码块可被 node --check（防文档腐烂）', async () 
   const { promisify } = await import('node:util')
   const run = promisify(execFile)
   const text = readFileSync(new URL('../PLUGINS.md', import.meta.url), 'utf8')
-  const blocks = [...text.matchAll(/```js\n([\s\S]*?)```/g)].map((m) => m[1])
+  // CRLF 兼容：Windows checkout（core.autocrlf）会把仓库 LF 转 CRLF，```js\n 会漏匹配 ```js\r\n
+  const blocks = [...text.matchAll(/```js\r?\n([\s\S]*?)```/g)].map((m) => m[1])
   assert.ok(blocks.length >= 4, '示例代码块数量合理')
   for (const [index, code] of blocks.entries()) {
     // 每块独立成文件过语法检查（export 语句在 .mjs 下合法）

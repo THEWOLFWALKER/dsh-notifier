@@ -26,8 +26,11 @@ export function describeFailure(json, text) {
  * spec 形状：
  *   label   渠道显示名（错误文案前缀）
  *   desc    渠道一句话说明（README 矩阵生成用）
- *   fields  { [key]: { required?, secret?, desc, default?, type?: 'number' } }
+ *   fields  { [key]: { required?, secret?, desc, default?, type?: 'number', plain?: true } }
+ *           plain?: true = 非秘密枚举值，管理台明文回显（getChannels 不脱敏该键）
  *   encode  'json' | 'form' | 'text'（默认 json）
+ *   preresolve (cfg) => cfg                                     // 可选：字段提取前归一旧配置（存量迁移）
+ *   fixedOptions true                                           // 可选：不暴露 timeoutMs/allowPrivateNetwork 引擎选项
  *   request (cfg, msg) => { url, headers?, body? | text? }   // 必须纯函数
  *   ok      ({ status, json, text, cfg, msg }) => boolean     // 成功判定，必须纯函数
  *   fail    ({ status, json, text }) => string                // 可选：中文失败文案
@@ -37,6 +40,9 @@ export function makeSpecAdapter(type, spec) {
   const label = spec.label ?? type
 
   function resolve(cfg = {}) {
+    // v0.13.1 preresolve：字段提取前让 spec 归一存量配置（如 wps-bot 旧 webhookKey+
+    // webhookHost 双字段合成新 webhook 单字段）；返回值替换 cfg（返回 falsy 则原样保留）。
+    if (typeof spec.preresolve === 'function') cfg = spec.preresolve(cfg) ?? cfg
     const resolved = {}
     for (const [key, field] of Object.entries(spec.fields ?? {})) {
       const raw = cfg[key]
@@ -57,9 +63,16 @@ export function makeSpecAdapter(type, spec) {
       resolved[key] = missing && field.default !== undefined ? field.default : value
     }
     if (typeof spec.validate === 'function') spec.validate(resolved)
-    resolved.timeoutMs = num(cfg.timeoutMs, spec.timeoutMs ?? 10000, 1000, 60000)
-    // S-02 逃生口（引擎级配置，同 timeoutMs 语义：不入 fields 声明表）
-    resolved.allowPrivateNetwork = cfg.allowPrivateNetwork === true
+    if (spec.fixedOptions === true) {
+      // v0.13.1 fixedOptions：官方固定端点渠道（wps-bot）不暴露 timeoutMs/allowPrivateNetwork
+      // 引擎调优选项——cfg 里同名键一律忽略，超时取 spec.timeoutMs ?? 10000；
+      // allowPrivateNetwork 恒 undefined（ssrfGuard 语义下即私网默认拒绝）。
+      resolved.timeoutMs = spec.timeoutMs ?? 10000
+    } else {
+      resolved.timeoutMs = num(cfg.timeoutMs, spec.timeoutMs ?? 10000, 1000, 60000)
+      // S-02 逃生口（引擎级配置，同 timeoutMs 语义：不入 fields 声明表）
+      resolved.allowPrivateNetwork = cfg.allowPrivateNetwork === true
+    }
     return resolved
   }
 

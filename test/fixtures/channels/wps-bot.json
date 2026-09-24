@@ -1,0 +1,17 @@
+{
+  "type": "wps-bot",
+  "validConfig": { "webhook": "https://woa.wps.cn/api/v1/webhook/send?key=a0b1c2d3e4f5061728394a5b6c7d8e9f" },
+  "invalidConfig": { "msgtype": "email" },
+  "message": { "title": "Build done", "content": "All tests pass", "level": "active" },
+  "expectedRequests": [
+    {
+      "url": "https://woa.wps.cn/api/v1/webhook/send?key=a0b1c2d3e4f5061728394a5b6c7d8e9f",
+      "method": "POST",
+      "bodyJson": { "msgtype": "text", "text": { "content": "Build done\nAll tests pass" } }
+    }
+  ],
+  "successResponses": [{ "status": 200, "body": "{\"result\":\"ok\"}" }],
+  "failResponse": { "status": 403, "body": "{\"result\":\"forbidden\"}" },
+  "errorMatch": "无效|失效",
+  "secretFields": ["webhook"]
+}
