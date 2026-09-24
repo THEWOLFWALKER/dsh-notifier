@@ -2995,3 +2995,19 @@ remote IM bytes
 ```
 
 **批准前仍不写代码。**
+
+---
+
+# 37. Owner 裁决记录（2026-09-24，已批准执行）
+
+> 五项裁决全部拍板，此后不再作为执行中的待确认项。仅保留两个「执行时证据门」：Feishu 1.73.0 timeout 具体调用形态、DSH peer 精确范围（均由源码/验证结果决定，非产品决策）。
+
+| # | 裁决点 | 裁定 |
+|---|---|---|
+| 1 | QQ keyboard `permission.specify_user_ids` | **移除**。最终形态对齐腾讯官方参考实现：`action:{type:1, permission:{type:2}, click_limit:1, data}`（无 specify_user_ids，证据：tencent-connect/dsh-qqbot `src/features/question-renderer.ts`、`src/features/approval-renderer.ts`）。理由：该字段无必要存在；用户权限已在 Control Core（token / account/user/chat / pending / 一次性裁决）保证，QQ keyboard 层不叠未经证实的 provider 限制。**不得**把「根因就是 specify_user_ids」写进 changelog；措辞限定为「对齐腾讯官方参考实现，移除非必要字段，并同时修正按钮 label 等协议约束」。 |
+| 2 | Qmsg legacy single qq/bot | **A（含细化）**：`type=group+qq=<id>` → `group=<id>` 无损自动迁移；`type=send+qq` / `bot` 在配置阶段报具体 migration error（文案示例：「Qmsg 3.0 不再支持通过请求参数指定单聊 QQ / bot。请在 Qmsg 控制台绑定目标机器人和 QQ 后，删除旧 qq/bot 配置。」），不静默忽略、不调用旧 endpoint；仅 key 无目标语义的旧配置自然归一为 v3 默认单聊。不选 B（双协议测试矩阵 + 将来再删）、不选 C（group 可无损迁，不必让用户重配）。 |
+| 3 | Issue #36 文件字节上限 | **统一 5 MiB**：`MAX_INBOUND_IMAGE_BYTES = 5*1024*1024`、`MAX_INBOUND_FILE_BYTES = 5*1024*1024`。单附件统一 ≤5 MiB；上限按**实际读取字节**计，不信 Content-Length（Header 仅用于提前拒绝；流读超 5 MiB 立即 cancel）。不做 configurable maxInboundFileBytes（将来真实需要再单独加并重审 SSRF/内存/并发/存储/DoS）。 |
+| 4 | Issue #31 Feishu timeout | **A 升级为「优先验证并大概率可直接实现」**：官方当前 `HttpRequestOptions.timeout?: number` + semantic API 第二 request options 参数 + 自定义 httpInstance 均有文档证据。执行合同：① 核 pin 的 `@larksuiteoapi/node-sdk@1.73.0` 实际 types/runtime——若 semantic method 第二参数最终进入 `HttpRequestOptions.timeout` → per-request timeout，覆盖 create/patch 等全部 REST send，正常关闭 #31；② 类型有 timeout 但 semantic 不透传 → 查 httpInstance 隔离方案；③ 两者都不成立 → PENDING-EVIDENCE / release blocker。**仍不接受 Promise.race() 冒充 transport timeout**。 |
+| 5 | DSH peer SemVer range | **A（更保守）**：Host P0-A / P0-B / P2 ctx.root / P2 native questions 全部完成后、拿真实 DSH 版本 matrix（contract/smoke 验证）再写。第一版宁窄勿猜（如只声明已验证的 0.1.7-rc.1 与 0.1.7，不拍 `^0.1.7`）。证据：deepseek-ai/deepseek-harness `packages/boot/app-boot/src/plugin-compatibility.ts` 只检查 `@deepseek-ai/dsh` / `@deepseek-ai/dsh-*` peers，且 `semver.satisfies(..., {includePrerelease:true})`；无 DSH peer 时 checker 不限制宿主版本。不阻塞开发，但阻塞最终 package compatibility 声明。 |
+
+**执行开始条件已满足**：owner 已批准执行顺序 v2 并完成全部裁决。仅 Commit 6（Feishu timeout）与 Commit 14（DSH peer）保留上述两个证据门。
