@@ -19,6 +19,52 @@ import { stringsOf } from '../strings.mjs'
 
 const DEFAULT_DOMAIN = 'https://open.feishu.cn'
 const SDK_PACKAGE = '@larksuiteoapi/node-sdk'
+// #31（Host P0 收口）：飞书入站 HTTP transport 有限超时。这是 transport safety invariant，
+// 不是新用户配置面——不 export、不进 config/admin/README（对齐 QQ/钉钉入站 10s 口径）。
+const FEISHU_HTTP_TIMEOUT_MS = 10_000
+
+/**
+ * 给底层 HttpRequestOptions 强制有限 timeout（上限保护），不 mutate 原 options。
+ * 有效值须满足 0 < effective <= maxMs；调用方显式更短 timeout 保留，其它（0/NaN/Infinity/
+ * 负数/undefined）一律回落到 maxMs。避免 spread 后仍复写原对象的副作用。
+ * @param {object|undefined|null} options
+ * @param {number} maxMs
+ * @returns {object} 新 options 对象（含有限 timeout）
+ */
+function withBoundedTimeout(options, maxMs) {
+  const source = options !== null && typeof options === 'object' ? options : {}
+  const requested = Number(source.timeout)
+  const timeout = Number.isFinite(requested) && requested > 0
+    ? Math.min(Math.trunc(requested), maxMs)
+    : maxMs
+  return { ...source, timeout }
+}
+
+/**
+ * 包装 SDK 导出的共享 defaultHttpInstance，产出仅属于本 Client 的 bounded HttpInstance。
+ * 显式实现 HttpInstance 全方法（request/get/delete/head/options/post/put/patch）而非 Proxy：
+ * 方法表小而明确，便于 review 与单测证明 timeout 无一遗漏。request() 是 hard gate（缺失即抛）。
+ * @param {object} base - SDK defaultHttpInstance
+ * @param {number} [timeoutMs]
+ * @returns {object} bounded HttpInstance
+ */
+function createTimedHttpInstance(base, timeoutMs = FEISHU_HTTP_TIMEOUT_MS) {
+  if (base === null || (typeof base !== 'object' && typeof base !== 'function')
+      || typeof base.request !== 'function') {
+    throw new Error(`${SDK_PACKAGE} defaultHttpInstance 不可用`)
+  }
+  const opts = (value) => withBoundedTimeout(value, timeoutMs)
+  return {
+    request: (options) => base.request(opts(options)),
+    get: (url, options) => base.get(url, opts(options)),
+    delete: (url, options) => base.delete(url, opts(options)),
+    head: (url, options) => base.head(url, opts(options)),
+    options: (url, options) => base.options(url, opts(options)),
+    post: (url, data, options) => base.post(url, data, opts(options)),
+    put: (url, data, options) => base.put(url, data, opts(options)),
+    patch: (url, data, options) => base.patch(url, data, opts(options)),
+  }
+}
 
 // G-17：飞书卡片 TTL 兜底（对齐 TG refs DEFAULT_TTL_MS 15min）。升级前在途卡片缺
 // srcChat/iat 时兼容放行——TG 侧由 ref TTL 15min 天然封顶，飞书侧此前无等价约束，
@@ -270,12 +316,20 @@ export function createFeishuInbound({ config, bus, fallbackTargets = [], logger 
     if (sdk?.Client === undefined || sdk?.WSClient === undefined || sdk?.EventDispatcher === undefined) {
       throw new Error(`${SDK_PACKAGE} 接口不完整（缺 Client/WSClient/EventDispatcher）`)
     }
-    // #31 入站 transport 有限超时：QQ/钉钉入站已注入 AbortController+signal，飞书走官方
-    // SDK（client.im.v1.message.create 等），其全局 request 超时注入点【待验证】——
-    // @larksuiteoapi/node-sdk@1.73.0 类型里 `timeout?` 仅存在于底层 HttpRequestOptions
-    // （per-request），Client 构造级超时字段未在公开类型面确认，不硬猜字段名；
-    // 已登记 docs/memory/risks.md（SDK 缺显式超时时长连可无限挂起的残余风险）。
-    client = new sdk.Client({ appId: config.appId, appSecret: config.appSecret, domain })
+    // #31 入站 transport 有限超时（Host P0 收口）：@larksuiteoapi/node-sdk@1.73.0 公开
+    // Client({httpInstance})，defaultHttpInstance 可从 SDK 导入。给本 Client 注入一个隔离
+    // bounded wrapper，在底层 HttpRequestOptions 层强制 <=10s 有限 timeout，连带覆盖 message
+    // create/patch 之前的 tenant token 获取；不改 SDK 共享默认实例、不用 Promise.race、不盲重试。
+    if (sdk?.defaultHttpInstance === undefined || typeof sdk.defaultHttpInstance?.request !== 'function') {
+      throw new Error(`${SDK_PACKAGE} 接口不完整（缺 defaultHttpInstance/request）`)
+    }
+    const timedHttp = createTimedHttpInstance(sdk.defaultHttpInstance, FEISHU_HTTP_TIMEOUT_MS)
+    client = new sdk.Client({
+      appId: config.appId,
+      appSecret: config.appSecret,
+      domain,
+      httpInstance: timedHttp,
+    })
     // v0.7.3（#1/#4/#6）：SDK 的 WSClient.start() → reConnect()/pullConnectConfig() 内部会调
     // this.logger.info/debug/error，传 logger: null 在 SDK 1.46+ 直接抛
     // "Cannot read properties of null (reading 'info')"，rejection 被外层吞掉后

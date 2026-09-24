@@ -58,7 +58,19 @@ function makeFakeSdk({ failPatch = 0 } = {}) {
     async close() {}
   }
   class FakeEventDispatcher { register(map) { Object.assign(this.handlers = this.handlers ?? {}, map); return this } }
-  const sdk = { Client: FakeClient, WSClient: FakeWSClient, EventDispatcher: FakeEventDispatcher }
+  // Host P0 #31：ensureStarted 现在要求 SDK 导出 defaultHttpInstance（bounded wrapper 的 base）。
+  const defaultHttpInstance = {
+    defaults: {},
+    async request() { return {} },
+    async get() { return {} },
+    async delete() { return {} },
+    async head() { return {} },
+    async options() { return {} },
+    async post() { return {} },
+    async put() { return {} },
+    async patch() { return {} },
+  }
+  const sdk = { Client: FakeClient, WSClient: FakeWSClient, EventDispatcher: FakeEventDispatcher, defaultHttpInstance }
   return { state, loader: async () => sdk }
 }
 

@@ -15,7 +15,7 @@ import { createActionDispatcher } from '../src/actions.mjs'
  * 伪造 @larksuiteoapi/node-sdk：记录 Client/WSClient 全部交互。
  * wsClient.start() 捕获 eventDispatcher，测试用 handlers['im.message.receive_v1'] 直接投喂事件。
  */
-function makeFakeSdk({ failStart = false, failCreate = 0, bareWs = false, failPatch = 0 } = {}) {
+function makeFakeSdk({ failStart = false, failCreate = 0, bareWs = false, failPatch = 0, failHttp = false } = {}) {
   const state = {
     loadCount: 0,
     clientOptions: [],
@@ -26,22 +26,57 @@ function makeFakeSdk({ failStart = false, failCreate = 0, bareWs = false, failPa
     dispatcher: null,
     sent: [],    // { receiveIdType, receiveId, msgType, content }
     patched: [], // { messageId, content }
+    httpRequests: [], // { method, url, timeout, data, params } —— Host P0 #31 transport bound 证据
+  }
+
+  // 模拟 @larksuiteoapi/node-sdk@1.73.0 导出的共享 defaultHttpInstance（axios.create() 形态：
+  // 含 defaults 与 request/get/delete/head/options/post/put/patch 全方法）。request() 记录
+  // timeout 供断言 bounded wrapper；failHttp 打开时抛 ECONNABORTED 以测 timeout 失败语义。
+  const defaultHttpInstance = {
+    defaults: {},
+    async request(options) {
+      state.httpRequests.push({
+        method: options?.method,
+        url: options?.url,
+        timeout: options?.timeout,
+        data: options?.data,
+        params: options?.params,
+      })
+      if (failHttp) {
+        const error = new Error('timeout of 10000ms exceeded')
+        error.code = 'ECONNABORTED'
+        throw error
+      }
+      return {}
+    },
+    async get(url, options) { return this.request({ ...options, method: 'GET', url }) },
+    async delete(url, options) { return this.request({ ...options, method: 'DELETE', url }) },
+    async head(url, options) { return this.request({ ...options, method: 'HEAD', url }) },
+    async options(url, options) { return this.request({ ...options, method: 'OPTIONS', url }) },
+    async post(url, data, options) { return this.request({ ...options, method: 'POST', url, data }) },
+    async put(url, data, options) { return this.request({ ...options, method: 'PUT', url, data }) },
+    async patch(url, data, options) { return this.request({ ...options, method: 'PATCH', url, data }) },
   }
 
   class FakeClient {
     constructor(options) {
       this.options = options
       state.clientOptions.push(options)
+      // 注入的 bounded httpInstance（Host P0 #31）：create/patch 先走 transport.request，
+      // 使现有发送测试即变成真实「经过 transport wrapper」的 contract test。
+      const transport = options.httpInstance
       this.im = {
         v1: {
           message: {
             async create({ params, data }) {
               if (state.sent.length < failCreate) throw new Error('mock network down')
+              await transport.request({ method: 'POST', url: 'https://open.feishu.cn/open-apis/im/v1/messages', params, data })
               state.sent.push({ receiveIdType: params.receive_id_type, receiveId: data.receive_id, msgType: data.msg_type, content: data.content })
               return { code: 0, msg: 'ok', data: { message_id: `om_${state.sent.length}` } }
             },
             async patch({ path, data }) {
               if (state.patched.length < failPatch) throw new Error('mock patch down')
+              await transport.request({ method: 'PATCH', url: `https://open.feishu.cn/open-apis/im/v1/messages/${path.message_id}`, data })
               state.patched.push({ messageId: path.message_id, content: data.content })
               return { code: 0, msg: 'ok' }
             },
@@ -93,12 +128,12 @@ function makeFakeSdk({ failStart = false, failCreate = 0, bareWs = false, failPa
     }
   }
 
-  const sdk = { Client: FakeClient, WSClient: bareWs ? BareWSClient : FakeWSClient, EventDispatcher: FakeEventDispatcher }
+  const sdk = { Client: FakeClient, WSClient: bareWs ? BareWSClient : FakeWSClient, EventDispatcher: FakeEventDispatcher, defaultHttpInstance }
   const loader = async () => {
     state.loadCount += 1
     return sdk
   }
-  return { state, loader }
+  return { state, loader, defaultHttpInstance }
 }
 
 function makeLogger() {
@@ -1170,3 +1205,81 @@ function rigTexts(sent) {
     body: JSON.parse(s.content).text ?? '',
   }))
 }
+
+// ---------------------------------------------------------------- Host P0 #31：Feishu transport bound
+
+test('Host P0 #31：Client 注入 bounded httpInstance，缺省 request timeout=10000', async () => {
+  const rig = makeRig()
+  rig.inbound.start()
+  await tick()
+  const opts = rig.fake.state.clientOptions[0]
+  assert.ok(opts.httpInstance, 'Client 必须收到自定义 httpInstance')
+  assert.equal(typeof opts.httpInstance.request, 'function')
+  await opts.httpInstance.request({ method: 'POST', url: 'https://open.feishu.cn/test' })
+  assert.equal(rig.fake.state.httpRequests.at(-1).timeout, 10_000)
+  await rig.inbound.stop()
+})
+
+test('Host P0 #31：bounded wrapper 保留更短 timeout、非法值回落 10000、不 mutate、不碰共享 defaults', async () => {
+  const rig = makeRig()
+  rig.inbound.start()
+  await tick()
+  const timed = rig.fake.state.clientOptions[0].httpInstance
+  const cases = [
+    [2500, 2500],
+    [undefined, 10_000],
+    [0, 10_000],
+    [-1, 10_000],
+    [Infinity, 10_000],
+    [NaN, 10_000],
+    [60_000, 10_000],
+  ]
+  for (const [input, expected] of cases) {
+    await timed.request({ method: 'POST', url: 'u', timeout: input })
+    assert.equal(rig.fake.state.httpRequests.at(-1).timeout, expected, `timeout=${String(input)} → ${expected}`)
+  }
+  const original = { headers: { foo: 'bar' } }
+  await timed.request(original)
+  assert.equal(original.timeout, undefined, 'wrapper 不得 mutate 调用方 options')
+  assert.deepEqual(original.headers, { foo: 'bar' }, 'headers 内容与引用不被破坏')
+  assert.equal(rig.fake.defaultHttpInstance.defaults.timeout, undefined, '不得改共享默认实例 defaults')
+  await rig.inbound.stop()
+})
+
+test('Host P0 #31：transport timeout → sendText false、卡片 null（不盲重试）', async () => {
+  const rig = makeRig({ sdkOptions: { failHttp: true } })
+  rig.inbound.start()
+  await tick()
+  assert.equal(await rig.inbound.sendText('ou_1', 'hi'), false)
+  assert.equal(await rig.inbound.sendApprovalCard({ chatId: 'ou_1', title: 't', content: 'c', approvalKey: 'ap:x:1', token: 'tk' }), null)
+  assert.equal(await rig.inbound.sendQuestionCard({ chatId: 'ou_1', title: 't', content: 'c', qKey: 'aq:1', token: 'tk', options: ['是', '否'] }), null)
+  assert.equal(await rig.inbound.sendActionCard({ chatId: 'ou_1', title: 't', content: 'c', actions: [{ label: '停', data: 'ac:x:y' }] }), null)
+  await rig.inbound.stop()
+})
+
+test('Host P0 #31：patch transport timeout → 恰好一次文本兜底 attempt（兜底同受 bound）', async () => {
+  const logger = makeLogger()
+  const vault = createTokenVault({ secret: 'k' })
+  const bus = createInboundBus({ allowUsers: ['ou_1'], vault, logger })
+  const fake = makeFakeSdk({ failHttp: true }) // patch 与兜底 create 都 transport timeout
+  const inbound = createFeishuInbound({ config: { appId: 'a', appSecret: 's' }, bus, logger, sdkLoader: fake.loader })
+  inbound.start()
+  await tick()
+  const key = 'ap:pft:1'
+  const token = vault.mint(key)
+  const outcome = bus.wait(key, 2000, { allowChats: new Map([['feishu', new Set(['oc_pft'])]]) })
+  const toast = fake.state.dispatcher.handlers['card.action.trigger']({
+    operator: { open_id: 'ou_1' },
+    action: { value: { act: buildApprovalAction('allowed-once', key, token) } },
+    context: { open_message_id: 'om_pft', open_chat_id: 'oc_pft' },
+  })
+  assert.equal(toast.toast.type, 'success')
+  assert.equal((await outcome).decision, 'allowed-once', '裁决本身不受 transport timeout 影响')
+  await tick()
+  const patchCalls = fake.state.httpRequests.filter((r) => r.method === 'PATCH')
+  const textCalls = fake.state.httpRequests.filter((r) => r.method === 'POST')
+  assert.equal(patchCalls.length, 1, 'patch 只 attempt 一次，超时不得重试 patch')
+  assert.equal(textCalls.length, 1, '超时后兜底文本恰 attempt 一次')
+  assert.ok(textCalls.every((r) => r.timeout === 10_000), '兜底同样受 bounded timeout')
+  await inbound.stop()
+})
