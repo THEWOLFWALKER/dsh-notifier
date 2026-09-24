@@ -590,13 +590,40 @@ export function apply(ctx, config = {}) {
         if (disposeAskTool !== null) disposers.push(disposeAskTool)
         questionsBridge.attach()
         disposers.push(() => questionsBridge.dispose())
-        // v0.10 宿主原生提问桥（任务书 3.2）：仅经 ctx.userQuestions 公开 seam 桥接
-        // 原生 ask_user_question；seam 缺失/被占用时安全降级（nativeBridge.capabilities()
-        // 反映降级，管理台据此展示）。绝不伪造原生桥。
-        nativeBridge = createNativeQuestionBridge({ ctx, questionBridge: questionsBridge, logger })
-        const nativeAttached = nativeBridge.attach()
+        // v0.10 宿主原生提问桥（任务书 3.2）：经宿主公开 seam 桥接原生 ask_user_question；
+        // seam 缺失/被占用时安全降级（nativeBridge.capabilities() 反映降级，管理台据此展示）。
+        // 绝不伪造原生桥。
+        // #27：(a) 服务读取改为防御式（ctx.get 非抛错，见 host/capability.mjs），探测不再
+        // 炸装配；(b) attach 不再依赖静态 inject 声明（cordis 4.0.2 required-inject 会在
+        // 宿主缺 userQuestions 服务时让整插件拒绝加载、通知全哑），改用 ctx.inject 运行时
+        // 可选依赖——服务就绪才激活，宿主无该服务时桥静默 unsupported、其余能力照常。
+        // canDeliver：入站交互通道空表时拦截器不截流（GUI-only 行为与未装插件一致）。
+        nativeBridge = createNativeQuestionBridge({
+          ctx,
+          questionBridge: questionsBridge,
+          logger,
+          canDeliver: () => Array.isArray(interactiveRaw) && interactiveRaw.length > 0,
+        })
         disposers.push(() => nativeBridge.dispose())
-        warn(`远程提问已启用：ask_user 工具（限流 ${resolved.questions.rateLimitPerMinute} 次/分钟，超时 ${Math.round(resolved.questions.timeoutMs / 1000)}s 不代答）；飞书/Telegram 单选选项卡 + 全渠道编号兜底；宿主原生提问桥 ${nativeAttached ? '已 attach（provider-chain）' : `未 attach（seam=${nativeBridge.capabilities().seam}，降级 unsupported）`}`)
+        const reportNativeBridge = () => {
+          const caps = nativeBridge.capabilities()
+          warn(`宿主原生提问桥 ${caps.attached ? `已 attach（${caps.mode}）` : `未 attach（seam=${caps.seam}${caps.error !== null ? `, error=${caps.error}` : ''}，降级 unsupported）`}`)
+        }
+        if (typeof ctx?.inject === 'function') {
+          try {
+            // 子插件回调第一参数 = 可选依赖子上下文：waterfall 监听器注册在它上面，
+            // 随 userQuestions 服务的 fiber 生命周期自动撤销/重放（服务替换后自动重挂）。
+            ctx.inject(['userQuestions'], (subCtx) => { nativeBridge.attach(subCtx); reportNativeBridge() })
+          } catch (error) {
+            warn(`ctx.inject 可选依赖包装失败（回落直连 attach）: ${error instanceof Error ? error.message : String(error)}`)
+            nativeBridge.attach()
+            reportNativeBridge()
+          }
+        } else {
+          nativeBridge.attach()
+          reportNativeBridge()
+        }
+        warn(`远程提问已启用：ask_user 工具（限流 ${resolved.questions.rateLimitPerMinute} 次/分钟，超时 ${Math.round(resolved.questions.timeoutMs / 1000)}s 不代答）；飞书/Telegram 单选选项卡 + 全渠道编号兜底`)
       } catch (error) {
         warn(`questions 桥装配失败，已跳过（其余能力不受影响）: ${error instanceof Error ? error.message : String(error)}`)
       }
