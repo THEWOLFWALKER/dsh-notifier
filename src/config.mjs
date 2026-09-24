@@ -91,7 +91,7 @@ const FIELD_HINTS = {
     token: { required: true, secret: true, desc: 'pushplus token（www.pushplus.plus）' },
   },
   serverchan: {
-    sct: { required: true, secret: true, desc: 'Server酱 SENDKEY（sct.ftqq.com）' },
+    sct: { required: true, secret: true, desc: 'Server酱 SENDKEY（sct.ftqq.com；SC3 企业版 sctp 前缀自动走 <数字>.push.ft07.com）' },
   },
   bark: {
     key: { required: true, secret: true, desc: 'Bark 设备 key（App 内复制）' },

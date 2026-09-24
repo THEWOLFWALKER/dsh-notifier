@@ -335,18 +335,34 @@ test('qq-bot: expires_in=0 不再 || 7200 静默活两小时——TTL 归一 fai
   await cap.done()
 })
 
-test('serverchan: sctp 前缀 SENDKEY 走 sctp.ftqq.com 域名（G-09 SC3）', async () => {
+test('serverchan: SC3 sctp 前缀 SENDKEY 走数字子域 push.ft07.com/send/<key>.send（G-09）', async () => {
   const cap = capture({ code: 0 })
-  await serverchan.send(serverchan.resolve({ sct: 'SCTP1234' }), MSG)
+  await serverchan.send(serverchan.resolve({ sct: 'sctp1234tABC' }), MSG)
   const seen = await cap.done()
-  assert.equal(seen.url, 'https://sctp.ftqq.com/SCTP1234.send')
+  assert.equal(seen.url, 'https://1234.push.ft07.com/send/sctp1234tABC.send')
+})
+
+test('serverchan: SC3 shard 取自 key 数字段——1 与 999 各归其子域', async () => {
+  const one = capture({ code: 0 })
+  await serverchan.send(serverchan.resolve({ sct: 'sctp1tABC' }), MSG)
+  assert.equal((await one.done()).url, 'https://1.push.ft07.com/send/sctp1tABC.send')
+  const many = capture({ code: 0 })
+  await serverchan.send(serverchan.resolve({ sct: 'sctp999tABC' }), MSG)
+  assert.equal((await many.done()).url, 'https://999.push.ft07.com/send/sctp999tABC.send')
+})
+
+test('serverchan: malformed SC3 key 配置阶段 fail-closed（不发网络请求）', async () => {
+  // 旧 sctp.ftqq.com 拼法（sctp 前缀但无 `<数字>t`）不再被静默接受
+  for (const bad of ['sctp', 'sctpfoo', 'sctp123', 'sctp123ABC', 'sctp123xABC', 'sctp-tABC', 'SCTP1234']) {
+    assert.throws(() => serverchan.resolve({ sct: bad }), /格式无效/, `key=${bad} 应拒绝`)
+  }
 })
 
 test('serverchan: Turbo key 维持 sctapi 域名（G-09 回归锚定）', async () => {
   const cap = capture({ code: 0 })
-  await serverchan.send(serverchan.resolve({ sct: 'SCT123' }), MSG)
+  await serverchan.send(serverchan.resolve({ sct: 'SCT123ABC' }), MSG)
   const seen = await cap.done()
-  assert.equal(seen.url, 'https://sctapi.ftqq.com/SCT123.send')
+  assert.equal(seen.url, 'https://sctapi.ftqq.com/SCT123ABC.send')
 })
 
 test('serverchan: 三别名同时配置出声一次并按 sct 优先（G-09）', async () => {
