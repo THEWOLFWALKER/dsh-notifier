@@ -60,6 +60,67 @@ test('splitByCodePoints：边界语义——空串 []、短文整段、非法步
   assert.deepEqual(splitByCodePoints('abc', 2.9), ['ab', 'c'], '非整数步长向下取整')
 })
 
+test('splitByCodePoints：缺省不启用句末优先——行为与历史逐段等长完全一致', () => {
+  const text = '第一句。第二句。第三句。'
+  const legacy = ['第一句。第', '二句。第三', '句。']
+  assert.deepEqual(splitByCodePoints(text, 5), legacy)
+  assert.deepEqual(splitByCodePoints(text, 5, {}), legacy)
+  assert.deepEqual(splitByCodePoints(text, 5, { preferSentenceBoundary: false }), legacy)
+})
+
+test('splitByCodePoints（句末优先）：切点落在句末标点，句子不被劈成半截', () => {
+  const text = '第一句话。第二句话。第三句话。'
+  const chunks = splitByCodePoints(text, 8, { preferSentenceBoundary: true })
+  assert.deepEqual(chunks, ['第一句话。', '第二句话。', '第三句话。'])
+  assert.equal(chunks.join(''), text)
+})
+
+test('splitByCodePoints（句末优先）：重复标点与右引号并入本句（…… 与 」 不被拆开）', () => {
+  const text = '「真的吗……」她问。好。'
+  const chunks = splitByCodePoints(text, 7, { preferSentenceBoundary: true })
+  assert.deepEqual(chunks, ['「真的吗……」', '她问。好。'])
+  assert.equal(chunks.join(''), text)
+})
+
+test('splitByCodePoints（句末优先）：ASCII 标点须后接空白才算句末（3;14 不误判为句边界）', () => {
+  assert.deepEqual(splitByCodePoints('3;14', 6, { preferSentenceBoundary: true }), ['3;14'])
+  // `!` 后接空格 → 是句末；句末标点后的空白并入本段（下一段不以空格开头）
+  const chunks = splitByCodePoints('Hello world! Next one.', 14, { preferSentenceBoundary: true })
+  assert.deepEqual(chunks, ['Hello world! ', 'Next one.'])
+})
+
+test('splitByCodePoints（句末优先）：无句末标点的长文本退化为等长硬切（段数与旧行为一致）', () => {
+  const text = '🀄'.repeat(4500)
+  const chunks = splitByCodePoints(text, 2000, { preferSentenceBoundary: true })
+  assert.deepEqual(chunks.map((c) => Array.from(c).length), [2000, 2000, 500], '无标点不得改变段数或段长')
+  assert.equal(chunks.join(''), text)
+})
+
+test('splitByCodePoints（句末优先）：属性式——任意句末文本拼接无损、每段预算内、无孤立代理项', () => {
+  const samples = [
+    '你好。我是听雪！你呢？',
+    'a。b！c？d…e；f\n'.repeat(40),
+    '「引用。」她说。'.repeat(30),
+    '🀄。'.repeat(300),
+    '没有标点的长段落'.repeat(60),
+  ]
+  for (const text of samples) {
+    for (const size of [3, 7, 64, 200, 1000]) {
+      const chunks = splitByCodePoints(text, size, { preferSentenceBoundary: true })
+      assert.equal(chunks.join(''), text, `拼接必须无损: size=${size}`)
+      for (const chunk of chunks) {
+        assert.ok(Array.from(chunk).length <= Math.max(size, 1), `块超预算: size=${size}`)
+        assert.equal(LONE_SURROGATE.test(chunk), false, `块含孤立代理项: size=${size}`)
+      }
+    }
+  }
+  // 退化语义与缺省路径一致
+  assert.deepEqual(splitByCodePoints('', 10, { preferSentenceBoundary: true }), [])
+  assert.deepEqual(splitByCodePoints(null, 3, { preferSentenceBoundary: true }), [])
+  assert.deepEqual(splitByCodePoints('abc', 0, { preferSentenceBoundary: true }), ['abc'])
+  assert.deepEqual(splitByCodePoints('abc', -2, { preferSentenceBoundary: true }), ['abc'])
+})
+
 test('segmentText：短文本单段返回且不加前缀（零开销）', () => {
   assert.deepEqual(segmentText('短消息'), ['短消息'])
   assert.deepEqual(segmentText('', {}), [''])
