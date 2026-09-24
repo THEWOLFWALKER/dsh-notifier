@@ -5,6 +5,7 @@ import {
   normalizeAgentLifecyclePayload,
   normalizeSessionEventArgs,
   scopeDiagnosticOf,
+  selectHostEventContext,
 } from '../src/host-events.mjs'
 
 test('host events: documented tuple, explicit envelope, and documented agent envelope normalize', () => {
@@ -23,7 +24,54 @@ test('host events: malformed callback payloads are rejected instead of guessed',
   assert.equal(normalizeAgentLifecyclePayload({ agent: null }), undefined)
 })
 
-test('host events: scoped child registers only host listeners on a feature-detected root context', () => {
+test('host events: the current ctx is the primary target and root is left untouched', () => {
+  const rootCalls = []
+  const root = {
+    on(event, listener, options) { rootCalls.push({ event, options }); return () => {} },
+  }
+  root.root = root
+  const currentCalls = []
+  const ctx = {
+    root,
+    on(event, listener, options) { currentCalls.push({ event, options }); return () => {} },
+  }
+  const registrar = createHostEventRegistrar(ctx)
+  registrar.on('session/event', () => {})
+  assert.equal(rootCalls.length, 0, 'root must not be subscribed while current works')
+  assert.equal(currentCalls.length, 1)
+  assert.deepEqual(currentCalls[0].options, { global: true })
+  assert.equal(registrar.snapshot().context, 'current')
+})
+
+test('host events: a failing current ctx falls back to root once and stays there', () => {
+  const rootCalls = []
+  const root = {
+    on(event, listener, options) { rootCalls.push({ event, options }); return () => {} },
+  }
+  root.root = root
+  let currentCalls = 0
+  const ctx = {
+    root,
+    on() { currentCalls += 1; throw new Error('scoped registration fault') },
+  }
+  const lines = []
+  const registrar = createHostEventRegistrar(ctx, (line) => lines.push(line))
+  const first = registrar.on('session/event', () => {})
+  const second = registrar.on('agent/error', () => {})
+  assert.equal(typeof first, 'function')
+  assert.equal(typeof second, 'function')
+  assert.equal(currentCalls, 1, 'current is only attempted before the sticky fallback')
+  assert.equal(rootCalls.length, 2, 'every later event registers on root')
+  for (const entry of rootCalls) assert.deepEqual(entry.options, { global: true })
+  const snapshot = registrar.snapshot()
+  assert.equal(snapshot.context, 'root')
+  assert.equal(snapshot.events['session/event'].attempts, 1)
+  assert.equal(snapshot.events['session/event'].registered, 1)
+  assert.equal(snapshot.events['session/event'].failures, 1)
+  assert.ok(lines.some((line) => /订阅失败.*session\/event/.test(line)))
+})
+
+test('host events: a tagged scoped child registers host listeners through the root fallback', () => {
   const listeners = {}
   const root = {
     on(event, listener) {
@@ -36,7 +84,7 @@ test('host events: scoped child registers only host listeners on a feature-detec
   const scopedBase = { [scope]: {} }
   const child = Object.create(scopedBase)
   child.root = root
-  child.on = () => { throw new Error('must not use scoped child') }
+  child.on = () => { throw new Error('must not use scoped child registration') }
   assert.equal(scopeDiagnosticOf(child), 'tagged')
   const registrar = createHostEventRegistrar(child)
   const received = []
@@ -49,9 +97,22 @@ test('host events: scoped child registers only host listeners on a feature-detec
   const row = snapshot.events['session/event']
   assert.equal(row.attempts, 1)
   assert.equal(row.registered, 1)
-  assert.equal(row.failures, 0)
+  assert.equal(row.failures, 1, 'the failed current attempt stays observable')
   assert.equal(row.received, 1)
   assert.equal(typeof row.lastAt, 'number')
+})
+
+test('host events: a ctx without ctx.on uses the documented root context', () => {
+  const rootCalls = []
+  const root = {
+    on(event, listener, options) { rootCalls.push({ event, options }); return () => {} },
+  }
+  root.root = root
+  const registrar = createHostEventRegistrar({ root })
+  registrar.on('session/event', () => {})
+  assert.equal(rootCalls.length, 1)
+  assert.deepEqual(rootCalls[0].options, { global: true })
+  assert.equal(registrar.snapshot().context, 'root')
 })
 
 test('host events: a non-Cordis root-shaped service is not used as an event context', () => {
@@ -64,6 +125,14 @@ test('host events: a non-Cordis root-shaped service is not used as an event cont
   registrar.on('session/event', () => {})
   assert.equal(registrar.snapshot().context, 'current')
   assert.equal(local.length, 1)
+})
+
+test('host events: a ctx with neither ctx.on nor a root ctx fails closed', () => {
+  const lines = []
+  const registrar = createHostEventRegistrar({}, (line) => lines.push(line))
+  assert.equal(registrar.on('session/event', () => {}), undefined)
+  assert.deepEqual(registrar.snapshot().events['session/event'], { attempts: 1, registered: 0, failures: 1, received: 0 })
+  assert.ok(lines.some((line) => /无 ctx\.on/.test(line)))
 })
 
 test('host events: registration errors and zero-event diagnostics stay observable without throwing', () => {
@@ -82,24 +151,56 @@ test('host events: registration errors and zero-event diagnostics stay observabl
   assert.ok(idleLines.some((line) => /未收到载荷.*session\/event/.test(line)))
 })
 
+test('host events: a throwing listener is contained to a warning', () => {
+  const listeners = {}
+  const ctx = {
+    on(event, listener) {
+      ;(listeners[event] ??= []).push(listener)
+      return () => {}
+    },
+  }
+  const lines = []
+  const registrar = createHostEventRegistrar(ctx, (line) => lines.push(line))
+  registrar.on('session/event', () => { throw new Error('listener fault') })
+  assert.doesNotThrow(() => listeners['session/event'][0]({ id: 's1' }, { type: 'turn/end' }))
+  assert.equal(registrar.snapshot().events['session/event'].received, 1)
+  assert.ok(lines.some((line) => /事件处理失败.*session\/event/.test(line)))
+})
+
+test('host events: the disposer is passed through only when it is a function', () => {
+  const disposer = () => {}
+  const registrar = createHostEventRegistrar({ on: () => disposer })
+  assert.equal(registrar.on('session/event', () => {}), disposer)
+
+  const noDisposer = createHostEventRegistrar({ on: () => undefined })
+  assert.equal(noDisposer.on('session/event', () => {}), undefined)
+})
+
 test('host events: every host subscription opts into `global` so a scope carrier cannot drop it', () => {
   // DSH dispatches `session/event` through dsh-scope's `scopeTarget`, which admits
   // an untagged listener globally but a TAGGED one only for the dispatch key or its
   // ancestors. Without `global: true` a session whose owner scope is unrelated to
   // this plugin's ctx silently loses its events (upstream issue #16).
   const seen = []
-  const root = {
+  const ctx = {
     on(event, listener, options) {
       seen.push({ event, options })
       return () => {}
     },
   }
-  root.root = root
-  const registrar = createHostEventRegistrar(root)
+  const registrar = createHostEventRegistrar(ctx)
   registrar.on('session/event', () => {})
   registrar.on('agent/error', () => {})
   assert.equal(seen.length, 2)
   for (const entry of seen) {
     assert.deepEqual(entry.options, { global: true }, `${entry.event} must subscribe globally`)
   }
+})
+
+test('host events: selectHostEventContext describes current first, then root, else current', () => {
+  const root = { on() {} }
+  root.root = root
+  assert.equal(selectHostEventContext({ root, on() {} }).source, 'current')
+  assert.equal(selectHostEventContext({ root }).source, 'root')
+  assert.equal(selectHostEventContext({}).source, 'current')
 })
