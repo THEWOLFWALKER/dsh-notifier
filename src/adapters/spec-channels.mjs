@@ -44,6 +44,9 @@ const WPS_WEBHOOK_PATH = '/api/v1/webhook/send'
 function normalizeWpsWebhookHost(raw) {
   let candidate = String(raw ?? '').trim()
   if (candidate === '') return null
+  // PR #34 review finding（v0.11.0）：WPS webhook 的 key 在 URL query 里即完整发送凭证，
+  // 显式 http: 是明文传输风险——直接返回 null，交 validate 的「只允许 https」兜底报错（fail-closed，不静默升级）。
+  if (/^http:\/\//i.test(candidate)) return null
   if (!/^https?:\/\//i.test(candidate)) candidate = `https://${candidate}`
   let parsed = null
   try { parsed = new URL(candidate) } catch { parsed = null }
@@ -62,6 +65,11 @@ function normalizeWpsWebhook(raw) {
   const trimmed = String(raw ?? '').trim()
   if (trimmed === '') {
     throw new NotifyError('wps-bot 未配置：webhook（群机器人完整 webhook 地址，含 ?key=）未填写——在 WPS 协作群添加群机器人后复制', ERROR_CODES.NOT_CONFIGURED)
+  }
+  // PR #34 review finding（v0.11.0）：key 即全部认证，显式 http: 是明文凭证传输——拒绝，
+  // 不静默升级为 https（用户显式输入发生语义变化时 fail-closed 比自动改写更可审计）。
+  if (/^http:\/\//i.test(trimmed)) {
+    throw new NotifyError('wps-bot 未配置：webhook 只允许 https（WPS 官方域名 woa.wps.cn / xz.wps.cn / 365.kdocs.cn）——显式 http: 不接受，请粘贴机器人页面下发的 https 完整地址（含 ?key=）', ERROR_CODES.NOT_CONFIGURED)
   }
   let candidate = trimmed
   if (!/^https?:\/\//i.test(candidate)) candidate = `https://${candidate}`

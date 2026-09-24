@@ -74,6 +74,14 @@ test('G-65 wps-bot：非官方域名 / 不可解析串 / 缺 key 显式拒绝（
   assert.throws(() => resolveOf('wps-bot')({}), /webhook.*未填写/, 'webhook 必填')
 })
 
+test('G-65 wps-bot：显式 http: 拒绝（PR #34 review finding——key 明文传输风险，fail-closed 不静默升级）', () => {
+  assert.throws(() => resolveOf('wps-bot')({ webhook: 'http://woa.wps.cn/api/v1/webhook/send?key=k' }), /只允许 https/, '新 webhook 显式 http 拒绝')
+  assert.throws(() => resolveOf('wps-bot')({ webhookKey: 'a'.repeat(32), webhookHost: 'http://xz.wps.cn' }), /只允许 https/, 'legacy webhookHost 显式 http 拒绝')
+  // https 三官方 host 防误伤回归
+  assert.equal(resolveOf('wps-bot')({ webhook: 'https://woa.wps.cn/api/v1/webhook/send?key=k' }).webhook, 'https://woa.wps.cn/api/v1/webhook/send?key=k')
+  assert.equal(resolveOf('wps-bot')({ webhook: 'https://xz.wps.cn/api/v1/webhook/send?key=k' }).webhook, 'https://xz.wps.cn/api/v1/webhook/send?key=k')
+})
+
 test('G-65 wps-bot：存量兼容——旧双字段 webhookKey+webhookHost 在 preresolve 合成完整 webhook', () => {
   // 仅 webhookKey：走默认 woa.wps.cn + 标准路径
   const legacy = resolveOf('wps-bot')({ webhookKey: 'a'.repeat(32) })
@@ -122,6 +130,25 @@ test('G-65 wps-bot：send 组装——最终 URL 即归一后的 webhook（365 /
     )
     assert.equal(seen[0].url, `https://365.kdocs.cn/woa/api/v1/webhook/send?key=${'a'.repeat(32)}`)
     assert.deepEqual(JSON.parse(seen[0].body), { msgtype: 'text', text: { content: 't\nc' } })
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('G-65 wps-bot：send 组装——markdown 走 {msgtype:"markdown", markdown:{text}}（PR #34 review finding 补精确断言）', async () => {
+  const seen = []
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (url, init) => {
+    seen.push({ url: String(url), body: init.body ? String(init.body) : null })
+    return { ok: true, status: 200, text: async () => '{"result":"ok"}' }
+  }
+  try {
+    await ADAPTERS['wps-bot'].send(
+      resolveOf('wps-bot')({ webhook: `https://woa.wps.cn/api/v1/webhook/send?key=${'a'.repeat(32)}`, msgtype: 'markdown' }),
+      { title: 't', content: 'c' },
+    )
+    assert.equal(seen[0].url, `https://woa.wps.cn/api/v1/webhook/send?key=${'a'.repeat(32)}`)
+    assert.deepEqual(JSON.parse(seen[0].body), { msgtype: 'markdown', markdown: { text: 't\n\nc' } }, 'markdown 用 joinPara 空行分段')
   } finally {
     globalThis.fetch = originalFetch
   }
