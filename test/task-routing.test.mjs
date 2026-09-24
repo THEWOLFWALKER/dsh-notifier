@@ -98,9 +98,9 @@ test('task selection: begin stores a pending selection and get reads it back', (
   const sel = createTaskSelection({ store })
   const eg = { channel: 'telegram', userId: 'u1', chatId: 'u1' }
   const result = sel.begin(eg, ['sid-a', 'sid-b', 'sid-a'], '帮我构建')
-  assert.deepEqual(result, { candidates: ['sid-a', 'sid-b'], originalText: '帮我构建', image: null })
+  assert.deepEqual(result, { candidates: ['sid-a', 'sid-b'], originalText: '帮我构建', attachments: [], image: null })
   assert.equal(sel.has(eg), true)
-  assert.deepEqual(sel.get(eg), { candidates: ['sid-a', 'sid-b'], originalText: '帮我构建', image: null })
+  assert.deepEqual(sel.get(eg), { candidates: ['sid-a', 'sid-b'], originalText: '帮我构建', attachments: [], image: null })
 })
 
 test('task selection: resolving by number clears pending so original text delivers exactly once', () => {
@@ -109,7 +109,7 @@ test('task selection: resolving by number clears pending so original text delive
   const eg = { channel: 'telegram', userId: 'u1', chatId: 'u1' }
   sel.begin(eg, ['sid-a', 'sid-b'], 'msg')
   const resolved = sel.resolve(eg, '2')
-  assert.deepEqual(resolved, { ok: true, sessionId: 'sid-b', originalText: 'msg', image: null })
+  assert.deepEqual(resolved, { ok: true, sessionId: 'sid-b', originalText: 'msg', attachments: [], image: null })
   assert.equal(sel.has(eg), false)
   // 二次消解 = no-pending：原消息不会二次投递
   assert.deepEqual(sel.resolve(eg, '1'), { ok: false, reason: 'no-pending', candidates: [] })

@@ -43,6 +43,52 @@ function sanitizeImage(value) {
   return image
 }
 
+/** 文件附件的脱敏归一（#36）：只留 url 与有界名字/大小，未知字段不透传。 */
+function sanitizeFile(value) {
+  if (!isRecord(value)) return null
+  const url = typeof value.url === 'string' ? value.url.trim() : ''
+  if (url === '') return null
+  const file = { url }
+  const name = typeof value.name === 'string' ? value.name.trim().slice(0, 128) : ''
+  if (name !== '') file.name = name
+  const size = Number(value.size)
+  if (Number.isInteger(size) && size >= 0) file.size = size
+  return file
+}
+
+/**
+ * 待决附件列表归一（#36）：`[{ kind:'image'|'file', image?|file? }]`，单项独立判定，
+ * 未知 kind / 畸形项丢弃（fail-closed）。同时兼容过渡期的裸图片对象入参（旧 `image` 形状）。
+ */
+function sanitizeAttachments(value) {
+  if (isRecord(value) && !Array.isArray(value)) {
+    const legacyImage = sanitizeImage(value)
+    return legacyImage === null ? [] : [{ kind: 'image', image: legacyImage }]
+  }
+  const out = []
+  for (const item of Array.isArray(value) ? value : []) {
+    if (!isRecord(item)) continue
+    if (item.kind === 'image') {
+      const image = sanitizeImage(item.image)
+      if (image !== null) out.push({ kind: 'image', image })
+      continue
+    }
+    if (item.kind === 'file') {
+      const file = sanitizeFile(item.file)
+      if (file !== null) out.push({ kind: 'file', file })
+    }
+  }
+  return out
+}
+
+/** 列出附件的脱敏视图（含旧 `image` 单项字段，供既有调用方继续读首图）。 */
+function attachmentsView(attachments) {
+  return {
+    attachments,
+    image: attachments.find((item) => item.kind === 'image')?.image ?? null,
+  }
+}
+
 /** 非负毫秒数归一（0 回退默认；NaN/负数/缺省回退默认）。 */
 function nonNegativeMs(value, fallback) {
   const n = Number(value)
@@ -128,10 +174,11 @@ export function createTaskSelection(options = {}) {
     if (candidates.length === 0) return undefined
     const originalText = typeof raw.originalText === 'string' ? raw.originalText : ''
     if (originalText === '') return undefined
-    const image = sanitizeImage(raw.image)
+    const stored = sanitizeAttachments(raw.attachments)
+    const attachments = stored.length > 0 ? stored : sanitizeAttachments(raw.image)
     const createdAt = typeof raw.createdAt === 'number' ? raw.createdAt : now()
     const expiresAt = typeof raw.expiresAt === 'number' ? raw.expiresAt : createdAt + ttlMs
-    return { candidates, originalText, image, createdAt, expiresAt }
+    return { candidates, originalText, attachments, createdAt, expiresAt }
   }
 
   /** 过滤仍活跃的候选；全灭返回空数组。 */
@@ -171,25 +218,26 @@ export function createTaskSelection(options = {}) {
      * @param {object} envelope - { channel, userId, chatId? }
      * @param {string[]} candidates - 候选会话 id（去重保序）
      * @param {string} originalText - 触发的原消息（选定后投一次）
-     * @param {object} [image] - 伴生图片附件（可选，选定后随原消息一起投）
-     * @returns {{ candidates: string[], originalText: string, image: object|null } | null}
+     * @param {Array<{kind: 'image'|'file', image?: object, file?: object}>|object} [attachments]
+     *   - 伴生附件（可选，选定后随原消息一起投）；兼容过渡期裸图片对象（旧 `image` 形状）
+     * @returns {{ candidates: string[], originalText: string, attachments: object[], image: object|null } | null}
      *   写入成功返回待决条目；失败返回 null（调用方回退旧行为）
      */
-    begin(envelope, candidates, originalText, image) {
+    begin(envelope, candidates, originalText, attachments) {
       prune()
       const key = keyOf(envelope)
       if (key === null) return null
       const live = liveCandidates(normalizeCandidates(candidates))
       const text = String(originalText ?? '')
       if (live.length === 0 || text === '') return null
-      const imagePart = sanitizeImage(image)
+      const items = sanitizeAttachments(attachments)
       const nowMs = now()
       const entry = { candidates: live, originalText: text, createdAt: nowMs, expiresAt: nowMs + ttlMs }
-      if (imagePart !== null) entry.image = imagePart
+      if (items.length > 0) entry.attachments = items
       // 尽力持久化；durable 失败也照常降级内存态（本模块是单进程暂态，内存态即可闭环）。
       safeSet(key, entry)
       memory.set(key, entry)
-      return { candidates: live, originalText: text, image: imagePart }
+      return { candidates: live, originalText: text, ...attachmentsView(items) }
     },
 
     /** 是否对该信封存在有效待决选择。 */
@@ -207,14 +255,14 @@ export function createTaskSelection(options = {}) {
       if (key === null) return undefined
       const entry = readEntry(key)
       if (entry === undefined) return undefined
-      return { candidates: [...entry.candidates], originalText: entry.originalText, image: entry.image ?? null }
+      return { candidates: [...entry.candidates], originalText: entry.originalText, ...attachmentsView(entry.attachments) }
     },
 
     /**
      * 用编号回复消解待决选择：`text` 为 1..candidates.length 的整数即命中。
      * @param {object} envelope
      * @param {string} text - 用户原样回复（如 '2'）
-     * @returns {{ ok: true, sessionId: string, originalText: string, image: object|null }
+     * @returns {{ ok: true, sessionId: string, originalText: string, attachments: object[], image: object|null }
      *   | { ok: false, reason: 'invalid'|'no-pending', candidates: string[] }}
      *   命中后清掉待决（原消息投递由调用方负责，恰好一次）。
      */
@@ -231,7 +279,12 @@ export function createTaskSelection(options = {}) {
       // 命中：清待决（先删后读，防重入二次命中原消息）。
       if (safeDelete(key)) memory.delete(key)
       else memory.delete(key)
-      return { ok: true, sessionId: entry.candidates[index - 1], originalText: entry.originalText, image: entry.image ?? null }
+      return {
+        ok: true,
+        sessionId: entry.candidates[index - 1],
+        originalText: entry.originalText,
+        ...attachmentsView(entry.attachments),
+      }
     },
 
     /** 撤销当前待决（envelope 维度）。 */

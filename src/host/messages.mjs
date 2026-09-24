@@ -16,7 +16,7 @@
 //     'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif'。
 //
 // 本模块只做三件事，不做 routing / Control Core / HTTP transport：
-//   readAttachments / admitInboundImage / buildRemoteUserMessage。
+//   readAttachments / admitInboundImage|admitInboundFile / buildRemoteUserMessage。
 
 import { randomUUID } from 'node:crypto'
 
@@ -71,19 +71,50 @@ export async function admitInboundImage(attachments, bytes, mediaType, name) {
 }
 
 /**
+ * 把已下载文件字节 admitted 为 durable FileAttachmentRef（#36 的 Host 边界扩展）。
+ * 依据 `packages/attachments/attachment/src/index.ts` 的 AttachmentStore
+ * （`saveFile({ data, name? }) → Promise<FileAttachmentRef>`，与 saveImage 同一 service）：
+ * attachments 缺失 / saveFile 不可用 / reject，一律返回 null——绝不 fallback 回远程 URL
+ * 继续塞进 Session（红线 2.4）。
+ * @param {object|null} attachments - readAttachments(ctx) 产物
+ * @param {Uint8Array} bytes - 有界下载得到的实读字节
+ * @param {string} [name] - 已由调用方 sanitizeFileName 清洗的展示名（空串 = 无名附件）
+ * @returns {Promise<object|null>} FileAttachmentRef，或 null。
+ */
+export async function admitInboundFile(attachments, bytes, name) {
+  if (attachments === null || attachments === undefined) return null
+  if (!(bytes instanceof Uint8Array) || typeof attachments.saveFile !== 'function') return null
+  try {
+    const ref = await attachments.saveFile({
+      data: bytes,
+      ...(name === undefined || name === null || name === '' ? {} : { name }),
+    })
+    return isRecord(ref) && typeof ref.attachmentId === 'string' ? ref : null
+  } catch { return null }
+}
+
+/**
  * 组装 DSH UserMessage V4（source.kind = 'dsh-notifier'，producer-owned）。
- * 图片走 durable image block（{ type:'image', attachment: ref }），不再产 image_url。
- * 纯图（text 为空）不夹带占位 text 块；summary 截断至 CONTEXT_SUMMARY_MAX_CHARS。
- * @param {{ text: string, imageRef?: object|null }} input
+ * 附件走 durable block（image: { type:'image', attachment: ImageAttachmentRef }，
+ * file: { type:'file', attachment: FileAttachmentRef }），不再产 image_url。
+ * 无正文（纯附件）不夹带占位 text 块；summary 截断至 CONTEXT_SUMMARY_MAX_CHARS。
+ * @param {{ text: string, blocks?: object[]|null, imageRef?: object|null }} input
+ *   blocks：已 admitted 的附件块数组（按入站顺序）；imageRef 为过渡期单项形状（无 blocks 时生效）。
  * @returns {{ id: string, role: 'user', content: object[], source: object }}
  */
-export function buildRemoteUserMessage({ text, imageRef = null }) {
+export function buildRemoteUserMessage({ text, blocks = null, imageRef = null }) {
   const realText = String(text ?? '')
-  const hasImage = isRecord(imageRef)
+  const realBlocks = []
+  if (Array.isArray(blocks)) {
+    for (const block of blocks) if (isRecord(block) && typeof block.type === 'string') realBlocks.push(block)
+  } else if (isRecord(imageRef)) {
+    realBlocks.push({ type: 'image', attachment: imageRef })
+  }
   const content = []
   if (realText !== '') content.push({ type: 'text', text: realText })
-  if (hasImage) content.push({ type: 'image', attachment: imageRef })
-  const summary = realText !== '' ? realText : '(图片消息)'
+  content.push(...realBlocks)
+  const fallback = realBlocks.some((block) => block.type === 'file') ? '(附件消息)' : '(图片消息)'
+  const summary = realText !== '' ? realText : fallback
   return {
     id: randomUUID(),
     role: 'user',

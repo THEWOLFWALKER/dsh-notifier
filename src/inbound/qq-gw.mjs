@@ -21,7 +21,7 @@ import { createTokenManager, createRateGate, normalizeTtlMs } from '../adapters/
 import { setBounded, createThrottledWarn } from './_bounded.mjs'
 import { resolveNotifyTargets } from './target-guard.mjs'
 import { buildApprovalAction, parseApprovalAction, buildQuestionAction, parseQuestionAction } from './_contract.mjs'
-import { parseQQImageMessage } from './message.mjs'
+import { parseQQImageMessage, parseQqAttachments } from './message.mjs'
 import { splitByCodePoints } from './segment.mjs'
 import { stringsOf } from '../strings.mjs'
 
@@ -30,6 +30,9 @@ const DEFAULT_API_BASE = 'https://api.sgroup.qq.com'
 const INTENT_GROUP_AND_C2C = 1 << 25
 const INTENT_INTERACTION = 1 << 26 // INTERACTION_CREATE：消息按钮点击回调（v0.8.4 按钮化）
 const CHAT_STATE_MAX = 1024
+/** 纯附件（无正文）占位正文：仅在信封确有附件时使用，投递链会剥离（conversation.mjs）。 */
+const IMAGE_PLACEHOLDER_TEXT = '[图片消息]'
+const FILE_PLACEHOLDER_TEXT = '[文件消息]'
 // 出站单条上限按 Unicode 码点计（非 UTF-16 码元）：文本 2000 / Markdown 3000（官方限制）。
 // 码点语义经 splitByCodePoints 保证——码元切片会把星体平面字符切成孤立代理项（G-22 同根）。
 const QQ_TEXT_MAX_CODEPOINTS = 2000
@@ -119,6 +122,40 @@ function stripMention(content) {
     if (pattern.test(text)) return { text: text.replace(pattern, '').trim(), matched: true }
   }
   return { text: text.trim(), matched: false, mentionLike: /^(@|<@)/.test(text) }
+}
+
+/**
+ * 收集事件 d 负载上的全部附件（#36）：官方 `attachments` 段优先（图片/文件，逐项白名单归一），
+ * 当官方段未给出图片时回落文档假设形状的 `extra` 图片段（真机证据不足，保持过渡支持）。
+ * 任一段形状未知一律丢弃，绝不伪装成文本或控制字段。
+ * @param {object} d - 消息事件负载
+ * @returns {Array<{ kind: 'image'|'file', image?: object, file?: object }>}
+ */
+function collectMessageAttachments(d) {
+  const list = parseQqAttachments(d)
+  if (!list.some((item) => item.kind === 'image')) {
+    const legacy = parseQQImageMessage(d)
+    if (legacy !== null) list.unshift(legacy)
+  }
+  return list
+}
+
+/** 纯附件（无正文）占位正文：有图片用图片占位，否则用文件占位（投递链会剥离）。 */
+const placeholderOf = (attachments) =>
+  (attachments.some((item) => item.kind === 'image') ? IMAGE_PLACEHOLDER_TEXT : FILE_PLACEHOLDER_TEXT)
+
+/**
+ * 信封的附件字段：规范形状 `attachments: []`；同时保留首图 `image` 单项字段（过渡期消费者
+ * 仍读它，见 conversation.mjs::collectAttachments），无正文时附 `kind` 供下游识别纯附件消息。
+ */
+function attachmentFields(attachments, withoutText) {
+  if (attachments.length === 0) return {}
+  const firstImage = attachments.find((item) => item.kind === 'image')
+  return {
+    attachments,
+    ...(firstImage === undefined ? {} : { image: firstImage.image }),
+    ...(withoutText ? { kind: attachments[0].kind } : {}),
+  }
 }
 
 /**
@@ -374,10 +411,10 @@ export function createQqInbound(options = {}) {
         const userId = String(d?.author?.user_openid ?? '')
         const messageId = String(d?.id ?? '')
         const text = String(d?.content ?? '').trim()
-        // QQ's documented C2C image segment is carried by `extra`. Only the shared parser's
-        // known fields survive; a malformed/unknown segment never becomes text or control data.
-        const image = parseQQImageMessage(d)
-        if (messageId === '' || userId === '' || (text === '' && image === null)) return
+        // #36：官方 `attachments` 段为规范来源（图片/文件），`extra` 图片段为其过渡兜底。
+        // 两者都只保留已知字段；malformed/未知形状的项直接丢弃，绝不变成文本或控制数据。
+        const attachments = collectMessageAttachments(d)
+        if (messageId === '' || userId === '' || (text === '' && attachments.length === 0)) return
         setBounded(targetKinds, userId, 'user', CHAT_STATE_MAX, onEvict)
         // v0.7：accept 返回值消费——拒绝/命令回执不再已读不回。
         // msg_id 必带（R5 审查 R5-3-P2-3：C2C 不带 msg_id 走主动消息额度，真机大概率被
@@ -385,8 +422,8 @@ export function createQqInbound(options = {}) {
         const envelope = {
           channel: 'qq', accountId: String(config?.appId ?? ''), userId, chatId: userId, messageId,
           chatType: 'private',
-          text: text || '[图片消息]',
-          ...(image === null ? {} : { image: image.image, ...(text === '' ? { kind: 'image' } : {}) }),
+          text: text || placeholderOf(attachments),
+          ...attachmentFields(attachments, text === ''),
         }
         const result = bus.accept(envelope)
         if (result?.reply !== undefined) {
@@ -407,10 +444,16 @@ export function createQqInbound(options = {}) {
           debug(`群消息 @ 形态未命中白名单，已保留原文（QQ @ 占位真机样本不足，出现即需采样登记）: ${JSON.stringify(String(d?.content ?? '').slice(0, 32))}`)
         }
         const text = mention.text
-        if (messageId === '' || userId === '' || chatId === '' || text === '') return
+        // #36：群 @ 事件与 C2C 同源（官方 `attachments` 段），同样只收已知字段。
+        const attachments = collectMessageAttachments(d)
+        if (messageId === '' || userId === '' || chatId === '' || (text === '' && attachments.length === 0)) return
         setBounded(targetKinds, chatId, 'group', CHAT_STATE_MAX, onEvict)
         // v0.7：群聊拒绝回执发回群（含「请私聊发送 /pair」引导）
-        const result = bus.accept({ channel: 'qq', accountId: String(config?.appId ?? ''), userId, chatId, messageId, chatType: 'group', text })
+        const result = bus.accept({
+          channel: 'qq', accountId: String(config?.appId ?? ''), userId, chatId, messageId, chatType: 'group',
+          text: text || placeholderOf(attachments),
+          ...attachmentFields(attachments, text === ''),
+        })
         if (result?.reply !== undefined) {
           postMessage(chatId, String(result.reply), messageId).catch((error) => {
             warn(`回执发送失败: ${error instanceof Error ? error.message : String(error)}`) // 回执失败不致命

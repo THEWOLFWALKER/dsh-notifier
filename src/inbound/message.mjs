@@ -25,6 +25,10 @@ const isPlainObject = (value) => value !== null && typeof value === 'object' && 
 export const MAX_INBOUND_MEDIA_URL_LENGTH = 2048
 export const MAX_INBOUND_IMAGE_DIMENSION = 100000
 export const MAX_INBOUND_IMAGE_BYTES = 5 * 1024 * 1024
+/** #36：图片与文件统一 5 MiB 上限（owner 决策——两套上限只会制造「图能过文件不能过」的困惑）。 */
+export const MAX_INBOUND_FILE_BYTES = 5 * 1024 * 1024
+/** 附件名长度上界（不可信输入；超长名截断，绝不进宿主/审计面无界增长）。 */
+export const MAX_INBOUND_FILE_NAME_LENGTH = 128
 export const DEFAULT_INBOUND_MEDIA_TIMEOUT_MS = 10000
 
 /** url 精确必须是非空字符串（fail-closed：缺 URL 的附件段不构成有效媒体消息）。 */
@@ -140,6 +144,65 @@ export function normalizeImageAttachment(raw) {
 }
 
 /**
+ * 附件文件名归一（#36）：附件名是完全不可信的输入。
+ *  - 剥离路径分量（`/` 与 Windows `\\`）——`../../etc/passwd` 只留 `passwd`；
+ *  - 剥离 C0/C1 控制字符（防日志注入/终端转义）；
+ *  - `.` / `..` / 纯空白 / 非字符串 → ''（调用方按无名附件处理，绝不编造名字）；
+ *  - 按码点截断到 MAX_INBOUND_FILE_NAME_LENGTH（不产生孤立代理项）。
+ * @param {unknown} value
+ * @returns {string} 安全文件名，或 ''（无可用名）。
+ */
+export function sanitizeFileName(value) {
+  const raw = typeof value === 'string' ? value : ''
+  // eslint-disable-next-line no-control-regex
+  const cleaned = raw.replace(/[\u0000-\u001f\u007f-\u009f]/g, '')
+  const base = cleaned.split(/[\\/]/).pop() ?? ''
+  const trimmed = base.trim()
+  if (trimmed === '' || trimmed === '.' || trimmed === '..') return ''
+  return Array.from(trimmed).slice(0, MAX_INBOUND_FILE_NAME_LENGTH).join('')
+}
+
+/** 附件 URL 归一（与图片同一套 SSRF 硬边界；禁用凭证段，绝不把远程地址当状态值）。 */
+const normalizeAttachmentUrl = (value) => normalizeImageUrl(value)
+
+/**
+ * Produce a bounded, known-field file object；未知 provider 字段一律丢弃。
+ * 文件不限制媒体类型（宿主 FileAttachmentRef 不设白名单），但仍要求显式 http(s) URL。
+ * @param {object} raw
+ * @returns {{ url: string, name?: string, size?: number } | null}
+ */
+export function normalizeFileAttachment(raw) {
+  if (!isPlainObject(raw)) return null
+  const url = normalizeAttachmentUrl(raw.url ?? raw.media_url ?? raw.mediaUrl
+    ?? raw.download_url ?? raw.downloadUrl ?? raw.file_url ?? raw.fileUrl)
+  if (url === '') return null
+  const file = { url }
+  const name = sanitizeFileName(raw.name ?? raw.filename ?? raw.file_name ?? raw.fileName)
+  if (name !== '') file.name = name
+  const size = Number(raw.size)
+  if (Number.isInteger(size) && size >= 0 && size <= MAX_INBOUND_FILE_BYTES) file.size = size
+  return file
+}
+
+/**
+ * 统一附件项归一（信封 `attachments: []` 的单项形状）：
+ * `{ kind:'image', image }` / `{ kind:'file', file }`；未知 kind 或畸形一律 null（fail-closed，
+ * 绝不把未知类型的附件伪装成文本漏进会话路由）。
+ */
+export function normalizeAttachmentItem(raw) {
+  if (!isPlainObject(raw)) return null
+  if (raw.kind === INBOUND_KINDS.image) {
+    const image = normalizeImageAttachment(raw.image)
+    return image === null ? null : { kind: INBOUND_KINDS.image, image }
+  }
+  if (raw.kind === INBOUND_KINDS.file) {
+    const file = normalizeFileAttachment(raw.file)
+    return file === null ? null : { kind: INBOUND_KINDS.file, file }
+  }
+  return null
+}
+
+/**
  * Optional image download primitive for provider bridges. It never persists a binary and only
  * returns bounded metadata. Callers may omit it entirely; malformed URLs, redirects, oversized
  * responses, and timeouts fail closed as `null`.
@@ -180,18 +243,19 @@ export async function downloadInboundImage(url, options = {}) {
 }
 
 /**
- * 有界下载图片字节（Host P0-A：作 durable admission 的输入）。
- * 与 downloadInboundImage 同一套 SSRF/超时/redirect:error/大小口径，但把实读字节
- * 收进内存返回给调用方做 saveImage；上限按实读字节计，不信 Content-Length，
- * 超限立即 cancel（红线 2.4 / 计划 §5.2「上限按实际读取字节计」）。
- * @param {string} url
- * @param {{ fetchImpl?: Function, maxBytes?: number, timeoutMs?: number }} [options]
- * @returns {Promise<{ data: Uint8Array, mediaType: string, size: number } | null>}
+ * 有界字节下载原语（图片与文件共用同一套硬边界）：
+ *  - URL 经 normalizeImageUrl（SSRF 硬边界 + 禁凭证段）；
+ *  - `redirect: 'error'`（不跟随跳转，跳转即失败）；
+ *  - 有限超时（AbortController，缺省 10s，硬上界 60s）；
+ *  - 上限按**实读字节**计（不信 Content-Length，超限立即 cancel），绝不落盘；
+ *  - mediaTypePrefix 非空时要求响应 Content-Type 命中该前缀（图片白名单），空串 = 不限类型（文件）。
+ * 任一环节失败返回 null（fail-closed）。
  */
-export async function downloadInboundImageBytes(url, options = {}) {
+async function downloadBoundedBytes(url, options, mediaTypePrefix) {
   const safeUrl = normalizeImageUrl(url)
   const fetchImpl = options.fetchImpl ?? globalThis.fetch?.bind(globalThis)
-  const maxBytes = Math.min(MAX_INBOUND_IMAGE_BYTES, Math.max(1, Number(options.maxBytes) || MAX_INBOUND_IMAGE_BYTES))
+  const limitBytes = options.limitBytes
+  const maxBytes = Math.min(limitBytes, Math.max(1, Number(options.maxBytes) || limitBytes))
   const timeoutMs = Math.min(60000, Math.max(1, Number(options.timeoutMs) || DEFAULT_INBOUND_MEDIA_TIMEOUT_MS))
   if (safeUrl === '' || typeof fetchImpl !== 'function') return null
   const controller = new AbortController()
@@ -202,7 +266,7 @@ export async function downloadInboundImageBytes(url, options = {}) {
     const declared = Number(response.headers?.get?.('content-length') ?? '')
     if (Number.isFinite(declared) && declared > maxBytes) return null
     const mediaType = String(response.headers?.get?.('content-type') ?? '').split(';', 1)[0].trim().toLowerCase()
-    if (!mediaType.startsWith('image/')) return null
+    if (mediaTypePrefix !== '' && !mediaType.startsWith(mediaTypePrefix)) return null
     const reader = response.body?.getReader?.()
     if (reader === undefined) return null
     const chunks = []
@@ -229,6 +293,31 @@ export async function downloadInboundImageBytes(url, options = {}) {
   } finally {
     clearTimeout(timer)
   }
+}
+
+/**
+ * 有界下载图片字节（Host P0-A：作 durable admission 的输入）。
+ * 上限按实读字节计，不信 Content-Length，超限立即 cancel（红线 2.4 / 计划 §5.2）。
+ * @param {string} url
+ * @param {{ fetchImpl?: Function, maxBytes?: number, timeoutMs?: number }} [options]
+ * @returns {Promise<{ data: Uint8Array, mediaType: string, size: number } | null>}
+ */
+export async function downloadInboundImageBytes(url, options = {}) {
+  const result = await downloadBoundedBytes(url, { ...options, limitBytes: MAX_INBOUND_IMAGE_BYTES }, 'image/')
+  return result === null ? null : { data: result.data, mediaType: result.mediaType, size: result.size }
+}
+
+/**
+ * 有界下载文件字节（#36：作 durable file admission 的输入）。
+ * 与图片同一套 SSRF/redirect/超时/实读字节口径；文件不限 Content-Type
+ * （宿主 FileAttachmentRef 无媒体白名单），但仍是「实读字节 + 上限 + 不落盘」。
+ * @param {string} url
+ * @param {{ fetchImpl?: Function, maxBytes?: number, timeoutMs?: number }} [options]
+ * @returns {Promise<{ data: Uint8Array, mediaType: string, size: number } | null>}
+ */
+export async function downloadInboundFileBytes(url, options = {}) {
+  const result = await downloadBoundedBytes(url, { ...options, limitBytes: MAX_INBOUND_FILE_BYTES }, '')
+  return result === null ? null : { data: result.data, mediaType: result.mediaType, size: result.size }
 }
 
 /**
@@ -315,4 +404,36 @@ export function parseQQImageMessage(eventData) {
     return { kind: INBOUND_KINDS.image, image }
   }
   return null
+}
+
+/**
+ * QQ 官方 `attachments` 段解析（#36）。
+ *
+ * 协议证据状态：`attachments` 是官方 C2C / 群 @ 事件文档列出的已知字段
+ * （见 docs/protocol-preflight/qq-bot.md 事件白名单），但真机样本尚未核验 →
+ * contract-tested，不得标记 real-device-verified。
+ *
+ * 判据（每项独立判定，不合格的项直接丢弃——fail-closed，绝不把未知类型伪装成文本）：
+ *  - 项为记录且 `content_type` 为非空字符串（缺类型 = 形状未知，整项拒绝）；
+ *  - `content_type` 以 `image/` 开头 → image 附件（url + 有界宽高白名单字段）；
+ *  - 其余类型 → file 附件（需显式 http(s) url；文件名经 sanitizeFileName 去路径/控制字符）。
+ * @param {object} eventData - 消息事件的 d 负载
+ * @returns {Array<{ kind: 'image', image: object } | { kind: 'file', file: object }>}
+ */
+export function parseQqAttachments(eventData) {
+  if (!isPlainObject(eventData) || !Array.isArray(eventData.attachments)) return []
+  const out = []
+  for (const raw of eventData.attachments) {
+    if (!isPlainObject(raw)) continue
+    const contentType = typeof raw.content_type === 'string' ? raw.content_type.trim().toLowerCase() : ''
+    if (contentType === '') continue
+    if (contentType.startsWith('image/')) {
+      const image = normalizeImageAttachment({ url: raw.url, width: raw.width, height: raw.height })
+      if (image !== null) out.push({ kind: INBOUND_KINDS.image, image })
+      continue
+    }
+    const file = normalizeFileAttachment({ url: raw.url, name: raw.filename ?? raw.name, size: raw.size })
+    if (file !== null) out.push({ kind: INBOUND_KINDS.file, file })
+  }
+  return out
 }

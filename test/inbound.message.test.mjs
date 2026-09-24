@@ -9,12 +9,18 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import {
   INBOUND_KINDS,
+  MAX_INBOUND_FILE_NAME_LENGTH,
+  downloadInboundFileBytes,
   downloadInboundImage,
+  normalizeAttachmentItem,
+  normalizeFileAttachment,
   normalizeImageAttachment,
   normalizeImageUrl,
   parseQQImageMessage,
+  parseQqAttachments,
   parseExtraSegments,
   normalizeInboundMessage,
+  sanitizeFileName,
 } from '../src/inbound/message.mjs'
 
 const FIXTURE_PATH = fileURLToPath(new URL('./fixtures/qq-c2c-image.json', import.meta.url))
@@ -148,4 +154,103 @@ test('parseQQImageMessage：extra 已解析数组（部分网关预解析）也�
   const parsed = parseQQImageMessage({ extra: [{ type: 'image', image: { url: 'https://y/x.png' } }] })
   assert.ok(parsed !== null)
   assert.equal(parsed.image.url, 'https://y/x.png')
+})
+
+// ---------------------------------------------------------------- #36 官方 attachments 段
+
+test('#36 parseQqAttachments：图片/文件分派，每项独立白名单归一', () => {
+  const parsed = parseQqAttachments({
+    attachments: [
+      { content_type: 'image/png', url: 'https://media.example.test/a.png', width: 800, height: 600, filename: 'a.png', injected: true },
+      { content_type: 'application/pdf', url: 'https://media.example.test/doc.pdf', filename: 'doc.pdf', size: 1024, injected: true },
+    ],
+  })
+  assert.deepEqual(parsed, [
+    { kind: INBOUND_KINDS.image, image: { url: 'https://media.example.test/a.png', width: 800, height: 600 } },
+    { kind: INBOUND_KINDS.file, file: { url: 'https://media.example.test/doc.pdf', name: 'doc.pdf', size: 1024 } },
+  ])
+  assert.equal(JSON.stringify(parsed).includes('injected'), false, '未知 provider 字段不得透传')
+})
+
+test('#36 parseQqAttachments：缺类型/缺 url/非记录/非数组一律不产生附件（fail-closed）', () => {
+  assert.deepEqual(parseQqAttachments({}), [], '无 attachments 字段')
+  assert.deepEqual(parseQqAttachments({ attachments: 'nope' }), [], '非数组')
+  assert.deepEqual(parseQqAttachments(null), [], '非对象')
+  assert.deepEqual(parseQqAttachments({ attachments: [
+    null,
+    { url: 'https://media.example.test/a.png' }, // 缺 content_type：形状未知，整项拒绝
+    { content_type: 'image/png' }, // 缺 url
+    { content_type: 'application/pdf', url: 'http://127.0.0.1/x' }, // 私网 URL 拒绝
+  ] }), [])
+})
+
+test('#36 sanitizeFileName：剥路径分量与控制字符、有界截断、无名归一为空串', () => {
+  assert.equal(sanitizeFileName('doc.pdf'), 'doc.pdf')
+  assert.equal(sanitizeFileName('../../etc/passwd'), 'passwd', '路径分量剥离（含 ../）')
+  assert.equal(sanitizeFileName('a\\b\\c.txt'), 'c.txt', 'Windows 反斜杠同样剥离')
+  assert.equal(sanitizeFileName('bad\u0000name\u001b.txt'), 'badname.txt', '控制字符剥离')
+  assert.equal(sanitizeFileName('  spaced.pdf  '), 'spaced.pdf')
+  assert.equal(sanitizeFileName('..'), '', '.. 不构成名字')
+  assert.equal(sanitizeFileName(''), '')
+  assert.equal(sanitizeFileName(42), '', '非字符串')
+  assert.equal(Array.from(sanitizeFileName('x'.repeat(500))).length, MAX_INBOUND_FILE_NAME_LENGTH, '有界截断')
+})
+
+test('#36 normalizeFileAttachment：需显式安全 URL；名字/大小白名单归一', () => {
+  assert.deepEqual(
+    normalizeFileAttachment({ name: 'doc.pdf', url: 'https://media.example.test/doc.pdf', size: 1024, injected: true }),
+    { url: 'https://media.example.test/doc.pdf', name: 'doc.pdf', size: 1024 },
+  )
+  assert.deepEqual(normalizeFileAttachment({ url: 'https://media.example.test/x' }), { url: 'https://media.example.test/x' }, '无名附件合法')
+  assert.equal(normalizeFileAttachment({ name: 'a.pdf' }), null, '缺 url 拒绝')
+  assert.equal(normalizeFileAttachment({ url: 'javascript:alert(1)' }), null, '非 http(s) 拒绝')
+  assert.equal(normalizeFileAttachment({ url: 'https://user:secret@media.example.test/x' }), null, '带凭证段拒绝')
+  assert.equal(normalizeFileAttachment({ url: 'http://169.254.169.254/latest' }), null, '元数据地址拒绝')
+  assert.equal(normalizeFileAttachment({ url: 'https://media.example.test/x', size: 999 * 1024 * 1024 }).size, undefined, '超上限 size 不透传')
+})
+
+test('#36 normalizeAttachmentItem：已知 kind 归一，未知 kind fail-closed', () => {
+  assert.deepEqual(
+    normalizeAttachmentItem({ kind: 'image', image: { url: 'https://media.example.test/a.png' } }),
+    { kind: INBOUND_KINDS.image, image: { url: 'https://media.example.test/a.png' } },
+  )
+  assert.deepEqual(
+    normalizeAttachmentItem({ kind: 'file', file: { url: 'https://media.example.test/a.pdf', name: 'a.pdf' } }),
+    { kind: INBOUND_KINDS.file, file: { url: 'https://media.example.test/a.pdf', name: 'a.pdf' } },
+  )
+  assert.equal(normalizeAttachmentItem({ kind: 'video', video: { url: 'https://media.example.test/v.mp4' } }), null)
+  assert.equal(normalizeAttachmentItem({ kind: 'file' }), null)
+  assert.equal(normalizeAttachmentItem(null), null)
+})
+
+test('#36 downloadInboundFileBytes：实读字节收内存；不限媒体类型但守 SSRF/超时/上限', async () => {
+  const ok = await downloadInboundFileBytes('https://media.example.test/doc.pdf', {
+    fetchImpl: async () => new Response(new Uint8Array([1, 2, 3]), { headers: { 'content-type': 'application/pdf' } }),
+  })
+  assert.ok(ok !== null)
+  assert.deepEqual([...ok.data], [1, 2, 3])
+  assert.equal(ok.mediaType, 'application/pdf')
+  // 与图片不同：非 image/* 类型不拒绝（宿主 FileAttachmentRef 无媒体白名单）
+  const anyType = await downloadInboundFileBytes('https://media.example.test/blob', {
+    fetchImpl: async () => new Response(new Uint8Array([9]), { headers: { 'content-type': 'application/octet-stream' } }),
+  })
+  assert.ok(anyType !== null)
+  const oversized = await downloadInboundFileBytes('https://media.example.test/big', {
+    maxBytes: 2,
+    fetchImpl: async () => new Response(new Uint8Array([1, 2, 3]), { headers: { 'content-type': 'application/pdf' } }),
+  })
+  assert.equal(oversized, null, '按实读字节计，超限立即失败')
+  const declared = await downloadInboundFileBytes('https://media.example.test/big', {
+    fetchImpl: async () => new Response('', { headers: { 'content-type': 'application/pdf', 'content-length': '99999999' } }),
+  })
+  assert.equal(declared, null, '声明的 Content-Length 超大也必须拒绝')
+  const blocked = await downloadInboundFileBytes('http://127.0.0.1/doc.pdf', {
+    fetchImpl: async () => new Response(new Uint8Array([1]), { headers: { 'content-type': 'application/pdf' } }),
+  })
+  assert.equal(blocked, null, 'SSRF 硬边界：私网/回环地址拒绝')
+  const timedOut = await downloadInboundFileBytes('https://media.example.test/slow.pdf', {
+    timeoutMs: 1,
+    fetchImpl: async (_url, init) => new Promise((_, reject) => init.signal.addEventListener('abort', () => reject(new Error('aborted')))),
+  })
+  assert.equal(timedOut, null, '有限超时')
 })
