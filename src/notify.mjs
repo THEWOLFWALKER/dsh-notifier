@@ -23,6 +23,15 @@ export function createNotifier(ctx, channels, options = {}) {
     try { logger?.warn?.('[dsh-notifier]', ...args) } catch { /* 日志失败绝不致命 */ }
   }
   const routing = options.routing !== undefined ? resolveRouting(options.routing) : resolveRouting()
+  const channelsNow = () => {
+    if (channels !== null && typeof channels === 'object' && typeof channels.snapshot === 'function') {
+      try {
+        const value = channels.snapshot()
+        return Array.isArray(value) ? value : []
+      } catch { return [] }
+    }
+    return Array.isArray(channels) ? channels : []
+  }
   const segment = (options.segment !== null && typeof options.segment === 'object')
     ? options.segment
     : { enabled: true, maxCodepoints: 1200 }
@@ -72,7 +81,7 @@ export function createNotifier(ctx, channels, options = {}) {
   async function notify(channel, msg, sendOptions = {}) {
     const type = typeof channel === 'string' ? channel.trim() : ''
     const normalized = normalizeMessage(msg)
-    const entry = channels.find((item) => item.type === type)
+    const entry = channelsNow().find((item) => item.type === type)
     if (entry === undefined) {
       warn(`渠道 "${type || '(空)'}" 未配置，已跳过推送（可用类型：${Object.keys(ADAPTERS).join('/')}）`)
       const result = channelResult(type || '(空)', 'skipped')
@@ -121,11 +130,12 @@ export function createNotifier(ctx, channels, options = {}) {
       audit(normalized, quietOutcome, { source: sourceExtra.source })
       return quietOutcome
     }
-    if (channels.length === 0) {
+    const currentChannels = channelsNow()
+    if (currentChannels.length === 0) {
       warn('未配置任何已启用渠道，notifyAll 无操作')
       return { ok: false, delivered: [], skipped: [], failed: [] }
     }
-    const targets = routeTargets(routing, channels, normalized)
+    const targets = routeTargets(routing, currentChannels, normalized)
       .filter((target) => filterTypes === null || filterTypes.includes(target.type))
     // v0.6.3 空目标可见化（审查 R1 P1-2）：路由矩阵/分流过滤后目标为空时，原实现
     // delivered/failed/skipped 三空 + ok:true + 零日志——agent 绑定的渠道后来被禁用/
@@ -135,7 +145,7 @@ export function createNotifier(ctx, channels, options = {}) {
       const hint = filterTypes !== null
         ? `分流过滤（channelTypes: [${filterTypes.join(', ')}]）后无目标`
         : '路由矩阵（routing 配置）未命中任何已启用渠道'
-      warn(`notifyAll 目标为空：${hint}（可用渠道：${channels.map((entry) => entry.type).join('/') || '无'}）`)
+      warn(`notifyAll 目标为空：${hint}（可用渠道：${currentChannels.map((entry) => entry.type).join('/') || '无'}）`)
       const emptyOutcome = { ok: true, delivered: [], skipped: ['(no-targets)'], failed: [] }
       audit(normalized, emptyOutcome, { source: sourceExtra.source })
       return emptyOutcome
@@ -176,7 +186,7 @@ export function createNotifier(ctx, channels, options = {}) {
     notify,
     notifyAll,
     flush,
-    channelCount: channels.length,
-    channels: channels.map((entry) => entry.type),
+    get channelCount() { return channelsNow().length },
+    get channels() { return channelsNow().map((entry) => entry.type) },
   }
 }

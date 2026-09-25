@@ -72,7 +72,7 @@ function apiStatusOf(error) {
  *             stop: () => Promise<void>,
  *             get port(): number | null }}
  */
-export function createAdminServer({ api, verifyToken, host = '127.0.0.1', port = 8104, ui = '', events = null, heartbeatMs = DEFAULT_HEARTBEAT_MS, allowedOrigins = [], allowedHosts = [], logger } = {}) {
+export function createAdminServer({ api, verifyToken, verifyLaunchTicket = null, host = '127.0.0.1', port = 8104, ui = '', events = null, heartbeatMs = DEFAULT_HEARTBEAT_MS, allowedOrigins = [], allowedHosts = [], logger } = {}) {
   const warn = (message) => {
     // stderr 双写（R5 审查 R5-2-P1-2：与 api.mjs 同款纪律，web profile 下 logger 不落 stdout）
     try { logger?.warn?.('[dsh-notifier/admin:server]', message) } catch { /* 日志失败绝不致命 */ }
@@ -130,6 +130,14 @@ export function createAdminServer({ api, verifyToken, host = '127.0.0.1', port =
   // 路由表（段匹配：':name' 匹配任意非空单段；先收集同路径全部方法再分派 → 405 可判定）。
   const routes = [
     { method: 'GET', segments: [], html: true, handler: () => htmlPage },
+    { method: 'POST', segments: ['api', 'auth', 'exchange-ticket'], public: true, handler: ({ body }) => {
+      if (typeof verifyLaunchTicket !== 'function' || verifyLaunchTicket(body?.ticket) !== true) {
+        const error = new Error('启动票据无效或已过期')
+        error.status = 401
+        throw error
+      }
+      return { accepted: true }
+    } },
     { method: 'GET', segments: ['api', 'overview'], handler: () => api.overview() },
     { method: 'GET', segments: ['api', 'bindings'], handler: () => api.getBindings() },
     { method: 'PUT', segments: ['api', 'bindings'], handler: ({ body }) => api.putBindings(body) },
@@ -333,7 +341,8 @@ export function createAdminServer({ api, verifyToken, host = '127.0.0.1', port =
     const segments = pathname === '/' ? [] : pathname.slice(1).split('/').map(decodeSegment)
     const { allowed, matched } = matchRoute(method, segments)
 
-    if (segments[0] === 'api' && !authorized(request)) {
+    const publicRoute = matched?.route?.public === true
+    if (segments[0] === 'api' && !publicRoute && !authorized(request)) {
       return respond.json(401, { error: '鉴权失败：缺少或错误的 Bearer token' })
     }
     if (matched === null) {
@@ -362,7 +371,7 @@ export function createAdminServer({ api, verifyToken, host = '127.0.0.1', port =
     try {
       result = await matched.route.handler({ params: matched.params, body, request })
     } catch (error) {
-      const status = apiStatusOf(error)
+      const status = apiStatusOf(error) ?? (Number.isInteger(error?.status) ? error.status : null)
       if (status !== null) return respond.json(status, { error: String(error.message ?? '') })
       warn(`api 处理异常: ${error instanceof Error ? error.message : String(error)}`)
       return respond.json(500, { error: '内部错误' }) // 堆栈只进日志，绝不回给客户端

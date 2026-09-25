@@ -406,8 +406,8 @@ export function createAdminApi(options = {}) {
     return yamlOutboundOf()
   }
 
-  /** admin 自有出站键 `admin:channel:<type>:outbound` 是否存在（零配置首访键域）。 */
-  const hasAdminOutbound = (type) => safeGet(`admin:channel:${type}:outbound`) !== undefined
+  /** v0.12 canonical outbound key; old admin:* remains compatibility fallback. */
+  const hasAdminOutbound = (type) => safeGet(`channel:${type}:outbound`) !== undefined || safeGet(`admin:channel:${type}:outbound`) !== undefined
 
   /** registry.isActive 防御包装：缺失/抛错一律 false。 */
   const isActiveOf = (id) => {
@@ -976,7 +976,7 @@ export function createAdminApi(options = {}) {
           }
         }
         // 零配置首访：出站行读取优先级 = admin:channel:<type>:outbound → 非双域 <type>:account → YAML
-        const adminOutbound = plainObjectOf(safeGet(`admin:channel:${row.type}:outbound`))
+        const adminOutbound = plainObjectOf(safeGet(`channel:${row.type}:outbound`)) ?? plainObjectOf(safeGet(`admin:channel:${row.type}:outbound`))
         const yamlConfig = plainObjectOf(yamlTable[row.type]) ?? {}
         const account = DUAL_INBOUND_DOMAIN.has(row.type)
           ? {}
@@ -1488,7 +1488,7 @@ export function createAdminApi(options = {}) {
       // 读取最新合并配置（当前 YAML 原始行 ⊕ 当前 admin:channel:<type>:outbound）——
       // raw 行剔除 type/enabled 元键，runChannelTest 内部自行 resolveEnvRefs + adapter.resolve。
       const rawTable = yamlRawOf()
-      const adminOutbound = plainObjectOf(safeGet(`admin:channel:${type}:outbound`))
+      const adminOutbound = plainObjectOf(safeGet(`channel:${type}:outbound`)) ?? plainObjectOf(safeGet(`admin:channel:${type}:outbound`))
       const rawRow = plainObjectOf(rawTable[type]) ?? {}
       const { type: _dropType, enabled: _dropEnabled, ...yamlRaw } = rawRow
       const merged = adminOutbound !== null ? { ...yamlRaw, ...adminOutbound } : yamlRaw

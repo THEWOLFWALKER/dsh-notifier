@@ -221,7 +221,34 @@ function readFragmentToken() {
     return ''
   } catch (e) { return '' }
 }
-/** 验证前即清地址栏 fragment：token 不停留在历史/书签/分享里。 */
+/** Native one-time launch ticket. */
+function readFragmentTicket() {
+  try {
+    var h = window.location && typeof window.location.hash === 'string' ? window.location.hash : ''
+    if (h.length < 2 || h.charAt(0) !== '#') return ''
+    var parts = h.slice(1).split('&')
+    for (var i = 0; i < parts.length; i += 1) {
+      var eq = parts[i].indexOf('=')
+      if (eq <= 0) continue
+      if (parts[i].slice(0, eq) === 'ticket') {
+        var v = decodeURIComponent(parts[i].slice(eq + 1))
+        return v && v.trim() ? v.trim() : ''
+      }
+    }
+    return ''
+  } catch (e) { return '' }
+}
+function exchangeLaunchTicket(ticket) {
+  return fetch('/api/auth/exchange-ticket', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ticket: ticket }),
+  }).then(function (res) {
+    if (!res.ok) throw new Error('启动票据无效或已过期')
+    return res.json()
+  })
+}
+/** 验证前即清地址栏 fragment。 */
 function clearFragment() {
   try {
     if (window.history && typeof window.history.replaceState === 'function') {
@@ -1651,8 +1678,17 @@ function init() {
   renderEntryPoint()
   // 零配置首访：fragment 启动凭证（#token=...）——读到即清地址栏，候选只进内存，
   // 随后的 loadAll/SSE 用它验证；成功才写 sessionStorage，401 回解锁门并给出可执行提示。
+  var ticket = readFragmentTicket()
   var launch = readFragmentToken()
-  if (launch) {
+  if (ticket) {
+    clearFragment()
+    exchangeLaunchTicket(ticket).then(function () {
+      flash('已通过 DSH 一次性启动票据打开高级管理台；敏感写操作仍使用原管理台会话鉴权。', 'ok')
+    }).catch(function (e) {
+      gateReason = errText(e)
+      showGate(gateReason)
+    })
+  } else if (launch) {
     clearFragment()
     setCandidateToken(launch)
     gateReason = '启动链接中的凭证无效或已过期（链接仅在打印它的进程内有效）。请从终端重新复制 token 输入。'

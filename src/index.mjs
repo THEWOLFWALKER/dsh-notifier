@@ -41,11 +41,22 @@ import { createAdminServer } from './admin/server.mjs'
 import { ADMIN_UI_HTML } from './admin/ui.mjs'
 import { createScanHandlers } from './admin/scan.mjs'
 import { runChannelTest } from './health.mjs'
+import { createOutboundSource } from './runtime/outbound-source.mjs'
+import { createSurfaceRevision } from './control-surface/revision.mjs'
+import { createSurfaceActivity } from './control-surface/activity.mjs'
+import { createSurfaceHealth } from './control-surface/health.mjs'
+import { createOutboundConfigService } from './control-surface/outbound-config.mjs'
+import { createChannelProjection } from './control-surface/channels.mjs'
+import { createTaskProjection } from './control-surface/tasks.mjs'
+import { createQuestionProjection } from './control-surface/questions.mjs'
+import { createLaunchTickets } from './control-surface/launch-ticket.mjs'
+import { createControlSurfaceService } from './control-surface/service.mjs'
+import { registerControlSurfaceRpc } from './control-surface/rpc.mjs'
 // lang 文案表：入站回执 / 晨报标题等手机可见文案取词（未知 lang 已在 resolveConfig 归一回落 zh）
 import { stringsOf } from './strings.mjs'
 
 export const name = 'dsh-notifier'
-export const inject = ['tools', 'agents']
+export const inject = ['tools', 'agents', 'connection']
 
 /** 返回已解析配置（供测试与其它插件复用）。 */
 export function apply(ctx, config = {}) {
@@ -194,8 +205,30 @@ export function apply(ctx, config = {}) {
     adminEnabled,
     warn,
   })
-  resolved.channels = overlay.channels
+  const outboundSource = createOutboundSource(overlay.channels)
+  resolved.channels = outboundSource.snapshot()
   const testRawConfigOf = overlay.testRawConfigOf
+
+  const surfaceRevision = createSurfaceRevision()
+  const surfaceActivity = createSurfaceActivity()
+  const surfaceHealth = createSurfaceHealth()
+  const launchTickets = createLaunchTickets()
+  let adminListenInfo = null
+  let surfaceAdminApi = null
+
+  const outboundConfigService = createOutboundConfigService({
+    store,
+    yamlRows: yamlRowOf,
+    source: outboundSource,
+    adminEnabled,
+    onChange: (topic) => surfaceRevision.touch(topic),
+    onAudit: (topic, detail) => surfaceActivity.record('configuration', topic, {
+      channel: detail?.type,
+      saved: detail?.saved === true,
+      deleted: detail?.deleted === true,
+      hotApplied: detail?.applied === true,
+    }),
+  })
 
   // v0.4.0 通知事件 hub（A 路线「管理台通知页」）：admin 开启时 notifier.onSend 旁路进
   // hub，GET /api/events 以 SSE 实时推给浏览器（系统通知数据源）。admin 关闭零开销——
@@ -208,10 +241,15 @@ export function apply(ctx, config = {}) {
   const onSend = composeOnSend([
     ledger === null ? null : (record) => ledger.append(record),
     eventHub === null ? null : (record) => eventHub.publish(record),
+    (record) => {
+      surfaceHealth.recordSend(record)
+      surfaceActivity.recordDelivery(record)
+      surfaceRevision.touch('delivery')
+    },
     emitSend,
   ])
 
-  const notifier = createNotifier(ctx, resolved.channels, { segment: resolved.segment, routing: resolved.routing, onSend })
+  const notifier = createNotifier(ctx, outboundSource, { segment: resolved.segment, routing: resolved.routing, onSend })
 
   const disposers = []
 
@@ -322,7 +360,7 @@ export function apply(ctx, config = {}) {
   const disposeTool = registerNotifyTool(ctx, notifier, {
     rateLimitPerMinute: resolved.toolRateLimitPerMinute,
     router,
-    channelTypes: () => resolved.channels.map((entry) => entry.type),
+    channelTypes: () => outboundSource.types(),
   })
   if (disposeTool != null) disposers.push(disposeTool)
   const disposeTestTool = registerNotifyTestTool(ctx, notifier, { rateLimitPerMinute: resolved.toolRateLimitPerMinute, strings })
@@ -678,6 +716,65 @@ export function apply(ctx, config = {}) {
     warn('approval 已配置但没有任何入站通道凭证：远程审批未启动。请先配置任一通道（如 inbound.telegram.botToken 或扫码落盘凭证），启动后经 /pair 配对即可使用')
   }
 
+  // v0.12 Native Control Surface. Existing projections remain the only authorities.
+  const surfaceTasks = createTaskProjection({
+    getTasks: () => {
+      try {
+        return tasksSnapshot({ ctx, registry, router, channelTypes: outboundSource.types(), attentionOf })
+      } catch {
+        return { count: 0, activitySorted: false, tasks: [] }
+      }
+    },
+  })
+  const surfaceQuestions = createQuestionProjection({
+    getQuestions: () => questionsBridge?.adminPending?.() ?? [],
+    settle: (payload) => questionsBridge?.adminSettle?.(payload) ?? { ok: false, reason: 'not_available', message: '问题桥未装配' },
+  })
+  const surfaceChannels = {
+    list: () => createChannelProjection({
+      outboundSource,
+      outboundConfig: outboundConfigService,
+      adminApi: surfaceAdminApi,
+      health: surfaceHealth,
+    }).list(),
+    get: (type) => createChannelProjection({
+      outboundSource,
+      outboundConfig: outboundConfigService,
+      adminApi: surfaceAdminApi,
+      health: surfaceHealth,
+    }).get(type),
+  }
+  const surfaceService = createControlSurfaceService({
+    revision: surfaceRevision,
+    channels: surfaceChannels,
+    outboundConfig: outboundConfigService,
+    saveInbound: async (type, patch) => {
+      if (typeof surfaceAdminApi?.putInboundChannel !== 'function') {
+        const error = new Error('入站配置写入能力不可用')
+        error.code = 'not-supported'
+        throw error
+      }
+      return surfaceAdminApi.putInboundChannel(type, patch)
+    },
+    channelTest: (type, raw) => runChannelTest({ type, rawConfig: raw, strings }),
+    tasks: surfaceTasks,
+    questions: surfaceQuestions,
+    activity: surfaceActivity,
+    health: surfaceHealth,
+    launchTickets,
+    adminLocation: () => adminListenInfo,
+  })
+  try {
+    const disposeSurfaceRpc = registerControlSurfaceRpc(ctx, surfaceService)
+    if (typeof disposeSurfaceRpc === 'function') disposers.push(() => { try { disposeSurfaceRpc() } catch {} })
+  } catch (error) {
+    warn('Native Control Surface RPC 装配失败，已降级为 Standalone: ' + (error instanceof Error ? error.message : String(error)))
+  }
+  disposers.push(() => {
+    surfaceRevision.dispose()
+    launchTickets.dispose()
+  })
+
   // v0.3.3 Web 管理台装配（设计稿 §5 + §0.5-6）：admin.enabled 开启时起 HTTP 壳 + API
   // 函数层 + 扫码流机。admin 缺省 false → 整块零执行，存量用户行为逐字节不变（§6 兼容红线）。
   // 军规：管理台起不来只 warn 绝不弄崩宿主插件（对齐「空配置绝不弄崩启动」家训）。
@@ -704,8 +801,8 @@ export function apply(ctx, config = {}) {
         registry,
         store,
         notifier,
-        channelsEnabled: () => resolved.channels.map((entry) => entry.type),
-        outboundConfigs: () => Object.fromEntries(resolved.channels.map((entry) => [entry.type, entry.config])),
+        channelsEnabled: () => outboundSource.types(),
+        outboundConfigs: () => Object.fromEntries(outboundSource.snapshot().map((entry) => [entry.type, entry.config])),
         // 零配置首访：channelTest 支持第二参 rawConfig——testOutboundChannel 现场合并
         // 「当前 YAML + 当前 state 出站键」后传入，保存后无需重启即可真实测试；
         // 旧 testChannel(type) 单参路径不变，仍用启动快照 testRawConfigOf。
@@ -734,6 +831,21 @@ export function apply(ctx, config = {}) {
         webLocal: 'available', // 管理台本机回环（此 API 自身已在本机运行）
         imageInput: conversationRouterActive ? 'available' : 'unknown', // 图片入站随会话路由装配
       })
+      surfaceAdminApi = adminApi
+      adminApi.putOutboundChannel = (type, cfg) => outboundConfigService.save(type, cfg)
+      adminApi.deleteOutboundChannel = (type) => outboundConfigService.remove(type)
+      adminApi.testOutboundChannel = async (type) => {
+        const raw = outboundConfigService.raw(type)
+        if (raw === null || Object.keys(raw).length === 0) {
+          const error = new Error('渠道未配置')
+          error.status = 501
+          throw error
+        }
+        const result = await runChannelTest({ type, rawConfig: raw, strings })
+        surfaceHealth.recordTest(type, result)
+        surfaceRevision.touch('health')
+        return result
+      }
       // v0.7：接通配对审计晚绑定（inbound 阶段积压的事件此刻转发 admin-audit.jsonl）
       try {
         pairingAuditSink = (action, detail) => adminApi.appendAudit(action, detail)
@@ -742,6 +854,7 @@ export function apply(ctx, config = {}) {
       const adminServer = createAdminServer({
         api: adminApi,
         verifyToken,
+        verifyLaunchTicket: (ticket) => launchTickets.consume(ticket),
         host: '127.0.0.1', // 红线：永不绑公网（§0.5-6，config.mjs 已写死不可配）
         port: resolved.admin.port,
         ui: ADMIN_UI_HTML,
@@ -750,6 +863,7 @@ export function apply(ctx, config = {}) {
       })
       adminServer.start()
         .then(({ port, address }) => {
+          adminListenInfo = { port, address }
           // mnt 批 1：就绪行永远给出 URL/端口/token 获取方式（不再出现「重启后不知 token 从哪来」）
           const acquireHint = tokenMode === 'explicit'
             ? 'token 用 YAML 显式配置的 admin.token'
@@ -781,10 +895,10 @@ export function apply(ctx, config = {}) {
     return disposeAll(disposers)
   })
 
-  if (resolved.channels.length === 0) {
-    warn(`未配置任何可用渠道（已跳过 ${resolved.skipped.length} 个配置项），事件推送与 notify 工具将无操作；请在 profile 的 cordis.patch.yml 配置 channels`)
+  if (outboundSource.types().length === 0) {
+    warn(`未配置任何可用渠道（已跳过 ${resolved.skipped.length} 个配置项），事件推送与 notify 工具将无操作；可在 DSH Native Control Surface 或 profile 配置 channels`)
   } else {
-    warn(`已启用渠道：${resolved.channels.map((entry) => entry.type).join('、')}`)
+    warn(`已启用渠道：${outboundSource.types().join('、')}`)
   }
 
   return resolved
