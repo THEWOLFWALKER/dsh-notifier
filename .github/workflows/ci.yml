@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, master]
+    branches: [main, master, dev]
   pull_request:
 
 jobs:
@@ -33,3 +33,34 @@ jobs:
           node -e "const p=require('./package.json'); const deps=Object.keys(p.dependencies??{}); if(deps.length>0){console.error('发现运行时依赖:',deps);process.exit(1)} console.log('OK: 零运行时依赖')"
       - name: Regenerate channel matrix (check README drift)
         run: node scripts/gen-channel-matrix.mjs --check
+
+  client:
+    # 浏览器产物 `lib/client.js` 是 generated + committed（消费方不构建已发布包）。
+    # 这个 job 重放构建并逐字节比对，专门抓「改了 plugin-src 忘了重建 / 重建了忘了提交」的漂移。
+    # 它是本仓库唯一需要 npm install 的地方：esbuild 是 build-only devDependency，
+    # test job 仍然零安装直跑 node --test。
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # --no-package-lock：项目策略禁止 lockfile（Node 不做版本锁定，esbuild 已在 package.json 精确钉版本）
+      - name: Install build-only devDependency
+        run: npm install --no-package-lock --ignore-scripts
+      - name: Fail if a lockfile appeared
+        shell: bash
+        run: |
+          if [ -f package-lock.json ]; then echo "package-lock.json must not exist after install"; exit 1; fi
+          echo "OK: no lockfile"
+      - name: Rebuild the browser artifact and fail on drift
+        shell: bash
+        run: |
+          npm run build:client
+          if ! git diff --exit-code -- lib/client.js; then
+            echo "lib/client.js is stale: run \`npm run build:client\` and commit the artifact"
+            exit 1
+          fi
+          echo "OK: lib/client.js matches a fresh build"
+      - name: Verify the browser artifact contract
+        run: npm run verify:client

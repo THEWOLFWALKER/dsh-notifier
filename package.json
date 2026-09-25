@@ -8,6 +8,7 @@
     ".": "./src/plugin-entry.mjs",
     "./internal": "./src/index.mjs",
     "./testing": "./src/testing.mjs",
+    "./client": "./lib/client.js",
     "./types": {
       "types": "./types/index.d.ts",
       "default": "./types/index.d.ts"
@@ -18,6 +19,7 @@
     "src",
     "test",
     "types",
+    "lib/client.js",
     "scripts/channel-login.mjs",
     "scripts/channel-selfcheck.mjs",
     "scripts/gen-channel-matrix.mjs",
@@ -37,7 +39,12 @@
   ],
   "scripts": {
     "test": "node --test \"test/*.test.mjs\" \"test/*.spec.mjs\"",
-    "verify:release": "node scripts/verify-release.mjs"
+    "verify:release": "node scripts/verify-release.mjs",
+    "build:client": "node plugin-src/client/build.mjs",
+    "verify:client": "node scripts/verify-client.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.9"
   },
   "dshQuality": {
     "testCount": 1816
@@ -45,6 +52,16 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-slots",
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-sidebar"
+      ]
     }
   },
   "peerDependencies": {
