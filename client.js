@@ -191,6 +191,9 @@ window.__ModuleLoader__.load({
       let waitAbort = null
       let fallbackTimer = null
       let disposed = false
+      // v0.12.1（P1-13）：同一资源只接受最新一代请求的响应，避免迟到数据覆盖当前视图。
+      const generations = { home: 0, channels: 0, channel: 0, tasks: 0, activity: 0 }
+      let paused = false
 
       const emit = (patch) => {
         snapshot = Object.freeze({ ...snapshot, ...patch })
@@ -205,38 +208,70 @@ window.__ModuleLoader__.load({
       }
 
       async function loadHome() {
+        const generation = ++generations.home
         try {
           const value = await rpc.call('surface.home')
+          if (generation !== generations.home) return value
           emit({ home: value, error: null, revision: Math.max(snapshot.revision, Number(value?.revision ?? 0)) })
           return value
         } catch (error) {
+          if (generation !== generations.home) return null
           setError(error)
           throw error
         }
       }
       async function loadChannels() {
-        const value = await rpc.call('channels.list')
-        emit({ channels: value, error: null })
-        updateRevision(value?.revision)
-        return value
+        const generation = ++generations.channels
+        try {
+          const value = await rpc.call('channels.list')
+          if (generation !== generations.channels) return value
+          emit({ channels: value, error: null })
+          updateRevision(value?.revision)
+          return value
+        } catch (error) {
+          if (generation !== generations.channels) return null
+          throw error
+        }
       }
       async function loadChannel(type) {
-        const value = await rpc.call('channels.get', { type })
-        emit({ channel: value, error: null })
-        updateRevision(value?.revision)
-        return value
+        const generation = ++generations.channel
+        try {
+          const value = await rpc.call('channels.get', { type })
+          if (generation !== generations.channel) return value
+          if (snapshot.view.kind !== 'channel' || snapshot.view.type !== type) return value
+          emit({ channel: value, error: null })
+          updateRevision(value?.revision)
+          return value
+        } catch (error) {
+          if (generation !== generations.channel) return null
+          throw error
+        }
       }
       async function loadTasks() {
-        const value = await rpc.call('tasks.list')
-        emit({ tasks: value, error: null })
-        updateRevision(value?.revision)
-        return value
+        const generation = ++generations.tasks
+        try {
+          const value = await rpc.call('tasks.list')
+          if (generation !== generations.tasks) return value
+          emit({ tasks: value, error: null })
+          updateRevision(value?.revision)
+          return value
+        } catch (error) {
+          if (generation !== generations.tasks) return null
+          throw error
+        }
       }
       async function loadActivity() {
-        const value = await rpc.call('activity.list', { limit: 100 })
-        emit({ activity: value, error: null })
-        updateRevision(value?.revision)
-        return value
+        const generation = ++generations.activity
+        try {
+          const value = await rpc.call('activity.list', { limit: 100 })
+          if (generation !== generations.activity) return value
+          emit({ activity: value, error: null })
+          updateRevision(value?.revision)
+          return value
+        } catch (error) {
+          if (generation !== generations.activity) return null
+          throw error
+        }
       }
       async function refreshCurrent() {
         if (disposed) return
@@ -294,18 +329,18 @@ window.__ModuleLoader__.load({
         return rpc.call('standalone.createLaunch')
       }
       function navigate(view) {
+        // v0.12.1（P2-10）：导航只负责切视图；目标视图的 mount effect 是唯一加载 owner。
         emit({ view, error: null })
-        void refreshCurrent()
       }
       function startWait() {
-        if (disposed || waitAbort !== null) return
+        if (disposed || paused || waitAbort !== null) return
         waitAbort = new AbortController()
         const signal = waitAbort.signal
         const loop = async () => {
-          while (!disposed && !signal.aborted) {
+          while (!disposed && !paused && !signal.aborted) {
             try {
               const value = await rpc.call('surface.wait', { after: snapshot.revision, timeoutMs: 25_000 }, signal)
-              if (signal.aborted || disposed) break
+              if (signal.aborted || disposed || paused) break
               if (Number(value?.revision ?? 0) > snapshot.revision) {
                 updateRevision(value.revision)
                 await refreshCurrent()
@@ -320,22 +355,43 @@ window.__ModuleLoader__.load({
           if (waitAbort?.signal === signal) waitAbort = null
         })
       }
+      function resumeWait() {
+        if (!paused) return
+        paused = false
+        startWait()
+      }
+      function setActive(active) {
+        const nextPaused = !active
+        if (disposed || nextPaused === paused) return
+        if (nextPaused) {
+          paused = true
+          waitAbort?.abort()
+          waitAbort = null
+        } else {
+          resumeWait()
+          void refreshCurrent()
+        }
+      }
       function dispose() {
         disposed = true
+        paused = true
         waitAbort?.abort()
         waitAbort = null
         if (fallbackTimer !== null) clearInterval(fallbackTimer)
         listeners.clear()
       }
 
-      fallbackTimer = setInterval(() => { void refreshCurrent() }, 30_000)
+      // v0.12.1（P2-11）：页面不可见时不继续定时刷新。
+      fallbackTimer = setInterval(() => { if (!paused && !disposed) void refreshCurrent() }, 30_000)
 
       return Object.freeze({
         getSnapshot: () => snapshot,
         subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener) },
         loadHome, loadChannels, loadChannel, loadTasks, loadActivity,
         refreshCurrent, saveChannel, testChannel, settleQuestion, createStandaloneLaunch,
-        navigate, startWait, dispose,
+        navigate, startWait, setActive, dispose,
+        // v0.12.1（P1-09）：视图必须能把业务失败写入统一错误出口。
+        reportError(error) { setError(error ?? null) },
       })
     }
 
@@ -516,8 +572,8 @@ window.__ModuleLoader__.load({
     function launchAdvancedConsole(controller, t, windowObject = window) {
       const popup = windowObject.open('about:blank', '_blank')
       if (!popup) return { opened: false }
-      try { popup.opener = null } catch {}
-      try { popup.document.title = 'dsh-notifier' } catch {}
+      try { popup.opener = null } catch (error) { void error }
+      try { popup.document.title = 'dsh-notifier' } catch (error) { void error }
       void controller.createStandaloneLaunch().then(result => {
         if (result?.available === true && typeof result.url === 'string' && result.url !== '') {
           popup.location.replace(result.url)
@@ -532,7 +588,7 @@ window.__ModuleLoader__.load({
 
     function HomeView({ ctx, controller, state, t }) {
       const home = state.home
-      useEffect(() => { if (home === null) void controller.loadHome().catch(() => {}) }, [])
+      useEffect(() => { void controller.loadHome().catch(error => controller.reportError(error)) }, [])
       const openAdvanced = () => {
         launchAdvancedConsole(controller, t)
       }
@@ -645,12 +701,12 @@ window.__ModuleLoader__.load({
 
     function ChannelsView({ ctx, controller, state, t }) {
       const data = state.channels
-      useEffect(() => { if (data === null) void controller.loadChannels().catch(() => {}) }, [])
+      useEffect(() => { void controller.loadChannels().catch(error => controller.reportError(error)) }, [])
       const [setup, setSetup] = useState(state.view.setup === true)
       const channels = data?.channels ?? []
       if (setup) return h('div', { className: 'dn-page' },
         h(PageHead, { title: t('setupChannel') }),
-        h(SetupFlow, { ctx, controller, channels, t, onDone: () => { setSetup(false); void controller.loadChannels().catch(() => {}) } }))
+        h(SetupFlow, { ctx, controller, channels, t, onDone: () => { setSetup(false); void controller.loadChannels().catch(error => controller.reportError(error)) } }))
       return h('div', { className: 'dn-page' },
         h(PageHead, {
           title: t('channels'),
@@ -668,9 +724,10 @@ window.__ModuleLoader__.load({
       const type = state.view.type
       const [drafts, setDrafts] = useState({ outbound: {}, inbound: {} })
       const [dirty, setDirty] = useState({ outbound: new Set(), inbound: new Set() })
+      const dirtyRef = useRef(dirty)
       const revisions = useRef({ outbound: null, inbound: null })
       const [testResult, setTestResult] = useState(null)
-      useEffect(() => { void controller.loadChannel(type).catch(() => {}) }, [type])
+      useEffect(() => { void controller.loadChannel(type).catch(error => controller.reportError(error)) }, [type])
       useEffect(() => {
         const channel = data?.channel
         if (!channel) return
@@ -682,7 +739,7 @@ window.__ModuleLoader__.load({
           setDrafts(current => {
             const next = { ...current, [direction]: { ...current[direction] } }
             for (const [key, value] of Object.entries(section?.editableValues ?? {})) {
-              if (!dirty[direction].has(key)) next[direction][key] = value
+              if (!dirtyRef.current[direction].has(key)) next[direction][key] = value
             }
             return next
           })
@@ -699,7 +756,9 @@ window.__ModuleLoader__.load({
         const setField = (key, value) => {
           setDirty(current => {
             const set = new Set(current[direction]); set.add(key)
-            return { ...current, [direction]: set }
+            const next = { ...current, [direction]: set }
+            dirtyRef.current = next
+            return next
           })
           setDrafts(current => ({ ...current, [direction]: { ...current[direction], [key]: value } }))
         }
@@ -709,8 +768,14 @@ window.__ModuleLoader__.load({
           if (Object.keys(payload).length === 0) return
           try {
             await controller.saveChannel(type, direction, payload)
-            setDirty(current => ({ ...current, [direction]: new Set() }))
-          } catch {}
+            setDirty(current => {
+              const next = { ...current, [direction]: new Set() }
+              dirtyRef.current = next
+              return next
+            })
+          } catch (error) {
+            controller.reportError(error)
+          }
         }
         return h(Section, { title: direction === 'outbound' ? t('notify') : t('control') },
           ...Object.entries(fields).map(([key, meta]) =>
@@ -728,7 +793,10 @@ window.__ModuleLoader__.load({
             direction === 'outbound'
               ? h(Button, {
                   disabled: state.busy[`test:${type}`] === true,
-                  onClick: () => void controller.testChannel(type).then(setTestResult).catch(() => {}),
+                  onClick: () => void controller.testChannel(type).then(setTestResult).catch(error => {
+                    controller.reportError(error)
+                    setTestResult({ delivered: false, detail: { en: String(error?.message ?? ''), zh: String(error?.message ?? '') } })
+                  }),
                 }, state.busy[`test:${type}`] === true ? t('testing') : t('test')) : null),
           h('p', { className: 'dn-rowMeta' }, section.applyMode === 'hot' ? t('applyHot') : section.applyMode === 'restart' ? t('applyRestart') : ''),
           direction === 'inbound' && section.applyMode === 'restart' ? h('p', { className: 'dn-note' }, t('inboundRestartHint')) : null,
@@ -743,6 +811,7 @@ window.__ModuleLoader__.load({
         h('div', { className: 'dn-detailBack' },
           h('button', { className: 'dn-link', onClick: () => controller.navigate({ kind: 'channels' }) }, `← ${t('back')}`)),
         h(PageHead, { title: resolveText(ctx, channel.label) || type }),
+        state.error ? h('p', { className: 'dn-error', role: 'alert' }, state.error?.message || t('unknownError')) : null,
         h(Direction, { direction: 'outbound', section: channel.notify }),
         h(Direction, { direction: 'inbound', section: channel.control }),
         h(Section, { title: t('recent20') },
@@ -756,7 +825,7 @@ window.__ModuleLoader__.load({
     }
 
     function TasksView({ ctx, controller, state, t }) {
-      useEffect(() => { if (state.tasks === null) void controller.loadTasks().catch(() => {}) }, [])
+      useEffect(() => { void controller.loadTasks().catch(error => controller.reportError(error)) }, [])
       return h('div', { className: 'dn-page' },
         h('div', { className: 'dn-detailBack' }, h('button', { className: 'dn-link', onClick: () => controller.navigate({ kind: 'home' }) }, `← ${t('back')}`)),
         h(PageHead, { title: t('tasks') }),
@@ -765,7 +834,7 @@ window.__ModuleLoader__.load({
     }
 
     function ActivityView({ ctx, controller, state, t }) {
-      useEffect(() => { if (state.activity === null) void controller.loadActivity().catch(() => {}) }, [])
+      useEffect(() => { void controller.loadActivity().catch(error => controller.reportError(error)) }, [])
       return h('div', { className: 'dn-page' },
         h('div', { className: 'dn-detailBack' }, h('button', { className: 'dn-link', onClick: () => controller.navigate({ kind: 'home' }) }, `← ${t('back')}`)),
         h(PageHead, { title: t('activity') }),
@@ -777,11 +846,11 @@ window.__ModuleLoader__.load({
       const state = useController(controller)
       const t = useT(ctx)
       useEffect(() => {
-        void controller.loadHome().catch(() => {})
         controller.startWait()
       }, [])
       if (state.view.kind === 'channels') return h(ChannelsView, { ctx, controller, state, t })
-      if (state.view.kind === 'channel') return h(ChannelDetailView, { ctx, controller, state, t })
+      // v0.12.1（P1-12）：按渠道类型重建详情组件，避免草稿/测试结果跨渠道串台。
+      if (state.view.kind === 'channel') return h(ChannelDetailView, { key: state.view.type, ctx, controller, state, t })
       if (state.view.kind === 'tasks') return h(TasksView, { ctx, controller, state, t })
       if (state.view.kind === 'activity') return h(ActivityView, { ctx, controller, state, t })
       return h(HomeView, { ctx, controller, state, t })
@@ -801,7 +870,7 @@ window.__ModuleLoader__.load({
     function PluginConfig({ controller, ctx, view }) {
       const state = useController(controller)
       const t = useT(ctx)
-      useEffect(() => { if (view === 'page') void controller.loadHome().catch(() => {}) }, [view])
+      useEffect(() => { if (view === 'page') void controller.loadHome().catch(error => controller.reportError(error)) }, [view])
       if (view !== 'page') return null
       const ready = (state.home?.channels?.length ?? 0) > 0
       return h('div', { className: 'dn-pluginConfig' },
@@ -810,7 +879,10 @@ window.__ModuleLoader__.load({
         h('div', { className: 'dn-formActions' },
           h(Button, {
             kind: 'primary',
-            onClick: () => { try { ctx.layout.selectPanel(PANEL_ID) } catch {}; controller.navigate({ kind: ready ? 'home' : 'channels', setup: !ready }) },
+            onClick: () => {
+              try { ctx.layout.selectPanel(PANEL_ID) } catch (error) { controller.reportError(error) }
+              controller.navigate({ kind: ready ? 'home' : 'channels', setup: !ready })
+            },
           }, ready ? t('openControl') : t('setupFirst'))),
         h('p', { className: 'dn-note' }, t('pluginAdvanced')))
     }
@@ -882,6 +954,15 @@ window.__ModuleLoader__.load({
         ctx.effect(() => () => { style.remove() }, 'dsh-notifier: native styles')
 
         const controller = createController(ctx)
+        // v0.12.1（P2-11）：页面不可见时停止 surface.wait 与 fallback 刷新，恢复时追一次。
+        ctx.effect(() => {
+          const page = typeof document === 'object' ? document : null
+          if (page === null) return
+          const onChange = () => controller.setActive(page.visibilityState !== 'hidden')
+          onChange()
+          page.addEventListener('visibilitychange', onChange)
+          return () => page.removeEventListener('visibilitychange', onChange)
+        }, 'dsh-notifier: native visibility')
         ctx.effect(() => () => controller.dispose(), 'dsh-notifier: native controller')
 
         const Main = () => h(MainPanel, { controller, ctx })
