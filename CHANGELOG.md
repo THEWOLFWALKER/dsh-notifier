@@ -1,6 +1,14 @@
 # Changelog
 
-## [Unreleased]
+## [0.11.0] - 2026-09-25（issue/PR 清零 + 宿主对齐 + 生态公共面）
+
+功能发布（minor）。在 v0.10 手机闭环之上收口 2026-09 的 issue/PR 清零与 DSH 宿主对齐线，并把生态公共面补齐为一等公民。`npm test` 为 **1816**（1816 pass，较 v0.10.2 基线 1616 净 +200）。规划中的 W7（管理台策略模板）/ W9（`test/reliability-*` 契约包）/ W8（`docs/reliability.md`）/ W10（管理台渠道健康面板）**顺延到下一版**，规格保留在 [docs/ROADMAP.md](docs/ROADMAP.md)。
+
+- **W0 issue/PR 清零**：#26 QQ keyboard `permission` 收敛为 `{ type: 2 }` + 按钮 label ≤10 码点；#31 入站 transport 有限超时（QQ/钉钉 AbortController，飞书经隔离 bounded `httpInstance`）；#32 turn/end 正文改有界缓存、彻底去 `session.events`/`snapshotEvents`；#33 QQ 出站默认 markdown + 码点分段；#36 QQ `attachments` 图片/文件 durable admission。另含 Feishu P2P `ou_/oc_` 来源错配修复（PR #20 残留）与 wps-bot `http:` 明文凭证收紧（PR #34 review）。
+- **宿主对齐**：P0-A 入站图片走 durable image block、`source.kind='dsh-notifier'`（对齐 DSH v0.1.7-rc.1 UserMessage V4）；P0-B `/stop` · turn/cancel 改结构化 `AgentCancelCause {kind:'user'}`；P1 Qmsg 3.0 v3 endpoint/目标语义迁移 + Server酱 SC3 数字子域 endpoint + `@deepseek-ai/dsh-session` optional peer 兼容矩阵（`verify-host-compat.mjs` 三处清单机械一致）；P2 host-events current-ctx 优先 + sticky root 回落、原生提问 seam 口径校准为 `user-questions/request` waterfall。
+- **生态公共面**：W1 `dsh-notifier/testing` fake、W2 `dsh-notifier/types` TypeScript 契约（零 TS 依赖）、W3 `examples/consumer-demo` 最小消费示例、W4 `PLUGINS.en.md` 英文契约、W5 手机侧 `/sessions` 活跃会话概览、W6 手机侧 `/log` 远程诊断日志（默认关 / owner-only / 脱敏 / 有界）。
+
+全部新能力默认最小权限、fail-closed；真机/宿主验证缺口仍登记在 [docs/memory/risks.md](docs/memory/risks.md)。
 
 ### 修复
 

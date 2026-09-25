@@ -31,7 +31,7 @@ const META = {
   pushdeer: { channel: 'PushDeer', auth: 'push key', free: '✅' },
   pushover: { channel: 'Pushover', auth: 'user key + app token', free: 'paid (one-time)' },
   pushplus: { channel: 'PushPlus (WeChat)', auth: 'token', free: '✅ (limits)' },
-  qmsg: { channel: 'Qmsg酱 (QQ)', auth: 'key + qq number', free: '✅ (limits)' },
+  qmsg: { channel: 'Qmsg酱 (QQ)', auth: 'key (+ optional group, v3)', free: '✅ (limits)' },
   'qq-bot': { channel: 'QQ official bot', auth: 'appId + appSecret', free: '✅' },
   serverchan: { channel: 'Server酱 (WeChat)', auth: 'sendkey', free: '✅ (limits)' },
   slack: { channel: 'Slack', auth: 'incoming webhook URL', free: '✅' },

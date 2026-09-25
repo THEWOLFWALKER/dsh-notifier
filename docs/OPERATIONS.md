@@ -9,7 +9,7 @@ node scripts/gen-channel-matrix.mjs --check
 node --check src/index.mjs
 ```
 
-The current release baseline is `1616` tests (`1616` pass) on the v0.10.1 line (notification-lang-setting + PR #22 Telegram aux buttons). The preceding v0.10.0 line closed at `1605`, v0.9.7 at `1548`, v0.9.6 at `1544`, v0.9.5 at `1531`, v0.9.0 used `1352`, and the v0.8.6 artifact historically records `909`. Do not change `package.json`'s release count to make these baselines look identical. The GitHub repository `main` branch is synced to v0.10.1. Desktop/host and provider protocol behavior still require real-device validation where noted below.
+The current release baseline is `1816` tests (`1816` pass) on the v0.11.0 line (issue/PR zeroing + host alignment + ecosystem public surface). The preceding v0.10.1/v0.10.2 lines closed at `1616`, v0.10.0 at `1605`, v0.9.7 at `1548`, v0.9.6 at `1544`, v0.9.5 at `1531`, v0.9.0 used `1352`, and the v0.8.6 artifact historically records `909`. Do not change `package.json`'s release count to make these baselines look identical. The GitHub repository `main` branch is being updated to v0.11.0. Desktop/host and provider protocol behavior still require real-device validation where noted below.
 
 The project has no install step for runtime tests. Optional packages are needed only for the corresponding real inbound flows: Feishu SDK, QQ connector, or QR terminal rendering.
 
@@ -63,7 +63,7 @@ node scripts/gen-channel-matrix.mjs --check
 git checkout main
 git merge --ff-only dev
 node scripts/verify-release.mjs
-git tag v0.10.1
+git tag v0.11.0
 git push origin main --tags
 npm publish
 ```

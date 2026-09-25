@@ -1,5 +1,7 @@
 # dsh-notifier v0.11.0 完整修复计划 — Issue / PR 清零版
 
+> **已归档（2026-09-25）**：本计划已随 v0.11.0 全部执行/收口（1816 tests）。保留作历史设计记录，**不再更新、不作为执行入口**。发行说明见 [CHANGELOG.md](../CHANGELOG.md)，当前事实见 [memory/project-state.md](memory/project-state.md)。
+
 > **状态：设计稿 / 等批准 / 不写代码**
 >
 > 仓库：`THEWOLFWALKER/dsh-notifier`  

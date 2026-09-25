@@ -1,5 +1,7 @@
 # dsh-notifier v0.11.0 规划输入（临时快照）
 
+> **已归档（2026-09-25）**：v0.11.0 已收口并发布（1816 tests），本快照中的 W0/W1~W6 与宿主对齐项均已完成，W7/W8/W9/W10 顺延下一版。本文保留作历史规划记录，**不再是当前执行入口**；发行说明见 [CHANGELOG.md](../CHANGELOG.md)，规格见 [ROADMAP.md](ROADMAP.md)，当前事实见 [memory/project-state.md](memory/project-state.md)。
+
 > 用途：供外部只读 agent 基于云端 dev 分支**重新规划** v0.11.0。本文件是临时输入，
 > 规划完成后可删除或归档。不是执行规格的替代品——W1~W10 唯一规格在 `docs/ROADMAP.md`。
 > 生成时间：2026-09-24 · 基准 commit：`9edaf41` · 测试基线：`npm test` 实测 **1663 全过 / 0 失败**。

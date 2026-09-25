@@ -1,6 +1,6 @@
 # Technical debt and release gates
 
-状态更新：2026-09-13。v0.10.1 收口（codex/notification-lang-setting + PR #22：双语 i18n `lang: 'zh' | 'en'` 与 Telegram 提问卡辅助钮并排，`npm test` 为 `1616`，1616 pass）。上一线 v0.10.0（codex/mobile-task-loop-v010，1605 pass）、v0.9.7（Telegram PR #22 + QQ Issue #23 修复收口，1548 pass）、v0.9.6（零配置首访，1544 pass）。此前的 R1–R5 修复列车于 R5（v0.9.5，W13）2026-09-05 收口，基线 `1531`。剩余事项只是真机/宿主验证和外部目录缓存刷新，不应被误读为待实现的新功能。
+状态更新：2026-09-25。v0.11.0 收口（issue/PR 清零 + 宿主对齐 + 生态公共面：W0 #26/#31/#32/#33/#36、P0-A/P0-B/P1/P2 宿主对齐、W1~W6 公共面，`npm test` 为 `1816`，1816 pass；W7/W8/W9/W10 顺延下一版）。上一线 v0.10.2（文档清理与收录状态收口，1616 pass）、v0.10.1（双语 i18n `lang: 'zh' | 'en'` 与 Telegram 提问卡辅助钮并排，1616 pass）、v0.10.0（codex/mobile-task-loop-v010，1605 pass）、v0.9.7（Telegram PR #22 + QQ Issue #23 修复收口，1548 pass）、v0.9.6（零配置首访，1544 pass）。此前的 R1–R5 修复列车于 R5（v0.9.5，W13）2026-09-05 收口，基线 `1531`。剩余事项只是真机/宿主验证和外部目录缓存刷新，不应被误读为待实现的新功能。
 
 ### 已知工具面坑（2026-08-28 登记）
 
@@ -17,7 +17,7 @@
 
 - 真机/协议：Telegram 4096 边界、Feishu WS、QQ gateway/按钮 ACK、DingTalk stream、WeChat iLink QR/长轮询、WxPusher 回调、图片/文件 payload 与各 provider 限制。
 - 宿主/桌面：DSH 真实事件装配、真实浏览器管理台操作、重启读取持久化 overlay、Windows BurntToast/PowerShell toast。桌面 `ask_user` 没有安全宿主接口，不能宣称可用或双端共享。
-- 发布：npm `0.10.1` 已完成认证并发布；后续可执行 registry artifact disposable profile 安装、启动/出站/入站 smoke。
+- 发布：npm `0.11.0` 已在 `dev` 上收口、待并入 `main` 并发布；发布后执行 registry artifact disposable profile 安装、启动/出站/入站 smoke。
 
 ## 维护规则
 
