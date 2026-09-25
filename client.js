@@ -892,11 +892,14 @@ window.__ModuleLoader__.load({
           name: 'main',
           key: PANEL_ID,
         }, Main))
+        // label 必须是 thunk：宿主 resolveSlotLabel 只对函数求值（`typeof label === 'function' ? label() : label`），
+        // 传普通对象会被原样当 React child 渲染 → "Objects are not valid as a React child"，
+        // 直接崩掉整个 sidebar slot（2026-09-25 真机 0.1.7-rc.2 复现：data-slot-error="sidebar"）。
         ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
           name: 'sidebar.panellist',
           id: PANEL_ID,
           order: 20,
-          label: { en: 'Notify & Control', zh: '通知与控制' },
+          label: () => resolveText(ctx, { en: 'Notify & Control', zh: '通知与控制' }),
         }, SidebarIcon))
         ctx.slots.inject('plugins.bundle.config', () => ctx.slots.register({
           name: 'plugins.bundle.config',

@@ -2,7 +2,7 @@
 
 ## [0.12.0] - 2026-09-25（Native Control Surface + 出站热生效 + 出站状态迁移）
 
-功能发布（minor）。把「可编辑出站配置」从 Standalone Admin 生命周期里解耦出来，交给 DSH 原生控制面（Native Control Surface）。`npm test` 为 **1828**（1828 pass，较 v0.11.0 基线 1816 净 +12）。**此版本尚未发布**：真机 DSH 宿主（`0.1.7-rc.2`）视觉/交互验证与 `alpha.1` 兼容性冒烟仍是发布门，未做即不得发布（缺口记 [docs/memory/risks.md](docs/memory/risks.md)）。
+功能发布（minor）。把「可编辑出站配置」从 Standalone Admin 生命周期里解耦出来，交给 DSH 原生控制面（Native Control Surface）。`npm test` 为 **1831**（1831 pass，较 v0.11.0 基线 1816 净 +15）。**已发布**：真机 DSH 宿主 `0.1.7-rc.2` 视觉/交互验证已通过（侧栏 + 主面板渲染、渠道设置向导、保存并测试、出站热生效、失败回执如实回传），`alpha.1` 兼容性冒烟也已通过（插件激活、RPC 通道 200、28 渠道、client module 装配进宿主 manifest）。
 
 ### 新增
 
@@ -23,6 +23,8 @@
 
 - **Admin 关闭时不得复活 Admin 自有出站 overlay**（`src/assembly/outbound.mjs`、`src/control-surface/outbound-config.mjs`）：canonical 键始终读取，但 `admin:channel:<type>:outbound` 与旧 `<type>:account` 仅在 `admin.enabled === true` 时兼容读取；Admin 关闭且无 overlay 命中时 `channels` 数组引用原样透传（零执行、零 warn，§6 兼容红线）。投影/`raw`/`test`/`remove` 与运行时 `OutboundSource` 保持同一读取口径。
 - 前端安全不变量：弹窗以 `windowObject.open('about:blank','_blank')` 打开后立即 `popup.opener = null`；不使用可选链作为赋值目标（避免 `SyntaxError` 破坏加载）。
+- **真机 RPC 通道 405**（`src/control-surface/rpc.mjs`、`src/index.mjs`）：真机 `0.1.7-rc.2` web profile 里 `ctx.connection.rpc.handle` 自身不可用（owner ctx 未声明 `webServer`，报 `cannot get property "webServer" without inject`），客户端 `rpc.call('/dsh-notifier', …)` 全部 405。改为先试 `connection.rpc.handle`，不可用时降级为直接 `webServer.register` 一个 `kind:'prefix'` 的 `/dsh-notifier` 路由——与官方 gateway 挂 `/api` 同款（`connection.admit` 准入 + `application/json` 校验 + `client-request` 信封 + 端点/方法一致性校验）；无 `webServer` 的 profile（tui/headless）仍静默降级为 Standalone 并 warn。新增 `test/control-surface-rpc-v012.test.mjs`（降级路由、准入/路径/信封守卫、method 不匹配）。
+- **真机侧栏插槽崩溃**（`client.js`）：宿主 `resolveSlotLabel` 只对函数求值（`typeof label === 'function' ? label() : label`），此前 `label` 传对象会被原样当 React child 渲染 → `Objects are not valid as a React child`，崩掉整个 `sidebar` slot（真机复现 `slot entry crashed in 'sidebar'`）。改为 thunk（`label: () => resolveText(ctx, { en: …, zh: … })`），`test/client-module.test.mjs` 断言 `typeof label === 'function'` 且求值结果正确。
 
 ## [0.11.0] - 2026-09-25（issue/PR 清零 + 宿主对齐 + 生态公共面）
 

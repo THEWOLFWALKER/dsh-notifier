@@ -764,12 +764,22 @@ export function apply(ctx, config = {}) {
     launchTickets,
     adminLocation: () => adminListenInfo,
   })
-  try {
-    const disposeSurfaceRpc = registerControlSurfaceRpc(ctx, surfaceService)
-    if (typeof disposeSurfaceRpc === 'function') disposers.push(() => { try { disposeSurfaceRpc() } catch {} })
-  } catch (error) {
-    warn('Native Control Surface RPC 装配失败，已降级为 Standalone: ' + (error instanceof Error ? error.message : String(error)))
+  // v0.12：Native 通道挂在宿主 HTTP server 上（`/dsh-notifier` prefix 路由），与宿主 connection
+  // 插件挂 `/api` 同款，故注册方必须能同时访问 connection（准入）与 webServer（挂路由）。
+  // 真机 0.1.7-rc.2 已复现：宿主 `connection.rpc.handle` 自身不可用（owner ctx 未声明 webServer），
+  // 详见 src/control-surface/rpc.mjs 文件头。webServer 只在 web profile 存在，故走条件注入；
+  // tui/headless 等无 webServer 的 profile 不装配、静默降级为 Standalone。
+  const mountSurfaceRpc = (rpcCtx) => {
+    try {
+      const disposeSurfaceRpc = registerControlSurfaceRpc(rpcCtx, surfaceService)
+      if (typeof disposeSurfaceRpc === 'function') disposers.push(() => { try { disposeSurfaceRpc() } catch {} })
+      else warn('Native Control Surface 无可用宿主接缝，已降级为 Standalone')
+    } catch (error) {
+      warn('Native Control Surface RPC 装配失败，已降级为 Standalone: ' + (error instanceof Error ? error.message : String(error)))
+    }
   }
+  if (typeof ctx?.inject === 'function') ctx.inject(['connection', 'webServer'], (webCtx) => mountSurfaceRpc(webCtx))
+  else mountSurfaceRpc(ctx)
   disposers.push(() => {
     surfaceRevision.dispose()
     launchTickets.dispose()

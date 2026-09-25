@@ -72,7 +72,11 @@ test('client module registers the four intended DSH slots', () => {
   mod.apply(ctx)
   assert.deepEqual(registrations.map(x => x.options.name).sort(), ['main', 'plugins.bundle.activation', 'plugins.bundle.config', 'sidebar.panellist'])
   assert.equal(registrations.find(x => x.options.name === 'main').options.key, 'dsh-notifier')
-  assert.equal(registrations.find(x => x.options.name === 'sidebar.panellist').options.id, 'dsh-notifier')
+  const panellist = registrations.find(x => x.options.name === 'sidebar.panellist')
+  assert.equal(panellist.options.id, 'dsh-notifier')
+  // 宿主 resolveSlotLabel 只对函数求值：label 必须是 thunk（对象会被当 React child 渲染并崩掉 sidebar）
+  assert.equal(typeof panellist.options.label, 'function')
+  assert.equal(panellist.options.label(), 'Notify & Control')
   for (const d of effects.reverse()) d()
 })
 

@@ -4,8 +4,8 @@
 
 ## 当前基线
 
-- 当前发布线：**v0.12.0**（Native Control Surface + 出站热生效 + 出站状态迁移，包版本字段 `0.12.0`，`dev` 开发中、未并入 `main`；真机 DSH 宿主验证仍待做）：canonical 出站键 `channel:<type>:outbound` 始终读取（Admin 关闭不得复活旧 overlay）、`OutboundSource` 为唯一运行时权威、DSH Connection RPC `/dsh-notifier`、一次性 Advanced Console 启动票据、Health/Activity/Channels/Tasks/Questions 投影、Native 前端（Host React，无 iframe/esbuild/react-dom）。上一发布线 **v0.11.0**（issue/PR 清零 + 宿主对齐 + 生态公共面，1816 tests；`main` @ `dfb4983`，tag `v0.11.0`）。更早 v0.10.2（文档清理与收录状态收口，1616 tests）。
-- 当前测试：`1828`（1828 pass，v0.12.0 开发基线、未发布）。v0.11.0 发布基线为 `1816`；历史 v0.10.1/v0.10.2 为 `1616`、v0.10.0 为 `1605`、v0.9.7 为 `1548`、v0.9.6 为 `1544`、v0.9.5 为 `1531`、v0.9.0 为 `1352`、npm `0.8.6` 契约为 `909`；按版本区分。
+- 当前发布线：**v0.12.0**（Native Control Surface + 出站热生效 + 出站状态迁移，包版本字段 `0.12.0`，`main` 已并入并 tag `v0.12.0`；真机 DSH 宿主 `0.1.7-rc.2` 视觉/交互验证与 `alpha.1` 兼容性冒烟均已通过）：canonical 出站键 `channel:<type>:outbound` 始终读取（Admin 关闭不得复活旧 overlay）、`OutboundSource` 为唯一运行时权威、DSH Connection RPC `/dsh-notifier`、一次性 Advanced Console 启动票据、Health/Activity/Channels/Tasks/Questions 投影、Native 前端（Host React，无 iframe/esbuild/react-dom）。上一发布线 **v0.11.0**（issue/PR 清零 + 宿主对齐 + 生态公共面，1816 tests；`main` @ `dfb4983`，tag `v0.11.0`）。更早 v0.10.2（文档清理与收录状态收口，1616 tests）。
+- 当前测试：`1831`（1831 pass，v0.12.0 发布基线）。v0.11.0 发布基线为 `1816`；历史 v0.10.1/v0.10.2 为 `1616`、v0.10.0 为 `1605`、v0.9.7 为 `1548`、v0.9.6 为 `1544`、v0.9.5 为 `1531`、v0.9.0 为 `1352`、npm `0.8.6` 契约为 `909`；按版本区分。
 - 单仓库双分支模型：`THEWOLFWALKER/dsh-notifier` 是唯一仓库，`dev` 分支做开发、`main` 分支做发布（发布版本 + 标签 + npm）。
 - 生态收录：Awesome DSH 收录条目已按 v0.10.2 刷新（PR #4981，更新手机任务接管/图片入会话/双语消息等描述），下一次刷新随 v0.11.0 发布；dshfind 按仓库元数据周期性同步。
 - Node.js ESM、Node `>=22`、无生产依赖、无构建步骤；28 个出站渠道，Telegram/Feishu/QQ Bot/WxPusher/WeChat iLink/DingTalk 六个入站控制通道。
