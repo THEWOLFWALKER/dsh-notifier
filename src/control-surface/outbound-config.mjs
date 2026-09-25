@@ -10,6 +10,7 @@ import {
   channelFixedOptions,
   resolveEnvRefs,
 } from '../config.mjs'
+import { deleteDurable, setDurable } from '../inbound/store.mjs'
 
 const OUTBOUND = new Set(CHANNEL_TYPES)
 const DUAL_INBOUND_DOMAIN = new Set(['feishu', 'dingtalk'])
@@ -160,13 +161,13 @@ export function createOutboundConfigService({
       const resolved = resolveCandidate(key, nextRaw)
 
       // Phase 2 — canonical persistence is the commit point.
-      try {
-        if (typeof store?.set !== 'function') throw new Error('store 不可用')
-        store.set(canonicalKey(key), nextCanonical)
-      } catch (cause) {
-        const error = new Error('出站配置写入失败')
+      // v0.12.1（P0-01）：store.set 失败时返回 false 而不抛，必须显式消费 durable 判据。
+      if (setDurable(store, canonicalKey(key), nextCanonical) !== true) {
+        // store.set 可能已经改了内存但没有落盘，回滚内存，避免 runtime/disk 分裂。
+        if (currentCanonical === null) deleteDurable(store, canonicalKey(key))
+        else setDurable(store, canonicalKey(key), currentCanonical)
+        const error = new Error('出站配置写入失败：未落盘，已放弃本次变更')
         error.code = 'storage-failed'
-        error.cause = cause
         throw error
       }
 
@@ -199,13 +200,13 @@ export function createOutboundConfigService({
       let fallback = null
       if (Object.keys(fallbackRaw).length > 0) fallback = resolveCandidate(key, fallbackRaw)
 
-      try {
-        if (typeof store?.delete !== 'function') throw new Error('store 不可用')
-        store.delete(canonicalKey(key))
-      } catch (cause) {
-        const error = new Error('出站配置删除失败')
+      // v0.12.1（P0-02）：delete() 返回 existed，不表达 durable 结果；删除未落盘时
+      // 禁止切换 live source，否则重启后配置会复活。
+      const removal = deleteDurable(store, canonicalKey(key))
+      if (removal.durable !== true) {
+        setDurable(store, canonicalKey(key), existing)
+        const error = new Error('出站配置删除失败：未落盘，已放弃本次变更')
         error.code = 'storage-failed'
-        error.cause = cause
         throw error
       }
 

@@ -63,10 +63,15 @@ export function composeDigest(summary, strings = stringsOf()) {
  */
 export function createLedger(options = {}) {
   const dir = typeof options.dir === 'string' && options.dir !== '' ? options.dir : '.'
-  const maxEntries = Math.max(50, Math.trunc(options.maxEntries ?? 500))
+  // v0.12.1（P1-22）：非法/无穷配置不能把 prune 判据退化成 NaN 或 Infinity。
+  const rawMaxEntries = Number(options.maxEntries)
+  const maxEntries = Number.isFinite(rawMaxEntries)
+    ? Math.min(100_000, Math.max(50, Math.trunc(rawMaxEntries)))
+    : 500
   const now = options.now ?? Date.now
   const file = `${dir}/ledger.jsonl`
   const stateFile = `${dir}/ledger-state.json`
+  let entryCount = 0
 
   const ensureDir = () => {
     try { mkdirSync(dir, { recursive: true }) } catch { /* 已存在或不可写：append 时自然暴露 */ }
@@ -91,6 +96,7 @@ export function createLedger(options = {}) {
       // v0.6.3：对齐 store 的 0600 军规（审查 R1 P1-3）——账本行含通知标题/错误摘要
       // （可能带任务路径与审批上下文），共享主机上不应其他账号可读。失败尽力而为。
       try { chmodSync(file, 0o600) } catch { /* Windows/受限环境无 chmod */ }
+      entryCount += 1
       maybePrune()
     } catch { /* 磁盘满/权限问题：静默，推送不受影响 */ }
   }
@@ -98,13 +104,19 @@ export function createLedger(options = {}) {
   /** 超过 2 倍上限时重写保留最新 maxEntries 条（摊销 O(n)，日常零开销）。 */
   function maybePrune() {
     try {
+      // 先用实例级计数判定，常态 append 不再同步全量读取 ledger。
+      if (entryCount <= maxEntries * 2) return
       const lines = readFileSync(file, 'utf8').split('\n').filter((line) => line.trim() !== '')
-      if (lines.length <= maxEntries * 2) return
+      if (lines.length <= maxEntries * 2) {
+        entryCount = lines.length
+        return
+      }
       const kept = lines.slice(-maxEntries)
       const tmp = `${file}.tmp`
       writeFileSync(tmp, `${kept.map((line) => `${line}\n`).join('')}`)
       try { chmodSync(tmp, 0o600) } catch { /* Windows/受限环境无 chmod */ }
       renameSync(tmp, file)
+      entryCount = kept.length
     } catch { /* 重写失败：下次再试，绝不致命 */ }
   }
 

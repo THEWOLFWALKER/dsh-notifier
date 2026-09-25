@@ -43,6 +43,9 @@ const syncSleep = (ms) => {
  * @param {string} filePath - JSON 文件路径（目录自动创建）
  */
 export function createStore(filePath) {
+  // v0.12.1（P2-07）：本实例启动时 state 文件存在但读不到的可观测标志。
+  let bootReadFailed = false
+
   // 启动载入：损坏/缺省 fail-open 到空态（无记忆好过误清空——审批丢失只导致超时回退）
   const loadBoot = () => {
     let raw
@@ -66,6 +69,7 @@ export function createStore(filePath) {
       } catch { /* stat 失败（文件刚被移走等）：自检跳过，不阻塞 */ }
       raw = readFileSync(filePath, 'utf8')
     } catch {
+      bootReadFailed = true
       return {} // 读失败（权限/占用等）：维持静默 fail-open，与损坏区分
     }
     try {
@@ -73,7 +77,8 @@ export function createStore(filePath) {
       // 无记忆可丢失、无现场可取证，按损坏告警纯属噪音（对抗性 review 第 3 轮修正）
       if (raw.trim() === '') return {}
       const parsed = JSON.parse(raw)
-      return (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) ? parsed : {}
+      if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed
+      throw Object.assign(new Error('state 文件形状异常（合法 JSON 但非对象）'), { code: 'SHAPE' })
     } catch {
       // P1-2 错误可见性（2026-08-20，Trae1）：启动时损坏原先静默清零——绑定表/待审批/
       // 扫码凭证全部丢失且零日志，用户只见「绑定莫名失效」。对齐 v0.6.5 save 路径的
@@ -117,7 +122,7 @@ export function createStore(filePath) {
       if (!existsSync(filePath)) return { ok: true, value: {} }
       const parsed = JSON.parse(readFileSync(filePath, 'utf8'))
       if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-        return { ok: true, value: {} } // 形状异常按空文件处理（非损坏，是「从未写过有效内容」）
+        return { ok: false, reason: 'corrupt' }
       }
       return { ok: true, value: parsed }
     } catch {
@@ -313,6 +318,10 @@ export function createStore(filePath) {
   }
 
   return {
+    /** v0.12.1（P2-07）：启动读取状态，区分读失败与文件不存在/空文件。 */
+    bootStatus() {
+      return { readFailed: bootReadFailed }
+    },
     get(key, fallback = undefined) {
       try { refreshIfChanged() } catch { /* 收敛失败：退回内存态 */ }
       const value = state[key]
@@ -332,7 +341,21 @@ export function createStore(filePath) {
         dirty.add(key)
         save()
       }
+      // 返回语义保持 existed（R1：task-selection.mjs:133 依赖 store.delete(key) === true）。
+      // 需要 durable 结论的调用方走 deleteDurable。
       return existed
+    },
+    /**
+     * v0.12.1（P0-02）：delete 的 durable 版本——既有 delete() 的返回值表达的是
+     * 「原 key 是否存在」，不表达「是否真正落盘」，调用方无法据此判断删除是否生效。
+     * @returns {{ existed: boolean, durable: boolean }}
+     */
+    deleteDurable(key) {
+      const existed = key in state
+      delete state[key]
+      if (!existed) return { existed: false, durable: true }
+      dirty.add(key)
+      return { existed: true, durable: save() }
     },
     keys(prefix = '') {
       try { refreshIfChanged() } catch { /* 收敛失败：退回内存态 */ }
@@ -355,5 +378,41 @@ export function createStore(filePath) {
       if (removed > 0) save()
       return removed
     },
+  }
+}
+
+/**
+ * v0.12.1：一致化 durable 写判据，供调用点在不关心错误分类、只关心成败时使用。
+ * 显式 false 才是失败；undefined 是遗留 mock store 的合法返回值，必须当作成功（I9）。
+ */
+export function setDurable(store, key, value) {
+  if (typeof store?.set !== 'function') return false
+  try {
+    return store.set(key, value) !== false
+  } catch {
+    return false
+  }
+}
+
+/**
+ * v0.12.1：一致化 durable 删除，返回 { existed, durable }。
+ * 真 store 有 deleteDurable 时优先使用；遗留 mock 只有 delete 时，沿用 existed 语义。
+ */
+export function deleteDurable(store, key) {
+  if (typeof store?.deleteDurable === 'function') {
+    try {
+      const result = store.deleteDurable(key)
+      return { existed: result?.existed === true, durable: result?.durable === true }
+    } catch {
+      return { existed: false, durable: false }
+    }
+  }
+  if (typeof store?.delete !== 'function') return { existed: false, durable: false }
+  try {
+    const existed = store.delete(key) === true
+    // 遗留 mock 只有 existed 语义：调用成功即视为完成；无 key 删除是幂等成功。
+    return { existed, durable: true }
+  } catch {
+    return { existed: false, durable: false }
   }
 }

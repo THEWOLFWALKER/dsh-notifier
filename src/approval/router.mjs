@@ -20,6 +20,7 @@ import { workspaceOf } from '../routing/session-registry.mjs'
 import { displayNameOf } from '../inbound/capability-matrix.mjs'
 // S-05：审批推送 reason 脱敏（minimal 默认）
 import { maskSecrets, normalizeRedaction } from '../redact.mjs'
+import { setDurable } from '../inbound/store.mjs'
 
 const OUTCOME_ALLOWED = 'allowed-once'
 const OUTCOME_REJECTED = 'rejected'
@@ -291,7 +292,9 @@ export function registerApprovalHandler(deps, strings) {
     const persistPushed = () => {
       try {
         const row = ledger.get(key)
-        if (row !== undefined) store.set(key, { ...row, pushedTo: [...pushedTo], hintTargets: [...hintTargets] })
+        if (row !== undefined && setDurable(store, key, { ...row, pushedTo: [...pushedTo], hintTargets: [...hintTargets] }) !== true) {
+          warn(`审批 ${key} 增量送达证据未落盘`)
+        }
       } catch { /* 增量落账失败不致命，末尾还有一次整体落账兜底 */ }
     }
     const fallbackText = t.approval.fallbackText(title, content)
@@ -494,7 +497,7 @@ export function registerApprovalHandler(deps, strings) {
       if (channelTypes === null && resolved !== null) {
         warn('审批分流解析为空集，回落全局广播（检查该 agent 的路由绑定与全局渠道池）')
       }
-      ledger.add(key, {
+      if (ledger.add(key, {
         mode,
         toolName: request?.toolName ?? '(unknown)',
         agentId: request?.agent?.id ?? request?.agent?.session?.id ?? null,
@@ -503,7 +506,10 @@ export function registerApprovalHandler(deps, strings) {
         // 数组 = 分流结果。编号回复 intended 兜底据此判定「广播教了回复 1 但卡片没送达」。
         intendedChannels: channelTypes,
         expiresAt: Date.now() + timeoutMs,
-      })
+      }) !== true) {
+        warn(`审批 ${key} 账本未落盘，交还桌面`)
+        return next()
+      }
       // v0.6.3 waiter 预注册（审查 R2 P1-1）：原实现先 await pushApproval（逐通道逐目标
       // 发卡 + 广播，限速门下数秒级）再 bus.wait——窗口内用户点按钮/回复 1/2 会命中
       // already-resolved 被静默丢弃，此后永远无人能裁决 → 超时回落桌面。先注册 waiter
@@ -537,7 +543,9 @@ export function registerApprovalHandler(deps, strings) {
       const pushedTo = delivery.pushedTo
       const row = ledger.get(key)
       if (row !== undefined && row.status === 'pending') {
-        store.set(key, { ...row, pushedTo, hintTargets: delivery.hintTargets })
+        if (setDurable(store, key, { ...row, pushedTo, hintTargets: delivery.hintTargets }) !== true) {
+          warn(`审批 ${key} 最终送达证据未落盘`)
+        }
       }
       if (ledger.get(key)?.decision === 'terminated') {
         await markRemoteResolved(pushedTo, t.approval.terminatedCard)

@@ -28,6 +28,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import { stringsOf } from '../strings.mjs'
 import { normalizeInbound } from '../inbound/_contract.mjs'
 import { MESSAGE_PRIORITY } from '../inbound/bus.mjs'
+import { setDurable } from '../inbound/store.mjs'
 import { guardTargets, feishuP2pEquivalent } from '../inbound/target-guard.mjs'
 import { createEscalationChain } from '../approval/escalation.mjs'
 import { createInteractionLedger } from '../interaction/ledger.mjs'
@@ -298,7 +299,9 @@ export function createQuestionBridge(deps, strings) {
     const persistPushed = () => {
       try {
         const row = ledger.get(qKey)
-        if (row !== undefined) store.set(qKey, { ...row, pushedTo: [...pushedTo] })
+        if (row !== undefined && setDurable(store, qKey, { ...row, pushedTo: [...pushedTo] }) !== true) {
+          warn(`提问 ${qKey} 增量送达证据未落盘`)
+        }
       } catch { /* 增量落账失败不致命，末尾整体落账兜底 */ }
     }
     for (const inbound of interactiveEntries()) {
@@ -963,7 +966,7 @@ export function createQuestionBridge(deps, strings) {
       }
       try {
         const token = vault.mint(qKey)
-        ledger.add(qKey, {
+        if (ledger.add(qKey, {
           question: String(question.question ?? ''),
           options: question.options.map((option) => String(option.label)),
           multiSelect: question.multiSelect === true,
@@ -971,7 +974,12 @@ export function createQuestionBridge(deps, strings) {
           agentId: agentId !== null && String(agentId) !== '' ? String(agentId) : null,
           pushedTo: [],
           expiresAt: Date.now() + timeoutMs,
-        })
+        }) !== true) {
+          warn(`提问 ${qKey} 账本未落盘，跳过本题投递`)
+          results.push({ question: String(question.question ?? ''), answered: false, reason: 'storage-failed' })
+          allAnswered = false
+          continue
+        }
         // waiter 预注册先于推卡（v0.6.3 审批时序同款：早到作答不被丢）。
         // AUTH-1：wait 登记允许会话范围（allowChats）；pushQuestion 每送达一张卡片即
         // 把它对应的 chatId 并入 allowChats（空目标 = 空 Map，不放行任意 chat）。
@@ -1012,7 +1020,9 @@ export function createQuestionBridge(deps, strings) {
           pushedTo = pushResult.pushedTo
           hintTargets = pushResult.hintTargets
           const rowNow = ledger.get(qKey)
-          if (rowNow !== undefined) store.set(qKey, { ...rowNow, pushedTo, hintTargets })
+          if (rowNow !== undefined && setDurable(store, qKey, { ...rowNow, pushedTo, hintTargets }) !== true) {
+            warn(`提问 ${qKey} 最终送达证据未落盘`)
+          }
           if (deliverySettled) {
             // 迟到成功投递与终态和解——wait 结算时这些卡还不在 pushedTo，
             // 早先的 markResolved 没见过它们。按行终态选话术补一次卡片编辑（best-effort；

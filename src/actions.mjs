@@ -10,6 +10,7 @@
 import { randomBytes } from 'node:crypto'
 import { stringsOf } from './strings.mjs'
 import { createInteractionLedger } from './interaction/ledger.mjs'
+import { setDurable } from './inbound/store.mjs'
 
 // CRACK-001（破甲轮 P0）：缺来源元数据的动作卡的升级迁移宽限窗，上界对齐 token TTL
 // （tokens.mjs 默认 10min）——升级瞬间在途的旧卡本就只剩 ≤10min 生命期，窗外一律
@@ -83,7 +84,9 @@ export function createActionDispatcher({ vault = null, store = null, logger = nu
           ? { [meta.channel]: [meta.chatId] }
           : null
         try {
-          ledger.add(key, { kind: normalizedKind, payload, ...(srcChats !== null ? { srcChats } : {}) })
+          if (ledger.add(key, { kind: normalizedKind, payload, ...(srcChats !== null ? { srcChats } : {}) }) !== true) {
+            throw new Error('动作账本未落盘')
+          }
         } catch (error) {
           // 账本失败 = 无法核销 = 绝不能发出卡片（发出即无首达保障）
           warn(`动作账本写入失败，降级不发卡片: ${error instanceof Error ? error.message : String(error)}`)
@@ -111,7 +114,9 @@ export function createActionDispatcher({ vault = null, store = null, logger = nu
           : {}
         const list = Array.isArray(srcChats[channel]) ? [...srcChats[channel]] : []
         if (!list.includes(chatId)) list.push(chatId)
-        try { store.set(actionKey, { ...row, srcChats: { ...srcChats, [channel]: list } }) } catch { /* 落账失败不致命 */ }
+        if (setDurable(store, actionKey, { ...row, srcChats: { ...srcChats, [channel]: list } }) !== true) {
+          warn(`动作 ${actionKey} 来源登记未落盘`)
+        }
       } catch {
         /* 来源登记失败不致命 */
       }
@@ -138,7 +143,9 @@ export function createActionDispatcher({ vault = null, store = null, logger = nu
         const nextRow = { ...row }
         if (Object.keys(next).length > 0) nextRow.srcChats = next
         else delete nextRow.srcChats
-        try { store.set(actionKey, nextRow) } catch { /* 落账失败不致命 */ }
+        if (setDurable(store, actionKey, nextRow) !== true) {
+          warn(`动作 ${actionKey} 来源撤销未落盘`)
+        }
       } catch {
         /* 来源撤销失败不致命 */
       }

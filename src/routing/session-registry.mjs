@@ -17,6 +17,7 @@
 import { basename } from 'node:path'
 import { createHostEventRegistrar, normalizeAgentLifecyclePayload } from '../host-events.mjs'
 import { normalizeControlOverlay } from '../control/session-arbiter.mjs'
+import { setDurable } from '../inbound/store.mjs'
 
 /** state.json 会话表键（与既有 bind:* / *:account 同域，§2）。 */
 const SESSIONS_KEY = 'route:sessions'
@@ -208,7 +209,6 @@ export function createSessionRegistry(options = {}) {
    * 写盘失败（store.set 抛）按既有防御壳降级内存态继续工作，removedIds 保留下次再删。
    */
   const persist = () => {
-    lastWriteMs = now()
     try {
       const base = plainObjectOf(store?.get?.(SESSIONS_KEY)) ?? {}
       const next = {}
@@ -236,14 +236,16 @@ export function createSessionRegistry(options = {}) {
         else record.control = deepCopyPlain(control)
         next[id] = record
       }
-      const writeResult = store?.set?.(SESSIONS_KEY, next)
+      const writeResult = setDurable(store, SESSIONS_KEY, next)
       // Stage-4 P1 收官（墓碑持久化收官）：只有持久化真到达盘上才清回收墓碑。
       // store.set 显式返回 false 是 createStore 的 durable 布尔（v0.8.7 起 save() 传播持久化成功与否，
       // 写未到达盘）；此时清掉 removedIds 会让「失败的 sweep 写 + 后续生命周期写」把过期会话从盘上
       // 基底复活——下次 persist 从 store.get 读到未删的盘上旧记录、又没了墓碑可删，过期 id 在盘上
       // 卷土重来（重启即重现）。故只在 durable 成功（返回非 false）时清；返回 undefined 的既有
       // store 保持兼容（undefined !== false 仍清）。set 抛错的路径本来就在外层 catch，不复删。
-      if (writeResult !== false) {
+      if (writeResult === true) {
+        // v0.12.1（P2-13）：写成功后才推进节流窗口；失败必须允许下一次 touch 重试。
+        lastWriteMs = now()
         removedIds.clear()
         for (const id of Object.keys(sessions)) dirtyFields.delete(id)
       }
@@ -750,6 +752,8 @@ export function createSessionRegistry(options = {}) {
 
     /** 反注册宿主事件 + 清理全部定时兜底（幂等，可重复调用）。 */
     dispose() {
+      // v0.12.1（P2-12）：退出前先把节流窗口内的最后一批会话状态落盘。
+      try { persist() } catch { /* 退出路径不抛 */ }
       for (const disposer of disposers.splice(0)) {
         try { disposer() } catch { /* 反注册失败不致命 */ }
       }

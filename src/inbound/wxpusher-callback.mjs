@@ -16,6 +16,7 @@ import { createRateGate } from '../adapters/_tokens.mjs'
 import { startHttpCallback } from './http-callback.mjs'
 import { resolveNotifyTargets } from './target-guard.mjs'
 import { stringsOf } from '../strings.mjs'
+import { setDurable } from './store.mjs'
 
 const SEND_ENDPOINT = 'https://wxpusher.zjiecode.com/api/send/message'
 const DEFAULT_PORT = 8103
@@ -196,7 +197,9 @@ export function createWxpusherInbound(options = {}) {
           warn(`app_subscribe 拒绝非法 uid 形态（len=${String(data.uid ?? '').length}）：${uid === '' ? '(empty)' : `${uid}`.slice(0, 32)}`)
           return
         }
-        try { store?.set(`wxpusher:bind:${uid}`, { at: Date.now(), extra: String(data.extra ?? '') }) } catch { /* 落盘失败不致命 */ }
+        if (setDurable(store, `wxpusher:bind:${uid}`, { at: Date.now(), extra: String(data.extra ?? '') }) !== true) {
+          warn(`uid ${uid} 订阅记录未落盘`)
+        }
         // v0.7 学习键汇流（计划书 §3.6）：订阅 uid 进待确认绑定，管理台成员页收口
         // （origin=learned；已是成员时 addPending 幂等拒绝，不产生重复条目）
         if (identity !== null && typeof identity.addPending === 'function') {

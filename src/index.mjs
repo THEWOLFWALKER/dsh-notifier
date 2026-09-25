@@ -492,7 +492,14 @@ export function apply(ctx, config = {}) {
     // v0.8.7 引导码文件交付（LEAK-2）：码面写本机 0600 文件，stderr 只印路径+ID——
     // 日志聚合不再承载 owner 级凭证。绑定表非空后不再铸造。
     const showBootstrap = (minted) => {
-      if (minted?.ok !== true) return
+      if (minted?.ok !== true) {
+        if (minted?.reason === 'storage-failed') {
+          // 配对码未持久化时绝不展示码面；仍给出与文件交付失败一致的可操作指引。
+          warn('引导码文件写入失败（配对码未持久化，请勿使用未落盘码面）')
+          warn('【引导配对码】文件写入失败，请使用管理台铸码')
+        }
+        return
+      }
       const minutes = Math.max(1, Math.round((minted.expiresAt - Date.now()) / 60000))
       if (writeBootstrapCodeFile(minted.code)) {
         warn(`【引导配对码】已写入 ${BOOTSTRAP_CODE_FILE}（${minutes} 分钟内有效，仅本机用户可读）\n  在任意已启用通道私聊机器人发送：/pair <配对码>\n  查看配对码：cat ${BOOTSTRAP_CODE_FILE}`)

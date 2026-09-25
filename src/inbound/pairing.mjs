@@ -14,6 +14,7 @@
 // 码级 locked 态保留，由管理台显式锁定（可疑活动人工处置）触达。
 
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
+import { setDurable } from './store.mjs'
 
 const KEY_CODES = 'inbound:pairing'
 const KEY_LOCKOUT = 'inbound:pairing:lockout'
@@ -115,8 +116,9 @@ export function createPairing(options = {}) {
       pruned[hash] = entry
     }
     if (prunedCount > 0) warn(`清扫 ${prunedCount} 条过期配对码终态记录`)
-    if (store !== null) store.set(KEY_CODES, pruned)
-    else memoryCodes = pruned
+    if (store !== null) return setDurable(store, KEY_CODES, pruned)
+    memoryCodes = pruned
+    return true
   }
 
   function readLockout() {
@@ -146,8 +148,9 @@ export function createPairing(options = {}) {
       bounded[key] = { fails: failsLive, lockedUntil: lockLive ? entry.lockedUntil : 0 }
     }
     const next = pruned ? bounded : table
-    if (store !== null) store.set(KEY_LOCKOUT, next)
-    else memoryLockout = next
+    if (store !== null) return setDurable(store, KEY_LOCKOUT, next)
+    memoryLockout = next
+    return true
   }
 
   /** 惰性过期：读取路径顺手把超时未核销的 minted/active/minted-active 转终态（免定时器）。
@@ -164,8 +167,9 @@ export function createPairing(options = {}) {
       }
     }
     if (expired.length > 0) {
-      writeCodes(table, now)
-      for (const entry of expired) audit('expire', { id: entry.id, origin: entry.origin })
+      if (writeCodes(table, now) === true) {
+        for (const entry of expired) audit('expire', { id: entry.id, origin: entry.origin })
+      }
     }
     return expired.length > 0
   }
@@ -194,8 +198,8 @@ export function createPairing(options = {}) {
       entry.lockedUntil = now + LOCKOUT_MS
     }
     table[userKey] = entry
-    writeLockout(table, now)
-    return now < entry.lockedUntil
+    const durable = writeLockout(table, now)
+    return { locked: now < entry.lockedUntil, durable }
   }
 
   function clearFailures(userKey) {
@@ -244,7 +248,7 @@ export function createPairing(options = {}) {
         redeemedBy: '',
       }
       table[hash] = entry
-      writeCodes(table, now)
+      if (writeCodes(table, now) !== true) return { ok: false, reason: 'storage-failed' }
       audit('mint', { id: entry.id, origin, mintedBy, expiresAt })
       return { ok: true, id: entry.id, code, expiresAt }
     },
@@ -264,18 +268,20 @@ export function createPairing(options = {}) {
       }
       const normalized = String(code ?? '').trim().toUpperCase()
       if (normalized === '' || !/^[A-Z2-9]{1,64}$/.test(normalized)) {
-        const tripped = recordFailure(userKey, now)
-        if (tripped) audit('lockout', { user: userKey, phase: 'tripped' })
-        return { ok: false, reason: tripped ? 'locked-out' : 'invalid-code' }
+        const failure = recordFailure(userKey, now)
+        if (failure.durable !== true) return { ok: false, reason: 'storage-failed' }
+        if (failure.locked) audit('lockout', { user: userKey, phase: 'tripped' })
+        return { ok: false, reason: failure.locked ? 'locked-out' : 'invalid-code' }
       }
       const table = readCodes()
       sweep(table, now)
       const hash = hashPairingCode(normalized)
       const entry = table[hash]
       if (entry === undefined || !safeEqual(entry.hash, hash)) {
-        const tripped = recordFailure(userKey, now)
-        if (tripped) audit('lockout', { user: userKey, phase: 'tripped' })
-        return { ok: false, reason: tripped ? 'locked-out' : 'invalid-code' }
+        const failure = recordFailure(userKey, now)
+        if (failure.durable !== true) return { ok: false, reason: 'storage-failed' }
+        if (failure.locked) audit('lockout', { user: userKey, phase: 'tripped' })
+        return { ok: false, reason: failure.locked ? 'locked-out' : 'invalid-code' }
       }
       if (entry.state === 'redeemed') return { ok: false, reason: 'already-redeemed' }
       if (entry.state === 'revoked') return { ok: false, reason: 'revoked' }
@@ -283,7 +289,7 @@ export function createPairing(options = {}) {
       if (entry.state === 'expired' || now >= entry.expiresAt) {
         if (entry.state !== 'expired') {
           entry.state = 'expired'
-          writeCodes(table, now)
+          if (writeCodes(table, now) !== true) return { ok: false, reason: 'storage-failed' }
           audit('expire', { id: entry.id, origin: entry.origin })
         }
         // G-30/G-31：过期码单独分支——不计入 5 次失败锁出，回执统一「码已过期」。
@@ -299,7 +305,7 @@ export function createPairing(options = {}) {
       entry.redeemedBy = userKey
       if (label !== '') entry.label = String(label).slice(0, 64)
       table[hash] = entry
-      writeCodes(table, now)
+      if (writeCodes(table, now) !== true) return { ok: false, reason: 'storage-failed' }
       clearFailures(userKey)
       audit('redeem', { id: entry.id, origin: entry.origin, user: userKey })
       return { ok: true, entry: { ...entry, code: normalized } }
@@ -316,7 +322,7 @@ export function createPairing(options = {}) {
         && (item.state === 'minted' || item.state === 'active' || item.state === 'minted-active'))
       if (entry === undefined) return { ok: false, reason: 'not-found' }
       entry.state = 'revoked'
-      writeCodes(table, now)
+      if (writeCodes(table, now) !== true) return { ok: false, reason: 'storage-failed' }
       audit('revoke', { id: entry.id, origin: entry.origin, by })
       return { ok: true }
     },
@@ -329,7 +335,7 @@ export function createPairing(options = {}) {
         && (item.state === 'minted' || item.state === 'active' || item.state === 'minted-active'))
       if (entry === undefined) return { ok: false, reason: 'not-found' }
       entry.state = 'locked'
-      writeCodes(table, now)
+      if (writeCodes(table, now) !== true) return { ok: false, reason: 'storage-failed' }
       audit('lock', { id: entry.id, origin: entry.origin, by })
       return { ok: true }
     },

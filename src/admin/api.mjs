@@ -25,6 +25,7 @@ import { CHANNEL_TYPES, channelFieldsOf, channelFixedOptions, channelDocUrlOf } 
 import { INBOUND_CHANNELS, INBOUND_CHANNEL_SET } from '../inbound/channels-registry.mjs'
 import { tasksSnapshot } from '../routing/task-projection.mjs'
 import { createHostCapabilitySnapshot } from '../host/capability.mjs'
+import { setDurable } from '../inbound/store.mjs'
 import {
   CONTROL_OVERLAY_MAX_MEMBERS,
   CONTROL_OVERLAY_MAX_STRING,
@@ -1046,7 +1047,9 @@ export function createAdminApi(options = {}) {
       try {
         if (typeof store?.set !== 'function') throw new Error('store 不可用')
         const existing = plainObjectOf(safeGet(`${type}:account`)) ?? {}
-        store.set(`${type}:account`, deepCopyPlain({ ...existing, ...config }))
+        if (setDurable(store, `${type}:account`, deepCopyPlain({ ...existing, ...config })) !== true) {
+          throw new Error('store 写入未落盘')
+        }
       } catch (error) {
         warn(`通道凭证写入失败: ${errorMessage(error)}`)
         return { type, saved: false }
@@ -1437,7 +1440,9 @@ export function createAdminApi(options = {}) {
       try {
         if (typeof store?.set !== 'function') throw new Error('store 不可用')
         const existing = plainObjectOf(safeGet(`admin:channel:${type}:outbound`)) ?? {}
-        store.set(`admin:channel:${type}:outbound`, deepCopyPlain({ ...existing, ...config }))
+        if (setDurable(store, `admin:channel:${type}:outbound`, deepCopyPlain({ ...existing, ...config })) !== true) {
+          throw new Error('store 写入未落盘')
+        }
       } catch (error) {
         warn(`出站通道配置写入失败: ${errorMessage(error)}`)
         return { type, saved: false, direction: 'outbound' }
@@ -1532,7 +1537,9 @@ export function createAdminApi(options = {}) {
       try {
         if (typeof store?.set !== 'function') throw new Error('store 不可用')
         const existing = plainObjectOf(safeGet(`${type}:account`)) ?? {}
-        store.set(`${type}:account`, deepCopyPlain({ ...existing, ...config }))
+        if (setDurable(store, `${type}:account`, deepCopyPlain({ ...existing, ...config })) !== true) {
+          throw new Error('store 写入未落盘')
+        }
       } catch (error) {
         warn(`入站通道配置写入失败: ${errorMessage(error)}`)
         return { type, saved: false, direction: 'inbound' }

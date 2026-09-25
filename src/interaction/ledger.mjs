@@ -18,6 +18,8 @@
 // 各链的 latestPendingFor 归属/兜底启发式留在链内——匹配语义（exact/onChannel/
 // intended/hint + liveWaiters 僵尸行过滤）差异太大，强行统一会引入行为漂移（批 4 决策）。
 
+import { setDurable } from '../inbound/store.mjs'
+
 /**
  * 创建统一交互状态账本。
  * @param {object} [options]
@@ -49,7 +51,7 @@ export function createInteractionLedger(options = {}) {
     /** 铸新行：覆写为 pending + createdAt。写入抛错不吞——由调用方决策
      *  （actions 降级不发卡 / approval 交还桌面 / questions 交还桌面）。 */
     add(key, row) {
-      store?.set(key, { ...row, status: statuses.pending, createdAt: now() })
+      return setDurable(store, key, { ...row, status: statuses.pending, createdAt: now() })
     },
     get(key) {
       return store?.get(key)
@@ -68,7 +70,7 @@ export function createInteractionLedger(options = {}) {
       if (row.status === statuses.resolved && opts.claimedSettle !== true) {
         return 'already-resolved'
       }
-      store.set(key, resolvedRowOf(row, decision, extra))
+      if (setDurable(store, key, resolvedRowOf(row, decision, extra)) !== true) return 'storage-failed'
       return true
     },
     /** 仅 pending 行可终止为 'terminated'（C2/P1-5 僵尸守卫）：已决/缺失行返回
@@ -76,7 +78,7 @@ export function createInteractionLedger(options = {}) {
     terminate(key, extra = {}) {
       const row = store?.get(key)
       if (row === undefined || !isPending(row)) return false
-      store.set(key, resolvedRowOf(row, 'terminated', extra))
+      if (setDurable(store, key, resolvedRowOf(row, 'terminated', extra)) !== true) return 'storage-failed'
       return true
     },
     /** 按前缀扫描行键（latestPendingFor 遍历用；store 缺失返回空数组）。 */

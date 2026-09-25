@@ -10,6 +10,7 @@
 
 import { isValidTargetId } from './target-guard.mjs'
 import { INBOUND_CHANNEL_SET } from './channels-registry.mjs'
+import { setDurable } from './store.mjs'
 
 const KEY_BINDINGS = 'inbound:bindings'
 const KEY_PENDING = 'inbound:pending'
@@ -101,8 +102,8 @@ export function createIdentity(options = {}) {
   }
 
   function writeBindings(table) {
-    if (store === null) return
-    store.set(KEY_BINDINGS, table)
+    if (store === null) return true
+    return setDurable(store, KEY_BINDINGS, table)
   }
 
   // G-44（W12）：启动时一次性清洗坏绑定键 + 写回 + warn 计数。
@@ -135,7 +136,10 @@ export function createIdentity(options = {}) {
     }
     if (badKeys.length === 0) return // 无死键：零写放大
     try {
-      store.set(KEY_BINDINGS, cleaned)
+      if (setDurable(store, KEY_BINDINGS, cleaned) !== true) {
+        warn('坏绑定键清洗写回未落盘（不致命）')
+        return
+      }
       const preview = badKeys.slice(0, 3).map((k) => String(k).slice(0, 32)).join('、')
       warn(`坏绑定键启动清洗：${badKeys.length} 条移除（${preview}${badKeys.length > 3 ? '…' : ''}），绑定表与业务视图对齐`)
     } catch (error) {
@@ -171,7 +175,10 @@ export function createIdentity(options = {}) {
     // 顺带剔除形状损坏的键（value 非对象/渠道非法）：与过期清扫一起写回，零额外写放大
     if (expired > 0 || Object.keys(out).length !== Object.keys(raw).length) {
       try {
-        store.set(KEY_PENDING, out)
+        if (setDurable(store, KEY_PENDING, out) !== true) {
+          warn('待确认绑定清扫写回未落盘（不致命）')
+          return out
+        }
         warn(`待确认绑定清扫：${expired} 条过期、${Object.keys(raw).length - Object.keys(out).length - expired} 条坏形状被移除`)
       } catch (error) {
         warn(`待确认绑定清扫写回失败（不致命）: ${error instanceof Error ? error.message : String(error)}`)
@@ -262,10 +269,12 @@ export function createIdentity(options = {}) {
           added += 1
         }
       }
-      if (store !== null) store.set(KEY_MIGRATED, true)
       if (added > 0) {
-        writeBindings(table)
+        if (writeBindings(table) !== true) return { added: 0, reason: 'storage-failed' }
         warn(`白名单迁移：${added} 条绑定落盘（一次性导入完成，此后增删以管理台为准）`)
+      }
+      if (store !== null && setDurable(store, KEY_MIGRATED, true) !== true) {
+        return { added: 0, reason: 'storage-failed' }
       }
       return { added }
     },
@@ -297,7 +306,7 @@ export function createIdentity(options = {}) {
         origin: VALID_ORIGINS.has(origin) ? origin : 'paired',
       }
       table[key] = record
-      writeBindings(table)
+      if (writeBindings(table) !== true) return { ok: false, reason: 'storage-failed' }
       return { ok: true, record }
     },
 
@@ -307,7 +316,7 @@ export function createIdentity(options = {}) {
       const key = `${channel}:${String(userId ?? '')}`
       if (table[key] === undefined) return { ok: false, reason: 'not-found' }
       delete table[key]
-      writeBindings(table)
+      if (writeBindings(table) !== true) return { ok: false, reason: 'storage-failed' }
       return { ok: true }
     },
 
@@ -320,7 +329,7 @@ export function createIdentity(options = {}) {
       if (typeof diff.label === 'string') record.label = diff.label.slice(0, 64)
       if (VALID_ROLES.has(diff.role)) record.role = diff.role
       table[key] = record
-      writeBindings(table)
+      if (writeBindings(table) !== true) return { ok: false, reason: 'storage-failed' }
       return { ok: true, record }
     },
 
@@ -339,7 +348,9 @@ export function createIdentity(options = {}) {
       if (table[`${channel}:${uid}`] !== undefined) return { ok: false, reason: 'already-bound' }
       const pending = readPending()
       pending[`${channel}:${uid}`] = { channel, userId: uid, origin, at: Date.now(), extra }
-      if (store !== null) store.set(KEY_PENDING, pending)
+      if (store !== null && setDurable(store, KEY_PENDING, pending) !== true) {
+        return { ok: false, reason: 'storage-failed' }
+      }
       return { ok: true }
     },
 
@@ -354,8 +365,15 @@ export function createIdentity(options = {}) {
       const entry = pending[key]
       if (entry === undefined) return { ok: false, reason: 'not-found' }
       delete pending[key]
-      if (store !== null) store.set(KEY_PENDING, pending)
-      return this.addBinding({ channel, userId: entry.userId, origin: 'confirmed' })
+      if (store !== null && setDurable(store, KEY_PENDING, pending) !== true) {
+        return { ok: false, reason: 'storage-failed' }
+      }
+      const result = this.addBinding({ channel, userId: entry.userId, origin: 'confirmed' })
+      if (result.ok !== true && store !== null) {
+        pending[key] = entry
+        setDurable(store, KEY_PENDING, pending)
+      }
+      return result
     },
 
     dismissPending(channel, userId) {
@@ -363,7 +381,9 @@ export function createIdentity(options = {}) {
       const key = `${channel}:${String(userId ?? '')}`
       if (pending[key] === undefined) return { ok: false, reason: 'not-found' }
       delete pending[key]
-      if (store !== null) store.set(KEY_PENDING, pending)
+      if (store !== null && setDurable(store, KEY_PENDING, pending) !== true) {
+        return { ok: false, reason: 'storage-failed' }
+      }
       return { ok: true }
     },
   }
