@@ -142,6 +142,35 @@ export function createLedger(options = {}) {
     return { counts, failedDeliveries, from: fromLabel ?? new Date(fromMs).toISOString(), to: toLabel ?? new Date(toMs).toISOString() }
   }
 
+  /**
+   * 最近 limit 条账本记录（Commit20 /log 的唯一数据源；**只读**、有界、绝不抛）。
+   * - 从文件尾向前收集，天然取「最新 N 条」并返回**正序**（旧→新，便于按时间阅读）；
+   * - 脏行（非 JSON / 非对象）逐条跳过——账本容错优先于完整，与 read() 同口径；
+   * - 返回 copy-on-read（每条 JSON 深拷贝）：调用方改返回值绝不污染内部/盘上数据；
+   * - 账本自身有 maxEntries 上限且 prune，故 full read 可接受（plan §11.12）。
+   */
+  function recent(limit = 20) {
+    try {
+      const n = Math.max(0, Math.trunc(Number(limit) || 0))
+      if (n === 0 || !existsSync(file)) return []
+      const lines = readFileSync(file, 'utf8').split('\n')
+      const out = []
+      for (let index = lines.length - 1; index >= 0 && out.length < n; index -= 1) {
+        const line = lines[index]
+        if (line.trim() === '') continue
+        try {
+          const entry = JSON.parse(line)
+          if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) continue
+          out.push(JSON.parse(JSON.stringify(entry)))
+        } catch { /* 脏行跳过 */ }
+      }
+      out.reverse()
+      return out
+    } catch {
+      return []
+    }
+  }
+
   /** 摘要去重标记：同一天只发一次晨报（重启不重发）。 */
   function markDigestDone(dateStr) {
     try {
@@ -158,7 +187,7 @@ export function createLedger(options = {}) {
     }
   }
 
-  return { append, read, summarize, compose: composeDigest, markDigestDone, lastDigestDate, get file() { return file } }
+  return { append, read, summarize, recent, compose: composeDigest, markDigestDone, lastDigestDate, get file() { return file } }
 }
 
 /**

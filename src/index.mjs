@@ -145,8 +145,13 @@ export function apply(ctx, config = {}) {
   // 启动时对「昨日」窗口汇总推送一次摘要（同日重启不重发；账本失败绝不影响推送）。
   const digestRaw = (resolved.digest !== null && typeof resolved.digest === 'object') ? resolved.digest : {}
   const ledgerEnabled = digestRaw.enabled === true
+  // Commit20：remoteLog.enabled 也要求账本存在——/log 的唯一数据源是 ledger.recent()。
+  // 账本创建因此不与「晨报」耦合：remoteLog 单独开启时也建账本（否则 /log 恒不可用），
+  // 但**晨报推送仍只由 digest.enabled 决定**（下方 if (ledgerEnabled && ...) 守卫），
+  // 打开 /log 不会顺带开始发晨报。
+  const remoteLogEnabled = resolved.remoteLog?.enabled === true
   let ledger = null
-  if (ledgerEnabled) {
+  if (ledgerEnabled || remoteLogEnabled) {
     const inboundRawForDir = (resolved.inbound !== null && typeof resolved.inbound === 'object') ? resolved.inbound : {}
     const ledgerDir = typeof inboundRawForDir.stateDir === 'string' && inboundRawForDir.stateDir.trim() !== ''
       ? inboundRawForDir.stateDir.trim()
@@ -324,7 +329,9 @@ export function apply(ctx, config = {}) {
   if (disposeTestTool != null) disposers.push(disposeTestTool)
 
   // 启动期晨报：昨日有记录且今天还没发过 → 推一次摘要（passive 级，走正常路由）。
-  if (ledger !== null) {
+  // Commit20：守卫必须看 **digest.enabled**（ledgerEnabled），而非「账本存在」——账本现在
+  // 也可能仅因 remoteLog.enabled 而建（/log 数据源），此时绝不该顺带发晨报。
+  if (ledgerEnabled && ledger !== null) {
     try {
       const window = yesterdayWindow()
       if (ledger.lastDigestDate() !== window.dateStr) {
@@ -654,6 +661,11 @@ export function apply(ctx, config = {}) {
         // v0.10 移动任务路由（任务书提交5）：歧义前置选择卡 + /tasks ⚠ 待关注标记
         taskSelection,
         attentionOf,
+        // Commit20：/log 三重依赖——identity（owner 判定，channel-scoped）、ledger（只读
+        // recent() 数据源）、remoteLog（开关与上限）。三者任一缺失即 fail-closed。
+        identity,
+        ledger,
+        remoteLog: resolved.remoteLog,
         logger,
       }, strings)
       disposers.push(disposeConversation)

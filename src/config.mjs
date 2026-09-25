@@ -43,6 +43,15 @@ export const ADAPTERS = Object.freeze({
 
 export const CHANNEL_TYPES = Object.freeze(Object.keys(ADAPTERS))
 
+/**
+ * 远程日志（Commit20 /log）hard caps：用户不可放大的**硬上限**。
+ * 敏感诊断能力（ledger 标题可能含任务上下文），故 remoteLog 配置再怎么写也只在此范围内生效。
+ */
+export const REMOTE_LOG_HARD_MAX_LINES = 200
+export const REMOTE_LOG_HARD_MAX_BYTES = 8192
+/** /log 缺省回传条数（无参时）。 */
+export const REMOTE_LOG_DEFAULT_LINES = 20
+
 /** 每渠道的 secret 键：这些字段在日志/诊断里必须脱敏。spec 渠道由声明表自动登记。 */
 const SECRET_FIELDS = {
   telegram: ['botToken'],
@@ -309,6 +318,21 @@ export function resolveConfig(config = {}) {
     remoteEnabled: rawQuestions.remoteEnabled !== false,
   }
 
+  // 远程日志（Commit20 /log）：敏感诊断能力，**默认关**（enabled 仅显式 true 才开）。
+  // maxLines/maxBytes 一律 clamp 到 hard caps（§11.5：用户不能放大），非有限数字回落上限：
+  // 安全配置的非法值不配得到宽松解释（与 graceSeconds 同法，只认真正的 number）。
+  // owner-only 与脱敏在 conversation 层执行。
+  const rawRemoteLog = (raw.remoteLog !== null && typeof raw.remoteLog === 'object' && !Array.isArray(raw.remoteLog)) ? raw.remoteLog : {}
+  const remoteLog = {
+    enabled: rawRemoteLog.enabled === true,
+    maxLines: typeof rawRemoteLog.maxLines === 'number' && Number.isFinite(rawRemoteLog.maxLines)
+      ? Math.min(REMOTE_LOG_HARD_MAX_LINES, Math.max(1, Math.trunc(rawRemoteLog.maxLines)))
+      : REMOTE_LOG_HARD_MAX_LINES,
+    maxBytes: typeof rawRemoteLog.maxBytes === 'number' && Number.isFinite(rawRemoteLog.maxBytes)
+      ? Math.min(REMOTE_LOG_HARD_MAX_BYTES, Math.max(256, Math.trunc(rawRemoteLog.maxBytes)))
+      : REMOTE_LOG_HARD_MAX_BYTES,
+  }
+
   // 空闲宽限窗（阶段 2 规则引擎）：turn 结束后等 N 秒，期间用户在页面/终端输入即取消打扰。
   const graceSeconds = typeof raw.graceSeconds === 'number' && Number.isFinite(raw.graceSeconds)
     ? Math.max(0, Math.trunc(raw.graceSeconds))
@@ -400,6 +424,7 @@ export function resolveConfig(config = {}) {
     events,
     toolRateLimitPerMinute,
     questions,
+    remoteLog,
     graceSeconds,
     routing: (raw.routing !== null && typeof raw.routing === 'object') ? raw.routing : {},
     // v0.6.1：inbound 块对齐 channels 的 ${ENV:NAME} 密钥引用语义（真机事故 §7：

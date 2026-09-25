@@ -3,7 +3,7 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { ADAPTERS } from '../src/config.mjs'
+import { ADAPTERS, resolveConfig, REMOTE_LOG_HARD_MAX_LINES, REMOTE_LOG_HARD_MAX_BYTES } from '../src/config.mjs'
 import { INBOUND_CHANNELS as REGISTRY } from '../src/inbound/channels-registry.mjs'
 import { INBOUND_CHANNELS as FROM_ADMIN } from '../src/admin/api.mjs'
 import { INBOUND_CHANNELS as FROM_MATRIX, INBOUND_CHANNEL_SET } from '../src/inbound/capability-matrix.mjs'
@@ -300,5 +300,59 @@ test('G-45 postText：默认 content-type text/plain，调用方同名头可覆�
     assert.equal(seen[1]['content-type'], 'application/json', '调用方覆盖优先')
   } finally {
     globalThis.fetch = originalFetch
+  }
+})
+
+// ---------------------------------------------------------------- Commit20 remoteLog（/log）
+
+test('Commit20 remoteLog：默认 enabled=false，maxLines/maxBytes 回落到 hard caps', () => {
+  const rl = resolveConfig({}).remoteLog
+  assert.equal(rl.enabled, false, '默认关（仅显式 true 才开）')
+  assert.equal(rl.maxLines, REMOTE_LOG_HARD_MAX_LINES)
+  assert.equal(rl.maxBytes, REMOTE_LOG_HARD_MAX_BYTES)
+})
+
+test('Commit20 remoteLog：enabled 仅显式 true 才开（truthy 非 true 一律关）', () => {
+  assert.equal(resolveConfig({ remoteLog: { enabled: true } }).remoteLog.enabled, true)
+  for (const value of [1, 'true', 'yes', {}, []]) {
+    assert.equal(resolveConfig({ remoteLog: { enabled: value } }).remoteLog.enabled, false, `enabled=${String(value)} 应关`)
+  }
+})
+
+test('Commit20 remoteLog：maxLines/maxBytes clamp 到 hard caps（用户不能放大 §11.5）', () => {
+  const rl = resolveConfig({ remoteLog: { enabled: true, maxLines: 100000, maxBytes: 999999999 } }).remoteLog
+  assert.equal(rl.maxLines, REMOTE_LOG_HARD_MAX_LINES)
+  assert.equal(rl.maxBytes, REMOTE_LOG_HARD_MAX_BYTES)
+})
+
+test('Commit20 remoteLog：下界 clamp（maxLines≥1 / maxBytes≥256）', () => {
+  const rl = resolveConfig({ remoteLog: { maxLines: 0, maxBytes: 0 } }).remoteLog
+  assert.equal(rl.maxLines, 1)
+  assert.equal(rl.maxBytes, 256)
+  const neg = resolveConfig({ remoteLog: { maxLines: -5, maxBytes: -1 } }).remoteLog
+  assert.equal(neg.maxLines, 1)
+  assert.equal(neg.maxBytes, 256)
+})
+
+test('Commit20 remoteLog：非法值回落上限（安全配置非法值不宽松解释）', () => {
+  for (const value of ['abc', null, undefined, {}, [], NaN, Infinity, true]) {
+    const rl = resolveConfig({ remoteLog: { maxLines: value, maxBytes: value } }).remoteLog
+    assert.equal(rl.maxLines, REMOTE_LOG_HARD_MAX_LINES, `maxLines=${String(value)} 应回落上限`)
+    assert.equal(rl.maxBytes, REMOTE_LOG_HARD_MAX_BYTES, `maxBytes=${String(value)} 应回落上限`)
+  }
+})
+
+test('Commit20 remoteLog：小数取整（trunc）', () => {
+  const rl = resolveConfig({ remoteLog: { maxLines: 12.9, maxBytes: 1024.9 } }).remoteLog
+  assert.equal(rl.maxLines, 12)
+  assert.equal(rl.maxBytes, 1024)
+})
+
+test('Commit20 remoteLog：remoteLog 非对象形态（数组/字符串/null）一律回落默认', () => {
+  for (const value of [[], 'on', null, 42]) {
+    const rl = resolveConfig({ remoteLog: value }).remoteLog
+    assert.equal(rl.enabled, false)
+    assert.equal(rl.maxLines, REMOTE_LOG_HARD_MAX_LINES)
+    assert.equal(rl.maxBytes, REMOTE_LOG_HARD_MAX_BYTES)
   }
 })

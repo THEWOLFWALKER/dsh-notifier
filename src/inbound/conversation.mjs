@@ -16,7 +16,8 @@
 import { stringsOf } from '../strings.mjs'
 import { workspaceOf } from '../routing/session-registry.mjs'
 import { projectTasks } from '../routing/task-projection.mjs'
-import { CHANNEL_TYPES } from '../config.mjs'
+import { CHANNEL_TYPES, REMOTE_LOG_DEFAULT_LINES, REMOTE_LOG_HARD_MAX_LINES, REMOTE_LOG_HARD_MAX_BYTES } from '../config.mjs'
+import { maskSecrets } from '../redact.mjs'
 import { chatScopeOf } from '../control/session-arbiter.mjs'
 import { bindingKey as identityBindingKey } from './identity.mjs'
 import { MESSAGE_PRIORITY } from './bus.mjs'
@@ -93,6 +94,12 @@ function attachmentFailureText(t, failures) {
 * @param {ReturnType<typeof import('../routing/task-selection.mjs').createTaskSelection>} [deps.taskSelection]
  *   - v0.10 任务选择（歧义前置）；非空时多活跃任务无绑定先下发选择卡
  * @param {(id: string) => boolean} [deps.attentionOf] - v0.10 待关注判定器（/tasks ⚠）
+ * @param {ReturnType<typeof import('./identity.mjs').createIdentity>} [deps.identity]
+ *   - Commit20：/log 的 owner 判定（channel-scoped）；缺省 fail-closed（拒绝）
+ * @param {ReturnType<typeof import('../ledger.mjs').createLedger>} [deps.ledger]
+ *   - Commit20：/log 的只读数据源（recent()）；缺省或未运行时回「暂不可用」
+ * @param {{ enabled?: boolean, maxLines?: number, maxBytes?: number }} [deps.remoteLog]
+ *   - Commit20：/log 开关与上限（resolved config；默认 enabled:false）；缺省视为未开启
  * @param {(url: string) => Promise<{data: Uint8Array, mediaType: string, size: number}|null>} [deps.downloadImageBytes]
  *   - Host P0-A 图片字节下载原语（测试替身注入点；缺省回落 message.mjs downloadInboundImageBytes）
  * @param {(url: string) => Promise<{data: Uint8Array, mediaType: string, size: number}|null>} [deps.downloadFileBytes]
@@ -113,6 +120,18 @@ export function registerConversationRouter(deps, strings) {
   const taskSelection = deps.taskSelection ?? null
   // v0.10 待关注事项判定器（/tasks ⚠ 标记与投影 attention 字段）；缺省恒 false。
   const attentionOf = typeof deps.attentionOf === 'function' ? deps.attentionOf : () => false
+  // Commit20：/log 远程日志回传。identity = owner 判定（channel-scoped）；ledger = 只读
+  // recent() 数据源（可能是 null —— 账本未运行）；remoteLog = resolved 配置（默认 enabled:false）。
+  // 三者任一缺失都 fail-closed（拒绝/未开启/暂不可用），绝不新增第二套鉴权。
+  const identity = deps.identity ?? null
+  const ledger = deps.ledger ?? null
+  const remoteLog = (deps.remoteLog !== null && typeof deps.remoteLog === 'object' && !Array.isArray(deps.remoteLog)) ? deps.remoteLog : {}
+  const remoteLogMaxLines = Number.isFinite(Number(remoteLog.maxLines))
+    ? Math.min(REMOTE_LOG_HARD_MAX_LINES, Math.max(1, Math.trunc(Number(remoteLog.maxLines))))
+    : REMOTE_LOG_HARD_MAX_LINES
+  const remoteLogMaxBytes = Number.isFinite(Number(remoteLog.maxBytes))
+    ? Math.min(REMOTE_LOG_HARD_MAX_BYTES, Math.max(256, Math.trunc(Number(remoteLog.maxBytes))))
+    : REMOTE_LOG_HARD_MAX_BYTES
   // Host P0-A 图片字节下载（有界超时/大小/类型）：把实读字节收进内存交给 attachments
   // 做 durable admission。可注入 downloadImageBytes 换成测试替身/渠道专用下载器。
   const downloadImageBytes = typeof deps.downloadImageBytes === 'function' ? deps.downloadImageBytes : downloadInboundImageBytes
@@ -372,6 +391,12 @@ say(t.helpLines.join('\n'))
       say(renderSessions(envelope))
       return true
     }
+    // Commit20：/log —— 敏感诊断能力（默认关、owner-only、脱敏、有界）。与 /sessions 同处
+    // 紧随 /tasks 之后；数据源是通知账本（非会话输出，口径见 renderLog）。
+    if (cmd === 'log') {
+      say(renderLog(envelope, args))
+      return true
+    }
     if (cmd === 'use') {
       fireAsync(handleTaskUse(envelope, args.join(' '), say))
       return true
@@ -496,6 +521,99 @@ say(t.helpLines.join('\n'))
     })
     lines.push(t.sessionsFooter)
     return lines.join('\n')
+  }
+
+  /**
+   * owner 判定：identity.list(channel) 里存在同 userId 且 role === 'owner' 的记录。
+   * owner 是 **channel-scoped** 绑定（同 userId 在别的渠道的 owner 不算数）；
+   * identity 缺失/list 抛错一律 fail-closed（false）。绝不告诉调用者「谁是 owner」。
+   */
+  function isOwner(envelope) {
+    if (identity === null || typeof identity.list !== 'function') return false
+    try {
+      return identity.list(envelope.channel).some(
+        (row) => String(row?.userId) === String(envelope.userId) && row?.role === 'owner',
+      )
+    } catch { return false }
+  }
+
+  /**
+   * 解析 `/log N`：无参 → 缺省 20；正整数 → 原值（收集时再 clamp 到 maxLines）；
+   * 0 / 负数 / 小数 / 非数字 / 多余参数 → null（调用方回 usage）。
+   * 只接受纯十进制正整数字面量（拒绝 '+3'、'1e3'、'0x10' 等奇形，fail-closed 不猜）。
+   */
+  function parseLogCount(args) {
+    if (args.length === 0) return REMOTE_LOG_DEFAULT_LINES
+    if (args.length > 1) return null
+    if (!/^\d+$/.test(args[0])) return null
+    const value = Number(args[0])
+    return value === 0 || !Number.isFinite(value) ? null : value
+  }
+
+  /**
+   * UTF-8 安全字节截断（plan §11.20/§11.21）：先给 marker 预留字节，再按 **code point**
+   * 递增累积到预算内——`text.slice(0, n)` 是 UTF-16 码元切法（会切出半个代理项且字节数不可控），
+   * 这里用 `for...of`（按码点迭代）保证无孤立代理项。未超限原样返回，超限追加 marker。
+   */
+  function truncateUtf8(text, maxBytes, marker) {
+    const encoder = new TextEncoder()
+    if (encoder.encode(text).length <= maxBytes) return text
+    const markerBytes = encoder.encode(marker).length
+    const budget = Math.max(0, maxBytes - markerBytes)
+    let out = ''
+    let used = 0
+    for (const ch of text) {
+      const size = encoder.encode(ch).length
+      if (used + size > budget) break
+      out += ch
+      used += size
+    }
+    return out + marker
+  }
+
+  /** 单条账本记录 → 一行投影（只 time/kind/level/title + delivered/failed 计数；无凭据、无原始错误）。 */
+  function projectLogLine(entry) {
+    const time = typeof entry.at === 'string' ? entry.at : ''
+    const kind = typeof entry.kind === 'string' && entry.kind !== '' ? entry.kind : 'other'
+    const level = typeof entry.level === 'string' ? entry.level : ''
+    const title = typeof entry.title === 'string' ? entry.title : ''
+    const delivered = Array.isArray(entry.delivered) ? entry.delivered.length : 0
+    const failed = Array.isArray(entry.failed) ? entry.failed.length : 0
+    return t.logLine(time, kind, level, title, delivered, failed)
+  }
+
+  /**
+   * /log：敏感诊断能力（Commit20）。默认关 + owner-only + 脱敏 + 有界。
+   * 数据源 = 通知账本 `ledger.recent()`——**账本没有 sessionId 语义**，故口径如实写作
+   * 「最近通知/事件摘要」（plan §11.14），绝不谎称是「当前会话日志」；也绝不读
+   * `session.events` / `snapshotEvents`（宿主面不可靠，plan §11.10）。
+   * 截断顺序（plan §11.19）：collect N → project lines → join → redact → line cap → byte cap。
+   * 顺序上「身份先通过 bus（陌生人根本进不了 command）」→ 本命令内 owner 判定 → 未开启 → 账本不可用。
+   * 脱敏口径如实声明：`maskSecrets` 是**形态**打码（sk-/ghp_/xox/Bearer/长 hex|base64 等），
+   * 不是语义扫描器——不保证逐字节抹掉任意 `foo=短值`，故 disabled/owner 闸与「有界」才是主防线。
+   */
+  function renderLog(envelope, args) {
+    if (!isOwner(envelope)) return t.logOwnerOnly
+    if (remoteLog.enabled !== true) return t.logDisabled
+    if (ledger === null || typeof ledger.recent !== 'function') return t.logUnavailable
+    const requested = parseLogCount(args)
+    if (requested === null) return t.logUsage(REMOTE_LOG_DEFAULT_LINES, remoteLogMaxLines)
+    let entries
+    try {
+      entries = ledger.recent(Math.min(requested, remoteLogMaxLines))
+    } catch {
+      return t.logUnavailable
+    }
+    const records = Array.isArray(entries) ? entries : []
+    if (records.length === 0) return t.logEmpty
+    const lines = [t.logSummaryHeader(records.length), ...records.map((entry) => projectLogLine(entry))]
+    // 脱敏（标题仍可能含路径/token-like 文本，plan §11.17）：走项目正式入口 maskSecrets，
+    // 在 join 之后整体过一遍（标题/kind 一视同仁），绝不复制 regex。
+    const redacted = maskSecrets(lines.join('\n'))
+    // line cap：防御性再截一次行数（header + maxLines），绝不因投影多吐行而放大。
+    const capped = redacted.split('\n').slice(0, remoteLogMaxLines + 1).join('\n')
+    // byte cap：UTF-8 安全截断（marker 预留字节），全程 ≤ maxBytes。
+    return truncateUtf8(capped, remoteLogMaxBytes, t.logTruncated)
   }
 
   /** 把本对话绑定到指定会话（store bind 键 + 台账反查挂钩 + 活跃信号），复用 /bind 的摘挂语义。 */

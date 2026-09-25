@@ -227,3 +227,76 @@ test('runChannelTest: 发送失败 detail 只含公开文案，内部细节落 s
     console.error = originalError
   }
 })
+
+// ---------------------------------------------------------------- Commit20 recent()（/log 只读数据源）
+
+test('Commit20 ledger.recent：取最新 N 条并返回正序（旧→新）', () => {
+  const dir = tempDir()
+  try {
+    const ledger = createLedger({ dir })
+    for (let index = 1; index <= 5; index += 1) {
+      ledger.append(record({ time: new Date(`2026-08-14T10:0${index}:00Z`).toISOString(), message: { title: `任务 ${index}`, content: 'c', level: 'info' } }))
+    }
+    const recent = ledger.recent(2)
+    assert.equal(recent.length, 2)
+    assert.equal(recent[0].title, '任务 4', '最新 N 条里最旧的在前')
+    assert.equal(recent[1].title, '任务 5', '最新的在最后')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('Commit20 ledger.recent：limit 为 0 / 负数 / 非数字 → 空数组，不抛', () => {
+  const dir = tempDir()
+  try {
+    const ledger = createLedger({ dir })
+    ledger.append(record())
+    assert.deepEqual(ledger.recent(0), [])
+    assert.deepEqual(ledger.recent(-3), [])
+    assert.deepEqual(ledger.recent('abc'), [])
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('Commit20 ledger.recent：脏行（非 JSON / 非对象）逐条跳过，容错优先', () => {
+  const dir = tempDir()
+  try {
+    const ledger = createLedger({ dir })
+    ledger.append(record({ message: { title: '任务 A', content: 'c', level: 'info' } }))
+    ledger.append(record({ message: { title: '任务 B', content: 'c', level: 'info' } }))
+    writeFileSync(join(dir, 'ledger.jsonl'), `${readFileSync(join(dir, 'ledger.jsonl'), 'utf8')}{broken json\n[1,2,3]\n\n`)
+    const recent = ledger.recent(10)
+    assert.equal(recent.length, 2, '两条有效记录保留，脏行不污染')
+    assert.equal(recent[0].title, '任务 A')
+    assert.equal(recent[1].title, '任务 B')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('Commit20 ledger.recent：copy-on-read（改返回值不污染盘上数据）', () => {
+  const dir = tempDir()
+  try {
+    const ledger = createLedger({ dir })
+    ledger.append(record({ message: { title: '任务 A', content: 'c', level: 'info' } }))
+    const first = ledger.recent(1)
+    first[0].title = '被篡改'
+    first[0].delivered.push('evil')
+    const second = ledger.recent(1)
+    assert.equal(second[0].title, '任务 A', '盘上/内部数据不被返回值污染')
+    assert.deepEqual(second[0].delivered, ['telegram'])
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('Commit20 ledger.recent：账本文件不存在 → 空数组，绝不抛', () => {
+  const dir = tempDir()
+  try {
+    const ledger = createLedger({ dir })
+    assert.deepEqual(ledger.recent(5), [])
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
