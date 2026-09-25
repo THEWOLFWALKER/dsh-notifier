@@ -2,6 +2,8 @@
 
 这是人类和 agent 的导航页。每个问题尽量只指向一个权威来源；运行时真相仍是 `src/` 与 `test/`，版本真相是 `package.json`。
 
+> 当前工作线 overlay：源码包版本为未发布的 `0.12.1`（dev）；Phase A-E 已完成，1889 tests 已登记，Phase F 与全量 npm 收口仍 open。`v0.12.0` 仍是最近一个已发布/tagged 版本。
+
 ## 当前基线
 
 - 当前发布线：**v0.12.0**（Native Control Surface + 出站热生效 + 出站状态迁移，包版本字段 `0.12.0`，`main` 已并入并 tag `v0.12.0`；真机 DSH 宿主 `0.1.7-rc.2` 视觉/交互验证与 `alpha.1` 兼容性冒烟均已通过）：canonical 出站键 `channel:<type>:outbound` 始终读取（Admin 关闭不得复活旧 overlay）、`OutboundSource` 为唯一运行时权威、DSH Connection RPC `/dsh-notifier`、一次性 Advanced Console 启动票据、Health/Activity/Channels/Tasks/Questions 投影、Native 前端（Host React，无 iframe/esbuild/react-dom）。上一发布线 **v0.11.0**（issue/PR 清零 + 宿主对齐 + 生态公共面，1816 tests；`main` @ `dfb4983`，tag `v0.11.0`）。更早 v0.10.2（文档清理与收录状态收口，1616 tests）。

@@ -16,13 +16,13 @@
 ![Zero deps](https://img.shields.io/badge/runtime%20deps-0-000000?style=flat-square)
 ![Channels](https://img.shields.io/badge/channels-28-00B4D8?style=flat-square)
 ![npm version](https://img.shields.io/npm/v/dsh-notifier?style=flat-square&logo=npm&logoColor=white)
-![tests](https://img.shields.io/badge/tests-1831-brightgreen?style=flat-square)
+![tests](https://img.shields.io/badge/tests-1889-brightgreen?style=flat-square)
 ![license](https://img.shields.io/badge/license-MIT-brightgreen?style=flat-square)
 [![dshfind](https://dshfind.com/api/badge/THEWOLFWALKER/dsh-notifier?lang=zh)](https://dshfind.com/zh/plugins/THEWOLFWALKER/dsh-notifier?ref=badge)
 
-`dsh-notifier@0.12.0` 是 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的通知与远程操作控制面：**28 个出站渠道**、**6 个入站控制渠道**、手机审批/提问/会话、任务状态、渠道健康与活动流，以及 **DSH 原生 Sidebar/Main 控制面**。运行时依赖仍然是 0。
+`dsh-notifier@0.12.1` 是 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的通知与远程操作控制面：**28 个出站渠道**、**6 个入站控制渠道**、手机审批/提问/会话、任务状态、渠道健康与活动流，以及 **DSH 原生 Sidebar/Main 控制面**。运行时依赖仍然是 0。
 
-包元数据：`dsh-notifier@0.12.0` · 1831 个自动化契约测试 · MIT 许可。
+包元数据：`dsh-notifier@0.12.1` · 1889 个自动化契约测试 · MIT 许可。
 
 [开始使用](docs/guide.md) · [升级指南](docs/upgrade-guide.md) · [兼容性](docs/compatibility-matrix.md) · [插件接入](PLUGINS.md) · [变更记录](CHANGELOG.md)
 
@@ -50,7 +50,7 @@ dsh plugin add dsh-notifier@latest --profile <profile名>
 1. 从 DSH 侧栏打开 **「通知与控制」**，或进入 **Plugins → dsh-notifier → 开始设置**；
 2. 选一个你已经在用的通知渠道；
 3. 填凭证，点 **「保存并测试」**；
-4. 必须真实收到测试通知，首访才算完成。
+4. 提供方接受测试消息后首访即可完成；如果没有端到端回执，界面会明确提示你到设备确认。
 
 之后修改**出站**渠道会立即热生效，正常使用无需 YAML。
 
@@ -255,9 +255,9 @@ npm pack --dry-run --json
 git diff --check
 ```
 
-v0.12.0 发布基线：**1831 / 1831 tests pass**。
+v0.12.1 修复线：登记 **1889 个契约测试**；修复包 focused 套件已通过，真实 provider/设备证据仍是外部门禁。
 
-test/ 1831 个测试；历史 0.8.6 包为 909 个测试。
+test/ 1889 个测试；历史 0.8.6 包为 909 个测试。
 
 ## 许可
 

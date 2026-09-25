@@ -16,13 +16,13 @@
 ![Zero deps](https://img.shields.io/badge/runtime%20deps-0-000000?style=flat-square)
 ![Channels](https://img.shields.io/badge/channels-28-00B4D8?style=flat-square)
 ![npm version](https://img.shields.io/npm/v/dsh-notifier?style=flat-square&logo=npm&logoColor=white)
-![tests](https://img.shields.io/badge/tests-1831-brightgreen?style=flat-square)
+![tests](https://img.shields.io/badge/tests-1889-brightgreen?style=flat-square)
 ![license](https://img.shields.io/badge/license-MIT-brightgreen?style=flat-square)
 [![dshfind](https://dshfind.com/api/badge/THEWOLFWALKER/dsh-notifier?lang=en)](https://dshfind.com/en/plugins/THEWOLFWALKER/dsh-notifier?ref=badge)
 
-`dsh-notifier@0.12.0` is the notification and remote-operations control plane for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness): **28 outbound channels**, **6 inbound control channels**, remote approvals/questions/conversation, task visibility, health/activity projections, and a **native DSH Sidebar/Main experience** — with zero runtime dependencies.
+`dsh-notifier@0.12.1` is the notification and remote-operations control plane for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness): **28 outbound channels**, **6 inbound control channels**, remote approvals/questions/conversation, task visibility, health/activity projections, and a **native DSH Sidebar/Main experience** — with zero runtime dependencies.
 
-Package metadata: `dsh-notifier@0.12.0` · 1831 automated contract tests · MIT licensed.
+Package metadata: `dsh-notifier@0.12.1` · 1889 automated contract tests · MIT licensed.
 
 [Get started](docs/guide.md) · [Upgrade](docs/upgrade-guide.en.md) · [Compatibility](docs/compatibility-matrix.md) · [Plugin API](PLUGINS.en.md) · [Changelog](CHANGELOG.md)
 
@@ -50,7 +50,7 @@ Restart DSH once so the newly installed client module and host plugin are loaded
 1. Open **Notify & Control** from the DSH sidebar, or **Plugins → dsh-notifier → Start setup**.
 2. Choose a notification channel you already use.
 3. Enter credentials and select **Save and test**.
-4. Setup finishes only after a **real test notification is delivered** to your device.
+4. Setup finishes when the provider **accepts** the test; if no end-to-end receipt exists, the UI explicitly asks you to confirm it on your device.
 
 After that, outbound edits apply immediately. No YAML is required for normal setup.
 
@@ -255,9 +255,9 @@ npm pack --dry-run --json
 git diff --check
 ```
 
-v0.12.0 release baseline: **1831 / 1831 tests pass**.
+v0.12.1 remediation line: **1889 registered contract tests**; the focused remediation suites pass, while real-provider/device evidence remains an external gate.
 
-test/ 1831 tests in the current line; the historical 0.8.6 package carried 909 tests.
+test/ 1889 tests in the current line; the historical 0.8.6 package carried 909 tests.
 
 ## License
 

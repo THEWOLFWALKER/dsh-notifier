@@ -4,6 +4,8 @@
 
 Current release: **dsh-notifier v0.12.0**.
 
+Development candidate on `dev`: **v0.12.1** (not tagged or published; 1889 tests registered, Phase F real-device/provider evidence open).
+
 Release evidence (2026-09-25):
 
 - `npm test`: **1831 / 1831 pass**

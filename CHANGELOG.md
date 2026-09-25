@@ -6,6 +6,16 @@
 
 ### 修复
 
+- **持久化契约（P0-01/P0-02/P0-03/P0-04/P1-20/P1-21/P1-22/P2-06/P2-07/P2-12/P2-13）**：写盘失败向调用方传播，内存状态不会先于 durable commit 变更；账本数值与读取路径有界；损坏 state 会取证并区分读取失败，退出前完成最终持久化。
+- **事实一致性（P1-01/P1-02/P1-03/P1-04/P1-05）**：Native 与 Admin 不再各自推断渠道/别名/热重启口径，入站配置不再随 Admin 开关消失，`qq-bot` round-trip 使用同一归一入口。
+- **有界准入（P1-14/P1-15/P1-16/P2-01/P2-02）**：RPC body、waiter、未绑定去重、WxPusher 学习队列以及入站附件数量/bytes/并发均有明确预算。
+- **前端生命周期（P1-09/P1-12/P1-13/P2-10/P2-11）**：详情视图隔离、迟到响应丢弃、导航避免重复 RPC、业务失败可见、不可见面板停止长轮询。
+
+### 变更
+
+- **Phase B**：渠道、别名和 apply mode 从多个历史投影收敛为单一权威；旧行为是 Native 读取 Admin 字段并把纯入站渠道混入可通知列表，容易造成 422 或 UI/运行时不一致。
+- **Phase D**：测试与投递状态由二态/失败判据改为 `delivered` / `accepted` / `unknown` 三态；旧行为把 provider 接受请求显示成已送达，且全 skipped 显示为已完成。
+
 - **渠道测试状态**：`channels.test` 不再把 provider 接受请求直接写成「已送达」；只有显式 `confirmed` / `receipt` 才返回 `delivered`，否则返回 `accepted` 并保留 provider detail，避免误导用户。
 - **投递活动**：全部渠道跳过时由 `delivery-finished` 改为 `delivery-skipped`，活动等级为 warning，并明确没有渠道接收通知。
 - **插件就绪判断**：从「home 有渠道」收窄为「至少一个 `notify.configured === true`」，避免只有入站/控制渠道时显示通知已就绪。

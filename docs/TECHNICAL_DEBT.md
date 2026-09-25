@@ -2,6 +2,8 @@
 
 状态更新：2026-09-25。当前发布线 **v0.12.0** 已发布（Native Control Surface + canonical 出站态 + Hot Apply，1831/1831 tests；真实 DSH 0.1.7-rc.2 Native 视觉/交互与 alpha.1 兼容性冒烟已通过）。v0.11.0（1816 tests）为上一发布线。当前剩余门主要是 provider/device 级真实验证、dark/light/窄屏的持续视觉回归与生态目录描述刷新；这些不得被误写成“v0.12 功能尚未实现”。
 
+开发线 `v0.12.1` 已完成 Phase A-E 的代码与契约修复，登记 1889 tests；全量 npm 门禁和 Phase F 真实设备/provider 证据仍是发布前债务，未被本地 focused 通过替代。
+
 ### 已知工具面坑（2026-08-28 登记）
 
 - **裸 `node --test` 会把 `scripts/` 吸进测试扫描**：`scripts/channel-selfcheck.mjs`（G-57：原 `test-channel.mjs` 重命名）是需要 CLI 参数的运维脚本，无参调用退出码 1，被 node test runner 当失败用例。正式测试面是 `npm test`（glob 限定 `test/*.test.mjs`/`*.spec.mjs`）；全量校验一律用 `npm test`，不要裸跑 `node --test`。

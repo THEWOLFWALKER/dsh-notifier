@@ -1,6 +1,7 @@
 # ROADMAP.md — 历史执行规格（v0.11 / v0.12 已收口）
 
 > 更新：2026-09-25 · **v0.12.0 已发布**（1831 tests；Native Control Surface + 出站 Hot Apply + canonical state）。
+> 开发线补丁：**v0.12.1** 已在 `dev` 完成 Phase A-E 代码/契约修复（1889 tests registered）；真机/provider 证据与最终全量发布门仍保持 open。
 > **归档说明：本文保留 v0.11 的 W1~W10 历史规格与战略背景，不再作为下一版本执行入口。** W1~W6 已随 v0.11 发布；v0.12 已用 Native Control Surface 重新落位了部分旧 Admin 方向。下一版本必须新建独立 workstream/任务书，不得把本文件未做项机械视为 v0.13 承诺。
 > 当前事实以 [memory/project-state.md](memory/project-state.md) 与 [../HANDOFF.md](../HANDOFF.md) 为准；长期产品方向看 [architecture-roadmap.md](architecture-roadmap.md)。
 
