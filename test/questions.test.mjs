@@ -22,6 +22,18 @@ function tempPath() {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
+/** 有界轮询等待：定时器触发的异步副作用在 CI 并行负载下可能晚于固定 sleep（同
+ *  admin-wiring.test.mjs 的 waitFor / questions-web-first.test.mjs 的 waitForEdits 同法）。
+ *  固定 sleep 会把「慢」误判成「没发生」——v0.11.0 main CI 抖动即由此而来。 */
+async function waitFor(predicate, timeoutMs = 3000) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (predicate()) return true
+    await sleep(10)
+  }
+  return predicate()
+}
+
 /**
  * 组装提问桥测试台。
  * @param {object} [options]
@@ -112,7 +124,10 @@ test('升级提醒逐目标发送：同一渠道的无关 chat 不会收到提�
   })
   const pending = rig.bridge.askQuestions({ questions: [SINGLE] })
   const otherPending = other.bridge.askQuestions({ questions: [SINGLE] })
-  await sleep(120)
+  // 提醒是 15ms 定时器 + 逐目标异步发送：等到它真正送达再断言（固定 sleep(120)
+  // 在 CI 负载高时被事件循环饥饿拖过窗口 → texts 仍空而误红）。
+  const arrived = await waitFor(() => rig.instances[0].texts.length > 0 && other.instances[0].texts.length > 0)
+  assert.ok(arrived, '升级提醒应在有界等待内逐目标送达')
   assert.equal(rig.broadcasts.length, 1, '只保留初始编号兜底广播，不广播升级提醒')
   assert.equal(other.broadcasts.length, 1, '第二实例也只保留初始编号兜底广播')
   assert.match(rig.instances[0].texts[0].text, /仍在等待作答/)

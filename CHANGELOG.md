@@ -41,6 +41,9 @@
 - **QQ 出站长文本的分段点落在句末标点**（`src/inbound/segment.mjs`、`src/inbound/qq-gw.mjs`）：`splitByCodePoints` 新增可选 `preferSentenceBoundary`（缺省 `false`，行为逐字节不变），QQ `postMessage` 启用。此前超长回复在第 2000 码点处等长硬切——一句中文若跨过该位置就被劈成两条消息，后半截以残句开头，用户需自行拼接（与 `segmentText` 已具备的「换行 > 空格 > 硬切」偏好不一致，QQ 是唯一仍走裸等长切分的出站路径）。现在贪心累积完整句子到预算边界，切点落在句末标点；句末标点后的重复标点与右引号/右括号并入本句（`……`、`！」` 不被拆开）；ASCII 的 `!?;` 须后接空白才算句末（`3;14` 这类正文不被误判）。无句末标点的长文本（纯 emoji、大段代码、无标点长段落）退化为与历史完全一致的等长硬切，段数与段长不变；每段仍 ≤ 2000 码点、拼接恒等于原文、无孤立代理项。
 - 测试：`test/segment.test.mjs` 增 6 项 focused（缺省零行为变化 / 句末切点 / 重复标点与右引号并入本句 / ASCII 标点须后接空白 / 无标点退化为等长硬切 / 属性式：任意文本拼接无损 + 每段预算内 + 无孤立代理项）；`test/inbound.qq.test.mjs` 增 2 项 focused（长中文回复切点落在句末标点、非末段以 `。` 结尾；纯 emoji 长回复段数与段长不变）。既有 G-22 码点安全用例原样通过。
 
+- **升级提醒用例改有界轮询（CI 抖动修复，main CI 转绿）**（`test/questions.test.mjs`）：`升级提醒逐目标发送` 用例此前用固定 `sleep(120)` 等 15ms 升级提醒（`createEscalationChain` 的 `setTimeout` + 逐目标异步 `sendText`）。CI 并行负载下事件循环饥饿会把定时器推过 120ms 窗口，`instances[0].texts` 仍为空 → `Cannot read properties of undefined (reading 'text')`（v0.11.0 main CI ubuntu：1815 pass / 1 fail；同 commit macOS 全绿，定位为定时器抖动而非产品缺陷）。现在改为有界轮询 `waitFor()`（与 `test/admin-wiring.test.mjs` 的 `waitFor`、`test/questions-web-first.test.mjs` 的 `waitForEdits` 同法：3000ms 上限 + 显式 `assert.ok(arrived, ...)`），等提醒真正送达再断言，不再把「慢」误判成「没发生」；用例数与产品行为均不变，断言只收紧不放松（等送达后才校验广播数/目标隔离）。
+- 验证：控制组复现——把 `afterMs` 延后到 400ms（远超旧 120ms 窗口）后，旧固定 sleep 写法复现 CI 同一 `not ok`，新写法通过；`node --test test/questions.test.mjs` = 68 pass；高负载（16 忙循环 / 3 核）下该用例连跑 3 次 + 全文件均全绿。
+
 修复 + 桥接重写（对应 issue #27，真机证据见 `docs/memory/risks.md`）：
 
 - **#27 修复（防炸）**：宿主 `ctx.userQuestions` 读取全部改为防御式（`host/capability.mjs` 新增 `readUserQuestions`：优先非抛错的 `ctx.get('userQuestions', false)`，代理直读抛错按「无服务」吞掉）。此前 cordis 4.0.2 ctx 代理对未声明服务的属性读取直接抛 `cannot get property "userQuestions" without inject`，把整个 questions 装配炸成 `questions 桥装配失败，已跳过`（真实宿主 100% 复现，issue #27 报告，本机 0.1.5-rc.2 亦然）。
