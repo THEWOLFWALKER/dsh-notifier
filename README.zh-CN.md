@@ -15,7 +15,7 @@
 ![渠道](https://img.shields.io/badge/channels-28-00B4D8?style=flat-square)
 
 ![npm version](https://img.shields.io/npm/v/dsh-notifier?style=flat-square&logo=npm&logoColor=white)
-![tests](https://img.shields.io/badge/tests-1816-brightgreen?style=flat-square)
+![tests](https://img.shields.io/badge/tests-1828-brightgreen?style=flat-square)
 ![license](https://img.shields.io/badge/license-MIT-brightgreen?style=flat-square)
 ![awesome-dsh-plugin](https://img.shields.io/badge/awesome--dsh--plugin-%E5%AE%98%E6%96%B9%E6%94%B6%E5%BD%95-00B4D8?style=flat-square)
 ![omdsh workshop](https://img.shields.io/badge/omdsh-workshop-7C3AED?style=flat-square)
@@ -27,7 +27,7 @@
 ![沉默](https://img.shields.io/badge/%E6%B2%89%E9%BB%98-%E6%B0%B8%E4%B8%8D%E6%89%B9%E5%87%86-9C27B0?style=flat-square)
 ![推送](https://img.shields.io/badge/push%20it-real%20good-FF4081?style=flat-square)
 
-包元数据：`dsh-notifier@0.11.0` · 1816 个自动化契约测试 · MIT 许可。
+包元数据：`dsh-notifier@0.12.0` · 1828 个自动化契约测试 · MIT 许可。
 
 把 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) agent 带到你平时使用的地方。dsh-notifier 用一个极简 `notify()` API 接住 28 个渠道，再提供手机审批、手机提问、会话控制和清爽的本机管理台——无需额外部署第二套运行时。
 
@@ -228,7 +228,7 @@ src/
   ledger.mjs          JSONL 账本 + 每日摘要
   rules.mjs           防打扰闸门（事件 / 关键词 / 宽限窗）
 scripts/              channel-login.mjs · channel-selfcheck.mjs · route.mjs · gen-channel-matrix.mjs
-test/                 1816 个测试；历史 0.8.6 包为 909 个测试。
+test/                 1828 个测试；历史 0.8.6 包为 909 个测试。
 ```
 
 设计准则：纯 ESM（`.mjs`）、零运行时依赖、绝大多数渠道走声明式 spec 引擎、适配器薄而诚实、无构建步骤。
@@ -247,7 +247,7 @@ test/                 1816 个测试；历史 0.8.6 包为 909 个测试。
 > 开发在本仓库的 `dev` 分支进行，`main` 是发布分支（发布版本 + 标签 + npm 发布）；在 `dev` 上开发、发版时并入 `main`。
 
 ```bash
-npm test          # 当前线：1816
+npm test          # 当前线：1828
 ```
 
 新增渠道：在 `src/adapters/` 实现适配器接口（`resolve(cfg)` + `send(msg)`），并在 `src/config.mjs` 注册；上方渠道矩阵由 `node scripts/gen-channel-matrix.mjs` 自动重生成。

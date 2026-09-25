@@ -24,6 +24,10 @@ The single repository `THEWOLFWALKER/dsh-notifier` hosts two branches with disti
 
 Remote approval and remote questions fail closed. Timeout, malformed input, invalid token, wrong source chat, or any exception returns control to the desktop and never invents an answer.
 
+## Outbound State Is Product Runtime State (v0.12)
+
+Editable outbound configuration is product/runtime state, not Standalone Admin state. The canonical store key is `channel:<type>:outbound` and is read regardless of `admin.enabled`; `admin:channel:<type>:outbound` and the legacy `<type>:account` are compatibility-only and must never be revived for a user who disabled Admin. One `OutboundSource` is the live runtime authority: every consumer takes a per-operation snapshot, outbound save is a hot synchronous swap (no notifier rebuild, no restart), and `resolved.channels` is a startup snapshot only. The DSH Native surface is the primary control surface; the Standalone console is the advanced/recovery entry and exchanges a one-time launch ticket instead of ever receiving the long-lived Admin bearer.
+
 ## User-Centered Product Direction
 
 Feature decisions start from the user's task and first-principles failure modes. Prefer mature, composable functionality, progressive disclosure, clear status, reversible actions, and actionable errors. Do not trade maintainability or safety for superficial feature breadth.

@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.12.0] - 2026-09-25（Native Control Surface + 出站热生效 + 出站状态迁移）
+
+功能发布（minor）。把「可编辑出站配置」从 Standalone Admin 生命周期里解耦出来，交给 DSH 原生控制面（Native Control Surface）。`npm test` 为 **1828**（1828 pass，较 v0.11.0 基线 1816 净 +12）。**此版本尚未发布**：真机 DSH 宿主（`0.1.7-rc.2`）视觉/交互验证与 `alpha.1` 兼容性冒烟仍是发布门，未做即不得发布（缺口记 [docs/memory/risks.md](docs/memory/risks.md)）。
+
+### 新增
+
+- **Native Control Surface**（`client.js`、`src/control-surface/`）：前端为 DSH Native 客户端模块（`dsh.client.platform='web'`，Sidebar 图标 + Main 面板 + 插件激活/配置卡），复用 Host React 与既有 DSH 视觉语言；无 iframe、不依赖本机 localhost 管理台、不引入 esbuild/Vite/Tailwind/react-dom 或运行时依赖。`package.json` 新增 `exports["./client"]` 并把 `client.js` 纳入 `files`。
+- **DSH Connection RPC**（`src/control-surface/rpc.mjs`、`service.mjs`）：`ctx.connection.rpc.handle('/dsh-notifier', …)` 承接 `surface.home` / `surface.wait`、`channels.list` / `get` / `save` / `test`、`tasks.list`、`questions.settle`、`activity.list`、`standalone.createLaunch`（宿主 `inject` 增补 `connection`）。`surface.wait` 由 Surface Revision 唤醒，不空转轮询。
+- **单一运行时权威 `OutboundSource`**（`src/runtime/outbound-source.mjs`）：`snapshot` / `types` / `get` / `replace` / `remove` / `revision` / `subscribe`；`createNotifier()` 改收 source 而非启动时冻结的 `channels[]`，notify/notifyAll、路由、提问与审批可用性、工具元数据、Control Surface 一律按操作时快照读取；兼容属性 `channels` / `channelCount` 改为动态 getter。出站保存**热生效**：不重建 notifier、不重启。
+- **canonical 出站态与 Hot Apply 事务**（`src/control-surface/outbound-config.mjs`、`src/assembly/outbound.mjs`）：canonical 键 `channel:<type>:outbound` 是产品/运行时态、始终读取；写入只落该键（旧键不自动删除）。保存按「校验 → 合并候选 → adapter resolve → 备 canonical 值 → 持久化 → 原子 `source.replace` → revision+1」推进：1–3 失败不写盘、不动运行时，5 失败不动运行时；删除先算回退候选，失败则在删盘前拒绝。
+- **Health / Activity / Channels / Tasks / Questions 投影**（`src/control-surface/`）：Channels 只回字段元数据与 `configured/active`，secret 字段绝不明文、方向（inbound/outbound）明确；Tasks/Questions 复用既有任务投影与 Control Core 问题桥（`adminPending`/`adminSettle`），不新增结算路径、不新增审批结算；Activity 对 token/secret/password/webhook/chatId/userId/accountId/body 等键名脱敏。
+- **一次性 Advanced Console 启动票据**（`src/control-surface/launch-ticket.mjs`、`src/admin/server.mjs`、`src/admin/ui/client.mjs`）：Native 生成单次票据，Standalone 经 `POST /api/auth/exchange-ticket` 交换（该路由 `public`，仅此路由豁免 Bearer，其余 `/api/*` 鉴权不变）；票据一次即焚、有 TTL，绝不下发长期 Admin Bearer；UI 读到 `#ticket` 先清 fragment 再交换。
+- **测试**：新增 `test/outbound-source-v012`、`surface-revision-v012`、`launch-ticket-v012`、`activity-v012`、`control-surface-service-v012`、`client-module` 六个 focused 套件（fixture 级执行前端注册、弹窗、问答/任务/渠道/活动渲染与静态安全不变量）。
+
+### 变更
+
+- **Standalone 管理台降级为高级/恢复入口**：仍只绑 `127.0.0.1` + Bearer，但同时能读到 canonical 出站态，Native 保存后管理台面板不再「看不见」。
+- **`resolved.channels` 语义收窄**为「启动解析快照」，装配后不再作为实时真源；`channelTypes` / `channelsEnabled` / `outboundConfigs` 全部改走 `OutboundSource`。
+
+### 修复
+
+- **Admin 关闭时不得复活 Admin 自有出站 overlay**（`src/assembly/outbound.mjs`、`src/control-surface/outbound-config.mjs`）：canonical 键始终读取，但 `admin:channel:<type>:outbound` 与旧 `<type>:account` 仅在 `admin.enabled === true` 时兼容读取；Admin 关闭且无 overlay 命中时 `channels` 数组引用原样透传（零执行、零 warn，§6 兼容红线）。投影/`raw`/`test`/`remove` 与运行时 `OutboundSource` 保持同一读取口径。
+- 前端安全不变量：弹窗以 `windowObject.open('about:blank','_blank')` 打开后立即 `popup.opener = null`；不使用可选链作为赋值目标（避免 `SyntaxError` 破坏加载）。
+
 ## [0.11.0] - 2026-09-25（issue/PR 清零 + 宿主对齐 + 生态公共面）
 
 功能发布（minor）。在 v0.10 手机闭环之上收口 2026-09 的 issue/PR 清零与 DSH 宿主对齐线，并把生态公共面补齐为一等公民。`npm test` 为 **1816**（1816 pass，较 v0.10.2 基线 1616 净 +200）。规划中的 W7（管理台策略模板）/ W9（`test/reliability-*` 契约包）/ W8（`docs/reliability.md`）/ W10（管理台渠道健康面板）**顺延到下一版**，规格保留在 [docs/ROADMAP.md](docs/ROADMAP.md)。

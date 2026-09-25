@@ -15,7 +15,7 @@
 ![Channels](https://img.shields.io/badge/channels-28-00B4D8?style=flat-square)
 
 ![npm version](https://img.shields.io/npm/v/dsh-notifier?style=flat-square&logo=npm&logoColor=white)
-![tests](https://img.shields.io/badge/tests-1816-brightgreen?style=flat-square)
+![tests](https://img.shields.io/badge/tests-1828-brightgreen?style=flat-square)
 ![license](https://img.shields.io/badge/license-MIT-brightgreen?style=flat-square)
 ![awesome-dsh-plugin](https://img.shields.io/badge/awesome--dsh--plugin-listed-00B4D8?style=flat-square)
 ![omdsh workshop](https://img.shields.io/badge/omdsh-workshop-7C3AED?style=flat-square)
@@ -27,7 +27,7 @@
 ![silence](https://img.shields.io/badge/silence%20never-approves-9C27B0?style=flat-square)
 ![push](https://img.shields.io/badge/push%20it-real%20good-FF4081?style=flat-square)
 
-Package metadata: `dsh-notifier@0.11.0` · 1816 automated contract tests · MIT licensed.
+Package metadata: `dsh-notifier@0.12.0` · 1828 automated contract tests · MIT licensed.
 
 Bring your [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) agent to the places you already use. dsh-notifier puts one minimal `notify()` API in front of 28 channels, then adds phone-friendly approvals, questions, session controls, and a calm local console — with no second runtime to deploy.
 
@@ -231,7 +231,7 @@ src/
   ledger.mjs          JSONL ledger + daily digest
   rules.mjs           anti-disturb gates (event / keyword / grace)
 scripts/              channel-login.mjs · channel-selfcheck.mjs · route.mjs · gen-channel-matrix.mjs
-test/                 1816 tests in the current line; historical 0.8.6 package carried 909 tests.
+test/                 1828 tests in the current line; historical 0.8.6 package carried 909 tests.
 ```
 
 Design rules: pure ESM (`.mjs`), zero runtime dependencies, a declarative spec engine for the bulk of channels, thin honest adapters, no build step.
@@ -250,7 +250,7 @@ Pin discipline (S-13): optional ranges are locked to the reviewed versions (the 
 > Development happens on the `dev` branch of this repository; `main` is the release branch (published versions + tags + npm releases). Work on `dev`, then merge to `main` when cutting a release.
 
 ```bash
-npm test          # current line: 1816
+npm test          # current line: 1828
 ```
 
 To add a channel: implement the adapter interface (`resolve(cfg)` + `send(msg)`) in `src/adapters/` and register it in `src/config.mjs`; the channel matrix above self-regenerates via `node scripts/gen-channel-matrix.mjs`.

@@ -1,0 +1,14 @@
+# Workstream: v012-native-control-surface
+
+- Agent identity: `codex | DeepSeek-V4.1-Flash | TraeCode remote sandbox`
+- Agent: `codex`
+- Branch: `codex/v0.12-native-control-surface`
+- Status: `done`
+- Start/end: `2026-09-25 -> 2026-09-25`
+- Scope: Land the v0.12 Native Control Surface (canonical outbound state + hot apply + DSH Connection RPC + one-time launch ticket + projections) by integrating the delivery pack `dsh-notifier-v0.12-COMPLETE-FINAL`.
+- Plan: Per the packed `AGENT-RUNBOOK.md` — create the topic branch off `dev`, run `implementation/scripts/apply-complete-v012.mjs "$(pwd)"` (transactional staging + `node --check`), run focused checks, then the full gates, resolve only mechanical/test-expectation failures, sync docs/release metadata, and land a small coherent commit sequence.
+- Owned files: `client.js`, `src/control-surface/**`, `src/runtime/outbound-source.mjs`, `src/notify.mjs`, `src/assembly/outbound.mjs`, `src/index.mjs`, `src/admin/api.mjs`, `src/admin/server.mjs`, `src/admin/ui/client.mjs`, `test/*v012.test.mjs`, `test/client-module.test.mjs`, plus release-metadata docs.
+- Do not touch: other agents' workstream files.
+- Validation: `node --test test/*v012.test.mjs test/client-module.test.mjs` (12/12); `npm test` (1828/1828, exit 0); `npm run verify:release`; `node scripts/gen-channel-matrix.mjs --check`; `npm pack --dry-run --json` (client.js present, 0 agent-config leaks); `node --check` on every new/changed JS/MJS; `git diff --check`.
+- Adversarial review: closed two real defects in the delivered pack (not test tweaks). (1) The fixture read `../frontend/client.js`, but the apply script lands the file at repo-root `client.js`. (2) `composeOutboundChannels` and the `outbound-config` service still read the Admin-owned legacy `<type>:account` overlay while `admin.enabled=false`, violating STATE-MIGRATION "Do not silently reactivate an old Admin-owned overlay"; both now read Admin-owned overlays (`admin:channel:<type>:outbound` and `<type>:account`) only when `admin.enabled===true`, while the canonical key is always read, and `composeOutboundChannels` returns the original `channels` array reference when no overlay applies (zero execution, §6 compat red line).
+- Handoff: code + release metadata integrated on `codex/v0.12-native-control-surface`; every executable gate is green. **Not published** — real DSH host `0.1.7-rc.2` visual/interaction review and the `alpha.1` compatibility smoke were not done (no Host in this sandbox); gaps recorded in `docs/memory/risks.md`. Next step: walk the Native UI and post-save hot-apply on a real DSH profile before publishing. Commits on this branch: `f6aa751` (runtime: live outbound source + control surface core), `aa27299` (client: DSH native notify-and-control surface), `bffbbb5` (test: hot-apply/control/handoff regressions), plus the release-metadata/docs commit that carries this file.
