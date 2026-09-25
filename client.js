@@ -31,6 +31,8 @@ window.__ModuleLoader__.load({
       test: '发送测试通知',
       testing: '正在发送测试通知…',
       testDelivered: '测试通知已送达',
+      testAccepted: '测试消息已发送',
+      testAcceptedHint: '已发送到提供方，请到客户端确认收到。',
       testFailed: '未能送达',
       complete: '完成',
       retry: '重试',
@@ -102,6 +104,8 @@ window.__ModuleLoader__.load({
       test: 'Send test notification',
       testing: 'Sending test notification…',
       testDelivered: 'Test notification delivered',
+      testAccepted: 'Test message sent',
+      testAcceptedHint: 'Sent to the provider — confirm receipt on your device.',
       testFailed: 'Delivery failed',
       complete: 'Done',
       retry: 'Retry',
@@ -186,6 +190,7 @@ window.__ModuleLoader__.load({
         busy: Object.freeze({}),
         error: null,
         revision: 0,
+        staleAt: null,
       })
       const listeners = new Set()
       let waitAbort = null
@@ -274,7 +279,7 @@ window.__ModuleLoader__.load({
         }
       }
       async function refreshCurrent() {
-        if (disposed) return
+        if (disposed) return false
         try {
           const kind = snapshot.view.kind
           if (kind === 'channels') await loadChannels()
@@ -282,7 +287,12 @@ window.__ModuleLoader__.load({
           else if (kind === 'tasks') await loadTasks()
           else if (kind === 'activity') await loadActivity()
           else await loadHome()
-        } catch {}
+          emit({ staleAt: null })
+          return true
+        } catch {
+          emit({ staleAt: Date.now() })
+          return false
+        }
       }
       async function saveChannel(type, direction, patch) {
         const key = `save:${type}:${direction}`
@@ -342,8 +352,8 @@ window.__ModuleLoader__.load({
               const value = await rpc.call('surface.wait', { after: snapshot.revision, timeoutMs: 25_000 }, signal)
               if (signal.aborted || disposed || paused) break
               if (Number(value?.revision ?? 0) > snapshot.revision) {
-                updateRevision(value.revision)
-                await refreshCurrent()
+                const refreshed = await refreshCurrent()
+                if (refreshed === true) updateRevision(value.revision)
               }
             } catch (error) {
               if (signal.aborted || disposed) break
@@ -604,6 +614,9 @@ window.__ModuleLoader__.load({
       return h('div', { className: 'dn-page' },
         h(PageHead, { title: t('title'), intro: t('intro'), actions }),
         h(StatusRow, { ctx, summary: home?.summary, t, onRetry: () => void controller.refreshCurrent() }),
+        state.staleAt !== null
+          ? h('p', { className: 'dn-error', role: 'alert' }, t('connectionLost'))
+          : null,
         (home?.questions?.length ?? 0) > 0
           ? h(Section, { title: `${t('needsAttention')}  ${home.questions.length}` },
               ...home.questions.slice(0, 3).map(question =>
@@ -649,9 +662,9 @@ window.__ModuleLoader__.load({
           setPhase('testing')
           const result = await controller.testChannel(type)
           setTestResult(result)
-          if (result?.delivered === true) {
+          if (result?.status === 'delivered' || result?.status === 'accepted' || result?.delivered === true) {
             setPhase('done')
-          } else if (result?.delivered === false) {
+          } else if (result?.status === 'unknown' || result?.status === 'failed' || result?.delivered === false) {
             setPhase('form')
           } else {
             throw new Error('channels.test returned an invalid delivery result')
@@ -689,12 +702,16 @@ window.__ModuleLoader__.load({
             meta?.description ? h('small', null, resolveText(ctx, meta.description)) : null)
         }),
         error ? h('p', { className: 'dn-error', role: 'alert' }, error?.message || t('unknownError')) : null,
-        testResult?.delivered === false ? h('p', { className: 'dn-error', role: 'alert' },
+        (testResult?.status === 'unknown' || testResult?.status === 'failed' || testResult?.delivered === false)
+          ? h('p', { className: 'dn-error', role: 'alert' },
           `${t('testFailed')}${testResult?.detail ? ` · ${resolveText(ctx, testResult.detail)}` : ''}`) : null,
         phase === 'testing' ? h('p', { className: 'dn-inlineStatus' }, h(StateDot, { state: 'ongoing' }), t('testing')) : null,
-        phase === 'done' && testResult?.delivered === true
+        phase === 'done'
           ? h('div', { className: 'dn-success' },
-              h('strong', null, t('testDelivered')),
+              h('strong', null, testResult?.status === 'delivered' ? t('testDelivered') : t('testAccepted')),
+              testResult?.status !== 'delivered'
+                ? h('p', { className: 'dn-note' }, resolveText(ctx, testResult?.providerDetail) || t('testAcceptedHint'))
+                : null,
               h(Button, { kind: 'primary', onClick: onDone }, t('complete')))
           : h(Button, { kind: 'primary', disabled: phase === 'testing', onClick: () => void saveAndTest() }, t('saveAndTest')))
     }
@@ -801,8 +818,12 @@ window.__ModuleLoader__.load({
           h('p', { className: 'dn-rowMeta' }, section.applyMode === 'hot' ? t('applyHot') : section.applyMode === 'restart' ? t('applyRestart') : ''),
           direction === 'inbound' && section.applyMode === 'restart' ? h('p', { className: 'dn-note' }, t('inboundRestartHint')) : null,
           direction === 'outbound' && testResult
-            ? h('p', { className: testResult.delivered === true ? 'dn-successText' : 'dn-error' },
-                testResult.delivered === true ? t('testDelivered') : `${t('testFailed')}${testResult.detail ? ` · ${resolveText(ctx, testResult.detail)}` : ''}`)
+            ? h('p', { className: testResult.status === 'delivered' || testResult.status === 'accepted' || testResult.delivered === true ? 'dn-successText' : 'dn-error' },
+                testResult.status === 'delivered' || testResult.delivered === true
+                  ? t('testDelivered')
+                  : testResult.status === 'accepted'
+                    ? `${t('testAccepted')}${testResult.providerDetail ? ` · ${resolveText(ctx, testResult.providerDetail)}` : ''}`
+                    : `${t('testFailed')}${testResult.detail ? ` · ${resolveText(ctx, testResult.detail)}` : ''}`)
             : null)
       }
 
@@ -872,7 +893,7 @@ window.__ModuleLoader__.load({
       const t = useT(ctx)
       useEffect(() => { if (view === 'page') void controller.loadHome().catch(error => controller.reportError(error)) }, [view])
       if (view !== 'page') return null
-      const ready = (state.home?.channels?.length ?? 0) > 0
+      const ready = (state.home?.channels ?? []).some(channel => channel?.notify?.configured === true)
       return h('div', { className: 'dn-pluginConfig' },
         h('strong', null, ready ? t('pluginReady') : t('noChannels')),
         h('p', null, ready ? resolveText(ctx, state.home?.summary?.detail) : t('noChannelsHint')),

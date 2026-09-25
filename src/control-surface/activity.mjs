@@ -41,7 +41,9 @@ function titleFor(row) {
   const map = {
     'delivery-finished': { en: `Notification delivered${channel}`, zh: `通知已送达${channel}` },
     'delivery-failed': { en: `Notification delivery failed${channel}`, zh: `通知发送失败${channel}` },
+    'delivery-skipped': { en: `Notification not delivered — no channel handled it${channel}`, zh: `通知未投递 · 没有渠道接收${channel}` },
     'channel-test-ok': { en: `Channel test succeeded${channel}`, zh: `渠道测试成功${channel}` },
+    'channel-test-accepted': { en: `Channel test accepted${channel}`, zh: `测试消息已发送${channel}` },
     'channel-test-failed': { en: `Channel test failed${channel}`, zh: `渠道测试失败${channel}` },
     'channel-saved': { en: `Channel configuration saved${channel}`, zh: `渠道配置已保存${channel}` },
     'channel-removed': { en: `Channel configuration removed${channel}`, zh: `渠道配置已删除${channel}` },
@@ -76,7 +78,10 @@ export function createSurfaceActivity({ capacity = 100, now = Date.now } = {}) {
         ? sendRecord.failed.map((item) => typeof item?.channel === 'string' ? item.channel : '').filter(Boolean)
         : []
       const skipped = Array.isArray(sendRecord.skipped) ? sendRecord.skipped : []
-      return record('notification', failed.length > 0 ? 'delivery-failed' : 'delivery-finished', {
+      const action = failed.length > 0 ? 'delivery-failed'
+        : delivered.length === 0 ? 'delivery-skipped'
+          : 'delivery-finished'
+      return record('notification', action, {
         delivered, failed, skipped, status: sendRecord.ok === false ? 'failed' : 'ok',
       })
     },
@@ -91,7 +96,8 @@ export function createSurfaceActivity({ capacity = 100, now = Date.now } = {}) {
           at: new Date(row.atMs).toISOString(),
           timeText: timeText(row.atMs, now()),
           category: ['notification', 'control', 'configuration', 'system'].includes(row.category) ? row.category : 'system',
-          level: row.detail?.status === 'failed' ? 'error' : (row.action.includes('failed') ? 'warn' : 'info'),
+          level: row.detail?.status === 'failed' ? 'error'
+            : (row.action.includes('failed') || row.action === 'delivery-skipped' ? 'warn' : 'info'),
           title: titleFor(row),
           ...(row.detail?.reason ? { detail: { en: String(row.detail.reason), zh: String(row.detail.reason) } } : {}),
         }))

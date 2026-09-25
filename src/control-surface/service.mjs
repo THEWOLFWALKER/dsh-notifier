@@ -44,7 +44,20 @@ function summaryOf(channelRows, questionRows) {
 function testResult(result) {
   const at = new Date().toISOString()
   if (result?.ok === true) {
-    return { delivered: true, reasonCode: null, detail: result?.detail ?? { en: 'Delivered', zh: '已送达' }, at }
+    // v0.12.1（P1-06 / D1 / D2）：provider 接受请求不等于端到端送达。
+    const confirmed = result?.confirmed === true || result?.receipt === true
+    const detail = result?.detail ?? (confirmed
+      ? { en: 'Delivered', zh: '已送达' }
+      : { en: 'Sent to the provider — confirm receipt on your device', zh: '已发送到提供方，请到客户端确认收到' })
+    return {
+      status: confirmed ? 'delivered' : 'accepted',
+      delivered: confirmed,
+      accepted: true,
+      detail,
+      providerDetail: result?.detail ?? null,
+      reasonCode: null,
+      at,
+    }
   }
   const text = String(result?.detail ?? '')
   const lower = text.toLowerCase()
@@ -52,7 +65,15 @@ function testResult(result) {
     : /timeout|超时/.test(lower) ? 'timeout'
       : /network|fetch|dns|socket|网络/.test(lower) ? 'network-error'
         : 'provider-error'
-  return { delivered: false, reasonCode, detail: text || { en: 'Delivery failed', zh: '发送失败' }, at }
+  return {
+    status: 'unknown',
+    delivered: false,
+    accepted: false,
+    reasonCode,
+    detail: text || { en: 'Delivery failed', zh: '发送失败' },
+    providerDetail: text || null,
+    at,
+  }
 }
 
 export function createControlSurfaceService({
@@ -150,8 +171,13 @@ export function createControlSurfaceService({
         health.recordTest(type, rawResult)
         revision.touch('health')
         const value = testResult(rawResult)
-        activity.record('notification', value.delivered ? 'channel-test-ok' : 'channel-test-failed', {
-          channel: type, status: value.delivered ? 'ok' : 'failed', reason: value.delivered ? null : value.detail,
+        const action = value.status === 'delivered' ? 'channel-test-ok'
+          : value.status === 'accepted' ? 'channel-test-accepted'
+            : 'channel-test-failed'
+        activity.record('notification', action, {
+          channel: type,
+          status: value.status === 'unknown' ? 'failed' : 'ok',
+          reason: value.status === 'unknown' ? value.detail : null,
         })
         return ok(value)
       }

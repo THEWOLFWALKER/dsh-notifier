@@ -46,3 +46,35 @@ test('home projection is compact and questions settle maps through one service',
   assert.equal(result.value.settled, true)
   assert.equal(settled, 1)
 })
+
+test('channel test distinguishes provider acceptance from explicit delivery receipt', async () => {
+  const revision = createSurfaceRevision()
+  const activity = createSurfaceActivity()
+  const health = createSurfaceHealth()
+  let testResult = { ok: true, detail: 'provider accepted request' }
+  const service = createControlSurfaceService({
+    revision,
+    channels: { list: () => [], get: () => null },
+    outboundConfig: { raw: () => ({ token: 'configured' }) },
+    channelTest: async () => testResult,
+    tasks: { list: () => [] },
+    questions: { list: () => [], settle: () => ({ settled: false }) },
+    activity,
+    health,
+    launchTickets: { mint: () => ({ ticket: 'x', expiresAt: 1 }) },
+    adminLocation: () => null,
+  })
+
+  const accepted = await service.call('channels.test', { type: 'telegram' })
+  assert.equal(accepted.ok, true)
+  assert.equal(accepted.value.status, 'accepted')
+  assert.equal(accepted.value.delivered, false)
+  assert.equal(accepted.value.detail, 'provider accepted request')
+  assert.equal(accepted.value.providerDetail, 'provider accepted request')
+  assert.equal(activity.list()[0].title.zh, '测试消息已发送 · telegram')
+
+  testResult = { ok: true, confirmed: true }
+  const delivered = await service.call('channels.test', { type: 'telegram' })
+  assert.equal(delivered.value.status, 'delivered')
+  assert.equal(delivered.value.delivered, true)
+})

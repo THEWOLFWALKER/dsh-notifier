@@ -23,3 +23,11 @@ test('activity projection refuses sensitive detail keys and returns frozen Activ
   assert.equal(json.includes('"chatId"'), false)
   assert.equal(json.includes('"token"'), false)
 })
+
+test('activity marks an all-skipped delivery as a warning', () => {
+  const activity = createSurfaceActivity()
+  activity.recordDelivery({ delivered: [], skipped: ['telegram'], failed: [], ok: true })
+  const row = activity.list()[0]
+  assert.equal(row.level, 'warn')
+  assert.match(row.title.zh, /通知未投递/)
+})

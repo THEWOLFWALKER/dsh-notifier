@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.12.1] - 2026-09-25（Durability + control-surface truthfulness）
+
+修复发布。聚焦持久化成功语义、控制面 admission、渠道真实状态与前端并发/生命周期边界；真实设备、真实账号与远端 provider 回执仍未在本地门禁中宣称通过。
+
+### 修复
+
+- **渠道测试状态**：`channels.test` 不再把 provider 接受请求直接写成「已送达」；只有显式 `confirmed` / `receipt` 才返回 `delivered`，否则返回 `accepted` 并保留 provider detail，避免误导用户。
+- **投递活动**：全部渠道跳过时由 `delivery-finished` 改为 `delivery-skipped`，活动等级为 warning，并明确没有渠道接收通知。
+- **插件就绪判断**：从「home 有渠道」收窄为「至少一个 `notify.configured === true`」，避免只有入站/控制渠道时显示通知已就绪。
+- **刷新真实性**：前端增加 `staleAt`；刷新失败显式标记连接状态，成功后清除；等待 revision 只有在对应视图刷新成功后才推进，避免丢失后续更新。
+
+### 延后验证
+
+- D8 的若干静默 `catch` 位于任务选择、通知编排、管理投影与入站会话的历史兼容边界；本阶段仅完成扫描，保留现状并登记为后续独立契约化工作，避免扩大改动面。
+
 ## [0.12.0] - 2026-09-25（Native Control Surface + 出站热生效 + 出站状态迁移）
 
 功能发布（minor）。把「可编辑出站配置」从 Standalone Admin 生命周期里解耦出来，交给 DSH 原生控制面（Native Control Surface）。`npm test` 为 **1831**（1831 pass，较 v0.11.0 基线 1816 净 +15）。**已发布**：真机 DSH 宿主 `0.1.7-rc.2` 视觉/交互验证已通过（侧栏 + 主面板渲染、渠道设置向导、保存并测试、出站热生效、失败回执如实回传），`alpha.1` 兼容性冒烟也已通过（插件激活、RPC 通道 200、28 渠道、client module 装配进宿主 manifest）。

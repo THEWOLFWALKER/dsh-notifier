@@ -39,6 +39,9 @@ function loadModule({ rpcCall } = {}) {
   const sandbox = {
     window: { __ModuleLoader__: { load(value) { registration = value } }, open() { return null } },
     document: {
+      visibilityState: 'visible',
+      addEventListener() {},
+      removeEventListener() {},
       head: { appendChild() {} },
       createElement() { return { dataset: {}, textContent: '', remove() {} } },
     },
