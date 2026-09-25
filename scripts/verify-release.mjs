@@ -106,6 +106,13 @@ for (const [subpath, target] of publicSubpaths) {
   check(covered, `exports["${subpath}"] target is not covered by package.json files: ${target}`)
 }
 
+// Commit17 发布边界：examples/ 是接入参考，**绝不**进 npm 包（消费者拿到的只是插件本体）。
+const examplesCovered = packageFiles.some((entry) => {
+  const dir = entry.replace(/\/$/, '')
+  return dir === 'examples' || dir.startsWith('examples/') || 'examples'.startsWith(dir)
+})
+check(!examplesCovered, 'package.json files must not cover examples/ (consumer demo stays out of the npm archive)')
+
 if (existsSync(resolve(root, '.git'))) {
   try {
     const trackedForbidden = execFileSync('git', ['ls-files', 'node_modules', 'package-lock.json'], { cwd: root, encoding: 'utf8' }).trim()
