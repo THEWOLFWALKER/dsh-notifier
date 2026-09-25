@@ -1,6 +1,6 @@
 {
   "name": "dsh-notifier",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "description": "DSH 通知插件：一个 notify() 打通 28 个出站渠道；支持 Telegram / 飞书 / QQ / 钉钉等入站远程审批、提问与对话回传；内置本机 Web 管理台。零运行时依赖。",
   "type": "module",
   "main": "src/plugin-entry.mjs",
@@ -12,7 +12,8 @@
       "types": "./types/index.d.ts",
       "default": "./types/index.d.ts"
     },
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./client": "./client.js"
   },
   "files": [
     "src",
@@ -33,18 +34,30 @@
     "docs/guide.md",
     "docs/compatibility-matrix.md",
     "docs/upgrade-guide.md",
-    "docs/upgrade-guide.en.md"
+    "docs/upgrade-guide.en.md",
+    "client.js"
   ],
   "scripts": {
     "test": "node --test \"test/*.test.mjs\" \"test/*.spec.mjs\"",
     "verify:release": "node scripts/verify-release.mjs"
   },
   "dshQuality": {
-    "testCount": 1816
+    "testCount": 1828
   },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-renderer",
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-sidebar",
+        "@deepseek-ai/dsh-client-ui-plugin-manager"
+      ]
     }
   },
   "peerDependencies": {
