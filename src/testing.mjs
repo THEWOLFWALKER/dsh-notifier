@@ -70,7 +70,7 @@ function normalizeOptions(rawOptions, defaultSourceName) {
  *
  * @param {object} [options]
  * @param {string} [options.sourceName] - 缺省来源标注（每次 push 的 `options.sourceName` 覆盖它）；缺省 `anonymous`。
- * @param {() => unknown} [options.now] - 时钟注入，决定 `calls[].at`（缺省 `Date.now`）。
+ * @param {() => number} [options.now] - 时钟注入，决定 `calls[].at`（缺省 `Date.now`）。
  * @returns {{
  *   version: '0.7',
  *   push: (message?: object, options?: object) => Promise<object>,

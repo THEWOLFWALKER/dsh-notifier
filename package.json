@@ -8,11 +8,16 @@
     ".": "./src/plugin-entry.mjs",
     "./internal": "./src/index.mjs",
     "./testing": "./src/testing.mjs",
+    "./types": {
+      "types": "./types/index.d.ts",
+      "default": "./types/index.d.ts"
+    },
     "./package.json": "./package.json"
   },
   "files": [
     "src",
     "test",
+    "types",
     "scripts/channel-login.mjs",
     "scripts/channel-selfcheck.mjs",
     "scripts/gen-channel-matrix.mjs",

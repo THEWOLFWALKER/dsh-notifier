@@ -70,7 +70,7 @@ for (const [index, v] of documentedVersions.entries()) {
 }
 
 const requiredPackageFiles = [
-  'src', 'test', 'cordis.patch.yml', 'CHANGELOG.md', 'PLUGINS.md',
+  'src', 'test', 'types', 'cordis.patch.yml', 'CHANGELOG.md', 'PLUGINS.md',
   'THIRD_PARTY_NOTICES.md', 'docs/guide.md', 'docs/compatibility-matrix.md',
   'docs/upgrade-guide.md', 'docs/upgrade-guide.en.md',
 ]
@@ -90,13 +90,19 @@ for (const file of ['PLUGINS.md', 'THIRD_PARTY_NOTICES.md', 'docs/guide.md', 'do
 
 // Commit15/16 公共子路径门：exports 子路径必须指向真实存在的目标文件，且该文件被 files 覆盖
 // （间接覆盖也算，如 files 含 "src"/"types" 目录）——否则消费方 import 子路径会 404/不进包。
+// `./types` 是 type-only 子路径，exports 用 `{ types, default }` 对象形态；两种形态都按同一契约校验。
 const publicSubpaths = [
   ['./testing', 'src/testing.mjs'],
+  ['./types', 'types/index.d.ts'],
 ]
 for (const [subpath, target] of publicSubpaths) {
-  check(packageJson.exports?.[subpath] === `./${target}`, `package.json exports["${subpath}"] must be ./${target}`)
+  const entry = packageJson.exports?.[subpath]
+  const typesTarget = typeof entry === 'string' ? entry : entry?.types
+  const runtimeTarget = typeof entry === 'string' ? entry : entry?.default
+  check(typesTarget === `./${target}`, `package.json exports["${subpath}"].types must be ./${target}`)
+  check(runtimeTarget === `./${target}`, `package.json exports["${subpath}"].default must be ./${target}`)
   check(existsSync(resolve(root, target)), `exports["${subpath}"] target is missing from the tree: ${target}`)
-  const covered = packageFiles.some((entry) => entry === target || target.startsWith(`${entry.replace(/\/$/, '')}/`))
+  const covered = packageFiles.some((entry2) => entry2 === target || target.startsWith(`${entry2.replace(/\/$/, '')}/`))
   check(covered, `exports["${subpath}"] target is not covered by package.json files: ${target}`)
 }
 

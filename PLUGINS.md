@@ -154,6 +154,18 @@ await fake.flush()  // resolve undefined
 
 两处刻意差异（不是缺陷）：fake 不做长度钳制/限流/预算记账（真实资源语义由真 facade 的契约测试覆盖），也不提供 `enabled()`（宿主诊断面，按能力探测 `typeof notifier?.push === 'function'` 即可）。fake **不发** `sent` 事件——事件面不在本工具内，测事件侧请用自有 `ctx` stub。
 
+## TypeScript：`dsh-notifier/types`
+
+用 TS 写消费方插件时，类型从 type-only 子路径取：
+
+```ts
+import type { NotifierFacade, NotifyMessage, PushResult } from 'dsh-notifier/types'
+```
+
+导出 `NotifyLevel` / `NotifyMessage` / `NotifyOptions` / `PushResult` / `PushFailure` / `NotifierSource` / `NotifierFacade` / `SentEventRecord` / `FakeNotifier` 等，逐项对照运行时公共面（只声明真存在的字段，内部选项不外泄）。`NotifierFacade.version` 是字面量 `'0.7'`，与 `ctx.notifier.version` 同源。`SentEventRecord` 保持 metadata-only——**不含** `title`/`content`/原始错误正文。
+
+这是显式 type-only 子路径：包根（`dsh-notifier`）是 DSH 插件契约本身，**没有** root `"types"` 字段（root JS 导出面远大于 notifier 公共面）。请始终 `from 'dsh-notifier/types'`。
+
 ## 真机验证记录
 
 - **2026-08-16 · DSH 0.1.0-rc.6(profile web,Node 24)**:特性 A/B 双确认——静态 inject 消费方解析到 `version=0.6` 真服务(非 stub);`dsh-notifier/sent` 事件跨插件可见(15/15,payload 形状完整);零渠道语义符合设计(`ok:false` 三空数组,不崩不阻塞)。同时裁定:回调式 `ctx.inject` 不触发、未声明访问服务属性直接抛错——本文档全部配方据此定稿为静态声明。安装注意:宿主用 pnpm 管理依赖时,手动覆盖 `node_modules/dsh-notifier` 会被回滚,升级请用 `dsh plugin add file:<路径>`。
