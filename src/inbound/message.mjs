@@ -30,6 +30,29 @@ export const MAX_INBOUND_FILE_BYTES = 5 * 1024 * 1024
 /** 附件名长度上界（不可信输入；超长名截断，绝不进宿主/审计面无界增长）。 */
 export const MAX_INBOUND_FILE_NAME_LENGTH = 128
 export const DEFAULT_INBOUND_MEDIA_TIMEOUT_MS = 10000
+/** 单条入站消息附件数量上限。 */
+export const MAX_INBOUND_ATTACHMENTS_PER_MESSAGE = 8
+/** 单条入站消息附件声明字节总量上限。 */
+export const MAX_INBOUND_ATTACHMENTS_TOTAL_BYTES = 16 * 1024 * 1024
+/** 全局入站附件下载并发预算（跨消息共享）。 */
+export const MAX_INBOUND_DOWNLOAD_CONCURRENCY = 4
+
+const downloadSlots = { active: 0, queue: [] }
+async function withDownloadSlot(fn) {
+  if (downloadSlots.active >= MAX_INBOUND_DOWNLOAD_CONCURRENCY) {
+    await new Promise((resolve) => downloadSlots.queue.push(resolve))
+  }
+  downloadSlots.active += 1
+  try { return await fn() } finally {
+    downloadSlots.active -= 1
+    const next = downloadSlots.queue.shift()
+    if (typeof next === 'function') next()
+  }
+}
+
+function warnAttachmentBudget(message) {
+  try { console.warn(`[dsh-notifier/inbound/message] ${message}`) } catch { /* 日志失败不致命 */ }
+}
 
 /** url 精确必须是非空字符串（fail-closed：缺 URL 的附件段不构成有效媒体消息）。 */
 const urlPresent = (value) => normalizeImageUrl(value) !== ''
@@ -208,38 +231,40 @@ export function normalizeAttachmentItem(raw) {
  * responses, and timeouts fail closed as `null`.
  */
 export async function downloadInboundImage(url, options = {}) {
-  const safeUrl = normalizeImageUrl(url)
-  const fetchImpl = options.fetchImpl ?? globalThis.fetch?.bind(globalThis)
-  const maxBytes = Math.min(MAX_INBOUND_IMAGE_BYTES, Math.max(1, Number(options.maxBytes) || MAX_INBOUND_IMAGE_BYTES))
-  const timeoutMs = Math.min(60000, Math.max(1, Number(options.timeoutMs) || DEFAULT_INBOUND_MEDIA_TIMEOUT_MS))
-  if (safeUrl === '' || typeof fetchImpl !== 'function') return null
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), timeoutMs)
-  try {
-    const response = await fetchImpl(safeUrl, { signal: controller.signal, redirect: 'error' })
-    if (!response?.ok) return null
-    const declared = Number(response.headers?.get?.('content-length') ?? '')
-    if (Number.isFinite(declared) && declared > maxBytes) return null
-    const contentType = String(response.headers?.get?.('content-type') ?? '').split(';', 1)[0].trim().toLowerCase()
-    if (!contentType.startsWith('image/')) return null
-    const reader = response.body?.getReader?.()
-    if (reader === undefined) return null
-    let size = 0
-    for (;;) {
-      const { done, value } = await reader.read()
-      if (done) break
-      size += value?.byteLength ?? 0
-      if (size > maxBytes) {
-        await reader.cancel().catch(() => {})
-        return null
+  return withDownloadSlot(async () => {
+    const safeUrl = normalizeImageUrl(url)
+    const fetchImpl = options.fetchImpl ?? globalThis.fetch?.bind(globalThis)
+    const maxBytes = Math.min(MAX_INBOUND_IMAGE_BYTES, Math.max(1, Number(options.maxBytes) || MAX_INBOUND_IMAGE_BYTES))
+    const timeoutMs = Math.min(60000, Math.max(1, Number(options.timeoutMs) || DEFAULT_INBOUND_MEDIA_TIMEOUT_MS))
+    if (safeUrl === '' || typeof fetchImpl !== 'function') return null
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), timeoutMs)
+    try {
+      const response = await fetchImpl(safeUrl, { signal: controller.signal, redirect: 'error' })
+      if (!response?.ok) return null
+      const declared = Number(response.headers?.get?.('content-length') ?? '')
+      if (Number.isFinite(declared) && declared > maxBytes) return null
+      const contentType = String(response.headers?.get?.('content-type') ?? '').split(';', 1)[0].trim().toLowerCase()
+      if (!contentType.startsWith('image/')) return null
+      const reader = response.body?.getReader?.()
+      if (reader === undefined) return null
+      let size = 0
+      for (;;) {
+        const { done, value } = await reader.read()
+        if (done) break
+        size += value?.byteLength ?? 0
+        if (size > maxBytes) {
+          await reader.cancel().catch(() => {})
+          return null
+        }
       }
+      return { url: safeUrl, contentType, size }
+    } catch {
+      return null
+    } finally {
+      clearTimeout(timer)
     }
-    return { url: safeUrl, contentType, size }
-  } catch {
-    return null
-  } finally {
-    clearTimeout(timer)
-  }
+  })
 }
 
 /**
@@ -252,47 +277,49 @@ export async function downloadInboundImage(url, options = {}) {
  * 任一环节失败返回 null（fail-closed）。
  */
 async function downloadBoundedBytes(url, options, mediaTypePrefix) {
-  const safeUrl = normalizeImageUrl(url)
-  const fetchImpl = options.fetchImpl ?? globalThis.fetch?.bind(globalThis)
-  const limitBytes = options.limitBytes
-  const maxBytes = Math.min(limitBytes, Math.max(1, Number(options.maxBytes) || limitBytes))
-  const timeoutMs = Math.min(60000, Math.max(1, Number(options.timeoutMs) || DEFAULT_INBOUND_MEDIA_TIMEOUT_MS))
-  if (safeUrl === '' || typeof fetchImpl !== 'function') return null
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), timeoutMs)
-  try {
-    const response = await fetchImpl(safeUrl, { signal: controller.signal, redirect: 'error' })
-    if (!response?.ok) return null
-    const declared = Number(response.headers?.get?.('content-length') ?? '')
-    if (Number.isFinite(declared) && declared > maxBytes) return null
-    const mediaType = String(response.headers?.get?.('content-type') ?? '').split(';', 1)[0].trim().toLowerCase()
-    if (mediaTypePrefix !== '' && !mediaType.startsWith(mediaTypePrefix)) return null
-    const reader = response.body?.getReader?.()
-    if (reader === undefined) return null
-    const chunks = []
-    let size = 0
-    for (;;) {
-      const { done, value } = await reader.read()
-      if (done) break
-      size += value?.byteLength ?? 0
-      if (size > maxBytes) {
-        await reader.cancel().catch(() => {})
-        return null
+  return withDownloadSlot(async () => {
+    const safeUrl = normalizeImageUrl(url)
+    const fetchImpl = options.fetchImpl ?? globalThis.fetch?.bind(globalThis)
+    const limitBytes = options.limitBytes
+    const maxBytes = Math.min(limitBytes, Math.max(1, Number(options.maxBytes) || limitBytes))
+    const timeoutMs = Math.min(60000, Math.max(1, Number(options.timeoutMs) || DEFAULT_INBOUND_MEDIA_TIMEOUT_MS))
+    if (safeUrl === '' || typeof fetchImpl !== 'function') return null
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), timeoutMs)
+    try {
+      const response = await fetchImpl(safeUrl, { signal: controller.signal, redirect: 'error' })
+      if (!response?.ok) return null
+      const declared = Number(response.headers?.get?.('content-length') ?? '')
+      if (Number.isFinite(declared) && declared > maxBytes) return null
+      const mediaType = String(response.headers?.get?.('content-type') ?? '').split(';', 1)[0].trim().toLowerCase()
+      if (mediaTypePrefix !== '' && !mediaType.startsWith(mediaTypePrefix)) return null
+      const reader = response.body?.getReader?.()
+      if (reader === undefined) return null
+      const chunks = []
+      let size = 0
+      for (;;) {
+        const { done, value } = await reader.read()
+        if (done) break
+        size += value?.byteLength ?? 0
+        if (size > maxBytes) {
+          await reader.cancel().catch(() => {})
+          return null
+        }
+        chunks.push(value)
       }
-      chunks.push(value)
+      const data = new Uint8Array(size)
+      let offset = 0
+      for (const chunk of chunks) {
+        data.set(chunk, offset)
+        offset += chunk.byteLength
+      }
+      return { data, mediaType, size }
+    } catch {
+      return null
+    } finally {
+      clearTimeout(timer)
     }
-    const data = new Uint8Array(size)
-    let offset = 0
-    for (const chunk of chunks) {
-      data.set(chunk, offset)
-      offset += chunk.byteLength
-    }
-    return { data, mediaType, size }
-  } catch {
-    return null
-  } finally {
-    clearTimeout(timer)
-  }
+  })
 }
 
 /**
@@ -423,17 +450,36 @@ export function parseQQImageMessage(eventData) {
 export function parseQqAttachments(eventData) {
   if (!isPlainObject(eventData) || !Array.isArray(eventData.attachments)) return []
   const out = []
+  let totalBytes = 0
+  let warnedCount = false
+  let warnedBytes = false
   for (const raw of eventData.attachments) {
     if (!isPlainObject(raw)) continue
+    if (out.length >= MAX_INBOUND_ATTACHMENTS_PER_MESSAGE) {
+      if (!warnedCount) {
+        warnedCount = true
+        warnAttachmentBudget(`单条消息附件超过 ${MAX_INBOUND_ATTACHMENTS_PER_MESSAGE} 个，已截断`)
+      }
+      break
+    }
+    const declaredSize = Number(raw.size)
+    const nextBytes = Number.isInteger(declaredSize) && declaredSize >= 0 ? declaredSize : 0
+    if (totalBytes + nextBytes > MAX_INBOUND_ATTACHMENTS_TOTAL_BYTES) {
+      if (!warnedBytes) {
+        warnedBytes = true
+        warnAttachmentBudget(`单条消息附件声明总量超过 ${MAX_INBOUND_ATTACHMENTS_TOTAL_BYTES} 字节，已截断`)
+      }
+      break
+    }
     const contentType = typeof raw.content_type === 'string' ? raw.content_type.trim().toLowerCase() : ''
     if (contentType === '') continue
     if (contentType.startsWith('image/')) {
       const image = normalizeImageAttachment({ url: raw.url, width: raw.width, height: raw.height })
-      if (image !== null) out.push({ kind: INBOUND_KINDS.image, image })
+      if (image !== null) { out.push({ kind: INBOUND_KINDS.image, image }); totalBytes += nextBytes }
       continue
     }
     const file = normalizeFileAttachment({ url: raw.url, name: raw.filename ?? raw.name, size: raw.size })
-    if (file !== null) out.push({ kind: INBOUND_KINDS.file, file })
+    if (file !== null) { out.push({ kind: INBOUND_KINDS.file, file }); totalBytes += nextBytes }
   }
   return out
 }

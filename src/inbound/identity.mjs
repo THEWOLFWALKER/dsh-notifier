@@ -74,6 +74,8 @@ function normalizeBinding(raw, fallbackKey) {
 /** 待确认绑定保留 7 天（R5 审查 R5-3-P3-7：陌生人扫码/订阅写入后无人确认，
  * 待确认表只增不减——读路径顺手清扫，有变更才写回）。 */
 const PENDING_TTL_MS = 7 * 24 * 60 * 60 * 1000
+/** 待确认队列容量上限（与入站去重 FIFO 同量级，防自报 uid 无限膨胀 state）。 */
+const PENDING_MAX = 512
 
 /**
  * 创建身份绑定层。
@@ -347,7 +349,13 @@ export function createIdentity(options = {}) {
       const table = readBindings()
       if (table[`${channel}:${uid}`] !== undefined) return { ok: false, reason: 'already-bound' }
       const pending = readPending()
-      pending[`${channel}:${uid}`] = { channel, userId: uid, origin, at: Date.now(), extra }
+      const at = Date.now()
+      pending[`${channel}:${uid}`] = { channel, userId: uid, origin, at, extra }
+      const keys = Object.keys(pending)
+      if (keys.length > PENDING_MAX) {
+        keys.sort((a, b) => (pending[a]?.at ?? 0) - (pending[b]?.at ?? 0))
+        for (const stale of keys.slice(0, keys.length - PENDING_MAX)) delete pending[stale]
+      }
       if (store !== null && setDurable(store, KEY_PENDING, pending) !== true) {
         return { ok: false, reason: 'storage-failed' }
       }

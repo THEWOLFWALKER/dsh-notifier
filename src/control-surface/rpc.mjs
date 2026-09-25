@@ -20,6 +20,10 @@
 
 export const CONTROL_SURFACE_CHANNEL = '/dsh-notifier'
 
+// v0.12.1（P1-15）：Native 通道的请求体上限。对齐 Admin HTTP 的 1MB——
+// RPC 合法负载只是信封与少量参数，1MB 是宽松上限；读取阶段即拒绝超限体。
+export const MAX_SURFACE_BODY_BYTES = 1024 * 1024
+
 const ENDPOINT_SEGMENT = /^[A-Za-z0-9_$.-]+$/
 
 function endpointFromPath(pathname) {
@@ -46,9 +50,20 @@ function writeText(res, status, text) {
 }
 
 async function readJsonBody(req) {
+  const declared = Number(req?.headers?.['content-length'])
+  if (Number.isFinite(declared) && declared > MAX_SURFACE_BODY_BYTES) {
+    throw Object.assign(new Error('payload too large'), { status: 413 })
+  }
   const chunks = []
-  for await (const chunk of req) chunks.push(chunk)
-  if (chunks.length === 0) return undefined
+  let size = 0
+  for await (const chunk of req) {
+    size += chunk?.length ?? 0
+    if (size > MAX_SURFACE_BODY_BYTES) {
+      throw Object.assign(new Error('payload too large'), { status: 413 })
+    }
+    chunks.push(chunk)
+  }
+  if (size === 0) return undefined
   return JSON.parse(Buffer.concat(chunks).toString('utf8'))
 }
 
@@ -83,7 +98,12 @@ function mountOnWebServer(ctx, service) {
         const contentType = String(req?.headers?.['content-type'] ?? '').split(';', 1)[0].trim().toLowerCase()
         if (contentType !== 'application/json') { writeText(res, 415, 'content type must be application/json'); return }
         let message
-        try { message = await readJsonBody(req) } catch { writeText(res, 400, 'body is not JSON'); return }
+        try {
+          message = await readJsonBody(req)
+        } catch (error) {
+          if (error?.status === 413) { writeText(res, 413, 'payload too large'); return }
+          writeText(res, 400, 'body is not JSON'); return
+        }
         if (!isRequestEnvelope(message)) { writeJson(res, badRequest('invalid-request', 'invalid client-request message')); return }
         if (message.method !== endpoint) {
           writeJson(res, badRequest(message.rpcId, `method ${JSON.stringify(message.method)} does not match endpoint ${JSON.stringify(endpoint)}`))

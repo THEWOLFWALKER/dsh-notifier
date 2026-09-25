@@ -16,7 +16,7 @@ import { createRateGate } from '../adapters/_tokens.mjs'
 import { startHttpCallback } from './http-callback.mjs'
 import { resolveNotifyTargets } from './target-guard.mjs'
 import { stringsOf } from '../strings.mjs'
-import { setDurable } from './store.mjs'
+import { deleteDurable, setDurable } from './store.mjs'
 
 const SEND_ENDPOINT = 'https://wxpusher.zjiecode.com/api/send/message'
 const DEFAULT_PORT = 8103
@@ -26,6 +26,7 @@ const DEFAULT_PORT = 8103
 const UID_MAX_LEN = 128
 const UID_PATTERN = /^[A-Za-z0-9_.\-]+$/
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1'])
+const MAX_WXPUSHER_LEARNED_BINDINGS = 512
 
 function isValidWxUid(uid) {
   return typeof uid === 'string' && uid.length > 0 && uid.length <= UID_MAX_LEN && UID_PATTERN.test(uid)
@@ -119,6 +120,23 @@ export function createWxpusherInbound(options = {}) {
   }
   const rateGate = createRateGate(500) // 官方约 2 QPS
 
+  function trimLearnedBindingKeys() {
+    if (typeof store?.keys !== 'function') return true
+    let keys
+    try { keys = store.keys('wxpusher:bind:') } catch { return false }
+    if (!Array.isArray(keys) || keys.length < MAX_WXPUSHER_LEARNED_BINDINGS) return true
+    const rows = keys.map((key) => {
+      let value = null
+      try { value = store.get(key) } catch { /* 读取失败按最旧处理 */ }
+      return { key, at: Number(value?.at) || 0 }
+    }).sort((a, b) => a.at - b.at)
+    const removeCount = rows.length - MAX_WXPUSHER_LEARNED_BINDINGS + 1
+    for (const row of rows.slice(0, removeCount)) {
+      if (deleteDurable(store, row.key).durable !== true) return false
+    }
+    return true
+  }
+
   let running = false
   let startPromise = null
   let server = null // { port, close }
@@ -197,7 +215,8 @@ export function createWxpusherInbound(options = {}) {
           warn(`app_subscribe 拒绝非法 uid 形态（len=${String(data.uid ?? '').length}）：${uid === '' ? '(empty)' : `${uid}`.slice(0, 32)}`)
           return
         }
-        if (setDurable(store, `wxpusher:bind:${uid}`, { at: Date.now(), extra: String(data.extra ?? '') }) !== true) {
+        if (store !== null && (trimLearnedBindingKeys() !== true
+          || setDurable(store, `wxpusher:bind:${uid}`, { at: Date.now(), extra: String(data.extra ?? '') }) !== true)) {
           warn(`uid ${uid} 订阅记录未落盘`)
         }
         // v0.7 学习键汇流（计划书 §3.6）：订阅 uid 进待确认绑定，管理台成员页收口

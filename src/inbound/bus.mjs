@@ -16,6 +16,7 @@
 
 import { createCommandHandler, getChannelName, parseCommand } from './commands.mjs'
 import { stringsOf } from '../strings.mjs'
+import { setDurable } from './store.mjs'
 
 const DEFAULT_DEDUP_WINDOW_MS = 24 * 60 * 60 * 1000
 /** G-46：合成 messageId（内容哈希兜底键）短去重窗——只兜平台 HTTP 重投（秒级），
@@ -105,7 +106,8 @@ export function createInboundBus(options = {}) {
     return false
   }
 
-  function remember(envelope, now = Date.now()) {
+  /** 只写内存 FIFO（有界，未绑定来源使用；不制造外部可写的 state 键）。 */
+  function rememberInMemory(envelope, now = Date.now()) {
     const key = dedupKeyOf(envelope)
     // 重置插入序：同 key 重复 remember 不占容量（Map.set 原地更新不挪位，语义无妨——
     // 容量淘汰只关心界内条目数）
@@ -114,7 +116,14 @@ export function createInboundBus(options = {}) {
       const oldest = fifo.keys().next().value
       fifo.delete(oldest)
     }
-    if (store !== null) store.set(key, now)
+  }
+
+  /** 绑定成员使用内存 + 持久化，跨重启继续防重放。 */
+  function remember(envelope, now = Date.now()) {
+    rememberInMemory(envelope, now)
+    if (store !== null && setDurable(store, dedupKeyOf(envelope), now) !== true) {
+      warn(`去重记录未落盘：${dedupKeyOf(envelope)}`)
+    }
   }
 
   /** 引导态：绑定表空 + 旧白名单空（此时六通道照常启动，仅开放注册面）。 */
@@ -221,7 +230,8 @@ export function createInboundBus(options = {}) {
 
       // 未绑定：拒绝也记账（R5 审查 R5-3-P3-2：平台对未回执消息会重投，不 remember 则
       // 同一 messageId 每次重投都重走判定链——60s 节流只兜回执不兜 warn 刷屏）
-      remember(envelope)
+      // 未绑定来源只记内存：仍拦平台重投，但不允许陌生 messageId 无限放大 state.json。
+      rememberInMemory(envelope)
       // 拒绝回执（引导态文案带配对指引；普通态带联系管理员指引）
       if (identity !== null && shouldReply(envelope.channel, envelope.userId)) {
         const bt = options.strings?.bus ?? stringsOf().bus
