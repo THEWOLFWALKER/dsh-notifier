@@ -1,9 +1,8 @@
-# ROADMAP.md — dsh-notifier v0.11.0 执行规格
+# ROADMAP.md — 历史执行规格（v0.11 / v0.12 已收口）
 
-> 更新：2026-09-25 · **v0.12.0 已发布**（1831 tests；Native Control Surface + 出站热生效 + 出站状态迁移；真机 DSH 宿主 `0.1.7-rc.2` 视觉/交互验证与 `alpha.1` 兼容性冒烟已通过）· 上一发布线 **v0.11.0**（1816 tests；W0 + 宿主 P0/P1/P2 + W1~W6 已发布）· 基线曾为 v0.10.2（1616 tests）· 目标版本 **v0.12.0**
-> **状态：W1~W6 已完成并随 v0.11.0 发布；W7（管理台策略模板）/ W8（`docs/reliability.md`）/ W9（`test/reliability-*` 契约包）/ W10（管理台渠道健康面板）顺延下一版，规格保留于本文件。**
-> 本文档是**交给执行 agent 的实施规格**。产品定位与战略论证见文末「背景」；技术形态演进见 [architecture-roadmap.md](architecture-roadmap.md)。
-> 执行 agent 通读全文后再动手；所有工作项完成后按「发布收口」统一走门禁。
+> 更新：2026-09-25 · **v0.12.0 已发布**（1831 tests；Native Control Surface + 出站 Hot Apply + canonical state）。
+> **归档说明：本文保留 v0.11 的 W1~W10 历史规格与战略背景，不再作为下一版本执行入口。** W1~W6 已随 v0.11 发布；v0.12 已用 Native Control Surface 重新落位了部分旧 Admin 方向。下一版本必须新建独立 workstream/任务书，不得把本文件未做项机械视为 v0.13 承诺。
+> 当前事实以 [memory/project-state.md](memory/project-state.md) 与 [../HANDOFF.md](../HANDOFF.md) 为准；长期产品方向看 [architecture-roadmap.md](architecture-roadmap.md)。
 
 ## 执行红线（任何工作项不得违反）
 

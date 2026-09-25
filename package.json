@@ -1,7 +1,7 @@
 {
   "name": "dsh-notifier",
   "version": "0.12.0",
-  "description": "DSH 通知插件：一个 notify() 打通 28 个出站渠道；支持 Telegram / 飞书 / QQ / 钉钉等入站远程审批、提问与对话回传；内置本机 Web 管理台。零运行时依赖。",
+  "description": "DSH 通知与远程操作控制面：28 个出站渠道、6 条入站控制通道、原生「通知与控制」UI、出站热生效；零运行时依赖。",
   "type": "module",
   "main": "src/plugin-entry.mjs",
   "exports": {
@@ -99,7 +99,12 @@
     "weixin",
     "ilink",
     "qr-login",
-    "remote-approval"
+    "remote-approval",
+    "remote-control",
+    "native-ui",
+    "control-plane",
+    "hot-apply",
+    "push-notifications"
   ],
   "dshWorkshop": {
     "schema": "omdsh-workshop-package/v1",

@@ -1,144 +1,136 @@
 # dsh-notifier
 
-> **Your agent, in your pocket.** — 通知、审批、遥控，全在你的手机里。
+<p align="center">
+  <img src="https://raw.githubusercontent.com/THEWOLFWALKER/dsh-notifier/main/docs/assets/dsh-notifier-icon.png" width="132" alt="dsh-notifier logo">
+</p>
 
-> **Maintenance notice (维护公告)**: until **2026-10-01**, the author is taking exams and cannot promptly maintain the project or review PRs/issues — replies will be delayed. Apologies for the inconvenience; outstanding items will be picked up after that. 至 **2026-10-01** 前作者因考试无法及时维护与查看 PR/Issue，回复会延迟，非常抱歉。
+<p align="center"><strong>Your agent, in your pocket.</strong><br>Notifications, approvals, remote control — now with a native DSH control surface.</p>
+
+> **Maintenance notice (维护公告)**: until **2026-10-01**, the author is taking exams and cannot promptly maintain the project or review PRs/issues — replies will be delayed. Apologies for the inconvenience. 至 **2026-10-01** 前作者因考试无法及时维护与查看 PR/Issue，回复会延迟。
 
 **English** · [**简体中文**](README.zh-CN.md)
 
 ![DSH](https://img.shields.io/badge/DSH-DeepSeek%20Harness-1F6FEB?style=flat-square)
 ![Node.js](https://img.shields.io/badge/Node.js-22%2B-339933?style=flat-square&logo=node.js&logoColor=white)
 ![JavaScript](https://img.shields.io/badge/JavaScript-ESM-F7DF1E?style=flat-square&logo=javascript&logoColor=black)
-![Cordis](https://img.shields.io/badge/Cordis-plugin-FF6B6B?style=flat-square)
-![Zero deps](https://img.shields.io/badge/zero%20deps-000000?style=flat-square)
-![Bilingual](https://img.shields.io/badge/bilingual-EN%2F%E7%AE%80%E4%BD%93-00A98F?style=flat-square)
+![Zero deps](https://img.shields.io/badge/runtime%20deps-0-000000?style=flat-square)
 ![Channels](https://img.shields.io/badge/channels-28-00B4D8?style=flat-square)
-
 ![npm version](https://img.shields.io/npm/v/dsh-notifier?style=flat-square&logo=npm&logoColor=white)
 ![tests](https://img.shields.io/badge/tests-1831-brightgreen?style=flat-square)
 ![license](https://img.shields.io/badge/license-MIT-brightgreen?style=flat-square)
-![awesome-dsh-plugin](https://img.shields.io/badge/awesome--dsh--plugin-listed-00B4D8?style=flat-square)
-![omdsh workshop](https://img.shields.io/badge/omdsh-workshop-7C3AED?style=flat-square)
 [![dshfind](https://dshfind.com/api/badge/THEWOLFWALKER/dsh-notifier?lang=en)](https://dshfind.com/en/plugins/THEWOLFWALKER/dsh-notifier?ref=badge)
-[![dshfind downloads](https://dshfind.com/api/badge/THEWOLFWALKER/dsh-notifier?metric=downloads&lang=en)](https://dshfind.com/en/plugins/THEWOLFWALKER/dsh-notifier?ref=badge)
-[![dshfind plugin card](https://dshfind.com/api/card/THEWOLFWALKER/dsh-notifier?lang=en)](https://dshfind.com/en/plugins/THEWOLFWALKER/dsh-notifier?ref=badge)
 
-![never miss](https://img.shields.io/badge/never%20miss-a%20turn-00BFFF?style=flat-square)
-![silence](https://img.shields.io/badge/silence%20never-approves-9C27B0?style=flat-square)
-![push](https://img.shields.io/badge/push%20it-real%20good-FF4081?style=flat-square)
+`dsh-notifier@0.12.0` is the notification and remote-operations control plane for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness): **28 outbound channels**, **6 inbound control channels**, remote approvals/questions/conversation, task visibility, health/activity projections, and a **native DSH Sidebar/Main experience** — with zero runtime dependencies.
 
 Package metadata: `dsh-notifier@0.12.0` · 1831 automated contract tests · MIT licensed.
 
-Bring your [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) agent to the places you already use. dsh-notifier puts one minimal `notify()` API in front of 28 channels, then adds phone-friendly approvals, questions, session controls, and a calm local console — with no second runtime to deploy.
+[Get started](docs/guide.md) · [Upgrade](docs/upgrade-guide.en.md) · [Compatibility](docs/compatibility-matrix.md) · [Plugin API](PLUGINS.en.md) · [Changelog](CHANGELOG.md)
 
-[Get started](docs/guide.md) · [Upgrade guide](docs/upgrade-guide.en.md) · [Plugin integration](PLUGINS.md)
+## v0.12: daily control moves into DSH
 
-Your agent and the harness itself both push through it: session events (`turn/end` · `approval/asked` · `agent/error`) auto-notify, the model calls a `notify` tool directly, and six inbound channels carry approvals, conversations, and multiple-choice questions (`ask_user`) back from your phone. Decisions are single-use and fail-closed — unknown sources and QQ GROUP control are rejected by default. Long tasks send heartbeats and stall alerts with a one-click stop button; identity is runtime pairing codes and bindings, not YAML strings — all with zero runtime dependencies.
+The primary daily surface is now **Notify & Control** inside DSH. You no longer need to hunt through startup logs for a localhost URL just to add or test a notification channel.
 
-## How it works
+- **Native Control Surface** — DSH Sidebar + Main panel, plus a Plugins activation/config entry.
+- **Live outbound Hot Apply** — save an outbound channel and the next send uses it immediately; no notifier rebuild and no DSH restart.
+- **One runtime authority** — notifier, routing, tools, questions/approvals availability and UI projections read the same `OutboundSource`.
+- **Health / Tasks / Questions / Activity** — operational views reuse existing runtime state; no second task/question database.
+- **Advanced Console stays available** — the loopback Web console is now an advanced/recovery surface for members, pairing, bindings, sessions and diagnostics.
+- **Safer handoff** — Native launches the Advanced Console with a short-lived one-time ticket; the Native client never receives the long-lived Admin bearer.
 
-```
-DSH agent ──notify() tool─────────┐
-                                  ├─▶ notifier core ─▶ 28 channels (IM webhooks / push apps / China apps)
-DSH session events ──auto push────┘   level routing · tiered retries · segmentation · anti-disturb · ledger
-                                      heartbeat ⏱ / stall ⚠ (v0.5) ──▶ cards with a ⏹ stop button
-your phone ──6 inbound channels───▶   remote approval (buttons · reply 1/2) · remote conversation (followup/inject/steer) · remote questions (option cards + custom/skip aux buttons, v0.8)
-```
-
-Every message resolves through one chain — level (`timeSensitive` / `active` / `passive`) → routing (multi-agent matrix) → channel adapter (`resolve(cfg)` + `send(msg)`). Two trigger lines feed it: the harness auto-pushes session events (debounced, deduped), and the model calls the `notify` tool. Six inbound channels ride the same core in reverse for approvals and conversation — and since v0.5 the outbound line reports back too: long-running turns send heartbeats, silent turns raise stall alerts, and Telegram/Feishu notifications carry a one-click stop action.
-
-## Web admin console
-
-The console is enabled by default and binds loopback only (mobile-friendly since v0.5). Zero-config onboarding: no YAML needed after install — open the exact `http://127.0.0.1:<port>/#token=...` link printed by the startup line (port conflicts fall back to a free port automatically; the token lives only in the URL fragment and is printed once). The in-page unlock gate verifies silently, then a first-visit wizard walks you through: pick a notification channel → fill in credentials → receive a real test notification on your phone. Remote reply, approvals, and member pairing can be configured later; bindings and sessions stay behind an explicit advanced-settings toggle.
-
-| Page | What it shows |
-|---|---|
-| **Home** | link status & next actions, outbound/inbound channel health matrix, pending questions, audit stream; a three-step setup wizard when nothing is configured yet |
-| **Channels** | outbound-first credential forms (masked `***`; untouched `***` fields are never submitted), instant real test send, QR authorization |
-| **Members** (v0.7.0) | identity bindings (roles / labels / pairing time), pairing codes, pending-binding confirmations |
-| **Notifications** (v0.4.0) | live SSE event stream, system-notification preferences, event log |
-| **Bindings** (advanced) | agent × channel checkbox grid, per-channel default agent |
-| **Sessions** (advanced) | per-session outbound resolution with override editing |
-
-> **Outbound config is "view-hot, delivery-cold"** (G-14, W12): saving an **outbound** channel in the admin console reflects in the UI immediately, and the channel card shows a **"重启后生效" (takes effect after restart)** badge — the delivery layer (outbound router/channel instances) only merges runtime config (YAML ⊕ store) at the **next plugin startup**; inbound credentials likewise reconnect at next startup. Test send is exempt: it runs against the latest merged config instantly, no restart needed.
-
-### What it looks like
-
-| Zero-config onboarding wizard | Channel setup (configured + collapsible groups) |
-|---|---|
-| ![First-visit onboarding wizard](docs/screenshots/fresh-wizard-desktop.png) | ![Channel setup](docs/screenshots/configured-channels-desktop.png) |
-
-| In-page unlock gate (silent token check) | Mobile layouts |
-|---|---|
-| ![Unlock gate](docs/screenshots/gate-unlock.png) | ![Mobile · channels](docs/screenshots/configured-channels-mobile.png) · ![Mobile · wizard](docs/screenshots/fresh-wizard-mobile.png) |
-
-Screenshots captured from the loopback console (blue-white theme, aligned with the DeepSeek Harness design tokens). The console binds loopback only and is mobile-friendly from v0.5.
+> Outbound changes are hot. Inbound transports may still require a restart when the UI says **Restart pending**; v0.12 intentionally does not pretend every inbound SDK/long connection can be reconfigured live.
 
 ## Quick start
 
 ```bash
-dsh plugin add dsh-notifier --profile <profile-name>
+dsh plugin add dsh-notifier@latest --profile <profile-name>
 ```
 
-> `--profile` is required (DSH 0.1.0-rc.6+): plugin installs target a named profile — use the one you run (e.g. `web`).
+Restart DSH once so the newly installed client module and host plugin are loaded, then:
 
-No YAML needed. Restart DSH, then open the full link printed by the `Web 管理台已就绪` startup line (looks like `http://127.0.0.1:<port>/#token=...`):
+1. Open **Notify & Control** from the DSH sidebar, or **Plugins → dsh-notifier → Start setup**.
+2. Choose a notification channel you already use.
+3. Enter credentials and select **Save and test**.
+4. Setup finishes only after a **real test notification is delivered** to your device.
 
-1. The token in the link verifies silently and the first-visit wizard opens;
-2. Pick a channel your phone already has (Bark / Telegram / Feishu / DingTalk …) and fill in its credentials;
-3. Hit "save & send test notification" — **once your phone buzzes, setup is done**.
+After that, outbound edits apply immediately. No YAML is required for normal setup.
 
-That's it. `turn/end`, `approval/asked`, and `agent/error` events now reach every configured channel, and the model can push on its own with `notify({ message, channel, title })`. Long tasks send heartbeats and stall alerts out of the box (v0.5 defaults), and you can stop a runaway turn right from the notification card.
+If the Native surface is unavailable (for example on a headless profile), the loopback **Advanced Console** and YAML/CLI paths remain available as recovery/automation entry points.
+
+## How it works
+
+```text
+DSH Sidebar / Plugins
+        │
+        ▼
+Native Control Surface ── DSH Connection RPC ──┐
+                                                │
+DSH events ────────────────┐                    ▼
+agent notify() tool ───────┼──▶ OutboundSource ─▶ notifier core ─▶ 28 outbound channels
+other plugins / ctx.notifier┘         │
+                                      └── health · activity · ledger
+
+your phone ── 6 inbound channels ──▶ identity + Control Core
+                                      ├─ approval
+                                      ├─ conversation / steer
+                                      ├─ ask_user questions
+                                      └─ task/session control
+
+Advanced Console (127.0.0.1) ──▶ same runtime state
+  members · pairing · bindings · sessions · diagnostics · recovery
+```
+
+Session events such as `turn/end`, `approval/asked`, and `agent/error` can auto-notify; the model can also call the `notify` tool directly. Six inbound channels carry approvals, conversation and `ask_user` responses back from your phone. Decisions are one-shot and fail-closed: silence never approves, unknown/unbound sources are rejected, and settlement remains behind the shared Control Core.
+
+## Control surfaces
+
+| Surface | Use it for | Notes |
+|---|---|---|
+| **Notify & Control** (DSH Native) | Home status, channels, real test sends, task projection, pending questions, recent activity | **Primary daily UI** |
+| **Plugins → dsh-notifier** | First setup, status, handoff into Notify & Control | No duplicate admin dashboard |
+| **Advanced Console** | Members/pairing, bindings, sessions, detailed diagnostics and recovery | Loopback-only, `127.0.0.1`; launched from Native when enabled |
+| **YAML / CLI** | Automation, reproducible deployments, headless operation | Advanced path; see [guide](docs/guide.md) |
 
 ## Core features
 
 | Feature | What it does |
 |---|---|
+| **28 outbound channels** | IM webhooks, push apps, China-centric services, desktop/local targets — zero runtime deps. |
+| **Native DSH UX** (v0.12) | Sidebar/Main panel + plugin activation/config card using Host React and DSH visual tokens; no iframe, Vite, esbuild or bundled React. |
+| **Live outbound Hot Apply** (v0.12) | Save → validate/resolve → persist canonical state → atomically swap the live channel; the next send uses the new config without restart. |
 | **Dual trigger lines** | Auto status push (`turn/end` · `approval/asked` · `agent/error`) plus a model-facing `notify` tool. |
-| **28 channels** | Telegram, Slack, Discord, Feishu, DingTalk, WeCom, WeCom App, QQ bot, OneBot, Teams, Mattermost, Google Chat, Bark, Pushover, PushDeer, Chanify, ntfy, Gotify, iGot, WxPusher, PushPlus, Server酱, Qmsg, 息知, webhook, bell, desktop, WPS 协作群机器人 (wps-bot) — zero runtime deps. |
-| **Level routing** | `timeSensitive` / `active` / `passive` → per-channel delivery semantics (silent push, priority headers, @-mentions) with tiered retries. |
-| **Remote approval** | Answer approvals from your phone — Telegram/Feishu cards, QQ native buttons in 1:1 chats, and numbered-reply fallback on channels without cards. Group destinations use a safe text fallback. Silence never approves. |
-| **Remote conversation** | Chat with your agent: plain text → `followup`/`inject`, `!` prefix steers mid-turn, a merge window reassembles mobile typing. |
-| **Remote questions** (v0.8.0) | The model asks you multiple-choice questions on your phone: 1-4 questions × 2-5 options (multi-select supported). Option cards on Feishu/Telegram and QQ 1:1 chats; Telegram single-select cards also carry ✍️ custom-answer and ⏭ skip buttons (source/token-checked, first-arrival wins); other destinations use a safe numbered-reply fallback. Out-of-range answers get a re-prompt without voiding the question; timeout never fabricates an answer. Same trust chain as approvals (HMAC one-time tokens, first-arrival wins, 30s/60s escalation). The loopback Web/admin console provides a masked pending-question list with choose/reject through Control Core. |
-| **Mobile command center** (v0.5.0) | Long-task heartbeats (default 15min start) and stall alerts (default 10min no events); Telegram/Feishu cards carry a ⏹ stop button (HMAC one-time tokens, same trust chain as approvals); `/quiet`·`/unquiet` mute or restore a session's pushes from your phone. |
-| **Mobile task & session control** (v0.11.0) | See active DSH tasks/sessions and pick which one a chat drives from your phone: `/tasks` (task list), `/use` (select), `/sessions` (session overview with status and attention flags). All read-only projections of the existing session registry — no second session state. `/log [N]` gives on-call a bounded, redacted recent-notifications summary: **off by default and owner-only** (`remoteLog.enabled`), line- and byte-capped and masked. |
-| **Open event source** (v0.6.0) | Other plugins push via the `notifier` service (`ctx.inject(['notifier'], …)` — shared config, routing, ledger, rate limits, flush) and subscribe to delivery metadata via `ctx.on('dsh-notifier/sent')`. Broadcast and directed sends each produce one audited event; message text is never exposed. Per-source rate limiting (10/min), 20k-codepoint clamps, never-reject API; consumer contract in [PLUGINS.md](PLUGINS.md) / [PLUGINS.en.md](PLUGINS.en.md), with build-time helpers `dsh-notifier/testing` (unit-test fake), `dsh-notifier/types` (TypeScript contract), and a runnable [consumer demo](examples/consumer-demo/README.md). |
-| **Identity system** (v0.7.0) | "Who can drive inbound" becomes a runtime object: pairing codes (`/pair <code>` in any DM; first redeemer becomes owner), composite-key bindings (`channel:userId` — a Telegram-bound id no longer admits a Feishu message), role management (last owner can't be deleted or demoted), and rejection receipts that tell unbound senders how to get in. Empty whitelist boots into a guided state with a bootstrap pairing code written to a local 0600 file (`<stateDir>/bootstrap-paircode.txt`; logs print the path, never the code) instead of refusing to start. **Full setup-to-daily-use walkthrough: [docs/guide.md](docs/guide.md) (中文)**. |
-| **Multi-agent routing** (v0.3.2) | Bidirectional agent × channel matrix; sessions auto-register; `/agent` command family + `route.mjs` CLI. |
-| **Web admin console** (v0.3.3; zero-config onboarding rebuild) | 127.0.0.1-only + Bearer token; enabled by default with a one-time fragment launch link and automatic port fallback; four main pages — home / channels / members (v0.7) / notify, with bindings / sessions behind an explicit advanced toggle; first-visit wizard finishes the moment a real test notification lands on your phone; responsive ≤768px layout (v0.5). |
-| **QR login** (v0.3.1) | One-command official scan authorization for QQ / DingTalk / Feishu (WeChat keeps iLink). |
-| **Desktop notifications** (v0.4.0) | Native `desktop` channel (`osascript` / `notify-send` / PowerShell toast) + admin SSE live stream. |
-| **Long-message segmentation** | Over-budget messages split into ordered `（i/n）` segments. |
-| **Anti-disturb rules** | Per-result event gating, keyword include/exclude, idle grace window. |
-| **Ledger & daily digest** | Append-only JSONL ledger + one `passive` summary of yesterday's traffic. |
-| **Secrets safe** | `role('secret')` keys redacted everywhere; `${ENV:NAME}` refs keep secrets out of the profile. |
-| **Never breaks startup** | Misconfigured channels are skipped silently with a log line. |
+| **Level routing** | `timeSensitive` / `active` / `passive` with per-channel semantics, retries, segmentation and anti-disturb rules. |
+| **Remote approval** | Telegram/Feishu cards, QQ C2C native buttons, numbered-reply fallbacks; silence never approves. |
+| **Remote questions** | `ask_user` option cards / numbered replies, multi-select, custom/skip where supported, first-arrival-wins settlement. |
+| **Remote conversation** | Plain text → followup/inject; `!` steers mid-turn; a merge window reconstructs mobile typing. |
+| **Mobile task/session control** | `/tasks`, `/use`, `/sessions`, `/stop`, `/quiet`, `/unquiet`; `/log [N]` is off by default and owner-only. |
+| **Identity & pairing** | Runtime `(channel,userId)` bindings, pairing codes, owner/member roles, source-bound fail-closed checks. |
+| **Plugin public API** | Other plugins can inject `ctx.notifier`, push through the same channels/routing/ledger/limits, and subscribe to metadata-only `dsh-notifier/sent`. |
+| **Advanced Console** | Local-only recovery and deeper management; Native uses a one-time launch ticket instead of exposing its long-lived bearer. |
+| **Ledger & digest** | Append-only delivery ledger plus optional daily summary. |
+| **Secret hygiene** | Secret fields are masked/omitted in projections; `${ENV:NAME}` keeps credentials out of YAML. |
 
-### Session commands (private-chat with the bot)
+### Session commands
 
-| Command | What it does | Boundaries |
+| Command | What it does | Boundary |
 |---|---|---|
-| `/help` | List every available command. | No args; also explains the text / `!` / `..` conventions below. |
-| `/status` | Show binding & agent status: bound session, resolved target, agent status, active-session list. | No args; when unbound it reports the channel-default routing instead. |
-| `/agent` | Active-session group view: `workspace \| sid \| status \| outbound channel \| quiet`. | No args. |
-| `/agent use <workspace\|sid prefix>` | Switch this conversation to that session (smart binding). | The target may contain spaces (the whole remainder is matched, G-33); unknown target gets a usage receipt. |
-| `/agent back` | Release this conversation's binding and go back to the channel default. | No args. |
-| `/bind <sessionId>` | Bind to an exact session (sid-level precise operation). | Unknown sid → "session not found" receipt. Rebinding detaches the old session's inbound hook first (G-48), so one user is never double-hooked. |
-| `/unbind` | Unbind (back to channel-default routing: the channel's default agent, or the most recently active session when unset). | No args. |
-| `/tasks` | Active task list (`taskRef \| workspace \| status \| attention`). | Read-only projection; unavailable (with a receipt) when the router engine is not assembled. |
-| `/use <workspace\|sid prefix>` | Select a task for this conversation (equivalent to `/agent use`; on an ambiguity selection card it delivers the original message instead). | Same target rules as `/agent use`. |
-| `/sessions` | Mobile session overview: active DSH sessions with status, attention flags, and the current binding. | Read-only; the single data source is the task projection — it never creates session state. |
-| `/log [N]` | Bounded, redacted recent notifications/events summary for on-call diagnosis. | **Off by default**, owner-only: an administrator must explicitly enable `remoteLog.enabled`; output is line- and byte-capped and masked. |
-| `/stop` | Cancel the current turn. | Bare `/stop` only (G-04): an appended message such as `/stop wait` is **not** a cancel — it falls through as an unknown command and is delivered as text. |
-| `/route` | Show the bidirectional resolution: session → channel and channel → session. | Unavailable (with a receipt) when the router engine is not assembled. |
-| `/quiet <workspace\|sid>` | Mute that session's outbound pushes; remote conversation is unaffected. | Target required (full name or ≥4-char sid prefix); unavailable when the router engine is not assembled. |
-| `/unquiet <workspace\|sid>` | Restore that session's outbound pushes. | Same boundary as `/quiet`. |
+| `/help` | List available commands | Private chat |
+| `/whoami` | Show identity/binding state | Private chat |
+| `/status` | Show current routing/session status | Private chat |
+| `/agent` / `/agent use …` / `/agent back` | Inspect and switch the active session | Bound identity |
+| `/bind <sessionId>` / `/unbind` | Exact session binding | Bound identity |
+| `/tasks` / `/use …` | List/select active tasks | Read-only task projection |
+| `/sessions` | Session overview with attention flags | Read-only projection |
+| `/log [N]` | Bounded redacted recent-notification summary | **Off by default**, owner-only |
+| `/stop` | Cancel the current turn | Bare `/stop` only |
+| `/route` | Show bidirectional route resolution | Router must be available |
+| `/quiet <target>` / `/unquiet <target>` | Mute/restore outbound pushes for a session | Conversation remains active |
+| `/pair <code>` / `/unpair` | Pair or detach an inbound identity | Private chat |
 
-Sending plain text talks to the agent; a `!` prefix steers mid-turn; a `..` suffix flushes immediately (inside the merge window). Group chats refuse remote-control commands (QQ groups reply with a "群聊不允许远程控制" receipt) — use the original private chat.
+Plain text talks to the agent; prefix with `!` to steer a running turn. Group chats do not get unsafe remote-control semantics — use the original private chat.
 
 ## Configuration
 
-All channels live under `config.channels`. Key example:
+For ordinary use, configure outbound channels in **Notify & Control**. YAML remains useful for bootstrap, automation and headless deployments:
 
 ```yaml
 insert:
@@ -146,31 +138,26 @@ insert:
     config:
       channels:
         - type: telegram
-          botToken: "123456:ABC-DEF..."
+          botToken: "${ENV:TELEGRAM_BOT_TOKEN}"
           chatId: "987654321"
         - type: feishu
-          webhook: "https://open.feishu.cn/open-apis/bot/v2/hook/..."
-        - type: wxpusher
-          appToken: "AT_..."
-          uids: ["UID_..."]
-        - type: serverchan
-          sct: "SCT..."
+          webhook: "${ENV:FEISHU_WEBHOOK}"
 ```
 
-Optional blocks each opt in under their own key:
+v0.12 writes editable outbound runtime state to the canonical `channel:<type>:outbound` store key. YAML is still a bootstrap/fallback source; old `admin:channel:<type>:outbound` and legacy `<type>:account` overlays are compatibility-only.
 
-| Block | Purpose | Key |
+| Block | Purpose | Typical key |
 |---|---|---|
-| `inbound` | Remote approval + conversation | `allowUsers: [...]` (first-import only since v0.7; manage members at runtime via the admin console or `/pair`) |
-| `approval` | Timeout, numbered reply, escalation | `mode: answer` |
-| `conversation` | Merge window, steer prefix | `mergeWindowMs: 1500` |
-| `route` | Multi-agent routing | `sessionTtlHours: 24` |
-| `admin` | Web console | enabled by default (127.0.0.1 only); open the exact `/#token=...` startup link — no port guessing |
-| `events` / `keywords` / `graceSeconds` | Anti-disturb gates | `exclude: ["heartbeat"]` |
-| `events.turnStart` / `longRunning` / `stall` | v0.5 status line | `longRunning: { firstAfterMs: 900000 }` |
-| `digest` | Ledger + daily summary | `enabled: true` |
+| `inbound` | Remote approval + conversation | first-import `allowUsers`, then runtime pairing |
+| `approval` | timeout, numbered reply, escalation | `mode: answer` |
+| `conversation` | merge window, steer prefix | `mergeWindowMs: 1500` |
+| `route` | multi-agent routing | `sessionTtlHours: 24` |
+| `admin` | Advanced Console | loopback-only; enabled by default unless explicitly disabled |
+| `events` / `keywords` / `graceSeconds` | anti-disturb gates | `exclude: ["heartbeat"]` |
+| `events.turnStart` / `longRunning` / `stall` | long-task status | `longRunning: { firstAfterMs: 900000 }` |
+| `digest` | ledger + daily summary | `enabled: true` |
 
-v0.5 status line defaults: `longRunning` and `stall` are **on** (15min first heartbeat, then every 15min; stall after 10min of silence) — zero-config long tasks are no longer a black box. `turnStart` is **off** by default (one message per turn is noise at the desk; turn it on when you fire a task and walk away). All timings clamp to a 60s floor; disable any of them with `enabled: false`.
+See the full walkthrough in [docs/guide.md](docs/guide.md).
 
 ## Channels
 
@@ -209,52 +196,69 @@ v0.5 status line defaults: `longRunning` and `stall` are **on** (15min first hea
 
 <!-- CHANNEL-MATRIX-END -->
 
-Six channels also open inbound (remote approval + conversation): `telegram`, `feishu`, `qq-bot`, `wxpusher`, `wechat`, `dingtalk` — long-lived connections or long polling, so no public IP is required (only the WxPusher callback needs one). Telegram/Feishu and QQ C2C single chats use native control buttons; other targets receive safe text or numbered-reply fallbacks, and the conversation `routeUnsafe` path cannot bypass the source-safety gate. QQ, WeChat iLink, and DingTalk image-message paths are wired; file receiving/sending follows the capability matrix. The loopback Web/admin console is the single control surface and offers a masked list of pending multi-choice questions plus choose/reject settlement through the shared Control Core. Since v0.5, telegram and feishu additionally carry notification action cards (stop button). Since v0.7, every inbound channel answers `/help` `/whoami` `/pair` `/unpair` registration commands, and outbound card targets resolve through a three-tier priority (per-channel bindings → channel config lists → global fallback) with per-channel id-shape guards.
+Six channels also provide inbound control: `telegram`, `feishu`, `qq-bot`, `wxpusher`, `wechat`, and `dingtalk`. Telegram/Feishu and QQ C2C can use native control buttons; other destinations fall back to safe text/numbered replies. Provider-specific media/file support remains capability- and validation-dependent — see [compatibility](docs/compatibility-matrix.md) and the capability matrix in the source.
+
+## DSH compatibility
+
+Declared host range:
+
+```text
+0.1.7-alpha.1 || 0.1.7-alpha.2 || 0.1.7-rc.1 || 0.1.7-rc.2
+```
+
+v0.12 release evidence includes:
+
+- **0.1.7-rc.2**: real-host Native UI / channel setup / save+test / Hot Apply walkthrough passed.
+- **0.1.7-alpha.1**: compatibility-floor smoke passed (activation, RPC, 28-channel projection, client-module serving).
+- **alpha.2 / rc.1**: source/artifact seam compatibility is verified; see the exact evidence level in [docs/compatibility-matrix.md](docs/compatibility-matrix.md).
 
 ## Architecture
 
-```
+```text
 src/
-  adapters/           28 channel adapters (resolve(cfg) + send(msg)) + declarative spec engine
-  config.mjs          channel registry + config schema — single source of truth for the matrix
-  index.mjs           plugin assembly: patch, tools, event listeners, admin wiring
-  event-listener.mjs  auto-push line (debounce, dedup, level routing) + v0.5 status wiring
-  status/             v0.5 turn tracker (heartbeat / stall detection, pure logic)
-  actions.mjs         v0.5 notification action dispatch (turn/cancel, HMAC one-time tokens)
-  notify.mjs          notify / notify_test tools + sliding-window rate limiting
-  routing/            multi-agent matrix (resolveOutbound / resolveInbound)
-  inbound/            six inbound channels (telegram/feishu/qq/wxpusher/wechat/dingtalk) + v0.7 identity stack
-                      (identity.mjs bindings · pairing.mjs codes · commands.mjs registration · target-guard.mjs resolution)
-  approval/           HMAC one-time tokens, dedup, escalation
-  questions/          v0.8 ask_user remote questions (option cards + numbered fallback, rides the approval stack)
-  admin/              web console (6 pages, SSE, bearer auth, mobile layout)
-  ledger.mjs          JSONL ledger + daily digest
-  rules.mjs           anti-disturb gates (event / keyword / grace)
-scripts/              channel-login.mjs · channel-selfcheck.mjs · route.mjs · gen-channel-matrix.mjs
-test/                 1831 tests in the current line; historical 0.8.6 package carried 909 tests.
+  adapters/                 28 outbound adapters + declarative spec engine
+  runtime/
+    outbound-source.mjs     single live outbound authority
+  control-surface/
+    service.mjs             Native command/query facade
+    rpc.mjs                 DSH authenticated control transport
+    channels.mjs            channel projection
+    health.mjs              bounded operational evidence
+    activity.mjs            redacted activity projection
+    tasks.mjs               task projection adapter
+    questions.mjs           Control-Core question bridge
+    launch-ticket.mjs       one-time Advanced Console launch tickets
+  notify.mjs                notify / notify_test + routing/limits
+  event-listener.mjs        automatic session-event notifications
+  routing/                  multi-agent routing
+  inbound/                  six inbound control channels + identity/pairing
+  approval/                 approval tokens/dedup/escalation
+  questions/                remote ask_user flow
+  admin/                    Advanced / recovery Web console
+  ledger.mjs                append-only delivery ledger + digest
+client.js                   DSH Native web client module
 ```
 
-Design rules: pure ESM (`.mjs`), zero runtime dependencies, a declarative spec engine for the bulk of channels, thin honest adapters, no build step.
-
-### Optional dependencies (optional assembly, S-13)
-
-`package.json` carries two `optionalDependencies`, both **exact-pinned** and **lazy-loaded only** — installing them is never required, and their absence never breaks startup or the core notify path:
-
-- `@larksuiteoapi/node-sdk` `1.73.0` — Feishu QR login / inbound WebSocket only. Missing → the Feishu channel reports `missing-sdk` with install guidance (`npm i @larksuiteoapi/node-sdk@1.73.0`), other channels keep working.
-- `qrcode-terminal` `0.12.0` — terminal QR rendering in the login CLIs only. Missing → the CLIs print a scannable link instead.
-
-Pin discipline (S-13): optional ranges are locked to the reviewed versions (the `^` floor that let `@larksuiteoapi/node-sdk` drift past the `registerApp` callback rename at ≥1.73 is gone). `@tencent-connect/qqbot-connector` is **not** an optionalDependency: it is npm-flagged `UNLICENSED`, so per `docs/memory/decisions.md` it stays a design reference only — never copied, redistributed, or introduced as a dependency. The QQ QR-login code path keeps its lazy `import()` and degrades to a `missing-sdk` receipt if the package is installed manually.
+The public consumer surface is documented in [PLUGINS.en.md](PLUGINS.en.md). `ctx.notifier.version` remains `0.7`; v0.12 changes the product control surface and runtime channel authority, not the consumer API contract.
 
 ## Development
 
-> Development happens on the `dev` branch of this repository; `main` is the release branch (published versions + tags + npm releases). Work on `dev`, then merge to `main` when cutting a release.
+Release gates:
 
 ```bash
-npm test          # current line: 1831
+npm test
+node scripts/verify-release.mjs
+node scripts/gen-channel-matrix.mjs --check
+node --check src/index.mjs
+node --check client.js
+npm pack --dry-run --json
+git diff --check
 ```
 
-To add a channel: implement the adapter interface (`resolve(cfg)` + `send(msg)`) in `src/adapters/` and register it in `src/config.mjs`; the channel matrix above self-regenerates via `node scripts/gen-channel-matrix.mjs`.
+v0.12.0 release baseline: **1831 / 1831 tests pass**.
+
+test/ 1831 tests in the current line; the historical 0.8.6 package carried 909 tests.
 
 ## License
 
-[MIT](LICENSE) · third-party notices in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
+MIT

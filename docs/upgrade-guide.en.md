@@ -1,170 +1,182 @@
-# dsh-notifier Upgrade Guide (Update · Verify Version · Version-Mismatch Triage · Rollback)
+# dsh-notifier Upgrade Guide
 
-> For **DSH users**: how to update dsh-notifier to the latest release, how to confirm the
-> installed version is correct, how to tell a "version mismatch / stale file" apart from a
-> real feature bug, and how to roll back to a previous version.
-> All commands assume the official **npm registry** release; the `file:` developer warning
-> is at the end. 简体中文版：[`upgrade-guide.md`](upgrade-guide.md)
+> For DSH users: update, verify the installed build, migrate from v0.11 to v0.12, triage stale installs, and roll back.
+>
+> 中文版：[`upgrade-guide.md`](upgrade-guide.md)
 
----
+## 1. Update to the latest release
 
-## 1. How to update dsh-notifier
-
-### Option A: the DSH plugin command (recommended — registry build)
-
-Run from the DSH installation root:
+Recommended:
 
 ```bash
 dsh plugin add dsh-notifier@latest --profile <profile-name>
 ```
 
-> For dsh-notifier, re-running `dsh plugin add` on the same package *is* the update: it pulls
-> the newest published version from the npm registry over the old install. `--profile` must be
-> the profile you actually run (required since DSH 0.1.0-rc.6, see README). If your DSH CLI
-> does not accept the `@latest` suffix, plain `dsh plugin add dsh-notifier --profile <profile-name>`.
-
-### Option B: manage it directly from the DSH root
-
-npm hosts:
+If your DSH CLI does not accept `@latest`:
 
 ```bash
-npm update dsh-notifier              # or npm install dsh-notifier@latest
+dsh plugin add dsh-notifier --profile <profile-name>
 ```
 
-pnpm hosts:
+Or manage it from the DSH root:
 
 ```bash
-pnpm update dsh-notifier             # or pnpm add dsh-notifier@latest
+npm install dsh-notifier@latest
+# or
+pnpm add dsh-notifier@latest
 ```
 
-### After updating
+### Restart once after installing the new package
 
-**Restart DSH.** Channel connections are brought up at startup — installing the package alone
-does not activate the new build's connections / tool wiring.
+Restart DSH once so the new Host plugin and `client.js` are loaded.
 
----
+That restart is required to **load the upgrade**. It does not mean v0.12 outbound edits are restart-bound: once v0.12 is running, outbound channel saves Hot Apply.
 
-## 2. How to confirm the installed version
+## 2. What changes from v0.11 to v0.12
 
-Three markers; pick any:
+### Native is now the primary UI
 
-| Method | Command / location | Success looks like |
+Old daily path:
+
+```text
+startup log
+→ copy localhost /#token link
+→ configure in Web Admin
+```
+
+v0.12 primary path:
+
+```text
+DSH Sidebar "Notify & Control"
+or Plugins → dsh-notifier
+→ configure channel
+→ save + real test
+```
+
+The Standalone Web console remains as **Advanced / Recovery**.
+
+### Outbound saves are live
+
+The old v0.11 “view-hot, delivery-cold / restart required” rule no longer applies to v0.12 outbound configuration.
+
+v0.12:
+
+```text
+save
+→ validate / resolve
+→ persist
+→ atomically replace OutboundSource entry
+→ next send uses the new config
+```
+
+### Canonical outbound state changed
+
+New writes use:
+
+```text
+channel:<type>:outbound
+```
+
+Old `admin:channel:<type>:outbound` and legacy `<type>:account` entries are compatibility inputs only.
+
+The canonical state is independent of `admin.enabled`.
+
+### Inbound can still be restart-bound
+
+v0.12 intentionally does not implement a generic hot-reloader for every inbound SDK/WS/long-poll transport. Follow the UI `applyMode`.
+
+## 3. Verify the actual installed version
+
+| Evidence | How | v0.12 expected |
 |---|---|---|
-| Admin-console badge | Open the web console, page header | `dsh-notifier console v0.8.x` (matches the current release) |
-| Startup-log wiring marker | DSH startup log, search for `remote questions enabled` | v0.8+ prints a line about the `ask_user` tool (re-wired since v0.8.2; missing means an old package or skipped wiring) |
-| CLI resolves the version | DSH root: `npm ls dsh-notifier` (npm) or `pnpm ls dsh-notifier` (pnpm) | Version shown = version actually assembled |
+| Native UI | DSH Sidebar / Plugins | `Notify & Control` entry exists |
+| CLI | `npm ls dsh-notifier` / `pnpm ls dsh-notifier` | `0.12.0` or newer |
+| Registry | `npm view dsh-notifier version` | matches the release you intended to install |
 
-Then compare against the latest published release:
+Developers can also inspect the installed package:
 
-```bash
-npm view dsh-notifier version
+```text
+exports["./client"] = "./client.js"
+dshQuality.testCount = 1831    # official 0.12.0 artifact
 ```
 
-Good only when "installed ≥ expected" **and** "installed == the release you set out to verify."
+## 4. Version says 0.12, behavior looks old
 
-> Note: the `remote questions enabled` startup line is a **wiring marker, not a version** — it
-> only proves "≥ v0.8.2 with the questions bridge healthy". For the exact patch, use the CLI
-> output / console badge.
+The usual cause is a stale `file:` install, manual node_modules overwrite, or pnpm restoring a different package tree.
 
----
-
-## 3. "A feature doesn't work" — triaging version mismatch / stale files
-
-Typical symptoms (a shipped feature seems not to exist):
-
-- A tool that should exist isn't there (e.g. `ask_user`, or the `remote questions enabled` log line is missing);
-- The console version badge is behind the latest release;
-- New-version config keys have no effect.
-
-Sequence:
-
-**Step 1 — confirm the actual version.** Use one of the three markers in §2.
-
-- If stale → go update (§1).
-
-**Step 2 — version is right but the feature still misbehaves → suspect mismatch / staleness**
-
-Most common source: the package was installed from a `file:` local path, or files were manually
-copied over `node_modules/dsh-notifier`. As soon as local sources change, the package inside
-node_modules **silently drifts away from the registry release** — it no longer looks like the
-official artifact, so test results don't represent the release. This exact gap once produced a
-"`ask_user` tool has an empty name" phantom; use the version, resolution-source, and restart checks in this section to rule out stale packages before treating it as a source defect.
-
-1. Reinstall the registry build over it:
-
-   ```bash
-   dsh plugin add dsh-notifier@latest --profile <profile-name>
-   ```
-
-2. For stubborn leftovers, uninstall, clear, and reinstall:
-
-   ```bash
-   dsh plugin remove dsh-notifier --profile <profile-name>
-   ```
-
-   Back in the DSH root, remove the old package (pnpm hosts: use pnpm commands, never delete
-   node_modules by hand — pnpm rolls it back):
-
-   ```bash
-   npm uninstall dsh-notifier          # npm hosts
-   # or
-   pnpm remove dsh-notifier            # pnpm hosts
-   ```
-
-   Then install the registry build again: `dsh plugin add dsh-notifier@latest --profile <profile-name>`.
-
-3. Confirm the resolution source is the registry, not `file:`:
-
-   ```bash
-   pnpm why dsh-notifier               # pnpm hosts
-   # or
-   npm ls dsh-notifier                 # npm hosts
-   ```
-
-   A `file:` / local absolute path in the resolution is a leftover; a registry address / plain
-   version number is normal.
-
-4. **Restart DSH**, then re-check with the §2 markers: badge, log line, and CLI must point at the same version.
-
-**Step 3 — still broken** → go back to the [usage guide](guide.md) troubleshooting table and the
-web console "Overview" live event stream.
-
----
-
-## 4. Downgrade / rollback
-
-To step back to a previous version (e.g. you don't want a behavior the latest introduces):
+Check:
 
 ```bash
-dsh plugin add dsh-notifier@0.8.1 --profile <profile-name>
+pnpm why dsh-notifier
+# or
+npm ls dsh-notifier
 ```
 
-pnpm hosts:
+A `file:` / absolute local path means you are not testing the registry artifact.
+
+Clean reinstall:
 
 ```bash
-pnpm add dsh-notifier@0.8.1
+dsh plugin remove dsh-notifier --profile <profile-name>
+dsh plugin add dsh-notifier@latest --profile <profile-name>
 ```
 
-**Restart DSH** afterwards, and confirm with the §2 markers that the badge / log line / CLI
-point at the target version.
+Restart DSH afterwards.
 
-> Downgrade note: if `state.json` was written by a newer version, the older build may not
-> understand some newer keys. When in doubt, back up `state.json` from the DSH data directory first.
+## 5. v0.12 triage
 
----
+### Native entry is missing
 
-## 5. For developers: don't keep `file:` installs around — the real-machine baseline is the registry build
+Check:
 
-- `file:` installs are for **temporary** local verification only. Left in place long-term, they
-  leave a package in node_modules that drifts with your local source — it doesn't look like the
-  registry release, so results don't represent the release. **Swap back to the registry build
-  and restart before shipping.**
-- **The real-machine acceptance baseline must be the registry build**: what
-  `dsh plugin add dsh-notifier@latest --profile <profile-name>` installs. All-green mocks do not
-  equal a correct real machine (project constitution rule 8 — the real-machine acceptance gate).
-- On pnpm hosts, manually overwriting `node_modules/dsh-notifier` gets rolled back by pnpm on the
-  next operation (see `PLUGINS.md` install notes) — don't copy files by hand; always use
-  `dsh plugin add` or pnpm commands.
-- The previously observed "`ask_user` tool named empty" symptom was most plausibly a version-mismatch
-  phantom from stale builds/packages on the real machine, not a source-code defect — run the §3
-  three-marker check before pointing at the code.
+1. installed package is `0.12.0+`;
+2. DSH restarted;
+3. Host version is in the declared range;
+4. installed package contains `client.js`;
+5. the web profile reports no client-module/slot failure.
+
+Declared range:
+
+```text
+0.1.7-alpha.1 || 0.1.7-alpha.2 || 0.1.7-rc.1 || 0.1.7-rc.2
+```
+
+### Outbound save still requires restart
+
+That is not normal v0.12 behavior. Verify that you are testing the registry build, that the edit is outbound (not inbound), and that no stale local package is shadowing it.
+
+### Advanced Console will not open
+
+Native does not auto-enable `admin.enabled`. If you explicitly disabled Admin, re-enable it or use YAML/CLI for recovery.
+
+## 6. Roll back to v0.11
+
+```bash
+dsh plugin add dsh-notifier@0.11.0 --profile <profile-name>
+```
+
+Back up state first.
+
+v0.11 does not understand the v0.12 canonical key:
+
+```text
+channel:<type>:outbound
+```
+
+A channel configured only through v0.12 Native UI may therefore disappear after downgrade unless the same configuration still exists in YAML/legacy state. Reconfigure it in v0.11 if needed.
+
+Do not edit a live state file by hand.
+
+## 7. Developers: use the registry artifact as the real-machine baseline
+
+`file:` is for temporary development only.
+
+Before publishing or reporting a real-host result, install the registry build, then verify:
+
+- registry version;
+- package payload;
+- Native client module;
+- one real save/test;
+- one real post-save outbound operation without restart.
+
+Green mocks/contracts do not certify external provider/device behavior.

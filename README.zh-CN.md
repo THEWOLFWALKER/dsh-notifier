@@ -1,142 +1,136 @@
 # dsh-notifier
 
-> **你的 agent，装进口袋。** —— 通知、审批、遥控，全在你的手机里。
+<p align="center">
+  <img src="https://raw.githubusercontent.com/THEWOLFWALKER/dsh-notifier/main/docs/assets/dsh-notifier-icon.png" width="132" alt="dsh-notifier logo">
+</p>
 
-> **维护公告（Maintenance notice）**：至 **2026-10-01** 前，作者因考试无法及时维护项目、查看与回复 PR / Issue，回复会有延迟，非常抱歉；逾期事项将在考试结束后尽快处理。Until **2026-10-01** the author is taking exams and cannot promptly maintain the project or review PRs/issues — replies will be delayed. Sorry for the inconvenience.
+<p align="center"><strong>Your agent, in your pocket.</strong><br>通知、审批、遥控，都在你的手机里；日常管理现在直接进入 DSH。</p>
+
+> **维护公告**：至 **2026-10-01** 前作者因考试无法及时维护与查看 PR/Issue，回复会延迟，非常抱歉。
 
 [**English**](README.md) · **简体中文**
 
 ![DSH](https://img.shields.io/badge/DSH-DeepSeek%20Harness-1F6FEB?style=flat-square)
 ![Node.js](https://img.shields.io/badge/Node.js-22%2B-339933?style=flat-square&logo=node.js&logoColor=white)
 ![JavaScript](https://img.shields.io/badge/JavaScript-ESM-F7DF1E?style=flat-square&logo=javascript&logoColor=black)
-![Cordis](https://img.shields.io/badge/Cordis-%E6%8F%92%E4%BB%B6%E5%BC%80%E5%8F%91-FF6B6B?style=flat-square)
-![零依赖](https://img.shields.io/badge/%E9%9B%B6%E4%BE%9D%E8%B5%96-000000?style=flat-square)
-![双语](https://img.shields.io/badge/%E5%8F%8C%E8%AF%AD%E6%96%87%E6%A1%A3-EN%2F%E7%AE%80%E4%BD%93-00A98F?style=flat-square)
-![渠道](https://img.shields.io/badge/channels-28-00B4D8?style=flat-square)
-
+![Zero deps](https://img.shields.io/badge/runtime%20deps-0-000000?style=flat-square)
+![Channels](https://img.shields.io/badge/channels-28-00B4D8?style=flat-square)
 ![npm version](https://img.shields.io/npm/v/dsh-notifier?style=flat-square&logo=npm&logoColor=white)
 ![tests](https://img.shields.io/badge/tests-1831-brightgreen?style=flat-square)
 ![license](https://img.shields.io/badge/license-MIT-brightgreen?style=flat-square)
-![awesome-dsh-plugin](https://img.shields.io/badge/awesome--dsh--plugin-%E5%AE%98%E6%96%B9%E6%94%B6%E5%BD%95-00B4D8?style=flat-square)
-![omdsh workshop](https://img.shields.io/badge/omdsh-workshop-7C3AED?style=flat-square)
 [![dshfind](https://dshfind.com/api/badge/THEWOLFWALKER/dsh-notifier?lang=zh)](https://dshfind.com/zh/plugins/THEWOLFWALKER/dsh-notifier?ref=badge)
-[![dshfind 下载量](https://dshfind.com/api/badge/THEWOLFWALKER/dsh-notifier?metric=downloads&lang=zh)](https://dshfind.com/zh/plugins/THEWOLFWALKER/dsh-notifier?ref=badge)
-[![dshfind 展示卡](https://dshfind.com/api/card/THEWOLFWALKER/dsh-notifier?lang=zh)](https://dshfind.com/zh/plugins/THEWOLFWALKER/dsh-notifier?ref=badge)
 
-![不漏](https://img.shields.io/badge/%E4%B8%8D%E6%BC%8F-%E4%BB%BB%E4%BD%95%E4%B8%80%E5%9B%9E%E5%90%88-00BFFF?style=flat-square)
-![沉默](https://img.shields.io/badge/%E6%B2%89%E9%BB%98-%E6%B0%B8%E4%B8%8D%E6%89%B9%E5%87%86-9C27B0?style=flat-square)
-![推送](https://img.shields.io/badge/push%20it-real%20good-FF4081?style=flat-square)
+`dsh-notifier@0.12.0` 是 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的通知与远程操作控制面：**28 个出站渠道**、**6 个入站控制渠道**、手机审批/提问/会话、任务状态、渠道健康与活动流，以及 **DSH 原生 Sidebar/Main 控制面**。运行时依赖仍然是 0。
 
 包元数据：`dsh-notifier@0.12.0` · 1831 个自动化契约测试 · MIT 许可。
 
-把 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) agent 带到你平时使用的地方。dsh-notifier 用一个极简 `notify()` API 接住 28 个渠道，再提供手机审批、手机提问、会话控制和清爽的本机管理台——无需额外部署第二套运行时。
+[开始使用](docs/guide.md) · [升级指南](docs/upgrade-guide.md) · [兼容性](docs/compatibility-matrix.md) · [插件接入](PLUGINS.md) · [变更记录](CHANGELOG.md)
 
-[快速上手](docs/guide.md) · [升级指南](docs/upgrade-guide.md) · [插件接入契约](PLUGINS.md)
+## v0.12：日常控制正式回到 DSH 里
 
-你的 agent 和宿主本身都能经它推送：会话事件（`turn/end` · `approval/asked` · `agent/error`）自动通知，模型可直接调用 `notify` 工具，六条入站通道把审批、对话和选择题（`ask_user`）从手机带回。裁决均单次有效且 fail-closed——未知来源与 QQ GROUP 控制一律拒绝。长任务发心跳与卡住提醒、卡片带一键停止；身份用运行时配对码与绑定，不再是 YAML 字符串——全程零运行时依赖。
+主入口现在是 DSH 侧栏里的 **「通知与控制」**。正常配置渠道、看状态、测试通知，不需要再去启动日志里找 localhost 地址和 token。
 
-## 工作原理
+- **Native Control Surface**：DSH Sidebar + Main 面板，并接入 Plugins 激活/配置入口。
+- **出站 Hot Apply**：保存出站渠道后，下一次发送立即使用新配置；不重建 notifier，也不需要重启 DSH。
+- **单一运行时权威**：notifier、路由、工具、审批/提问可用性和 UI 投影都读同一个 `OutboundSource`。
+- **Health / Tasks / Questions / Activity**：直接投影现有运行时状态，不再做第二套任务/问题状态。
+- **高级管理台继续保留**：本机 Web 管理台降级为 Advanced / Recovery，用于成员、配对、绑定、会话和深度诊断。
+- **安全交接**：Native 打开高级管理台使用短时一次性 ticket，不把长期 Admin Bearer 暴露给 Native 前端。
 
-```
-DSH Agent ─notify() 工具───────┐
-                               ├─▶ notifier 核心 ─▶ 28 个渠道（IM webhook / 推送 App / 国内生态）
-DSH 会话事件 ─自动推送──────────┘   分级路由 · 分档重试 · 长消息分段 · 防打扰 · 账本
-                                   心跳 ⏱ / 卡住 ⚠（v0.5）──▶ 卡片自带 ⏹ 停止按钮
-你的手机 ─6 条入站通道──────────▶   远程审批（按钮 · 回复 1/2） · 远程会话（followup/inject/steer） · 远程提问（选项卡 + 自定义/跳过辅助钮，v0.8）
-```
-
-每条消息都走同一条链路解析 —— 分级（`timeSensitive` / `active` / `passive`）→ 路由（多 agent 矩阵）→ 渠道适配器（`resolve(cfg)` + `send(msg)`）。两条触发线喂入核心：宿主自动推送会话事件（防抖、去重），模型直接调用 `notify` 工具。六条入站通道反向复用同一核心，承接审批与对话——v0.5 起出站线也会回报：长任务发心跳、静默任务报卡住，Telegram / 飞书通知带一键停止动作。
-
-## 界面预览
-
-Web 管理台（默认启用，仅绑 127.0.0.1；v0.5 起移动端自适应）。零配置首访：安装后不用写 YAML——打开启动日志打印的 `http://127.0.0.1:<port>/#token=...` 链接（端口冲突自动换端口，token 只在 fragment 仅此一次明文），站内解锁门静默验证后进入首访向导：选通知渠道 → 填凭证 → 当场收到真实测试通知即完成初始化；手机回复、审批、成员配对以后可以再配。绑定矩阵和会话等复杂设置需显式点击「打开高级设置」：
-
-| 页面 | 内容 |
-|---|---|
-| **首页** | 链路状态与下一步行动、出/入站通道健康矩阵、待决提问、审计流；未配置出站时首屏为三步配置向导 |
-| **通知渠道** | 出站为主、入站为次的凭证建单（处处脱敏 `***`，`***` 视为未修改）、即时真实测试发送、扫码授权 |
-| **成员**（v0.7.0） | 身份绑定（角色/备注/配对时间）、配对码铸造与撤销、待确认绑定收口 |
-| **通知**（v0.4.0） | SSE 事件流实时推送、系统通知偏好、事件日志 |
-| **绑定矩阵**（高级） | agent × 通道勾选网格、入站通道默认 agent |
-| **会话台账**（高级） | 每会话出站解析与覆盖编辑 |
-
-实拍预览（蓝白主题，对齐 DeepSeek Harness 设计令牌；仅绑回环地址，v0.5 起移动端自适应）：
-
-| 零配置首访向导 | 通知渠道（已配置 + 可折叠分组） |
-|---|---|
-| ![零配置首访向导](docs/screenshots/fresh-wizard-desktop.png) | ![通知渠道配置](docs/screenshots/configured-channels-desktop.png) |
-
-| 站内解锁门（静默验证 token） | 移动端布局 |
-|---|---|
-| ![解锁门](docs/screenshots/gate-unlock.png) | ![移动端·渠道](docs/screenshots/configured-channels-mobile.png) · ![移动端·向导](docs/screenshots/fresh-wizard-mobile.png) |
+> **出站保存热生效。** 入站 transport 如果 UI 显示「等待重启」，仍需要重启；v0.12 没有假装所有 SDK/长连接都能热重载。
 
 ## 快速开始
 
 ```bash
-dsh plugin add dsh-notifier --profile <profile-name>
+dsh plugin add dsh-notifier@latest --profile <profile名>
 ```
 
-> `--profile` 必填（DSH 0.1.0-rc.6 起）：插件安装需指定目标 profile——填你实际运行的那个（如 `web`）。
+安装完成后重启一次 DSH，让新的 Host 插件与 Client Module 装载。然后：
 
-装完**不用写 YAML**。重启 DSH，打开启动日志里 **「Web 管理台已就绪」** 一行打印的完整链接（形如 `http://127.0.0.1:<端口>/#token=...`；端口冲突会自动换端口，token 只出现这一次）：
+1. 从 DSH 侧栏打开 **「通知与控制」**，或进入 **Plugins → dsh-notifier → 开始设置**；
+2. 选一个你已经在用的通知渠道；
+3. 填凭证，点 **「保存并测试」**；
+4. 必须真实收到测试通知，首访才算完成。
 
-1. 链接里的 token 静默验证通过 → 进入首访向导；
-2. 选一个手机上有的通知渠道（Bark / Telegram / 飞书 / 钉钉……），按表单提示填凭证；
-3. 点「保存并发送测试通知」——**手机当场收到，初始化就完成了**。
+之后修改**出站**渠道会立即热生效，正常使用无需 YAML。
 
-完成。`turn/end`、`approval/asked`、`agent/error` 事件即推送到已配置渠道，模型也能用 `notify({ message, channel, title })` 主动推送。长任务默认自动发心跳与卡住提醒（v0.5），失控的 turn 直接在通知卡片上停掉。
+如果当前 profile 没有 Native UI（例如 headless 场景），仍可使用本机 **高级管理台** 或 YAML / CLI 作为恢复和自动化入口。
 
-> 批量部署 / 自动化场景仍可用 YAML：渠道写在 profile patch（`cordis.patch.yml`）的 `channels` 下，字段清单见下文「配置项」。YAML 是高级入口，不是第二套控制台。
+## 工作原理
 
-## 核心功能
+```text
+DSH Sidebar / Plugins
+        │
+        ▼
+Native Control Surface ── DSH Connection RPC ──┐
+                                                │
+DSH 事件 ─────────────────┐                    ▼
+agent notify() 工具 ──────┼──▶ OutboundSource ─▶ notifier core ─▶ 28 个出站渠道
+其他插件 / ctx.notifier ──┘         │
+                                    └── health · activity · ledger
+
+你的手机 ── 6 个入站渠道 ──▶ 身份系统 + Control Core
+                              ├─ 审批
+                              ├─ 会话 / steer
+                              ├─ ask_user 提问
+                              └─ 任务 / 会话控制
+
+Advanced Console（127.0.0.1）──▶ 同一份运行时状态
+  成员 · 配对 · 绑定 · 会话 · 诊断 · 恢复
+```
+
+`turn/end`、`approval/asked`、`agent/error` 等 DSH 事件可以自动通知；模型也可以直接调用 `notify` 工具。六个入站渠道把审批、对话与 `ask_user` 结果从手机带回 DSH。裁决始终一次性、fail-closed：沉默永不等于批准，未知/未绑定来源默认拒绝，最终结算仍走共享 Control Core。
+
+## 四个入口怎么分工
+
+| 入口 | 适合干什么 | 定位 |
+|---|---|---|
+| **通知与控制**（DSH Native） | 首页状态、渠道、真实测试、任务、待处理问题、最近活动 | **日常主入口** |
+| **Plugins → dsh-notifier** | 首次设置、状态、跳转到通知与控制 | 不做第二套后台 |
+| **高级管理台** | 成员/配对、绑定矩阵、会话、高级诊断与恢复 | 仅本机 `127.0.0.1` |
+| **YAML / CLI** | 自动化、可复现部署、headless | 高级入口 |
+
+## 核心能力
 
 | 功能 | 说明 |
 |---|---|
+| **28 个出站渠道** | IM webhook、推送 App、国内常用服务、桌面/本地目标；零运行时依赖。 |
+| **DSH 原生 UI**（v0.12） | Sidebar/Main + Plugins 激活/配置入口；复用 Host React 与 DSH 视觉 token，无 iframe/Vite/esbuild/自带 React。 |
+| **出站 Hot Apply**（v0.12） | 保存前先校验/resolve，持久化后原子替换 live channel；下一次发送直接用新配置，不重启。 |
 | **双触发线** | 自动状态推送（`turn/end` · `approval/asked` · `agent/error`）+ 模型侧 `notify` 工具。 |
-| **28 个渠道** | Telegram / Slack / Discord / 飞书 / 钉钉 / 企微 / 企微应用 / QQ 机器人 / OneBot / Teams / Mattermost / Google Chat / Bark / Pushover / PushDeer / Chanify / ntfy / Gotify / iGot / WxPusher / PushPlus / Server酱 / Qmsg / 息知 / webhook / bell / 桌面通知 / WPS 协作群机器人（wps-bot）—— 零运行时依赖。 |
-| **分级路由** | `timeSensitive` / `active` / `passive` → 各渠道原生送达语义（静默推送、优先级标头、@提醒），配分档重试。 |
-| **远程审批** | 手机上回答审批 —— Telegram/飞书卡片、QQ 单聊原生按钮，以及无卡片渠道的编号回复兜底；群聊目标使用安全文本回退。沉默永不批准。 |
-| **远程会话** | 与 agent 对话：纯文本 → `followup`/`inject`，`!` 前缀中途纠偏，合并窗拼回手机碎片输入。 |
-| **远程提问**（v0.8.0） | 模型在手机上向你发起选择题：1-4 题 × 2-5 选项（支持多选）。飞书 / Telegram 及 QQ C2C 单聊推选项卡片；Telegram 单选卡片另带 ✍️ 自定义回答与 ⏭ 跳过按钮（来源/token 校验、首达采纳）；其他目标自动使用安全的编号回复兜底；答错可重答、问题不作废；超时永不代答。与审批同一信任链（HMAC 一次性 token、首达采纳、30s/60s 催办）。本机 Web 管理台提供脱敏待处理问题列表，并经 Control Core 进行 choose/reject 结算。 |
-| **移动指挥中心**（v0.5.0） | 长任务心跳（默认 15min 起）与疑似卡住提醒（默认 10min 无事件）；Telegram / 飞书卡片自带 ⏹ 停止按钮（HMAC 一次性 token，与审批同一信任链）；`/quiet`·`/unquiet` 在手机上静默/恢复会话推送。 |
-| **手机任务/会话控制**（v0.11.0） | 在手机上看活跃 DSH 任务/会话、并选本次对话驱动哪一个：`/tasks`（任务列表）、`/use`（选择）、`/sessions`（会话概览，含状态与待关注标记）。均为既有会话注册表的只读投影，不新建第二套会话状态。`/log [N]` 为值班提供有界、脱敏的最近通知摘要：**默认关且仅 owner 可用**（`remoteLog.enabled`），有行数/字节上限并脱敏。 |
-| **开放事件源**（v0.6.0） | 其他插件经 `notifier` 服务推送（`ctx.inject(['notifier'], …)`——共享配置、路由、账本、限流、flush），并可 `ctx.on('dsh-notifier/sent')` 订阅投递元数据。广播与定向推送各产生一次审计事件，事件绝不暴露正文；按源独立限流（默认 10/分钟）、2 万码点钳制、永不 reject 的 API；消费方契约见 [PLUGINS.md](PLUGINS.md) / [PLUGINS.en.md](PLUGINS.en.md)，构建期辅助：`dsh-notifier/testing`（单测 fake）、`dsh-notifier/types`（TypeScript 契约）与可直接运行的[消费方示例](examples/consumer-demo/README.md)。 |
-| **身份体系**（v0.7.0） | 「谁能驱动入站」成为运行时对象：配对码准入（任意通道私聊 `/pair <码>`，首位核销者成为 owner）、复合键绑定（`channel:userId`——TG 绑定的 id 不再放行飞书消息）、角色管理（末位 owner 不可删不可降）、拒绝回执（未绑定者收到含自身身份与配对指引的回执）。空白名单引导态启动（bootstrap 码写本机 0600 文件 `<stateDir>/bootstrap-paircode.txt`，日志只印路径不印码面），不再拒绝启动。**从安装到日常使用的完整指南见 [docs/guide.md](docs/guide.md)**。 |
-| **多 agent 路由**（v0.3.2） | agent × 通道双向矩阵；会话创建即建档；`/agent` 命令族 + `route.mjs` CLI。 |
-| **Web 管理台**（v0.3.3；零配置首访重构） | 仅绑 127.0.0.1 + Bearer token；默认启用，首启打印 fragment 启动链接，端口冲突自动回退；四主页面 —— 首页 / 通知渠道 / 成员（v0.7）/ 通知，绑定 / 会话收进显式高级设置；首访三步向导当场收到测试通知即完成初始化；v0.5 起 ≤768px 移动端自适应。 |
-| **扫码授权**（v0.3.1） | QQ / 钉钉 / 飞书一条命令官方扫码授权（微信保持 iLink）。 |
-| **桌面通知**（v0.4.0） | `desktop` 原生渠道（`osascript` / `notify-send` / PowerShell toast）+ 管理台 SSE 实时流。 |
-| **长消息分段** | 超出预算的消息按序切成带 `（i/n）` 前缀的多段。 |
-| **防打扰规则** | 事件按结果分控、关键词 include/exclude、空闲宽限窗。 |
-| **账本 + 每日摘要** | 只追加 JSONL 账本 + 昨日流量一条 `passive` 摘要。 |
-| **密钥安全** | `role('secret')` 密钥处处脱敏；`${ENV:NAME}` 引用让密钥不落 profile。 |
-| **绝不搞崩启动** | 配错的渠道静默跳过并留一行日志。 |
+| **分级路由** | `timeSensitive` / `active` / `passive`，带渠道原生语义、重试、分段和防打扰。 |
+| **远程审批** | Telegram/飞书卡片、QQ C2C 原生按钮、编号回复兜底；沉默永不批准。 |
+| **远程提问** | `ask_user` 选择题/编号回复、多选，自定义/跳过按渠道能力提供；首达采纳。 |
+| **远程会话** | 纯文本 followup/inject；`!` 中途纠偏；合并窗拼回手机碎片输入。 |
+| **手机任务/会话控制** | `/tasks`、`/use`、`/sessions`、`/stop`、`/quiet`、`/unquiet`；`/log [N]` 默认关闭且仅 owner。 |
+| **身份与配对** | `(channel,userId)` 复合绑定、配对码、owner/member、来源精确校验。 |
+| **插件公共面** | 其他插件可注入 `ctx.notifier`，复用同一渠道/路由/账本/限流，并订阅 metadata-only 的 `dsh-notifier/sent`。 |
+| **高级管理台** | 本机恢复/深度管理；Native 只拿一次性启动票据，不拿长期 Bearer。 |
+| **账本与摘要** | JSONL append-only 账本 + 可选每日摘要。 |
+| **凭证安全** | secret 在投影中只表示「已配置」，不回明文；YAML 可用 `${ENV:NAME}`。 |
 
-### 会话命令（私聊机器人发）
+### 私聊命令速查
 
-| 命令 | 干什么 | 边界说明 |
+| 命令 | 干什么 | 边界 |
 |---|---|---|
-| `/help` | 列出全部可用命令。 | 无参；顺带说明下面的文本 / `!` / `..` 约定。 |
-| `/status` | 查看绑定与 agent 状态：绑定 sid、解析目标、agent 状态、活跃会话清单。 | 无参；未绑定时回显通道默认路由提示。 |
-| `/agent` | 活跃会话分组视图：`workspace \| sid \| 状态 \| 出站通道 \| quiet`。 | 无参。 |
-| `/agent use <workspace\|sid 前缀>` | 本对话切到该会话（智能绑定）。 | 目标名可含空格（剩余整段参与匹配，G-33）；未命中给用法回执。 |
-| `/agent back` | 解除本对话绑定，回通道默认。 | 无参。 |
-| `/bind <sessionId>` | 精确绑定到指定会话（sid 级操作）。 | 未知 sid → 「会话不存在」回执；覆盖绑定先摘旧会话的入站挂钩（G-48），一用户绝不双挂。 |
-| `/unbind` | 解绑（回到通道默认路由：通道默认 agent，未配置则最近活跃）。 | 无参。 |
-| `/tasks` | 活跃任务列表（`taskRef \| workspace \| 状态 \| 待关注`）。 | 只读投影；路由引擎未装配时回执不可用。 |
-| `/use <workspace\|sid 前缀>` | 为本对话选择任务（等价 `/agent use`；歧义选择卡时改为投递原消息）。 | 目标规则同 `/agent use`。 |
-| `/sessions` | 手机会话概览：活跃 DSH 会话的状态、待关注标记与当前绑定。 | 只读；单一数据源 = 任务投影，绝不新建会话状态。 |
-| `/log [N]` | 有界、脱敏的最近通知/事件摘要，供值班排障。 | **默认关**、仅 owner 可用：需管理员显式开启 `remoteLog.enabled`；输出有行数/字节上限并脱敏。 |
-| `/stop` | 取消当前 turn。 | 仅裸 `/stop` 命中（G-04）：带附言的 `/stop 等等` **不**取消，按未知命令落为普通文本投递。 |
-| `/route` | 查看当前双向解析：会话→通道 / 通道→会话。 | 路由引擎未装配时回执不可用。 |
-| `/quiet <workspace\|sid>` | 静默该会话的出站推送；远程对话不受影响。 | 必须带目标（完整名或 ≥4 位 sid 前缀）；路由引擎未装配时不可用。 |
-| `/unquiet <workspace\|sid>` | 恢复该会话的出站推送。 | 边界同 `/quiet`。 |
+| `/help` | 列出可用命令 | 私聊 |
+| `/whoami` | 看身份与绑定状态 | 私聊 |
+| `/status` | 看当前路由/会话状态 | 私聊 |
+| `/agent` / `/agent use …` / `/agent back` | 看并切换活跃会话 | 已绑定身份 |
+| `/bind <sessionId>` / `/unbind` | 精确绑定/解绑会话 | 已绑定身份 |
+| `/tasks` / `/use …` | 看/选活跃任务 | 只读任务投影 |
+| `/sessions` | 会话概览与 attention | 只读投影 |
+| `/log [N]` | 有界、脱敏的最近通知摘要 | **默认关**、仅 owner |
+| `/stop` | 停止当前 turn | 必须裸 `/stop` |
+| `/route` | 查看双向路由解析 | Router 可用时 |
+| `/quiet <目标>` / `/unquiet <目标>` | 静默/恢复某会话出站推送 | 不影响远程对话 |
+| `/pair <码>` / `/unpair` | 配对/解绑入站身份 | 私聊 |
 
-直接发文本 = 对话；`!` 前缀 = 中途纠偏（steer）；`..` 结尾 = 立即发送（合并窗内）。群聊拒绝远程控制命令（QQ 群回「群聊不允许远程控制」）——请回原私聊会话操作。
+直接发文字就是给 agent 的输入；`!` 前缀可以在任务进行中纠偏。群聊不开放危险的远程控制语义，请回原私聊操作。
 
-## 配置项
+## 配置
 
-所有渠道都在 `config.channels` 下。关键示例：
+日常使用优先在 **「通知与控制」** 里配置出站渠道。YAML 适合 bootstrap、自动化和 headless：
 
 ```yaml
 insert:
@@ -144,31 +138,26 @@ insert:
     config:
       channels:
         - type: telegram
-          botToken: "123456:ABC-DEF..."
+          botToken: "${ENV:TELEGRAM_BOT_TOKEN}"
           chatId: "987654321"
         - type: feishu
-          webhook: "https://open.feishu.cn/open-apis/bot/v2/hook/..."
-        - type: wxpusher
-          appToken: "AT_..."
-          uids: ["UID_..."]
-        - type: serverchan
-          sct: "SCT..."
+          webhook: "${ENV:FEISHU_WEBHOOK}"
 ```
 
-可选模块各自在专属键下显式开启：
+v0.12 可编辑出站态统一写到 canonical `channel:<type>:outbound`。YAML 仍是 bootstrap/fallback；旧 `admin:channel:<type>:outbound` 与 `<type>:account` 仅保留兼容读取。
 
-| 模块 | 用途 | 键 |
+| 模块 | 用途 | 常用键 |
 |---|---|---|
-| `inbound` | 远程审批 + 远程会话 | `allowUsers: [...]`（v0.7 起仅做首次导入；此后经管理台或 `/pair` 运行时管理成员） |
+| `inbound` | 远程审批 + 会话 | 首次导入 `allowUsers`，之后走运行时配对 |
 | `approval` | 超时、编号回复、升级提醒 | `mode: answer` |
 | `conversation` | 合并窗、steer 前缀 | `mergeWindowMs: 1500` |
 | `route` | 多 agent 路由 | `sessionTtlHours: 24` |
-| `admin` | 网页控制台 | 默认启用（仅 127.0.0.1）；以启动日志打印的 `/#token=...` 完整链接为准，不用猜端口 |
-| `events` / `keywords` / `graceSeconds` | 防打扰闸门 | `exclude: ["heartbeat"]` |
-| `events.turnStart` / `longRunning` / `stall` | v0.5 状态上报线 | `longRunning: { firstAfterMs: 900000 }` |
+| `admin` | 高级管理台 | 默认启用、仅本机；可显式关闭 |
+| `events` / `keywords` / `graceSeconds` | 防打扰 | `exclude: ["heartbeat"]` |
+| `events.turnStart` / `longRunning` / `stall` | 长任务状态线 | `longRunning: { firstAfterMs: 900000 }` |
 | `digest` | 账本 + 每日摘要 | `enabled: true` |
 
-v0.5 状态上报线默认值：`longRunning` 与 `stall` **默认开**（15min 首条心跳、此后每 15min 一条；10min 无事件报卡住）——零配置的长任务不再是黑盒。`turnStart` **默认关**（桌面场景每 turn 一条是噪音；发完任务就离开的移动场景建议显式开启）。所有时长下限钳制 60s；关闭任一项用 `enabled: false`。
+完整流程见 [docs/guide.md](docs/guide.md)。
 
 ## 渠道
 
@@ -201,57 +190,75 @@ v0.5 状态上报线默认值：`longRunning` 与 `stall` **默认开**（15min 
 | `webhook` | 任意自定义端点 | — | — |
 | `wecom` | 企业微信群机器人 | webhook key | ✅ |
 | `wecom-app` | 企业微信应用消息 | corpid + agentId + secret | ✅ |
+| `wps-bot` | WPS 协作群机器人（WOA） | webhook URL（含 `?key=`） | ✅ |
 | `wxpusher` | WxPusher（微信） | appToken + uid | ✅（限量） |
 | `xizhi` | 息知 | sendkey | ✅（限量） |
 
 <!-- CHANNEL-MATRIX-END -->
 
-另有六个渠道开启入站（远程审批 + 远程会话）：`telegram`、`feishu`、`qq-bot`、`wxpusher`、`wechat`、`dingtalk` —— 长连接或长轮询，无需公网 IP（仅 WxPusher 回调需要公网可达）。Telegram/飞书及 QQ C2C 单聊使用原生控制按钮；其他目标自动获得安全的文本或编号回复兜底，`conversation` 的 `routeUnsafe` 旁路不能绕过来源安全闸门。QQ、微信 iLink、钉钉图片消息路径已接线；文件收发按能力矩阵标记。本机 Web 管理台是唯一控制台，提供脱敏的待处理多选项提问列表，并经共享 Control Core 提供 choose/reject 结算。v0.5 起 telegram 与 feishu 额外承载通知动作卡片（停止按钮）。v0.7 起每条入站通道响应 `/help` `/whoami` `/pair` `/unpair` 注册命令，出站卡片目标走三级优先解析（该通道绑定 → 通道配置清单 → 全局回落）并按渠道做 id 形状守卫。
+另有六个渠道开放入站控制：`telegram`、`feishu`、`qq-bot`、`wxpusher`、`wechat`、`dingtalk`。Telegram / 飞书及 QQ C2C 可使用原生控制按钮，其他目标自动回退安全文本/编号回复。媒体/文件能力仍以 capability matrix 与真实平台验证结果为准，不把「代码已接线」等同于「真机已验证」。
+
+## DSH 兼容性
+
+声明范围：
+
+```text
+0.1.7-alpha.1 || 0.1.7-alpha.2 || 0.1.7-rc.1 || 0.1.7-rc.2
+```
+
+v0.12 发布证据：
+
+- **0.1.7-rc.2**：真实宿主 Native UI / 渠道设置 / 保存并测试 / Hot Apply 验收通过；
+- **0.1.7-alpha.1**：兼容下限冒烟通过（插件激活、RPC、28 渠道、Client Module 加载）；
+- **alpha.2 / rc.1**：源码/制品 seam 兼容已核；证据级别详见 [docs/compatibility-matrix.md](docs/compatibility-matrix.md)。
 
 ## 架构
 
-```
+```text
 src/
-  adapters/           28 个渠道适配器（resolve(cfg) + send(msg)）+ 声明式 spec 引擎
-  config.mjs          渠道注册表 + 配置 schema —— 矩阵唯一事实来源
-  index.mjs           插件装配：patch、工具、事件监听、admin 接线
-  event-listener.mjs  自动推送线（防抖、去重、分级路由）+ v0.5 状态线接线
-  status/             v0.5 turn 跟踪器（心跳 / 卡住检测，纯逻辑）
-  actions.mjs         v0.5 通知动作分发（turn/cancel，HMAC 一次性 token）
-  notify.mjs          notify / notify_test 工具 + 滑动窗口限流
-  routing/            多 agent 矩阵（resolveOutbound / resolveInbound）
-  inbound/            六条入站通道（telegram/feishu/qq/wxpusher/wechat/dingtalk）+ v0.7 身份栈
-                      （identity.mjs 绑定 · pairing.mjs 配对码 · commands.mjs 注册命令 · target-guard.mjs 目标解析）
-  approval/           HMAC 一次性 token、去重、升级
-  questions/          v0.8 远程提问 ask_user（选项卡 + 编号兜底，复用审批桥接栈）
-  admin/              网页控制台（6 页、SSE、bearer 鉴权、移动端自适应）
-  ledger.mjs          JSONL 账本 + 每日摘要
-  rules.mjs           防打扰闸门（事件 / 关键词 / 宽限窗）
-scripts/              channel-login.mjs · channel-selfcheck.mjs · route.mjs · gen-channel-matrix.mjs
-test/                 1831 个测试；历史 0.8.6 包为 909 个测试。
+  adapters/                 28 个出站适配器 + 声明式 spec
+  runtime/
+    outbound-source.mjs     唯一 live 出站权威
+  control-surface/
+    service.mjs             Native command/query facade
+    rpc.mjs                 DSH 鉴权控制通道
+    channels.mjs            渠道投影
+    health.mjs              有界健康证据
+    activity.mjs            脱敏活动投影
+    tasks.mjs               任务投影适配
+    questions.mjs           Control Core 问题桥
+    launch-ticket.mjs       高级管理台一次性票据
+  notify.mjs                notify / notify_test + 路由/限流
+  event-listener.mjs        DSH 事件自动通知
+  routing/                  多 agent 路由
+  inbound/                  六个入站控制通道 + 身份/配对
+  approval/                 审批 token / 去重 / 升级提醒
+  questions/                ask_user 远程提问
+  admin/                    Advanced / Recovery Web 管理台
+  ledger.mjs                append-only 账本 + digest
+client.js                   DSH Native Web Client Module
 ```
 
-设计准则：纯 ESM（`.mjs`）、零运行时依赖、绝大多数渠道走声明式 spec 引擎、适配器薄而诚实、无构建步骤。
-
-### 可选依赖（可选装配语义，S-13）
-
-`package.json` 只保留两个 `optionalDependencies`，均**精确锁定版本**且**仅懒加载**——不装也能跑，缺失绝不搞崩启动、不影响核心 notify 链路：
-
-- `@larksuiteoapi/node-sdk` `1.73.0` —— 仅飞书扫码登录 / 入站 WebSocket 用。缺失时飞书渠道报 `missing-sdk` 并给出安装指引（`npm i @larksuiteoapi/node-sdk@1.73.0`），其余渠道照常工作。
-- `qrcode-terminal` `0.12.0` —— 仅登录 CLI 的终端二维码渲染用。缺失时 CLI 改打印可扫链接。
-
-锁定纪律（S-13）：可选依赖区间收敛为已审查的精确版本（此前 `^` 下限会让 `@larksuiteoapi/node-sdk` 漂移到 ≥1.73 的 `registerApp` 回调改名；如今漂移面封死）。`@tencent-connect/qqbot-connector` **不在** optionalDependencies 中：npm 标记 `UNLICENSED`，按 `docs/memory/decisions.md` 维持「仅参考不引入」——不复制、不分发、不作为依赖引入。QQ 扫码登录代码路径保留懒 `import()`：若用户手动安装该包仍可用，缺包则降级为 `missing-sdk` 回执。
+消费方公共面见 [PLUGINS.md](PLUGINS.md)。`ctx.notifier.version` 仍是 `0.7`；v0.12 改的是产品控制面与运行时渠道权威，不是消费方 API breaking。
 
 ## 开发
 
-> 开发在本仓库的 `dev` 分支进行，`main` 是发布分支（发布版本 + 标签 + npm 发布）；在 `dev` 上开发、发版时并入 `main`。
+发布门禁：
 
 ```bash
-npm test          # 当前线：1831
+npm test
+node scripts/verify-release.mjs
+node scripts/gen-channel-matrix.mjs --check
+node --check src/index.mjs
+node --check client.js
+npm pack --dry-run --json
+git diff --check
 ```
 
-新增渠道：在 `src/adapters/` 实现适配器接口（`resolve(cfg)` + `send(msg)`），并在 `src/config.mjs` 注册；上方渠道矩阵由 `node scripts/gen-channel-matrix.mjs` 自动重生成。
+v0.12.0 发布基线：**1831 / 1831 tests pass**。
+
+test/ 1831 个测试；历史 0.8.6 包为 909 个测试。
 
 ## 许可
 
-[MIT](LICENSE) · 第三方声明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
+MIT

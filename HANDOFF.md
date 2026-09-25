@@ -20,7 +20,7 @@
 - Node.js ESM（Node `>=22`），无生产依赖、无构建步骤；28 个出站渠道由统一 adapter/spec 层装配。
 - 入站控制通道为 Telegram、Feishu、QQ Bot、WxPusher、WeChat iLink、DingTalk。通知、审批、会话输入和 `ask_user` 共享状态、路由、账本与 Control Core。
 - 身份是 `(channel, userId)` 绑定；涉及账号/聊天时继续精确匹配 `(channel, accountId, userId, chatId)`。未绑定、来源冲突、未知 `chatType`、缺关键来源字段均默认拒绝。
-- Web 管理台是唯一控制台，且只监听 `127.0.0.1`、使用 Bearer token。个人模式首屏引导配置通道、配对成员、测试发送；会话/绑定等高级项按需展开。YAML 是高级/自动化入口，不是第二套控制台。
+- v0.12 起 DSH Native「通知与控制」是日常主控制面；Standalone Web 管理台仍只监听 `127.0.0.1` 并使用 Bearer，但定位为 Advanced / Recovery。出站渠道在 Native 保存后经 `OutboundSource` Hot Apply；成员/配对/绑定/会话等深度管理仍由 Advanced Console 承接；YAML/CLI 是自动化/headless 入口。
 - Web/admin 已有脱敏问题列表及 choose/reject 结算（`/api/questions`、`/api/questions/:ref/settle`），结算始终经过 Control Core。桌面 `ask_user` 没有安全宿主接口，因此不得声称 desktop 可结算或已有双端共享；超时/失败必须交还桌面，绝不代答。
 
 ## 已完成范围（代码/契约证据）
