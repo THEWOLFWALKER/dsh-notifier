@@ -6,6 +6,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
+import { hostCompatFailures } from './verify-host-compat.mjs'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const read = (file) => readFileSync(resolve(root, file), 'utf8')
@@ -22,6 +23,10 @@ const version = String(packageJson.version ?? '')
 const qualityCount = Number(packageJson.dshQuality?.testCount)
 check(/^\d+\.\d+\.\d+$/.test(version), `package.json version is invalid: ${version}`)
 check(Number.isInteger(qualityCount) && qualityCount > 0, 'dshQuality.testCount must be a positive integer')
+
+// Commit14 宿主兼容门：peer range / DSH host matrix / dshWorkshop.dshVersions 三处必须互相一致
+// （`scripts/verify-host-compat.mjs` 单一真相，避免任一清单先行漂移）。
+for (const failure of hostCompatFailures(root)) failures.push(failure)
 
 const changelog = read('CHANGELOG.md')
 const readme = read('README.md')
@@ -66,18 +71,20 @@ for (const [index, v] of documentedVersions.entries()) {
 
 const requiredPackageFiles = [
   'src', 'test', 'cordis.patch.yml', 'CHANGELOG.md', 'PLUGINS.md',
-  'THIRD_PARTY_NOTICES.md', 'docs/guide.md', 'docs/upgrade-guide.md', 'docs/upgrade-guide.en.md',
+  'THIRD_PARTY_NOTICES.md', 'docs/guide.md', 'docs/compatibility-matrix.md',
+  'docs/upgrade-guide.md', 'docs/upgrade-guide.en.md',
 ]
 // S-11（W13）：files 从「含整个 scripts 目录」改为显式列举发布脚本（hook-server.mjs
 // 开发用不随包分发）——校验每个发布脚本都在 files 清单里，缺一个即失败。
 const requiredScripts = [
   'scripts/channel-login.mjs', 'scripts/channel-selfcheck.mjs', 'scripts/gen-channel-matrix.mjs',
-  'scripts/route.mjs', 'scripts/verify-release.mjs', 'scripts/wechat-login.mjs',
+  'scripts/route.mjs', 'scripts/verify-release.mjs', 'scripts/verify-host-compat.mjs',
+  'scripts/wechat-login.mjs',
 ]
 const packageFiles = Array.isArray(packageJson.files) ? packageJson.files : []
 for (const file of requiredPackageFiles) check(packageFiles.includes(file), `package.json files is missing ${file}`)
 for (const script of requiredScripts) check(packageFiles.includes(script), `package.json files is missing ${script} (S-11 发布脚本须显式列举)`)
-for (const file of ['PLUGINS.md', 'THIRD_PARTY_NOTICES.md', 'docs/guide.md', 'docs/upgrade-guide.md', 'docs/upgrade-guide.en.md']) {
+for (const file of ['PLUGINS.md', 'THIRD_PARTY_NOTICES.md', 'docs/guide.md', 'docs/compatibility-matrix.md', 'docs/upgrade-guide.md', 'docs/upgrade-guide.en.md']) {
   check(existsSync(resolve(root, file)), `release documentation is missing from the tree: ${file}`)
 }
 

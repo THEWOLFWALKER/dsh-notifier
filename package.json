@@ -17,12 +17,14 @@
     "scripts/gen-channel-matrix.mjs",
     "scripts/route.mjs",
     "scripts/verify-release.mjs",
+    "scripts/verify-host-compat.mjs",
     "scripts/wechat-login.mjs",
     "cordis.patch.yml",
     "CHANGELOG.md",
     "PLUGINS.md",
     "THIRD_PARTY_NOTICES.md",
     "docs/guide.md",
+    "docs/compatibility-matrix.md",
     "docs/upgrade-guide.md",
     "docs/upgrade-guide.en.md"
   ],
@@ -39,7 +41,13 @@
     }
   },
   "peerDependencies": {
-    "@deepseek-ai/cordis": "^4.0.1"
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-session": "0.1.7-alpha.1 || 0.1.7-alpha.2 || 0.1.7-rc.1 || 0.1.7-rc.2"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-session": {
+      "optional": true
+    }
   },
   "optionalDependencies": {
     "@larksuiteoapi/node-sdk": "1.73.0",
@@ -103,7 +111,10 @@
     ],
     "compatibility": {
       "dshVersions": [
-        "0.1.0-rc.6"
+        "0.1.7-alpha.1",
+        "0.1.7-alpha.2",
+        "0.1.7-rc.1",
+        "0.1.7-rc.2"
       ]
     },
     "capability": {

@@ -13,6 +13,7 @@ Snapshot date: 2026-09-13. Current release line **v0.10.1** (`codex/notification
 - Public discovery metadata is aligned with v0.10.1; the Awesome DSH listing refresh is tracked by PR #4981 (adds phone task takeover, images into session, bilingual messages), and dshfind consumes the repository metadata on its scheduled sync.
 - QQ C2C buttons, QQ GROUP text fallback, and QQ/WeChat iLink/DingTalk image envelopes are contract-tested only. Media/file support and provider-specific payload/reconnect behavior remain `declared` or unverified.
 - `allowUsers` is retained as one-shot `inbound:migrated` compatibility import; optional Feishu/QQ SDK lifecycle seams are documented in [compatibility-matrix.md](../compatibility-matrix.md).
+- DSH host compatibility is declared there too: `@deepseek-ai/dsh-session` is an **optional** peer marker (`peerDependenciesMeta.optional`) whose exact/OR-exact range `0.1.7-alpha.1 || 0.1.7-alpha.2 || 0.1.7-rc.1 || 0.1.7-rc.2` was generated from verified `dsh-v0.1.7-*` seam sources (no `^`/`>=` guessing; `0.1.0-rc.6` re-checked as unverified and excluded). `scripts/verify-host-compat.mjs`, wired into `npm run verify:release`, keeps the peer range, the matrix rows, and `dshWorkshop.compatibility.dshVersions` mechanically aligned; no real-host preflight run has been done yet (see [risks.md](risks.md)).
 
 ## Validation evidence
 
