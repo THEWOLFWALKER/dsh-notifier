@@ -366,6 +366,12 @@ say(t.helpLines.join('\n'))
       say(renderTaskList())
       return true
     }
+    // Commit19：/sessions —— 手机侧「用户任务概览」。与 /tasks 同源（projectTasks 单一数据源），
+    // 但面向「我在忙什么 / 哪个会话待我处理 / 当前绑到哪」而非路由调试（那是 /agent 的职责）。
+    if (cmd === 'sessions') {
+      say(renderSessions(envelope))
+      return true
+    }
     if (cmd === 'use') {
       fireAsync(handleTaskUse(envelope, args.join(' '), say))
       return true
@@ -458,6 +464,37 @@ say(t.helpLines.join('\n'))
       const attention = task.attention === true ? ' ⚠' : ''
       lines.push(`  ${index + 1}. ${workspace} | ${String(task.taskRef).slice(0, 8)} | ${task.status}${attention}`)
     })
+    return lines.join('\n')
+  }
+
+  /**
+   * /sessions：手机侧用户任务概览（Commit19）。数据源**单一**——与 /tasks、管理台同用
+   * `projectTasks`（registry + 宿主 agent 状态折叠出的只读派生视图），不读 store 的
+   * route:sessions 内部键、不新增持久状态。每行「编号. [*] workspace」+「sid 前缀 · 状态 · [⚠]」：
+   *   - `*`  标出 `resolveTarget(envelope)` 解析出的当前绑定会话（前缀匹配 taskRef）
+   *   - `⚠`  标出有待关注事项（待决提问/审批），只给布尔标记，绝不显示待决内容
+   *   - sid 只显示 8 位前缀（完整 id 属敏感面），切换交给既有 /use 或 /bind（footer 引导）
+   * 排序沿用 projectTasks（活跃降序）；projectTasks 自身逐字段降级、绝不抛，故此处不 crash。
+   */
+  function renderSessions(envelope) {
+    const { tasks } = projectTasks({ registry, router, ctx, channelTypes: () => globalTypes(), attentionOf })
+    if (tasks.length === 0) return t.sessionsEmpty
+    const current = resolveTarget(envelope).sessionId
+    const lines = [t.sessionsTitle]
+    tasks.forEach((task, index) => {
+      const workspace = task.workspace === '' ? t.sessionsUnknownWorkspace : task.workspace
+      const mark = current !== null && current !== undefined && String(task.taskRef) === String(current)
+        ? t.sessionsCurrentMark
+        : ''
+      const prefix = String(task.taskRef).slice(0, 8)
+      const status = typeof task.status === 'string' && task.status !== '' && task.status !== 'unknown'
+        ? task.status
+        : t.sessionsUnknownStatus
+      const attention = task.attention === true ? t.sessionsAttentionMark : ''
+      lines.push(t.sessionsRowHead(index + 1, mark, workspace))
+      lines.push(t.sessionsRowBody(prefix, status, attention))
+    })
+    lines.push(t.sessionsFooter)
     return lines.join('\n')
   }
 
