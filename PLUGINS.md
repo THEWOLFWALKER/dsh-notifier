@@ -134,6 +134,26 @@ export function apply(ctx) {
 }
 ```
 
+## 单测：`dsh-notifier/testing`
+
+消费方插件的单测不必手写 stub：
+
+```js
+import { createFakeNotifier } from 'dsh-notifier/testing'
+
+const fake = createFakeNotifier({ sourceName: 'my-plugin', now: () => 0 })
+// 把 fake 当作 ctx.notifier 注入你的 apply()
+const result = await fake.push({ title: 'T', content: 'C' }, { sourceName: 'my-plugin' })
+
+fake.version        // '0.7'，与真 facade 同一公共面版本
+fake.calls          // [{ message, options, at }]，只读数组（每次读取返回深拷贝）
+await fake.flush()  // resolve undefined
+```
+
+行为规格与真 facade 逐项对齐：`push` **永不 reject**；返回 `{ ok, delivered, skipped, failed, source }`（`source.kind` 恒为 `'plugin'`，成功时 `delivered: ['fake']`）；`title`/`content` 非字符串按空、双空 → `skipped: ['(malformed)']`；`options.simulate: 'rate-limited' | 'disabled' | 'budget' | 'busy'` 回放对应 `skipped`，未知值按正常成功——用它测你的失败分支，不必改宿主配置。
+
+两处刻意差异（不是缺陷）：fake 不做长度钳制/限流/预算记账（真实资源语义由真 facade 的契约测试覆盖），也不提供 `enabled()`（宿主诊断面，按能力探测 `typeof notifier?.push === 'function'` 即可）。fake **不发** `sent` 事件——事件面不在本工具内，测事件侧请用自有 `ctx` stub。
+
 ## 真机验证记录
 
 - **2026-08-16 · DSH 0.1.0-rc.6(profile web,Node 24)**:特性 A/B 双确认——静态 inject 消费方解析到 `version=0.6` 真服务(非 stub);`dsh-notifier/sent` 事件跨插件可见(15/15,payload 形状完整);零渠道语义符合设计(`ok:false` 三空数组,不崩不阻塞)。同时裁定:回调式 `ctx.inject` 不触发、未声明访问服务属性直接抛错——本文档全部配方据此定稿为静态声明。安装注意:宿主用 pnpm 管理依赖时,手动覆盖 `node_modules/dsh-notifier` 会被回滚,升级请用 `dsh plugin add file:<路径>`。

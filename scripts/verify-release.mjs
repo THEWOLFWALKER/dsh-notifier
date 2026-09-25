@@ -88,6 +88,18 @@ for (const file of ['PLUGINS.md', 'THIRD_PARTY_NOTICES.md', 'docs/guide.md', 'do
   check(existsSync(resolve(root, file)), `release documentation is missing from the tree: ${file}`)
 }
 
+// Commit15/16 公共子路径门：exports 子路径必须指向真实存在的目标文件，且该文件被 files 覆盖
+// （间接覆盖也算，如 files 含 "src"/"types" 目录）——否则消费方 import 子路径会 404/不进包。
+const publicSubpaths = [
+  ['./testing', 'src/testing.mjs'],
+]
+for (const [subpath, target] of publicSubpaths) {
+  check(packageJson.exports?.[subpath] === `./${target}`, `package.json exports["${subpath}"] must be ./${target}`)
+  check(existsSync(resolve(root, target)), `exports["${subpath}"] target is missing from the tree: ${target}`)
+  const covered = packageFiles.some((entry) => entry === target || target.startsWith(`${entry.replace(/\/$/, '')}/`))
+  check(covered, `exports["${subpath}"] target is not covered by package.json files: ${target}`)
+}
+
 if (existsSync(resolve(root, '.git'))) {
   try {
     const trackedForbidden = execFileSync('git', ['ls-files', 'node_modules', 'package-lock.json'], { cwd: root, encoding: 'utf8' }).trim()

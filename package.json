@@ -7,6 +7,7 @@
   "exports": {
     ".": "./src/plugin-entry.mjs",
     "./internal": "./src/index.mjs",
+    "./testing": "./src/testing.mjs",
     "./package.json": "./package.json"
   },
   "files": [
