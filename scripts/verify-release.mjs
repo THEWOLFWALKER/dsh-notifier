@@ -70,7 +70,7 @@ for (const [index, v] of documentedVersions.entries()) {
 }
 
 const requiredPackageFiles = [
-  'src', 'test', 'types', 'cordis.patch.yml', 'CHANGELOG.md', 'PLUGINS.md',
+  'src', 'test', 'types', 'cordis.patch.yml', 'CHANGELOG.md', 'PLUGINS.md', 'PLUGINS.en.md',
   'THIRD_PARTY_NOTICES.md', 'docs/guide.md', 'docs/compatibility-matrix.md',
   'docs/upgrade-guide.md', 'docs/upgrade-guide.en.md',
 ]
@@ -84,7 +84,7 @@ const requiredScripts = [
 const packageFiles = Array.isArray(packageJson.files) ? packageJson.files : []
 for (const file of requiredPackageFiles) check(packageFiles.includes(file), `package.json files is missing ${file}`)
 for (const script of requiredScripts) check(packageFiles.includes(script), `package.json files is missing ${script} (S-11 发布脚本须显式列举)`)
-for (const file of ['PLUGINS.md', 'THIRD_PARTY_NOTICES.md', 'docs/guide.md', 'docs/compatibility-matrix.md', 'docs/upgrade-guide.md', 'docs/upgrade-guide.en.md']) {
+for (const file of ['PLUGINS.md', 'PLUGINS.en.md', 'THIRD_PARTY_NOTICES.md', 'docs/guide.md', 'docs/compatibility-matrix.md', 'docs/upgrade-guide.md', 'docs/upgrade-guide.en.md']) {
   check(existsSync(resolve(root, file)), `release documentation is missing from the tree: ${file}`)
 }
 

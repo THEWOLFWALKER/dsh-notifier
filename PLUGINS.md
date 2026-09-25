@@ -1,5 +1,6 @@
 # PLUGINS.md — 从你的插件调用 dsh-notifier
 
+> English: [PLUGINS.en.md](PLUGINS.en.md)
 > dsh-notifier v0.6 起开放两条面:**出向** `ctx.notifier` 服务注入(推送)与**入向** `dsh-notifier/sent` 事件(订阅)。
 > 本文档面向**消费方插件作者**。公共面版本:`0.7`(`ctx.notifier.version`,只在公共面 breaking 时 bump,与包版本不联动)。
 

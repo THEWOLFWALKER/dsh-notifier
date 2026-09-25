@@ -28,6 +28,7 @@
     "cordis.patch.yml",
     "CHANGELOG.md",
     "PLUGINS.md",
+    "PLUGINS.en.md",
     "THIRD_PARTY_NOTICES.md",
     "docs/guide.md",
     "docs/compatibility-matrix.md",
