@@ -23,6 +23,7 @@ import { appendFileSync, chmodSync, mkdirSync, readFileSync, renameSync, statSyn
 import { dirname, join } from 'node:path'
 import { CHANNEL_TYPES, channelFieldsOf, channelFixedOptions, channelDocUrlOf } from '../config.mjs'
 import { INBOUND_CHANNELS, INBOUND_CHANNEL_SET } from '../inbound/channels-registry.mjs'
+import { createInboundChannelConfigPort, INBOUND_FIELDS, describeBadChannelValue, inboundKeyWhitelist } from '../inbound/channel-config.mjs'
 import { tasksSnapshot } from '../routing/task-projection.mjs'
 import { createHostCapabilitySnapshot } from '../host/capability.mjs'
 import { setDurable } from '../inbound/store.mjs'
@@ -186,28 +187,6 @@ function lastActiveMs(value) {
   return 0
 }
 
-/** 入站通道的凭证字段表（管理台表单渲染用；wechat 为 iLink 登录态扫码产物，不手填）。 */
-const INBOUND_FIELDS = {
-  telegram: { botToken: { required: true, desc: 'Telegram Bot Token（与出站同域）' } },
-  feishu: {
-    appId: { required: true, desc: '飞书自建应用 App ID（扫码授权自动写入）' },
-    appSecret: { required: true, desc: '飞书自建应用 App Secret（扫码授权自动写入）' },
-  },
-  qq: {
-    appId: { required: true, desc: 'QQ 机器人 AppID（扫码授权自动写入）' },
-    appSecret: { required: true, desc: 'QQ 机器人 AppSecret（扫码授权自动写入）' },
-  },
-  wxpusher: {
-    appToken: { required: true, desc: 'WxPusher 应用 APP_TOKEN（回调鉴权即凭证）' },
-    accountId: { required: false, desc: '本地账号标识（多账号/多应用时建议填写；不要填 APP_TOKEN）' },
-  },
-  wechat: {},
-  dingtalk: {
-    appKey: { required: true, desc: '钉钉企业内部应用 AppKey（扫码授权自动写入）' },
-    appSecret: { required: true, desc: '钉钉企业内部应用 AppSecret（扫码授权自动写入）' },
-  },
-}
-
 /**
  * v0.6.5（审查 R4-2-P2-1）putChannel 防线常量：
  * 原实现只校验「非空普通对象」，持 token 客户端可写任意键 + 近 1MB 垃圾值污染
@@ -234,7 +213,7 @@ const DANGEROUS_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
 function channelKeyWhitelist(type) {
   const keys = new Set()
   if (DUAL_INBOUND_DOMAIN.has(type)) {
-    for (const key of Object.keys(INBOUND_FIELDS[type] ?? {})) keys.add(key)
+    for (const key of inboundKeyWhitelist(type)) keys.add(key)
     return keys
   }
   if (OUTBOUND_SET.has(type)) {
@@ -246,14 +225,9 @@ function channelKeyWhitelist(type) {
     }
   }
   if (INBOUND_SET.has(type)) {
-    for (const key of Object.keys(INBOUND_FIELDS[type] ?? {})) keys.add(key)
+    for (const key of inboundKeyWhitelist(type)) keys.add(key)
   }
   return keys
-}
-
-/** 单值字节数（字符串按 UTF-8 计）。 */
-const valueBytes = (value) => {
-  try { return Buffer.byteLength(value, 'utf8') } catch { return Infinity }
 }
 
 /**
@@ -263,35 +237,6 @@ const valueBytes = (value) => {
  * @param {unknown} value
  * @returns {string | null} 首个违规的中文错误消息；合法返回 null。
  */
-function describeBadChannelValue(key, value) {
-  if (typeof value === 'string') {
-    if (valueBytes(value) > MAX_VALUE_BYTES) return `"${key}" 超过 ${MAX_VALUE_BYTES} 字节上限`
-    return null
-  }
-  if (typeof value === 'number') return Number.isFinite(value) ? null : `"${key}" 必须是有限数字`
-  if (typeof value === 'boolean') return null
-  if (Array.isArray(value)) {
-    if (value.length > MAX_CHANNEL_KEYS) return `"${key}" 数组超过 ${MAX_CHANNEL_KEYS} 项上限`
-    for (const item of value) {
-      const bad = describeBadChannelValue(key, item)
-      if (bad !== null) return bad
-    }
-    return null
-  }
-  const obj = plainObjectOf(value)
-  if (obj !== null) {
-    const entries = Object.entries(obj)
-    if (entries.length > MAX_CHANNEL_KEYS) return `"${key}" 对象超过 ${MAX_CHANNEL_KEYS} 键上限`
-    for (const [subKey, item] of entries) {
-      if (DANGEROUS_KEYS.has(subKey)) return `"${key}" 内含保留键 "${subKey}"`
-      const bad = describeBadChannelValue(`${key}.${subKey}`, item)
-      if (bad !== null) return bad
-    }
-    return null
-  }
-  return `"${key}" 的值必须是字符串/数字/布尔/数组/对象`
-}
-
 /**
  * 创建 Web 管理台 API 实例（server.mjs 按方法名调用；全部依赖可缺省）。
  *
@@ -349,7 +294,7 @@ export function createAdminApi(options = {}) {
     // v0.10 提交7「管理台暴露 DSH 连接与任务状态」：宿主上下文 + 任务投影注入 + 宿主
     // 能力快照注入（全部只读；缺失一律安全降级，绝不抛）。
     ctx = null, attentionOf = null, hostSnapshot = null,
-    questionsFallbackEnabled = false, webLocal = 'unknown', imageInput = 'unknown',
+    questionsFallbackEnabled = false, webLocal = 'unknown', imageInput = 'unknown', inboundConfig = null,
   } = options ?? {}
 
   const warn = (message) => {
@@ -463,6 +408,9 @@ export function createAdminApi(options = {}) {
     }
   }
 
+  // v0.12.1（P1-03）：Admin 与 Native 共用同一入站配置端口，端口本身不依赖 Admin 生命周期。
+  const inboundPort = inboundConfig ?? createInboundChannelConfigPort({ store, warn, audit: auditGuard })
+
   /**
    * 通道行全集（overview 与 getChannels 共用）：出站 = CHANNEL_TYPES 全量 + 入站 =
    * INBOUND_CHANNELS 全量（telegram/feishu 等双向通道各出一行，direction 区分）。
@@ -485,9 +433,9 @@ export function createAdminApi(options = {}) {
         configured: isEnabled || hasAdminOutbound(type) || (!dual && hasAccount(type)),
         enabled: isEnabled,
         editable: true,
-        // G-14（W12）：出站配置视图热/投递冷——出站恒「重启后生效」（投递层只在插件
-        // 下次启动时并入运行时：YAML ⊕ store 合并），UI 据此渲染警示角标；
-        // 但 testOutboundChannel 用最新合并配置即时真测，不受重启限制。
+        // v0.12.1（P1-05）：这里的 restartRequired 描述 Admin legacy <type>:account
+        // 写入域；该域只在插件下次启动时并入运行时。Native canonical 出站域是 Hot Apply，
+        // 由 src/control-surface/apply-mode.mjs 单独回答，不能用本字段反推。
         restartRequired: true,
       })
     }
@@ -964,7 +912,7 @@ export function createAdminApi(options = {}) {
      * @returns {Array<{ type: string, direction: 'outbound'|'inbound', configured: boolean,
      *   enabled: boolean, editable: boolean, restartRequired: boolean, config: object, fields: object }>}
      *   行集合与 overview().channels 同构同序，多 config/fields/editable/restartRequired 字段
-     *   （restartRequired：出站恒 true——投递冷，配置重启后才并入运行时，UI 据此标「重启后生效」）。
+     *   （restartRequired：描述本接口 legacy 写入域的重启语义；Native 不消费此字段）。
      */
     getChannels() {
       const yamlTable = yamlOutboundOf()
@@ -1012,8 +960,7 @@ export function createAdminApi(options = {}) {
      * @param {string} type - 通道类型，必须 ∈ CHANNEL_TYPES ∪ INBOUND_CHANNELS。
      * @param {object} config - 非空普通对象，键必须在该通道字段白名单内。
      * @returns {{ type: string, saved: boolean, restartRequired: boolean }} saved=false = 存储
-     *   不可用/写入失败降级（不抛）；restartRequired=出站恒 true（投递冷，G-14：UI 保存后
-     *   即时回显但须重启才并入运行时，据此提示「重启后生效」）。
+     *   不可用/写入失败降级（不抛）；restartRequired 仍只描述本接口 legacy 写入域。
      * @throws {ApiError} 422 type 非法、config 非非空普通对象、含 webhook/未知/保留键、
      *   或字段数/值形态超限。
      */
@@ -1055,9 +1002,8 @@ export function createAdminApi(options = {}) {
         return { type, saved: false }
       }
       auditGuard('putChannel', { type }) // 审计只记通道名，绝不落凭证内容
-      // G-14（W12）：出站配置视图热/投递冷——返回 restartRequired 供 UI 即时提示「重启后生效」。
-      // 出站渠道恒 true（投递层下次启动才并入运行时）；双域通道（feishu/dingtalk）UI 表单写的是
-      // 入站机器人凭证域（出站 webhook 只读走 YAML），语义归入站 → false。
+      // v0.12.1（P1-05）：该字段继续描述 Admin legacy 写入域，不能代表 Native canonical
+      // 出站域的 applyMode。Native 口径由 src/control-surface/apply-mode.mjs 提供。
       return { type, saved: true, restartRequired: OUTBOUND_SET.has(type) && !DUAL_INBOUND_DOMAIN.has(type) }
     },
 
@@ -1511,41 +1457,13 @@ export function createAdminApi(options = {}) {
      * @throws {ApiError} 422 校验失败；500 存储写入失败
      */
     putInboundChannel(type, config) {
-      if (typeof type !== 'string' || !INBOUND_SET.has(type)) {
-        throw new ApiError(422, `未知入站通道类型 "${String(type)}"（可用：${INBOUND_CHANNELS.join('/')}）`)
-      }
-      if (plainObjectOf(config) === null || Object.keys(config).length === 0) {
-        throw new ApiError(422, 'config 必须是非空对象')
-      }
-      const allowed = channelKeyWhitelist(type)
-      if (allowed.size === 0) {
-        throw new ApiError(422, `${type} 凭证由扫码登录自动写入，不支持手工配置`)
-      }
-      if (Object.keys(config).length > MAX_CHANNEL_KEYS) {
-        throw new ApiError(422, `字段数超过上限（最多 ${MAX_CHANNEL_KEYS} 个）`)
-      }
-      for (const [key, value] of Object.entries(config)) {
-        if (DANGEROUS_KEYS.has(key)) {
-          throw new ApiError(422, `保留键 "${key}" 不可写入`)
-        }
-        if (!allowed.has(key)) {
-          throw new ApiError(422, `未知字段 "${key}"（${type} 可用字段：${[...allowed].join('/')}）`)
-        }
-        const bad = describeBadChannelValue(key, value)
-        if (bad !== null) throw new ApiError(422, bad)
-      }
       try {
-        if (typeof store?.set !== 'function') throw new Error('store 不可用')
-        const existing = plainObjectOf(safeGet(`${type}:account`)) ?? {}
-        if (setDurable(store, `${type}:account`, deepCopyPlain({ ...existing, ...config })) !== true) {
-          throw new Error('store 写入未落盘')
-        }
+        return inboundPort.put(type, config)
       } catch (error) {
-        warn(`入站通道配置写入失败: ${errorMessage(error)}`)
-        return { type, saved: false, direction: 'inbound' }
+        const status = Number(error?.status) || 500
+        if (status >= 500) warn(`入站通道配置写入失败: ${errorMessage(error)}`)
+        throw new ApiError(status, errorMessage(error))
       }
-      auditGuard('putInboundChannel', { type })
-      return { type, saved: true, direction: 'inbound' }
     },
 
     /**
@@ -1555,23 +1473,13 @@ export function createAdminApi(options = {}) {
      * @throws {ApiError} 422 类型非法；404 配置不存在；500 存储写入失败
      */
     deleteInboundChannel(type) {
-      if (typeof type !== 'string' || !INBOUND_SET.has(type)) {
-        throw new ApiError(422, `未知入站通道类型 "${String(type)}"`)
-      }
-      const key = `${type}:account`
-      const existing = plainObjectOf(safeGet(key))
-      if (existing === null) {
-        throw new ApiError(404, `入站配置不存在：${type}`)
-      }
       try {
-        if (typeof store?.delete !== 'function') throw new Error('store 不可用')
-        store.delete(key)
+        return inboundPort.remove(type)
       } catch (error) {
-        warn(`入站通道配置删除失败: ${errorMessage(error)}`)
-        throw new ApiError(500, '入站配置删除失败')
+        const status = Number(error?.status) || 500
+        if (status >= 500) warn(`入站通道配置删除失败: ${errorMessage(error)}`)
+        throw new ApiError(status, errorMessage(error))
       }
-      auditGuard('deleteInboundChannel', { type })
-      return { type, deleted: true, direction: 'inbound' }
     },
   }
   return api

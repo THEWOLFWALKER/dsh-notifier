@@ -17,16 +17,13 @@ import { guardTargets } from '../inbound/target-guard.mjs'
 import { createInteractionLedger } from '../interaction/ledger.mjs'
 import { workspaceOf } from '../routing/session-registry.mjs'
 // 维护批 6 前置：跨渠道能力矩阵作为单一事实来源
-import { displayNameOf } from '../inbound/capability-matrix.mjs'
+import { displayNameOf, toInboundChannelName } from '../inbound/capability-matrix.mjs'
 // S-05：审批推送 reason 脱敏（minimal 默认）
 import { maskSecrets, normalizeRedaction } from '../redact.mjs'
 import { setDurable } from '../inbound/store.mjs'
 
 const OUTCOME_ALLOWED = 'allowed-once'
 const OUTCOME_REJECTED = 'rejected'
-const INTERACTIVE_ALIASES = Object.freeze({ 'qq-bot': 'qq' })
-
-
 // 升级链默认节奏：30s / 60s 各再提醒一轮（timeoutMs 默认 120s 内完成两轮升级）。
 // note 不在此处定死——默认节奏的提醒文案随 lang 在装配点注入（t.approval.escStageNote1/2）。
 const DEFAULT_ESCALATION_STAGES = [
@@ -244,8 +241,8 @@ export function registerApprovalHandler(deps, strings) {
       if (!Array.isArray(channelTypes)) return channelTypes
       const merged = new Set(channelTypes)
       for (const type of channelTypes) {
-        const alias = INTERACTIVE_ALIASES[String(type)]
-        if (alias !== undefined) merged.add(alias)
+        const alias = toInboundChannelName(String(type))
+        if (alias !== type) merged.add(alias)
       }
       return [...merged]
     } catch (error) {
@@ -343,8 +340,8 @@ export function registerApprovalHandler(deps, strings) {
     const broadcastTypes = channelTypes === null
       ? null
       : channelTypes.filter((type) => {
-        const alias = INTERACTIVE_ALIASES[String(type)]
-        return alias === undefined || !carded.has(alias)
+        const alias = toInboundChannelName(String(type))
+        return alias === type || !carded.has(alias)
       }).filter((type) => outbound.size === 0 || outbound.has(type))
     if (broadcastTypes !== null && broadcastTypes.length === 0) return { pushedTo, hintTargets }
     // G-34（D5）：早到的裁决（waiter 预注册窗口内用户已点卡）已把行翻终态——广播文本

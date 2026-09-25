@@ -2,6 +2,7 @@ const PUBLIC_ERROR_CODES = new Set([
   'bad-request', 'not-found', 'not-configured', 'not-supported',
   'storage-failed', 'conflict', 'host-unavailable', 'internal',
 ])
+import { inboundApplyMode, isHotApplied } from './apply-mode.mjs'
 
 function normalizeCode(error) {
   const raw = String(error?.code ?? 'internal').replace(/^dsh-notifier\//, '')
@@ -118,8 +119,8 @@ export function createControlSurfaceService({
           const saved = await saveInbound(payload?.type, payload?.patch)
           result = {
             saved: saved?.saved === true,
-            applied: false,
-            applyMode: 'restart',
+            applied: isHotApplied('inbound'),
+            applyMode: inboundApplyMode(),
             configRevision: 0,
           }
         } else {

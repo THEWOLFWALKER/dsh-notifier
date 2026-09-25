@@ -178,7 +178,12 @@ export function createOutboundConfigService({
       return result
     },
 
-    remove(type) {
+    /**
+     * 删除 canonical 出站配置。
+     * mode='fallback'（缺省）保留既有 legacy/YAML 回退；mode='revoke' 同时删除可删的
+     * legacy 覆盖源，使凭证不会在下次启动时从旧覆盖域复活。YAML bootstrap 仍不可删除。
+     */
+    remove(type, options = {}) {
       const key = String(type ?? '').trim()
       if (!OUTBOUND.has(key)) throw Object.assign(new Error(`未知出站通道类型 "${key}"`), { code: 'bad-request' })
       const existing = plain(safeGet(store, canonicalKey(key)))
@@ -210,7 +215,12 @@ export function createOutboundConfigService({
         throw error
       }
 
-      if (fallback === null) source.remove(key)
+      if (options?.mode === 'revoke') {
+        // v0.12.1（P0-02）：显式撤销，清理 legacy 覆盖域；双域入站凭证不能误删。
+        deleteDurable(store, oldAdminKey(key))
+        if (!DUAL_INBOUND_DOMAIN.has(key)) deleteDurable(store, `${key}:account`)
+        source.remove(key)
+      } else if (fallback === null) source.remove(key)
       else source.replace(key, fallback)
       const result = { type: key, deleted: true, applied: true, applyMode: 'hot', configRevision: source.version }
       emit('channel-removed', result)

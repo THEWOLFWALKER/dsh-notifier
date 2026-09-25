@@ -1,7 +1,7 @@
 const SECRETISH = /(?:token|secret|password|credential|authorization|cookie|webhook|chatid|userid|accountid|body|content|message)$/i
 const ALLOWED_DETAIL_KEYS = new Set([
   'channel', 'direction', 'status', 'reason', 'delivered', 'skipped', 'failed',
-  'saved', 'deleted', 'hotApplied', 'restartRequired', 'taskRef', 'workspace',
+  'saved', 'deleted', 'hotApplied', 'taskRef', 'workspace',
   'action', 'source', 'count',
 ])
 

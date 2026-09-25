@@ -13,6 +13,7 @@ import { registerNotifyTool, registerNotifyTestTool } from './tool-register.mjs'
 import { createLedger, yesterdayWindow } from './ledger.mjs'
 // 阶段 4/5：inbound 回传栈（远程审批 + 会话路由）
 import { createStore, defaultStateDir } from './inbound/store.mjs'
+import { createInboundChannelConfigPort } from './inbound/channel-config.mjs'
 import { createTokenVault } from './inbound/tokens.mjs'
 import { createIdentity } from './inbound/identity.mjs'
 import { createPairing } from './inbound/pairing.mjs'
@@ -214,7 +215,16 @@ export function apply(ctx, config = {}) {
   const surfaceHealth = createSurfaceHealth()
   const launchTickets = createLaunchTickets()
   let adminListenInfo = null
-  let surfaceAdminApi = null
+  // v0.12.1（P1-03）：Native inbound 读写不再依赖 admin.enabled。
+  const inboundConfigPort = createInboundChannelConfigPort({
+    store,
+    warn: (message) => warn(`[dsh-notifier/inbound-config] ${message}`),
+  })
+  let surfaceAdminApi = {
+    getChannels: () => inboundConfigPort.rows(),
+    putInboundChannel: (type, patch) => inboundConfigPort.put(type, patch),
+    deleteInboundChannel: (type) => inboundConfigPort.remove(type),
+  }
 
   const outboundConfigService = createOutboundConfigService({
     store,
@@ -837,6 +847,7 @@ export function apply(ctx, config = {}) {
         guidedProbe: () => identity.isEmpty() && allowUsers.length === 0, // 与 bus.isGuided 同口径（R5-2-P2-2）
         stateDir,
         logger,
+        inboundConfig: inboundConfigPort,
         questions: questionsBridge, // 路线图阶段 2A：远程提问管理台裁决（脱敏查询 + 受保护结算）
         control, // 结算必须经 Control Core 唯一裁决（注入同一实例，缺线即 fail-closed）
         // v0.10 提交7：暴露 DSH 连接与任务状态——宿主上下文 + 任务投影关注判定 + 宿主
@@ -850,7 +861,7 @@ export function apply(ctx, config = {}) {
       })
       surfaceAdminApi = adminApi
       adminApi.putOutboundChannel = (type, cfg) => outboundConfigService.save(type, cfg)
-      adminApi.deleteOutboundChannel = (type) => outboundConfigService.remove(type)
+      adminApi.deleteOutboundChannel = (type, options) => outboundConfigService.remove(type, options)
       adminApi.testOutboundChannel = async (type) => {
         const raw = outboundConfigService.raw(type)
         if (raw === null || Object.keys(raw).length === 0) {

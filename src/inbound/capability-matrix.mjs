@@ -35,6 +35,15 @@ export const OUTBOUND_TO_INBOUND_ALIAS = Object.freeze({
 })
 
 /**
+ * v0.12.1（P1-01 / D-07）：出站 type → 入站 channel 名的唯一归一入口。
+ * 未知 type 原样返回，避免对未知渠道做猜测。
+ */
+export function toInboundChannelName(type) {
+  const key = String(type ?? '')
+  return OUTBOUND_TO_INBOUND_ALIAS[key] ?? key
+}
+
+/**
  * 入站 channel 名 → 出站 adapter type 的反向映射（从别名表推导）。
  * 未知入站名返回 null。
  */
