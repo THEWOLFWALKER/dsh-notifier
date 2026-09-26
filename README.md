@@ -1,165 +1,83 @@
-# dsh-notifier
-
 <p align="center">
-  <img src="https://raw.githubusercontent.com/THEWOLFWALKER/dsh-notifier/main/docs/assets/dsh-notifier-icon.png" width="132" alt="dsh-notifier logo">
+  <img src="docs/assets/readme-hero.png" alt="dsh-notifier — Agent ⇄ User, across every channel" width="100%">
 </p>
 
-<p align="center"><strong>Your agent, in your pocket.</strong><br>Notifications, approvals, remote control — now with a native DSH control surface.</p>
+<div align="center">
 
-> **Maintenance notice (维护公告)**: until **2026-10-01**, the author is taking exams and cannot promptly maintain the project or review PRs/issues — replies will be delayed. Apologies for the inconvenience. 至 **2026-10-01** 前作者因考试无法及时维护与查看 PR/Issue，回复会延迟。
+# dsh-notifier
 
-**English** · [**简体中文**](README.zh-CN.md)
+**Your agent, in your pocket.**
 
-![DSH](https://img.shields.io/badge/DSH-DeepSeek%20Harness-1F6FEB?style=flat-square)
-![Node.js](https://img.shields.io/badge/Node.js-22%2B-339933?style=flat-square&logo=node.js&logoColor=white)
-![JavaScript](https://img.shields.io/badge/JavaScript-ESM-F7DF1E?style=flat-square&logo=javascript&logoColor=black)
-![Zero deps](https://img.shields.io/badge/runtime%20deps-0-000000?style=flat-square)
-![Channels](https://img.shields.io/badge/channels-28-00B4D8?style=flat-square)
-![npm version](https://img.shields.io/npm/v/dsh-notifier?style=flat-square&logo=npm&logoColor=white)
-![tests](https://img.shields.io/badge/tests-1984-brightgreen?style=flat-square)
-![license](https://img.shields.io/badge/license-MIT-brightgreen?style=flat-square)
-[![dshfind](https://dshfind.com/api/badge/THEWOLFWALKER/dsh-notifier?lang=en)](https://dshfind.com/en/plugins/THEWOLFWALKER/dsh-notifier?ref=badge)
+Bring DeepSeek Harness to your phone: notifications, approvals, questions, remote conversation, and task/session control across **28 outbound** and **6 inbound** channels.
 
-`dsh-notifier@0.13.0` is the notification and remote-operations control plane for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness): **28 outbound channels**, **6 inbound control channels**, remote approvals/questions/conversation, task visibility, health/activity projections, and a **native DSH Sidebar/Main experience** — with zero runtime dependencies.
+[简体中文](README.zh-CN.md) · [Quick Guide](docs/guide.en.md) · [Troubleshooting](docs/TROUBLESHOOTING.en.md) · [Compatibility](docs/compatibility-matrix.md)
 
-Package metadata: `dsh-notifier@0.13.0` · 1984 automated contract tests · MIT licensed.
+<p>
+  <a href="https://www.npmjs.com/package/dsh-notifier"><img src="https://img.shields.io/npm/v/dsh-notifier?style=flat-square&logo=npm&logoColor=white" alt="npm version"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-2ea44f?style=flat-square" alt="MIT license"></a>
+  <a href="https://dshfind.com/en/plugins/THEWOLFWALKER/dsh-notifier?ref=badge"><img src="https://dshfind.com/api/badge/THEWOLFWALKER/dsh-notifier?lang=en" alt="dshfind"></a>
+</p>
 
-[Get started](docs/guide.md) · [Upgrade](docs/upgrade-guide.en.md) · [Compatibility](docs/compatibility-matrix.md) · [Plugin API](PLUGINS.en.md) · [Changelog](CHANGELOG.md)
+</div>
 
-## v0.12: daily control moves into DSH
+## What it does
 
-The primary daily surface is now **Notify & Control** inside DSH. You no longer need to hunt through startup logs for a localhost URL just to add or test a notification channel.
+dsh-notifier is the notification and remote-operations layer for DeepSeek Harness. It is built for the common workflow of **leaving the DSH window while still wanting to know what your agent is doing — and respond when it needs you**.
 
-- **Native Control Surface** — DSH Sidebar + Main panel, plus a Plugins activation/config entry.
-- **Live outbound Hot Apply** — save an outbound channel and the next send uses it immediately; no notifier rebuild and no DSH restart.
-- **One runtime authority** — notifier, routing, tools, questions/approvals availability and UI projections read the same `OutboundSource`.
-- **Health / Tasks / Questions / Activity** — operational views reuse existing runtime state; no second task/question database.
-- **Advanced Console stays available** — the loopback Web console is now an advanced/recovery surface for members, pairing, bindings, sessions and diagnostics.
-- **Safer handoff** — Native launches the Advanced Console with a short-lived one-time ticket; the Native client never receives the long-lived Admin bearer.
+- **Get notified anywhere** — task completion, approvals, errors, long-running status, and model-triggered notifications.
+- **Respond from your phone** — approve/reject, answer `ask_user`, continue a conversation, steer a running turn, or switch tasks/sessions.
+- **Manage it inside DSH** — the Native **Notify & Control** panel is the daily control surface; the loopback Advanced Console remains available for recovery and deeper management.
+- **Keep failures contained** — unsafe or unknown inbound actions fail closed; outbound channel failures do not take down the rest of the notifier.
 
-> Outbound changes are hot. Inbound transports may still require a restart when the UI says **Restart pending**; v0.12 intentionally does not pretend every inbound SDK/long connection can be reconfigured live.
+<p align="center">
+  <img src="docs/screenshots/fresh-wizard-desktop.png" alt="dsh-notifier setup wizard" width="49%">
+  <img src="docs/screenshots/configured-channels-desktop.png" alt="dsh-notifier configured channels" width="49%">
+</p>
 
-## Quick start
+## Install
+
+### Ask an AI to install it for you
+
+Copy this sentence to an AI/agent that can operate your terminal:
+
+> Install or upgrade the latest stable **dsh-notifier** on this machine. First detect the active DSH profile and current install source, verify the installed DSH/Node versions are compatible, and preserve the existing configuration. Do not modify unrelated plugins or print any token/secret. Install from the official package, restart the relevant DSH Host once, verify the actual installed version and the **Notify & Control** entry, then report the commands you ran, the result, and any remaining problem. Project: `https://github.com/THEWOLFWALKER/dsh-notifier`
+
+The full AI installation procedure is in [AI_INSTALL.en.md](docs/AI_INSTALL.en.md).
+
+### Install manually
 
 ```bash
 dsh plugin add dsh-notifier@latest --profile <profile-name>
 ```
 
-Restart DSH once so the newly installed client module and host plugin are loaded, then:
+Restart DSH once so the new Host plugin and `client.js` are loaded. Then:
 
-1. Open **Notify & Control** from the DSH sidebar, or **Plugins → dsh-notifier → Start setup**.
-2. Choose a notification channel you already use.
-3. Enter credentials and select **Save and test**.
-4. Setup finishes when the provider **accepts** the test; if no end-to-end receipt exists, the UI explicitly asks you to confirm it on your device.
+1. Open **Notify & Control** from the DSH sidebar, or **Plugins → dsh-notifier**.
+2. Choose a channel you already use.
+3. Enter its credentials and choose **Save and test**.
+4. If the provider only confirms API acceptance, verify the message on your device; a provider acceptance is not presented as end-to-end delivery proof.
 
-After that, outbound edits apply immediately. No YAML is required for normal setup.
+Outbound configuration changes are hot-applied after installation. Inbound transports can still show **Restart pending** when their long-lived connection must be recreated.
 
-If the Native surface is unavailable (for example on a headless profile), the loopback **Advanced Console** and YAML/CLI paths remain available as recovery/automation entry points.
+## Pick the mode you need
 
-## How it works
-
-```text
-DSH Sidebar / Plugins
-        │
-        ▼
-Native Control Surface ── DSH Connection RPC ──┐
-                                                │
-DSH events ────────────────┐                    ▼
-agent notify() tool ───────┼──▶ OutboundSource ─▶ notifier core ─▶ 28 outbound channels
-other plugins / ctx.notifier┘         │
-                                      └── health · activity · ledger
-
-your phone ── 6 inbound channels ──▶ identity + Control Core
-                                      ├─ approval
-                                      ├─ conversation / steer
-                                      ├─ ask_user questions
-                                      └─ task/session control
-
-Advanced Console (127.0.0.1) ──▶ same runtime state
-  members · pairing · bindings · sessions · diagnostics · recovery
-```
-
-Session events such as `turn/end`, `approval/asked`, and `agent/error` can auto-notify; the model can also call the `notify` tool directly. Six inbound channels carry approvals, conversation and `ask_user` responses back from your phone. Decisions are one-shot and fail-closed: silence never approves, unknown/unbound sources are rejected, and settlement remains behind the shared Control Core.
-
-## Control surfaces
-
-| Surface | Use it for | Notes |
-|---|---|---|
-| **Notify & Control** (DSH Native) | Home status, channels, real test sends, task projection, pending questions, recent activity | **Primary daily UI** |
-| **Plugins → dsh-notifier** | First setup, status, handoff into Notify & Control | No duplicate admin dashboard |
-| **Advanced Console** | Members/pairing, bindings, sessions, detailed diagnostics and recovery | Loopback-only, `127.0.0.1`; launched from Native when enabled |
-| **YAML / CLI** | Automation, reproducible deployments, headless operation | Advanced path; see [guide](docs/guide.md) |
-
-## Core features
-
-| Feature | What it does |
-|---|---|
-| **28 outbound channels** | IM webhooks, push apps, China-centric services, desktop/local targets — zero runtime deps. |
-| **Native DSH UX** (v0.12) | Sidebar/Main panel + plugin activation/config card using Host React and DSH visual tokens; no iframe, Vite, esbuild or bundled React. |
-| **Live outbound Hot Apply** (v0.12) | Save → validate/resolve → persist canonical state → atomically swap the live channel; the next send uses the new config without restart. |
-| **Dual trigger lines** | Auto status push (`turn/end` · `approval/asked` · `agent/error`) plus a model-facing `notify` tool. |
-| **Level routing** | `timeSensitive` / `active` / `passive` with per-channel semantics, retries, segmentation and anti-disturb rules. |
-| **Remote approval** | Telegram/Feishu cards, QQ C2C native buttons, numbered-reply fallbacks; silence never approves. |
-| **Remote questions** | `ask_user` option cards / numbered replies, multi-select, custom/skip where supported, first-arrival-wins settlement. |
-| **Remote conversation** | Plain text → followup/inject; `!` steers mid-turn; a merge window reconstructs mobile typing. |
-| **Mobile task/session control** | `/tasks`, `/use`, `/sessions`, `/stop`, `/quiet`, `/unquiet`; `/log [N]` is off by default and owner-only. |
-| **Identity & pairing** | Runtime `(channel,userId)` bindings, pairing codes, owner/member roles, source-bound fail-closed checks. |
-| **Plugin public API** | Other plugins can inject `ctx.notifier`, push through the same channels/routing/ledger/limits, and subscribe to metadata-only `dsh-notifier/sent`. |
-| **Advanced Console** | Local-only recovery and deeper management; Native uses a one-time launch ticket instead of exposing its long-lived bearer. |
-| **Ledger & digest** | Append-only delivery ledger plus optional daily summary. |
-| **Secret hygiene** | Secret fields are masked/omitted in projections; `${ENV:NAME}` keeps credentials out of YAML. |
-
-### Session commands
-
-| Command | What it does | Boundary |
-|---|---|---|
-| `/help` | List available commands | Private chat |
-| `/whoami` | Show identity/binding state | Private chat |
-| `/status` | Show current routing/session status | Private chat |
-| `/agent` / `/agent use …` / `/agent back` | Inspect and switch the active session | Bound identity |
-| `/bind <sessionId>` / `/unbind` | Exact session binding | Bound identity |
-| `/tasks` / `/use …` | List/select active tasks | Read-only task projection |
-| `/sessions` | Session overview with attention flags | Read-only projection |
-| `/log [N]` | Bounded redacted recent-notification summary | **Off by default**, owner-only |
-| `/stop` | Cancel the current turn | Bare `/stop` only |
-| `/route` | Show bidirectional route resolution | Router must be available |
-| `/quiet <target>` / `/unquiet <target>` | Mute/restore outbound pushes for a session | Conversation remains active |
-| `/pair <code>` / `/unpair` | Pair or detach an inbound identity | Private chat |
-
-Plain text talks to the agent; prefix with `!` to steer a running turn. Group chats do not get unsafe remote-control semantics — use the original private chat.
-
-## Configuration
-
-For ordinary use, configure outbound channels in **Notify & Control**. YAML remains useful for bootstrap, automation and headless deployments:
-
-```yaml
-insert:
-  - id: dsh-notifier
-    config:
-      channels:
-        - type: telegram
-          botToken: "${ENV:TELEGRAM_BOT_TOKEN}"
-          chatId: "987654321"
-        - type: feishu
-          webhook: "${ENV:FEISHU_WEBHOOK}"
-```
-
-v0.12 writes editable outbound runtime state to the canonical `channel:<type>:outbound` store key. YAML is still a bootstrap/fallback source; old `admin:channel:<type>:outbound` and legacy `<type>:account` overlays are compatibility-only.
-
-| Block | Purpose | Typical key |
-|---|---|---|
-| `inbound` | Remote approval + conversation | first-import `allowUsers`, then runtime pairing |
-| `approval` | timeout, numbered reply, escalation | `mode: answer` |
-| `conversation` | merge window, steer prefix | `mergeWindowMs: 1500` |
-| `route` | multi-agent routing | `sessionTtlHours: 24` |
-| `admin` | Advanced Console | loopback-only; enabled by default unless explicitly disabled |
-| `events` / `keywords` / `graceSeconds` | anti-disturb gates | `exclude: ["heartbeat"]` |
-| `events.turnStart` / `longRunning` / `stall` | long-task status | `longRunning: { firstAfterMs: 900000 }` |
-| `digest` | ledger + daily summary | `enabled: true` |
-
-See the full walkthrough in [docs/guide.md](docs/guide.md).
+| I want to… | Start here |
+| --- | --- |
+| Only receive task notifications | Configure one outbound channel in **Notify & Control** |
+| Approve / answer questions from my phone | Add a supported inbound channel, then pair your identity |
+| Talk to the agent remotely | Pair your identity, then send plain text in the private bot chat |
+| Steer a running task | Send `! <instruction>` from the bound private chat |
+| Manage members, bindings, sessions or recovery | Open the **Advanced Console** from Native |
+| Automate or run headless | Use YAML / CLI from the [guide](docs/guide.en.md) |
 
 ## Channels
+
+**Outbound (28):** Bark, Bell, Chanify, Desktop, DingTalk, Discord, Feishu, Google Chat, Gotify, iGot, Mattermost, ntfy, OneBot 11, PushDeer, Pushover, PushPlus, Qmsg, QQ official bot, ServerChan, Slack, Microsoft Teams, Telegram, Webhook, WeCom robot, WeCom app, WPS Bot, WxPusher, Xizhi.
+
+**Inbound control (6):** Telegram, Feishu, QQ official bot, WxPusher, WeChat iLink, DingTalk.
+
+<details>
+<summary><strong>Full channel matrix (generated from the channel registry)</strong></summary>
 
 <!-- CHANNEL-MATRIX-START -->
 
@@ -196,68 +114,101 @@ See the full walkthrough in [docs/guide.md](docs/guide.md).
 
 <!-- CHANNEL-MATRIX-END -->
 
-Six channels also provide inbound control: `telegram`, `feishu`, `qq-bot`, `wxpusher`, `wechat`, and `dingtalk`. Telegram/Feishu and QQ C2C can use native control buttons; other destinations fall back to safe text/numbered replies. Provider-specific media/file support remains capability- and validation-dependent — see [compatibility](docs/compatibility-matrix.md) and the capability matrix in the source.
+</details>
 
-## DSH compatibility
+Provider behavior differs. Buttons, attachments, delivery receipts, reconnect behavior, and account limits are only claimed at the evidence level documented in [Compatibility](docs/compatibility-matrix.md).
 
-Declared host range:
+<details>
+<summary><strong>Common private-chat commands</strong></summary>
+
+| Command | Purpose |
+| --- | --- |
+| `/help` | Show commands |
+| `/whoami` | Show identity / pairing state |
+| `/status` | Current routing / session state |
+| `/tasks` / `/use …` | List or select active tasks |
+| `/sessions` | Session overview |
+| `/stop` | Stop the current turn |
+| `/route` | Show bidirectional routing |
+| `/quiet …` / `/unquiet …` | Mute / restore notification delivery |
+| `/pair <code>` / `/unpair` | Pair / detach an inbound identity |
+| `/log [N]` | Bounded redacted recent-notification summary; off by default and owner-only |
+
+Plain text continues the conversation. Prefix with `!` to steer a running turn. Unsafe remote-control semantics are not enabled in group chats.
+
+</details>
+
+## How it fits together
 
 ```text
-0.1.7-alpha.1 || 0.1.7-alpha.2 || 0.1.7-rc.1 || 0.1.7-rc.2
+DSH events / notify() / other plugins
+                 │
+                 ▼
+        dsh-notifier core
+        ┌────────┴────────┐
+        ▼                 ▼
+  28 outbound        health / activity
+     channels             │
+        │                 │
+        ▼                 │
+      phone               │
+        │                 │
+        └─ 6 inbound ─────┘
+             │
+             ▼
+ identity + Control Core
+ approval · ask_user · conversation · task/session control
 ```
 
-v0.12 release evidence includes:
+The Native UI, notifier runtime, tests, and Advanced Console are designed to observe the same underlying state rather than maintaining separate “UI truth” and “runtime truth”.
 
-- **0.1.7-rc.2**: real-host Native UI / channel setup / save+test / Hot Apply walkthrough passed.
-- **0.1.7-alpha.1**: compatibility-floor smoke passed (activation, RPC, 28-channel projection, client-module serving).
-- **alpha.2 / rc.1**: source/artifact seam compatibility is verified; see the exact evidence level in [docs/compatibility-matrix.md](docs/compatibility-matrix.md).
+## Need help? Diagnose first, then report
 
-## Architecture
+Please **do not start by pasting a large log into an issue**. The fastest support path is:
 
-```text
-src/
-  adapters/                 28 outbound adapters + declarative spec engine
-  runtime/
-    outbound-source.mjs     single live outbound authority
-  control-surface/
-    service.mjs             Native command/query facade
-    rpc.mjs                 DSH authenticated control transport
-    channels.mjs            channel projection
-    health.mjs              bounded operational evidence
-    activity.mjs            redacted activity projection
-    tasks.mjs               task projection adapter
-    questions.mjs           Control-Core question bridge
-    launch-ticket.mjs       one-time Advanced Console launch tickets
-  notify.mjs                notify / notify_test + routing/limits
-  event-listener.mjs        automatic session-event notifications
-  routing/                  multi-agent routing
-  inbound/                  six inbound control channels + identity/pairing
-  approval/                 approval tokens/dedup/escalation
-  questions/                remote ask_user flow
-  admin/                    Advanced / recovery Web console
-  ledger.mjs                append-only delivery ledger + digest
-client.js                   DSH Native web client module
-```
+1. Give an AI the [troubleshooting prompt](docs/TROUBLESHOOTING.en.md) and let it perform read-only diagnosis first.
+2. Let the AI identify the installed version, DSH profile/version, install source, failing subsystem, and a minimal reproduction — with secrets redacted.
+3. If the problem is safely fixable locally, fix and re-test it.
+4. If it remains unresolved, have the AI generate a compact [diagnostic report](docs/DIAGNOSTICS.en.md).
+5. Send that report through GitHub Issues or the contact channels below.
 
-The public consumer surface is documented in [PLUGINS.en.md](PLUGINS.en.md). `ctx.notifier.version` remains `0.7`; v0.12 changes the product control surface and runtime channel authority, not the consumer API contract.
+This keeps “old package / wrong profile / stale `file:` install / missing restart / provider credential” cases out of maintainer triage, while giving us a reproducible report when there is a real project bug.
+
+## Documentation
+
+| Document | Use it for |
+| --- | --- |
+| [Guide](docs/guide.en.md) | Install, first setup, outbound/inbound, pairing, daily use |
+| [AI installation](docs/AI_INSTALL.en.md) | Safe copy/paste prompt for a terminal-capable AI |
+| [Troubleshooting](docs/TROUBLESHOOTING.en.md) | Human + AI first-line diagnosis |
+| [Diagnostics](docs/DIAGNOSTICS.en.md) | Evidence collection and support report format |
+| [Compatibility](docs/compatibility-matrix.md) | DSH / optional SDK / provider evidence levels |
+| [Upgrade guide](docs/upgrade-guide.en.md) | Update, verify version, stale-install cleanup, rollback |
+| [Plugin API](PLUGINS.en.md) | `ctx.notifier` consumer API |
+| [Architecture](docs/architecture.md) | Internal design and runtime authorities |
+| [Changelog](CHANGELOG.md) | Release history |
+
+## Contact
+
+For reproducible bugs, prefer **GitHub Issues after AI-assisted diagnosis**.
+
+- QQ: **3622976831**
+- Email: **3622976831@qq.com**
+- QQ group: **947656156**
+
+<p align="center">
+  <img src="docs/assets/qq-group.png" alt="dsh-notifier QQ group 947656156" width="300">
+</p>
+
+Do not send bot tokens, webhook secrets, admin tokens, full `state.json`, or unredacted private chat content through an issue, QQ, or email.
+
+> Maintenance note: replies may be slower until **2026-10-01** because the maintainer is taking exams.
 
 ## Development
 
-Release gates:
+Node.js **22+**, ESM, and zero **mandatory** runtime dependencies. Some provider onboarding features use optional dependencies and load them only when needed.
 
-```bash
-npm test
-node scripts/verify-release.mjs
-node scripts/gen-channel-matrix.mjs --check
-node --check src/index.mjs
-node --check client.js
-npm pack --dry-run --json
-git diff --check
-```
-
-v0.13.0 convergence line: **1984 registered contract tests**; the full hermetic suite passes, while real-provider/device evidence remains an external gate.
-
-test/ 1984 tests in the current line; the historical 0.8.6 package carried 909 tests.
+Release verification remains documented in [AGENTS.md](AGENTS.md), [OPERATIONS](docs/OPERATIONS.md), and the repository test suite.
 
 ## License
 
