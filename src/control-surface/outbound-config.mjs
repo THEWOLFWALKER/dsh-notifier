@@ -345,6 +345,11 @@ export function createOutboundConfigService({
         throw error
       }
 
+      // v0.13（C11.5 / R7）：desired delete 已提交后，运行时 remove/replace 失败绝不能被
+      // 说成「配置提交失败」（那会诱导调用方回滚 desired）。分层返回：deleted=true 表示
+      // 期望态已落盘；applied=false / runtimeState=failed / applyMode=restart-pending 表示
+      // 运行时尚未跟上，等重启收敛。绝不 rollback desired state。
+      let applyError = null
       if (options?.mode === 'revoke') {
         // Legacy keys are removed in the same transaction above.  No read or
         // resolve of those keys occurs, so malformed leftovers cannot block revoke.
@@ -352,11 +357,26 @@ export function createOutboundConfigService({
           source.remove(key)
           applyState.set(key, { state: 'stopped', applyMode: 'hot' })
         } catch (error) {
+          applyError = error
           applyState.set(key, { state: 'failed', applyMode: 'restart-pending', error: diagnosticErrorMessage(error, existing) })
         }
-      } else if (fallback === null) source.remove(key)
-      else source.replace(key, fallback)
-      const result = { type: key, deleted: true, applied: true, applyMode: 'hot', configRevision: source.version }
+      } else {
+        try {
+          if (fallback === null) {
+            source.remove(key)
+            applyState.set(key, { state: 'stopped', applyMode: 'hot' })
+          } else {
+            source.replace(key, fallback)
+            applyState.set(key, { state: 'online', applyMode: 'hot' })
+          }
+        } catch (error) {
+          applyError = error
+          applyState.set(key, { state: 'failed', applyMode: 'restart-pending', error: diagnosticErrorMessage(error, existing) })
+        }
+      }
+      const result = applyError === null
+        ? { type: key, deleted: true, applied: true, applyMode: 'hot', configRevision: source.version }
+        : { type: key, deleted: true, applied: false, applyMode: 'restart-pending', runtimeState: 'failed', configRevision: source.version }
       emit('channel-removed', result)
       return result
     },

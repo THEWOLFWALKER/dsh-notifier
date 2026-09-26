@@ -467,9 +467,25 @@ export function createAdminApi(options = {}) {
         restartRequired: true,
       })
     }
+    // v0.13（C11.5 / R6）：入站行必须区分配置（desired）与运行时（runtime）。此前
+    // enabled/configured 直接冒充「已生效」，且 restartRequired 恒 false 也在撒谎——
+    // 入站凭证只在下次启动才并入 transport（applyMode=restart）。active 由 inboundPort
+    // 注入的薄聚合 runtime 真值回答，拿不到就是 false（绝不 configured → active）。
+    const inboundByType = new Map((() => {
+      try { return typeof inboundPort?.rows === 'function' ? inboundPort.rows() : [] } catch { return [] }
+    })().map((row) => [row.type, row]))
     for (const channel of INBOUND_CHANNELS) {
       const configured = hasAccount(channel)
-      rows.push({ type: channel, direction: 'inbound', configured, enabled: configured, editable: true, restartRequired: false })
+      const inRow = inboundByType.get(channel)
+      rows.push({
+        type: channel,
+        direction: 'inbound',
+        configured,
+        enabled: configured,
+        active: inRow?.active === true,
+        editable: true,
+        restartRequired: inRow?.restartRequired !== false,
+      })
     }
     return rows
   }
@@ -1035,7 +1051,10 @@ export function createAdminApi(options = {}) {
       auditGuard('putChannel', { type }) // 审计只记通道名，绝不落凭证内容
       // v0.12.1（P1-05）：该字段继续描述 Admin legacy 写入域，不能代表 Native canonical
       // 出站域的 applyMode。Native 口径由 src/control-surface/apply-mode.mjs 提供。
-      return { type, saved: true, restartRequired: OUTBOUND_SET.has(type) && !DUAL_INBOUND_DOMAIN.has(type) }
+      // v0.13（C11.5 / R6）：本接口只写 `<type>:account` 且在下次启动才并入运行时
+      // （内联注释 §putChannel 装配说明），双域通道写的是入站机器人凭证——两条路径都
+      // 必须重启才建立/替换 transport，故恒为 true；不得再用 false 谎称已生效。
+      return { type, saved: true, restartRequired: true }
     },
 
     /**

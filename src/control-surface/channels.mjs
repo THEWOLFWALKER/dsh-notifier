@@ -82,8 +82,10 @@ export function createChannelProjection({ outboundSource, outboundConfig, inboun
         control: inRow ? {
           configured: inRow.configured === true,
           editable: inRow.editable !== false,
-          active: inRow.enabled === true,
+          // v0.13（C11.5 / R6）：runtime truth——不再把 persisted/enabled 当成 active。
+          active: inRow.active === true,
           applyMode: inboundApplyMode(),
+          restartPending: inRow.restartPending === true,
           configRevision: Number(inboundConfig?.version) || 0,
           fields: fieldViews(inFields, inConfig),
           editableValues: editableValues(inFields, inConfig),
