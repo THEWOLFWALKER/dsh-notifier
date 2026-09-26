@@ -11,6 +11,7 @@
 // 军规：任何请求处理异常绝不崩进程；请求体上限 1MB（超限 413）；stop() 幂等（二次调用不抛）。
 
 import { createServer } from 'node:http'
+import { diagnosticErrorMessage } from '../security/diagnostic.mjs'
 
 const MAX_BODY_BYTES = 1024 * 1024
 const JSON_TYPE = 'application/json; charset=utf-8'
@@ -392,8 +393,8 @@ export function createAdminServer({ api, verifyToken, verifyLaunchTicket = null,
       result = await matched.route.handler({ params: matched.params, body, request })
     } catch (error) {
       const status = apiStatusOf(error) ?? (Number.isInteger(error?.status) ? error.status : null)
-      if (status !== null) return respond.json(status, { error: String(error.message ?? '') })
-      warn(`api 处理异常: ${error instanceof Error ? error.message : String(error)}`)
+      if (status !== null) return respond.json(status, { error: diagnosticErrorMessage(error) })
+      warn(`api 处理异常: ${diagnosticErrorMessage(error)}`)
       return respond.json(500, { error: '内部错误' }) // 堆栈只进日志，绝不回给客户端
     }
     if (matched.route.html) return respond.html(200, String(result))

@@ -3,6 +3,7 @@ const PUBLIC_ERROR_CODES = new Set([
   'storage-failed', 'conflict', 'host-unavailable', 'internal',
 ])
 import { inboundApplyMode, isHotApplied } from './apply-mode.mjs'
+import { redactDiagnosticValue } from '../security/diagnostic.mjs'
 
 function normalizeCode(error) {
   const raw = String(error?.code ?? 'internal').replace(/^dsh-notifier\//, '')
@@ -67,13 +68,14 @@ function testResult(result) {
       delivered: confirmed,
       confirmed,
       accepted: true,
-      detail,
-      providerDetail: result?.detail ?? null,
+      detail: redactDiagnosticValue(detail),
+      providerDetail: redactDiagnosticValue(result?.detail ?? null),
       reasonCode: null,
       at,
     }
   }
-  const text = String(result?.detail ?? '')
+  const safeDetail = redactDiagnosticValue(result?.detail ?? '')
+  const text = typeof safeDetail === 'string' ? safeDetail : JSON.stringify(safeDetail)
   const lower = text.toLowerCase()
   const reasonCode = /auth|token|secret|401|403/.test(lower) ? 'auth-failed'
     : /timeout|超时/.test(lower) ? 'timeout'
@@ -85,7 +87,7 @@ function testResult(result) {
     accepted: false,
     reasonCode,
     detail: text || { en: 'Delivery failed', zh: '发送失败' },
-    providerDetail: text || null,
+    providerDetail: safeDetail || null,
     at,
   }
 }
@@ -199,9 +201,10 @@ export function createControlSurfaceService({
           throw error
         }
         const rawResult = await channelTest(type, raw)
-        health.recordTest(type, rawResult)
+        const safeRawResult = redactDiagnosticValue(rawResult, raw)
+        health.recordTest(type, safeRawResult)
         revision.touch('health')
-        const value = testResult(rawResult)
+        const value = testResult(safeRawResult)
         const action = value.status === 'delivered' ? 'channel-test-ok'
           : value.status === 'accepted' ? 'channel-test-accepted'
             : 'channel-test-failed'

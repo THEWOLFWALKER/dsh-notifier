@@ -4,6 +4,7 @@
 // 这里走裸 adapter——配置错了能拿到最原始的中文错误（去哪里拿凭证）。
 
 import { ADAPTERS, CHANNEL_TYPES, resolveEnvRefs } from './config.mjs'
+import { diagnosticErrorMessage } from './security/diagnostic.mjs'
 // lang 文案表：自检推送的 title/正文取词（zh 兜底，既有调用方零感知）
 import { stringsOf } from './strings.mjs'
 
@@ -28,7 +29,7 @@ export async function runChannelTest({ type, rawConfig, message, strings = null 
   try {
     resolved = ADAPTERS[channel].resolve(resolveEnvRefs(rawConfig ?? {}))
   } catch (error) {
-    return { ok: false, channel, detail: `配置校验失败：${error instanceof Error ? error.message : String(error)}` }
+    return { ok: false, channel, detail: `配置校验失败：${diagnosticErrorMessage(error, rawConfig)}` }
   }
   try {
     await ADAPTERS[channel].send(resolved, {
@@ -40,8 +41,8 @@ export async function runChannelTest({ type, rawConfig, message, strings = null 
   } catch (error) {
     // G-53 分层：admin UI / 工具反馈只见公开文案；完整内部细节（响应体/网络原文）
     // 双写 stderr，运维排障不丢信息。公开文案不含 HTTP 原文与底层 message。
-    const publicText = error instanceof Error ? (error.publicMessage ?? error.message) : String(error)
-    const internalDetail = error instanceof Error ? (error.detail ?? error.message) : String(error)
+    const publicText = diagnosticErrorMessage(error instanceof Error ? (error.publicMessage ?? error.message) : error, resolved)
+    const internalDetail = diagnosticErrorMessage(error.detail ?? error, resolved)
     try {
       console.error(`[dsh-notifier/health] 渠道 "${channel}" 自检失败详情: ${internalDetail}`)
     } catch { /* stderr 不可用不致命 */ }

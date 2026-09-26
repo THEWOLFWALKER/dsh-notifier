@@ -9,6 +9,7 @@ import { migrateCanonicalChannelConfig } from '../src/control-surface/channel-co
 import { createOutboundConfigService } from '../src/control-surface/outbound-config.mjs'
 import { createOutboundSource } from '../src/runtime/outbound-source.mjs'
 import { createInboundChannelConfigPort } from '../src/inbound/channel-config.mjs'
+import { redactDiagnostic, redactDiagnosticValue } from '../src/security/diagnostic.mjs'
 import { createStore } from '../src/inbound/store.mjs'
 
 const tempState = (initial) => {
@@ -147,4 +148,12 @@ test('v0.13 inbound secret patch contract: blank keeps, null and clearSecrets de
   port.put('telegram', { botToken: 'third-secret' })
   port.put('telegram', { clearSecrets: ['botToken'] })
   assert.deepEqual(store.get('telegram:account'), {})
+})
+
+test('v0.13 diagnostics: configured values are absent from errors and audit-shaped details', () => {
+  const secret = 'plain-secret-value'
+  assert.equal(redactDiagnostic(`provider rejected ${secret}`, { key: secret }).includes(secret), false)
+  assert.deepEqual(redactDiagnosticValue({ type: 'bark', secret, nested: { token: secret } }), {
+    type: 'bark', secret: '***', nested: { token: '***' },
+  })
 })

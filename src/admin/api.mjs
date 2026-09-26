@@ -28,6 +28,7 @@ import { tasksSnapshot } from '../routing/task-projection.mjs'
 import { createHostCapabilitySnapshot } from '../host/capability.mjs'
 import { deleteDurable, setDurable } from '../inbound/store.mjs'
 import { isPublicExposure } from '../security/exposure.mjs'
+import { diagnosticErrorMessage, redactDiagnosticValue } from '../security/diagnostic.mjs'
 import { splitSecretPatch } from '../security/secret-patch.mjs'
 import {
   CONTROL_OVERLAY_MAX_MEMBERS,
@@ -159,7 +160,7 @@ function resolveMemberRecord(identity, parsed, pending = false) {
 }
 
 /** 错误 → 可读消息（日志与审计用）。 */
-const errorMessage = (error) => (error instanceof Error ? error.message : String(error))
+const errorMessage = (error) => diagnosticErrorMessage(error)
 
 /**
  * 深遍历脱敏（getChannels 用；比 config.mjs 的 maskChannelConfig 更激进——管理台凭证表单
@@ -409,7 +410,7 @@ export function createAdminApi(options = {}) {
           renameSync(auditFile, `${auditFile}.1`)
         }
       } catch { /* stat 失败（文件尚不存在等）：跳过轮转直接 append */ }
-      appendFileSync(auditFile, `${JSON.stringify({ time: new Date().toISOString(), action, detail })}\n`, 'utf8')
+      appendFileSync(auditFile, `${JSON.stringify({ time: new Date().toISOString(), action, detail: redactDiagnosticValue(detail) })}\n`, 'utf8')
       // v0.6.3：对齐 store 的 0600 军规（审查 R3 P2-2）——审计含 session id 与绑定键。
       try { chmodSync(auditFile, 0o600) } catch { /* Windows/受限环境无 chmod */ }
     } catch (error) {
