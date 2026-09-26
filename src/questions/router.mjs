@@ -553,12 +553,21 @@ export function createQuestionBridge(deps, strings) {
   function settle(qKey, row, optIdxes, via, userId) {
     const idxs = resolveIdxs(row, optIdxes)
     if (idxs === null) {
-      return { ok: false, message: t.invalidOption }
+      return { ok: false, reason: 'invalid-option', message: t.invalidOption }
     }
-    const verdict = bus.settle(qKey, { kind: 'aq', idxs }, via, userId)
-    if (!verdict.ok) return { ok: false, message: t.alreadyAnsweredFirstWin }
     const labels = idxs.map((idx) => row.options[idx])
-    ledger.resolve(qKey, 'answered', { answers: labels, via: String(via), userId: String(userId) })
+    // I5: durable ledger is the first-winner authority.  The waiter is only
+    // notified after the durable transition succeeds; a storage failure leaves
+    // the waiter pending so another authorized attempt can retry.
+    const committed = ledger.resolve(qKey, 'answered', { answers: labels, via: String(via), userId: String(userId) })
+    if (committed !== true) {
+      return {
+        ok: false,
+        reason: committed === 'storage-failed' ? 'storage-failed' : 'already-resolved',
+        message: committed === 'storage-failed' ? t.answerUnavailable : t.alreadyAnsweredFirstWin,
+      }
+    }
+    bus.settle(qKey, { kind: 'aq', idxs }, via, userId)
     warn(`${qKey} 作答：${labels.join('、')}（via ${via}）`)
     return { ok: true, message: t.answeredWithLabels(labels), answers: labels }
   }
@@ -574,18 +583,30 @@ export function createQuestionBridge(deps, strings) {
     if (safe.tooLong) {
       return { ok: false, message: t.answerTooLong(ANSWER_MAX_CODEPOINTS) }
     }
-    const verdict = bus.settle(qKey, { kind: 'aq-text', idxs: [], text: safe.text }, `${envelope.channel}:text`, envelope.userId)
-    if (!verdict.ok) return { ok: false, message: t.alreadyAnsweredFirstWin }
-    ledger.resolve(qKey, 'answered', { answers: [safe.text], via: `${envelope.channel}:text`, userId: String(envelope.userId), custom: true })
+    const committed = ledger.resolve(qKey, 'answered', { answers: [safe.text], via: `${envelope.channel}:text`, userId: String(envelope.userId), custom: true })
+    if (committed !== true) {
+      return {
+        ok: false,
+        reason: committed === 'storage-failed' ? 'storage-failed' : 'already-resolved',
+        message: committed === 'storage-failed' ? t.answerUnavailable : t.alreadyAnsweredFirstWin,
+      }
+    }
+    bus.settle(qKey, { kind: 'aq-text', idxs: [], text: safe.text }, `${envelope.channel}:text`, envelope.userId)
     warn(`${qKey} 自定义作答（via ${envelope.channel}:text）`)
     return { ok: true, message: t.answeredCustom(safe.text), answers: [safe.text] }
   }
 
   /** 跳过（aq-skip）：与 admin decline 同语义（交还桌面、绝不编造答案），但来自手机端按钮。 */
   function settleSkip(qKey, envelope) {
-    const verdict = bus.settle(qKey, { kind: 'aq-skip', idxs: [] }, `${envelope.channel}:button`, envelope.userId)
-    if (!verdict.ok) return { ok: false, message: t.alreadyAnsweredFirstWin }
-    ledger.resolve(qKey, 'skipped', { via: `${envelope.channel}:button`, userId: String(envelope.userId) })
+    const committed = ledger.resolve(qKey, 'skipped', { via: `${envelope.channel}:button`, userId: String(envelope.userId) })
+    if (committed !== true) {
+      return {
+        ok: false,
+        reason: committed === 'storage-failed' ? 'storage-failed' : 'already-resolved',
+        message: committed === 'storage-failed' ? t.answerUnavailable : t.alreadyAnsweredFirstWin,
+      }
+    }
+    bus.settle(qKey, { kind: 'aq-skip', idxs: [] }, `${envelope.channel}:button`, envelope.userId)
     warn(`${qKey} 已跳过（via ${envelope.channel}:button）`)
     return { ok: true, message: t.skippedFeedback }
   }
@@ -640,9 +661,9 @@ export function createQuestionBridge(deps, strings) {
   /** admin 驳回：复用手机端「跳过」的语义（`aq-skip` + ledger.resolve 'skipped'），交还桌面、
    *  绝不编造答案；bus.settle 首达采纳保证与作答互斥（单次结算）。 */
   function decline(key, row, via, userId) {
-    const verdict = bus.settle(key, { kind: 'aq-skip', idxs: [] }, via, userId)
-    if (!verdict.ok) return { ok: false, reason: verdict.reason ?? 'already-resolved' }
-    ledger.resolve(key, 'skipped', { via, userId })
+    const committed = ledger.resolve(key, 'skipped', { via, userId })
+    if (committed !== true) return { ok: false, reason: committed === 'storage-failed' ? 'storage-failed' : 'already-resolved' }
+    bus.settle(key, { kind: 'aq-skip', idxs: [] }, via, userId)
     return { ok: true, message: '已驳回该提问：交还桌面处理', answers: [] }
   }
   /** 当前待决问题归属的 agentId 集合（供任务投影 attention 与装配层判定「待关注」；

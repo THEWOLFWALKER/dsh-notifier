@@ -466,3 +466,52 @@ test('CRACK-001 装配侧兜底：markSource 落账失败（store 抛错被吞�
   assert.equal(clickB.ok, false, '同一失败路径的卡出窗后 fail-closed')
   assert.equal(clickB.reason, 'source-chat-mismatch')
 })
+
+test('C5：动作 claim 落盘失败时绝不执行 handler，pending 保持可重试', () => {
+  const data = new Map()
+  let writes = 0
+  const store = {
+    get: (key, fallback) => (data.has(key) ? data.get(key) : fallback),
+    set: (key, value) => {
+      writes += 1
+      if (writes === 2) throw new Error('disk full during claim')
+      data.set(key, value)
+      return true
+    },
+    delete: (key) => { data.delete(key); return true },
+    entries: () => [...data.entries()],
+  }
+  const vault = createTokenVault({ secret: 'c5-claim-fail' })
+  const dispatcher = createActionDispatcher({ vault, store })
+  let calls = 0
+  dispatcher.register('turn/cancel', () => { calls += 1; return { ok: true } })
+  const card = dispatcher.mintAction('turn/cancel', {})
+  const result = dispatcher.dispatch({ actionKey: card.key, token: card.token })
+  assert.equal(result.ok, false)
+  assert.equal(result.reason, 'storage-failed')
+  assert.equal(calls, 0)
+  assert.equal(store.get(card.key).status, 'pending')
+})
+
+test('C5：重启看到 claimed 只报告 uncertain，不自动重跑 handler', () => {
+  const data = new Map()
+  const store = {
+    get: (key, fallback) => (data.has(key) ? data.get(key) : fallback),
+    set: (key, value) => { data.set(key, value); return true },
+    delete: (key) => { data.delete(key); return true },
+    entries: () => [...data.entries()],
+  }
+  const vault = createTokenVault({ secret: 'c5-restart' })
+  const first = createActionDispatcher({ vault, store })
+  first.register('turn/cancel', () => ({ ok: true }))
+  const card = first.mintAction('turn/cancel', {})
+  store.set(card.key, { ...store.get(card.key), status: 'claimed', outcome: 'claimed', claimedAt: Date.now() })
+  let calls = 0
+  const restarted = createActionDispatcher({ vault, store })
+  restarted.register('turn/cancel', () => { calls += 1; return { ok: true } })
+  const result = restarted.dispatch({ actionKey: card.key, token: card.token })
+  assert.equal(result.ok, false)
+  assert.equal(result.reason, 'uncertain')
+  assert.equal(calls, 0)
+  assert.equal(store.get(card.key).status, 'claimed')
+})

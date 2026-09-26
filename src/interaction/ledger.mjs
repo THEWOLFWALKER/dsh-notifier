@@ -18,7 +18,7 @@
 // 各链的 latestPendingFor 归属/兜底启发式留在链内——匹配语义（exact/onChannel/
 // intended/hint + liveWaiters 僵尸行过滤）差异太大，强行统一会引入行为漂移（批 4 决策）。
 
-import { setDurable } from '../inbound/store.mjs'
+import { setDurable, transactDurable } from '../inbound/store.mjs'
 
 /**
  * 创建统一交互状态账本。
@@ -46,6 +46,38 @@ export function createInteractionLedger(options = {}) {
     resolvedAt: now(),
   })
 
+  const claimedRowOf = (row, extra = {}) => ({
+    ...row,
+    ...extra,
+    status: 'claimed',
+    [decisionField]: 'claimed',
+    claimedAt: now(),
+  })
+
+  /**
+   * Apply a state transition against the freshest transaction draft.  Legacy
+   * test doubles still get the old single-key fallback; the production store
+   * always takes the atomic path.
+   */
+  const transition = (key, decide, write) => {
+    if (typeof store?.transact === 'function') {
+      let outcome = { kind: 'missing' }
+      const result = transactDurable(store, (draft) => {
+        const row = draft[key]
+        outcome = decide(row)
+        if (outcome.kind === 'write') draft[key] = write(row, outcome)
+        return outcome.kind
+      })
+      if (result.committed !== true) return { ok: false, reason: 'storage-failed' }
+      return { ok: true, ...outcome }
+    }
+    const row = store?.get(key)
+    const outcome = decide(row)
+    if (outcome.kind !== 'write') return { ok: true, ...outcome }
+    if (setDurable(store, key, write(row, outcome)) !== true) return { ok: false, reason: 'storage-failed' }
+    return { ok: true, ...outcome }
+  }
+
   return {
     statuses,
     /** 铸新行：覆写为 pending + createdAt。写入抛错不吞——由调用方决策
@@ -58,6 +90,25 @@ export function createInteractionLedger(options = {}) {
     },
     /** 待决判定：非对象/非 pending（含旧行、僵尸行）一律视为已决（fail-closed）。 */
     isPending,
+    /**
+     * Durable first-winner claim for actions.  A claimed row is intentionally
+     * not pending and is never auto-executed again after a restart.
+     */
+    claim(key, extra = {}) {
+      const result = transition(
+        key,
+        (row) => {
+          if (row === undefined) return { kind: 'missing' }
+          if (row.status === 'claimed') return { kind: 'uncertain' }
+          if (row.status !== statuses.pending) return { kind: 'already-resolved' }
+          return { kind: 'write' }
+        },
+        (row) => claimedRowOf(row, extra),
+      )
+      if (!result.ok) return { ok: false, reason: result.reason }
+      if (result.kind === 'write') return { ok: true, claimed: true }
+      return { ok: false, reason: result.kind === 'uncertain' ? 'uncertain' : result.kind === 'already-resolved' ? 'already-resolved' : 'unknown' }
+    },
     /** 行缺失返回 false；已终态（status='resolved'）返回 'already-resolved' 不再翻转
      *  （S-14，W12：内部 API 误用/迟到 settle/竞态双 resolve 不覆写既有终态裁决）。
      *  actions 的「首达采纳后多步落地」（'executing' 占位 → 'done' 终局）是同一执行的
@@ -65,13 +116,22 @@ export function createInteractionLedger(options = {}) {
      *  已决行二次 resolve 一律拒绝。extra 不能覆盖 status/decision/resolvedAt。
      * @param {object} [opts.claimedSettle] - 仅 actions 用：放行对已终态行的终局落地 */
     resolve(key, decision, extra = {}, opts = {}) {
-      const row = store?.get(key)
-      if (row === undefined) return false
-      if (row.status === statuses.resolved && opts.claimedSettle !== true) {
-        return 'already-resolved'
-      }
-      if (setDurable(store, key, resolvedRowOf(row, decision, extra)) !== true) return 'storage-failed'
-      return true
+      const result = transition(
+        key,
+        (row) => {
+          if (row === undefined) return { kind: 'missing' }
+          if (row.status === statuses.resolved && opts.claimedSettle !== true) return { kind: 'already-resolved' }
+          if (row.status === 'claimed' && opts.claimedSettle !== true) return { kind: 'already-claimed' }
+          if (row.status !== statuses.pending && row.status !== 'claimed') return { kind: 'already-resolved' }
+          return { kind: 'write' }
+        },
+        (row) => resolvedRowOf(row, decision, extra),
+      )
+      if (!result.ok) return 'storage-failed'
+      if (result.kind === 'write') return true
+      if (result.kind === 'already-claimed') return 'already-claimed'
+      if (result.kind === 'already-resolved') return 'already-resolved'
+      return false
     },
     /** 仅 pending 行可终止为 'terminated'（C2/P1-5 僵尸守卫）：已决/缺失行返回
      *  false，绝不改写。onAbandon / 会话销毁路径专用。 */

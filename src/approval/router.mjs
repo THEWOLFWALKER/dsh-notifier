@@ -171,6 +171,28 @@ export function registerApprovalHandler(deps, strings) {
   // 核心账本 + 审批专用归属启发式合成同一 ledger 面（其余调用点零改动）。
   const ledger = { ...core, latestPendingFor }
 
+  /**
+   * Control Core settlement order: validate the token first, claim the
+   * durable interaction row, then release the in-memory waiter.  A failed
+   * durable write therefore cannot deliver a host decision.
+   */
+  function settleThroughLedger(input) {
+    const key = input.approvalKey ?? input.key
+    const decision = input.decision
+    if (decision !== OUTCOME_ALLOWED && decision !== OUTCOME_REJECTED) return false
+    if (input.trusted !== true) {
+      let verdict
+      try { verdict = vault.verify(input.token) } catch { return false }
+      if (verdict?.ok !== true || verdict.key !== key) return false
+    }
+    const committed = ledger.resolve(key, decision, { via: String(input.via ?? ''), userId: String(input.userId ?? '') })
+    if (committed !== true) return { ok: false, reason: committed === 'storage-failed' ? 'storage-failed' : 'already-resolved' }
+    // A durable winner is authoritative even if the live waiter disappeared
+    // between lookup and delivery; no second durable write is attempted.
+    bus.settle(key, decision, input.via, input.userId)
+    return { ok: true }
+  }
+
   // G-34（D5）：文本线 5min 抑制判定——行已翻终态（裁决成功/终止/超时/失效）且在窗口内，
   // 同 key 的广播与升级链文本不再推送。窗口由 resolvedAt 表达：只有真实裁决才写终态，
   // pending 行（observe 旁观中）永不抑制。
@@ -214,9 +236,7 @@ export function registerApprovalHandler(deps, strings) {
         if (input.trusted !== true) return exact
         return exact || isAuthorizedDecider(identity, event.channel, event.userId)
       },
-      settle: (input) => input.trusted === true
-        ? bus.decideTrusted({ approvalKey: input.approvalKey ?? input.key, decision: input.decision, via: input.via, userId: input.userId })
-        : bus.decide({ approvalKey: input.approvalKey ?? input.key, decision: input.decision, token: input.token, via: input.via, userId: input.userId, chatId: input.chatId }),
+      settle: (input) => settleThroughLedger(input),
     })
   }
 

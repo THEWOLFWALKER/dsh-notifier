@@ -137,7 +137,7 @@ function makeRig({ approvalConfig = {}, chatIds = ['100'], mode = 'answer', send
     approvalConfig: { mode, ...approvalConfig },
   })
   const handle = (request) => handlers['approval/request'](request, () => 'desktop')
-  return { store, vault, bus, handlers, broadcasts, cards, edits, dispose, handle }
+  return { store, vault, bus, control, handlers, broadcasts, cards, edits, dispose, handle }
 }
 
 test('router：observe 模式只旁观——推完卡片立即交还桌面', async () => {
@@ -183,6 +183,37 @@ test('router：answer 模式远程拒绝——返回 rejected，卡片编辑为�
   assert.equal(await pending, 'rejected')
   assert.equal(rig.store.get('ap:c1:1').decision, 'rejected')
   assert.match(rig.edits[0].text, /已远程拒绝/)
+  rig.dispose()
+})
+
+test('C5：审批 durable 结算失败时不释放 host waiter，恢复后可重试', async () => {
+  const rig = makeRig({ approvalConfig: { timeoutMs: 3000, escalation: { enabled: false } } })
+  const pending = rig.handle({ toolName: 'rm', callId: 'c5-fail', reason: 'x' })
+  await sleep(20)
+  const card = rig.cards[0]
+  const originalTransact = rig.store.transact
+  rig.store.transact = () => ({ ok: false, committed: false, durable: false, code: 'STATE_BUSY' })
+  const failed = rig.control.handle({
+    command: 'approval', eventId: 'c5-fail-1', approvalKey: card.approvalKey,
+    decision: 'allowed-once', token: card.token, via: 'telegram:button',
+    channel: 'telegram', accountId: 'TG_APP', userId: '42', chatId: '100',
+  })
+  assert.equal(failed.status, 'desktop_fallback')
+  assert.equal(rig.store.get(card.approvalKey).status, 'pending')
+  let settled = false
+  void pending.then(() => { settled = true })
+  await sleep(20)
+  assert.equal(settled, false, 'durable 失败不得释放 host waiter')
+
+  rig.store.transact = originalTransact
+  const retried = rig.control.handle({
+    command: 'approval', eventId: 'c5-fail-2', approvalKey: card.approvalKey,
+    decision: 'allowed-once', token: card.token, via: 'telegram:button',
+    channel: 'telegram', accountId: 'TG_APP', userId: '42', chatId: '100',
+  })
+  assert.equal(retried.status, 'accepted')
+  assert.equal(await pending, 'allowed-once')
+  assert.equal(rig.store.get(card.approvalKey).decision, 'allowed-once')
   rig.dispose()
 })
 

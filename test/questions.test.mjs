@@ -160,6 +160,41 @@ test('P4 卡片为主：卡片送达的渠道不再收编号文案（零广播�
   rig.bridge.dispose()
 })
 
+test('C5：提问 durable 结算失败时不释放 waiter，恢复后可重试', async () => {
+  const rig = makeRig()
+  const pending = rig.bridge.askQuestions({ questions: [SINGLE] })
+  assert.equal(await waitFor(() => rig.instances[0].cards.length === 1), true)
+  const card = rig.instances[0].cards[0]
+  const originalTransact = rig.store.transact
+  rig.store.transact = () => ({ ok: false, committed: false, durable: false, code: 'STATE_BUSY' })
+  const failed = rig.bridge.decide({ qKey: card.qKey, optIdx: '0', token: card.token, via: 'telegram', userId: '100' })
+  assert.equal(failed.ok, false)
+  assert.equal(failed.reason, 'storage-failed')
+  assert.equal(rig.store.get(card.qKey).status, 'pending')
+  rig.store.transact = originalTransact
+  const retried = rig.bridge.decide({ qKey: card.qKey, optIdx: '0', token: card.token, via: 'telegram', userId: '100' })
+  assert.equal(retried.ok, true)
+  const result = await pending
+  assert.equal(result.answered, true)
+  assert.equal(rig.store.get(card.qKey).decision, 'answered')
+  rig.bridge.dispose()
+})
+
+test('C5：卡片 patch 失败不能改变 durable winner', async () => {
+  const rig = makeRig()
+  const pending = rig.bridge.askQuestions({ questions: [SINGLE] })
+  assert.equal(await waitFor(() => rig.instances[0].cards.length === 1), true)
+  const card = rig.instances[0].cards[0]
+  rig.instances[0].raw.editResolved = async () => { throw new Error('patch unavailable') }
+  const answered = rig.bridge.decide({ qKey: card.qKey, optIdx: '1', token: card.token, via: 'telegram', userId: '100' })
+  assert.equal(answered.ok, true)
+  const result = await pending
+  assert.equal(result.answered, true)
+  assert.equal(rig.store.get(card.qKey).decision, 'answered')
+  assert.deepEqual(rig.store.get(card.qKey).answers, ['预发环境'])
+  rig.bridge.dispose()
+})
+
 test('P4 编号兜底只发卡片未送达的渠道（分流 channelTypes）', async () => {
   const rig = makeRig({ channelTypes: ['telegram', 'wxpusher', 'webhook'] })
   const pending = rig.bridge.askQuestions({ questions: [SINGLE] })

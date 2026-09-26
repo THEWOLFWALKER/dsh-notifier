@@ -46,7 +46,7 @@ test('账本：resolve 有行即翻终态，决策字段名可参数化（action
   assert.equal(store.get('act:k').outcome, 'done', '终态裁决不被二次 resolve 覆写')
 })
 
-test('账本：resolve 已终态不翻转（S-14 双 resolve 幂等）；claimedSettle 逃生门供 actions 终局落地', () => {
+test('账本：resolve 已终态不翻转（S-14 双 resolve 幂等）；claimedSettle 只允许动作完成', () => {
   const store = memStore()
   const ledger = createInteractionLedger({ keyPrefix: 'aq:', store })
   ledger.add('aq:1', { payload: 1 })
@@ -58,17 +58,20 @@ test('账本：resolve 已终态不翻转（S-14 双 resolve 幂等）；claimed
   assert.equal(row.decision, 'answered', '终态裁决不被迟到 settle 覆写')
   assert.equal(row.payload, 2, '旁注字段也不被二次 resolve 追加')
   assert.equal(row.resolvedAt !== 5, true, 'resolvedAt 恒取决议时刻')
-  // 逃生门（仅 actions 的 executing→终局落地用）：claimedSettle 放行已占位行落定终态
-  assert.equal(ledger.resolve('aq:1', 'done', { via: 'x' }, { claimedSettle: true }), true)
-  const settled = store.get('aq:1')
+  // 动作完成必须经过真实 pending → claimed → resolved 中间态；不能把已有
+  // winner 当成 claimed 再次改写。
+  ledger.add('aq:claimed', { payload: 9 })
+  assert.equal(ledger.claim('aq:claimed', { via: 'claim' }).ok, true)
+  assert.equal(ledger.resolve('aq:claimed', 'done', { via: 'x' }, { claimedSettle: true }), true)
+  const settled = store.get('aq:claimed')
   assert.equal(settled.decision, 'done')
   assert.equal(settled.via, 'x')
   assert.equal(settled.status, 'resolved')
-  // 逃生门同样不放开 status/decision/resolvedAt 覆写（resolvedRowOf 恒覆盖决议字段）
-  ledger.resolve('aq:1', 'final', { status: 'pending', decision: 'evil', resolvedAt: 5 }, { claimedSettle: true })
+  // 终态 winner 仍不可被迟到完成路径覆写。
+  assert.equal(ledger.resolve('aq:1', 'final', { status: 'pending', decision: 'evil', resolvedAt: 5 }, { claimedSettle: true }), 'already-resolved')
   const final = store.get('aq:1')
   assert.equal(final.status, 'resolved')
-  assert.equal(final.decision, 'final')
+  assert.equal(final.decision, 'answered')
   assert.ok(final.resolvedAt !== 5, 'resolvedAt 仍由决议时刻覆盖')
 })
 

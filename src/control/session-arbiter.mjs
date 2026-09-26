@@ -248,7 +248,11 @@ export function createSessionArbiter({ policy = {}, now = Date.now, onSettle = n
       settled.add(event.eventId)
       try {
         const result = onSettle?.(event, current)
-        if (result === false) { settled.delete(event.eventId); audit({ event, status: 'desktop_fallback', reason: 'settlement_failed' }); return { status: 'desktop_fallback', reason: 'settlement_failed' } }
+        if (result === false || result?.ok === false) {
+          settled.delete(event.eventId)
+          audit({ event, status: 'desktop_fallback', reason: result?.reason ?? 'settlement_failed' })
+          return { status: 'desktop_fallback', reason: result?.reason ?? 'settlement_failed' }
+        }
         audit({ event, status: 'accepted' })
         return { status: 'accepted', event }
       } catch {

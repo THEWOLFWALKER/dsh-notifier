@@ -213,6 +213,11 @@ export function createActionDispatcher({ vault = null, store = null, logger = nu
           // 账本行缺失（重启清账 / 极旧卡片）：按过期处理，绝不执行
           return { ok: false, reason: 'unknown-action', message: t.actions.expired }
         }
+        if (row.status === 'claimed') {
+          // A previous process durably claimed this action but did not publish
+          // its terminal outcome.  It is uncertain, never safe to auto-run.
+          return { ok: false, reason: 'uncertain', message: t.actions.alreadyHandled }
+        }
         if (row.status !== 'pending') {
           return { ok: false, reason: 'already-resolved', message: t.actions.alreadyHandled }
         }
@@ -249,16 +254,20 @@ export function createActionDispatcher({ vault = null, store = null, logger = nu
           try { ledger.resolve(actionKey, 'unknown-kind', { via }) } catch { /* 账本失败不致命 */ }
           return { ok: false, reason: 'unknown-kind', message: t.actions.unknownKind }
         }
-        // 首达采纳：先落 resolved 再执行（并发双击只执行一次）
-        try { ledger.resolve(actionKey, 'executing', { via }) } catch { /* 账本失败不致命 */ }
+        // I5：先把 pending 原子地 claim，再执行不可逆 handler。claim 失败
+        // 不能释放副作用；claimed 行在重启后按 uncertain 处理，不自动重跑。
+        const claim = ledger.claim(actionKey, { via })
+        if (claim?.ok !== true) {
+          return { ok: false, reason: claim?.reason ?? 'storage-failed', message: claim?.reason === 'uncertain' ? t.actions.alreadyHandled : t.actions.dispatchError }
+        }
         try {
           const result = handler({ actionKey, payload: row.payload, via, userId }) ?? {}
           const ok = result.ok !== false
           const message = typeof result.message === 'string' && result.message !== ''
             ? result.message
             : (ok ? t.actions.executed : t.actions.notEffective)
-          // S-14（W12）：账本已终态不翻转，终局落地走 claimedSettle 显式逃生门——
-          // 'executing' 是同一执行的中段占位，允许在此落定终态裁决（done/declined/error）。
+          // claim 后的终局落地只允许同一执行显式完成；失败会留下 claimed，
+          // 供重启后的 uncertain 诊断使用，不再自动执行。
           try { ledger.resolve(actionKey, ok ? 'done' : 'handler-declined', { via }, { claimedSettle: true }) } catch { /* 账本失败不致命 */ }
           warn(`动作 ${actionKey} 裁决 via ${via}（user ${userId}）: ${ok ? 'done' : 'handler-declined'}`)
           return { ok: true, message }
