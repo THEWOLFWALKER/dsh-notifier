@@ -17,3 +17,11 @@ test('launch ticket expires', () => {
   now += 20_000
   assert.equal(tickets.consume(minted.ticket), false)
 })
+
+test('C10：launch ticket 容量绝不瞬时超过上限，保留最新票据', () => {
+  const tickets = createLaunchTickets({ max: 4 })
+  const minted = Array.from({ length: 10 }, () => tickets.mint())
+  assert.equal(tickets.size(), 4)
+  assert.equal(tickets.consume(minted[0].ticket), false)
+  assert.equal(tickets.consume(minted.at(-1).ticket), true)
+})

@@ -25,6 +25,8 @@ const DEFAULT_DEDUP_WINDOW_MS = 24 * 60 * 60 * 1000
  *  又把误吞面收敛到「同一分钟内同文本」这一本就歧义的窄缝。 */
 const DEFAULT_SYNTHETIC_DEDUP_WINDOW_MS = 60 * 1000
 const DEFAULT_FIFO_MAX = 512
+export const MAX_GLOBAL_WAITERS = 256
+export const MAX_AGENT_WAITERS = 32
 /** 拒绝回执节流：每用户 60 秒至多一条（内存 Map，重启清零无妨）。 */
 const REPLY_THROTTLE_MS = 60 * 1000
 
@@ -66,6 +68,8 @@ export function createInboundBus(options = {}) {
   const vault = options.vault ?? null
   const dedupWindowMs = options.dedupWindowMs ?? DEFAULT_DEDUP_WINDOW_MS
   const syntheticDedupWindowMs = options.syntheticDedupWindowMs ?? DEFAULT_SYNTHETIC_DEDUP_WINDOW_MS
+  const globalWaiterCap = Math.max(1, Math.min(MAX_GLOBAL_WAITERS, Number(options.maxWaiters) || MAX_GLOBAL_WAITERS))
+  const agentWaiterCap = Math.max(1, Math.min(MAX_AGENT_WAITERS, Number(options.maxWaitersPerAgent) || MAX_AGENT_WAITERS))
   const warn = (message) => {
     try { options.logger?.warn?.('[dsh-notifier/inbound]', message) } catch { /* 日志失败绝不致命 */ }
     // v0.6.1 双写 stderr：宿主 logger 不落 stdout 时告警仍可见（真机事故复盘）
@@ -263,6 +267,14 @@ export function createInboundBus(options = {}) {
       const existing = waiters.get(approvalKey)
       if (existing !== undefined && !existing.settled) return existing.promise
       const agentId = typeof options.agentId === 'string' ? options.agentId : ''
+      if (waiters.size >= globalWaiterCap) {
+        warn(`waiter 全局容量已满（${globalWaiterCap}），拒绝 ${approvalKey}`)
+        return Promise.resolve(null)
+      }
+      if (agentId !== '' && (agentWaiters.get(agentId)?.size ?? 0) >= agentWaiterCap) {
+        warn(`agent ${agentId} waiter 容量已满（${agentWaiterCap}），拒绝 ${approvalKey}`)
+        return Promise.resolve(null)
+      }
       const onAbandon = typeof options.onAbandon === 'function' ? options.onAbandon : null
       // v0.8.3 SEC-1：允许会话范围（channel → chatId 集合）。按钮裁决来源校验用；
       // 缺省 null = 不限制（编号回复/旧装配不受影响）。
@@ -363,6 +375,10 @@ export function createInboundBus(options = {}) {
 
     pendingCount() {
       return waiters.size
+    },
+
+    pendingCountForAgent(agentId) {
+      return agentWaiters.get(String(agentId ?? ''))?.size ?? 0
     },
 
     dispose() {

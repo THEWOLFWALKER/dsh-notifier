@@ -19,6 +19,7 @@ export function createLaunchTickets({ ttlMs = 60_000, now = Date.now, max = 32 }
       const token = randomBytes(32).toString('base64url')
       const id = randomBytes(12).toString('base64url')
       rows.set(id, { hash: digest(token), expiresAt: now() + ttl, used: false })
+      sweep()
       return { ticket: `${id}.${token}`, expiresAt: now() + ttl }
     },
 
@@ -41,5 +42,6 @@ export function createLaunchTickets({ ttlMs = 60_000, now = Date.now, max = 32 }
     dispose() {
       rows.clear()
     },
+    size: () => { sweep(); return rows.size },
   }
 }

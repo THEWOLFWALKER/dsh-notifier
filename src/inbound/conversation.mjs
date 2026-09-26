@@ -22,10 +22,18 @@ import { chatScopeOf } from '../control/session-arbiter.mjs'
 import { bindingKey as identityBindingKey } from './identity.mjs'
 import { deleteDurable, setDurable } from './store.mjs'
 import { MESSAGE_PRIORITY } from './bus.mjs'
-import { normalizeImageAttachment, normalizeFileAttachment, normalizeAttachmentItem, downloadInboundImageBytes, downloadInboundFileBytes, INBOUND_KINDS } from './message.mjs'
+import {
+  normalizeImageAttachment, normalizeFileAttachment, normalizeAttachmentItem,
+  downloadInboundImageBytes, downloadInboundFileBytes, INBOUND_KINDS,
+  MAX_INBOUND_ATTACHMENTS_TOTAL_BYTES,
+} from './message.mjs'
 import { readAttachments, admitInboundImage, admitInboundFile, buildRemoteUserMessage } from '../host/messages.mjs'
 
 const DEFAULT_MERGE_WINDOW_MS = 1500
+export const MAX_MERGE_KEYS = 256
+export const MAX_MERGE_PARTS = 32
+export const MAX_MERGE_UTF8_BYTES = 64 * 1024
+export const MAX_MERGE_ABSOLUTE_AGE_MS = 30_000
 /** 各 P0 通道「附件-only」占位正文（wechat/qq/dingtalk 沿用）；投递时不得把它当真实文本交给模型。 */
 const IMAGE_PLACEHOLDER_TEXT = '[图片消息]'
 const FILE_PLACEHOLDER_TEXT = '[文件消息]'
@@ -562,7 +570,7 @@ say(t.helpLines.join('\n'))
    * 递增累积到预算内——`text.slice(0, n)` 是 UTF-16 码元切法（会切出半个代理项且字节数不可控），
    * 这里用 `for...of`（按码点迭代）保证无孤立代理项。未超限原样返回，超限追加 marker。
    */
-  function truncateUtf8(text, maxBytes, marker) {
+  function truncateUtf8(text, maxBytes, marker = '') {
     const encoder = new TextEncoder()
     if (encoder.encode(text).length <= maxBytes) return text
     const markerBytes = encoder.encode(marker).length
@@ -817,10 +825,14 @@ say(t.helpLines.join('\n'))
 
     const blocks = []
     const failures = []
+    let aggregateBytes = 0
     for (const item of parts) {
-      const block = await admitAttachmentBlock(item)
-      if (block === null) failures.push(item.kind)
-      else blocks.push(block)
+      const admitted = await admitAttachmentBlock(item, MAX_INBOUND_ATTACHMENTS_TOTAL_BYTES - aggregateBytes)
+      if (admitted === null) failures.push(item.kind)
+      else {
+        blocks.push(admitted.block)
+        aggregateBytes += admitted.size
+      }
     }
     if (failures.length > 0) {
       if (typeof onAttachmentFailure === 'function') {
@@ -855,19 +867,21 @@ say(t.helpLines.join('\n'))
    * 图片走 saveImage（媒体白名单在 host 层），文件走 saveFile（不限媒体类型）；
    * 文件名已在归一阶段经 sanitizeFileName 去路径/控制字符。
    */
-  async function admitAttachmentBlock(item) {
+  async function admitAttachmentBlock(item, remainingBytes) {
     if (attachments === null) return null // 无 attachment service：附件能力不可用
     if (item.kind === INBOUND_KINDS.image) {
       const bytes = await downloadImageBytes(item.image.url)
       if (bytes === null || bytes === undefined) return null
+      if (!Number.isFinite(Number(bytes.size)) || bytes.size < 0 || bytes.size > remainingBytes) return null
       const ref = await admitInboundImage(attachments, bytes.data, bytes.mediaType)
-      return ref === null ? null : { type: 'image', attachment: ref }
+      return ref === null ? null : { block: { type: 'image', attachment: ref }, size: bytes.size }
     }
     if (item.kind === INBOUND_KINDS.file) {
       const bytes = await downloadFileBytes(item.file.url)
       if (bytes === null || bytes === undefined) return null
+      if (!Number.isFinite(Number(bytes.size)) || bytes.size < 0 || bytes.size > remainingBytes) return null
       const ref = await admitInboundFile(attachments, bytes.data, item.file.name)
-      return ref === null ? null : { type: 'file', attachment: ref }
+      return ref === null ? null : { block: { type: 'file', attachment: ref }, size: bytes.size }
     }
     return null
   }
@@ -888,6 +902,29 @@ say(t.helpLines.join('\n'))
   const pending = new Map() // `${channel}:${userId}:${String(chatId ?? '')}` -> { parts, timer, forceSteer }
   const mergeWindowKeyOf = (envelope) =>
     `${envelope.channel}:${envelope.userId}:${String(envelope.chatId ?? '')}`
+
+  const utf8Bytes = (value) => Buffer.byteLength(String(value), 'utf8')
+  const scheduleMerge = (entry) => {
+    clearTimeout(entry.timer)
+    const remainingAge = Math.max(1, entry.createdAt + MAX_MERGE_ABSOLUTE_AGE_MS - Date.now())
+    entry.timer = setTimeout(() => flush(entry.envelope), Math.min(mergeWindowMs, remainingAge))
+  }
+  const createMergeEntry = (envelope, text, items, forceSteer = false) => {
+    const part = truncateUtf8(text)
+    const entry = {
+      parts: part === '' ? [] : [part],
+      bytes: utf8Bytes(part),
+      timer: null,
+      forceSteer,
+      attachments: items,
+      createdAt: Date.now(),
+      envelope,
+    }
+    scheduleMerge(entry)
+    return entry
+  }
+  const canAppend = (entry, text) => entry.parts.length < MAX_MERGE_PARTS
+    && entry.bytes + utf8Bytes(text) + (entry.parts.length > 0 ? 1 : 0) <= MAX_MERGE_UTF8_BYTES
   function flush(envelope) {
     const key = mergeWindowKeyOf(envelope)
     const entry = pending.get(key)
@@ -1020,8 +1057,18 @@ say(t.helpLines.join('\n'))
     const key = mergeWindowKeyOf(envelope) // G-51：与 flush 同一键（含 chatId 维度）
     if (text.endsWith('..') || text.endsWith('!!')) {
       // 终止符：先并入再立即冲刷（!! 追加 steer 前缀）；附件取首条非空窗（合并窗内附件不叠加）
-      const entry = pending.get(key) ?? { parts: [], timer: null, forceSteer: false, attachments: [] }
-      entry.parts.push(text.slice(0, -2).trim())
+      const part = text.slice(0, -2).trim()
+      let entry = pending.get(key)
+      if (entry !== undefined && !canAppend(entry, part)) {
+        flush(entry.envelope)
+        entry = undefined
+      }
+      entry ??= createMergeEntry(envelope, '', [], false)
+      const safePart = truncateUtf8(part, MAX_MERGE_UTF8_BYTES - entry.bytes - (entry.parts.length > 0 ? 1 : 0))
+      if (safePart !== '') {
+        entry.parts.push(safePart)
+        entry.bytes += utf8Bytes(safePart) + (entry.parts.length > 1 ? 1 : 0)
+      }
       entry.forceSteer = entry.forceSteer || text.endsWith('!!')
       if (entry.attachments.length === 0) entry.attachments = items
       pending.set(key, entry)
@@ -1032,20 +1079,25 @@ say(t.helpLines.join('\n'))
       fireAsync(route(envelope, text, items))
       return
     }
-    const entry = pending.get(key)
+    let entry = pending.get(key)
+    if (entry !== undefined) {
+      if (!canAppend(entry, text) || Date.now() - entry.createdAt >= MAX_MERGE_ABSOLUTE_AGE_MS) {
+        flush(entry.envelope)
+        entry = undefined
+      }
+    }
     if (entry !== undefined) {
       entry.parts.push(text)
+      entry.bytes += utf8Bytes(text) + 1
       if (entry.attachments.length === 0) entry.attachments = items
-      clearTimeout(entry.timer)
-      entry.timer = setTimeout(() => flush(envelope), mergeWindowMs)
+      scheduleMerge(entry)
       return
     }
-    pending.set(key, {
-      parts: [text],
-      timer: setTimeout(() => flush(envelope), mergeWindowMs),
-      forceSteer: false,
-      attachments: items,
-    })
+    if (pending.size >= MAX_MERGE_KEYS) {
+      const oldest = pending.values().next().value
+      if (oldest !== undefined) flush(oldest.envelope)
+    }
+    pending.set(key, createMergeEntry(envelope, text, items))
   }, { priority: MESSAGE_PRIORITY.conversation })
 
   // 追踪最近活跃 agent（默认投递目标）；agent 退出时清理绑定与合并窗。

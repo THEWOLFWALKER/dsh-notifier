@@ -5,6 +5,7 @@
 
 import { normalizeControlEvent, makeReceipt } from './contract.mjs'
 import { createSessionArbiter, normalizeControlOverlay, normalizeSessionPolicy } from './session-arbiter.mjs'
+import { createHandledEvents } from './handled-events.mjs'
 
 const text = (value) => typeof value === 'string' && value.trim() !== '' ? value.trim() : null
 const COMMANDS = new Set(['stop', 'question-answer', 'approval', 'steer', 'ordinary-message'])
@@ -116,7 +117,7 @@ export function createControlEntry({ policy = {}, identity = null, now = Date.no
     ? policyForSession
     : (typeof sessionPolicy === 'function' && (policyForSession === null || policyForSession === sessionPolicy) ? sessionPolicy : null)
   const handlers = new Map()
-  const handled = new Set()
+  const handled = createHandledEvents({ now })
   let disposed = false
   const warn = (message) => {
     try { logger?.warn?.('[dsh-notifier/control]', message) } catch { /* diagnostics never alter control flow */ }
@@ -290,6 +291,7 @@ export function createControlEntry({ policy = {}, identity = null, now = Date.no
   return {
     register,
     handle,
+    handledCount: () => handled.size(),
     dispose() { disposed = true; handlers.clear(); handled.clear() },
     commands: Object.freeze([...COMMANDS]),
   }

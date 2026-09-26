@@ -5,12 +5,42 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { setBounded, createThrottledWarn, DEFAULT_MAP_MAX } from '../src/inbound/_bounded.mjs'
+import { createHandledEvents } from '../src/control/handled-events.mjs'
+import { createInboundBus } from '../src/inbound/bus.mjs'
 
 /** 可拨动假时钟（与 breaker.test.mjs 同款）。 */
 function makeClock(start = 1_000_000) {
   let now = start
   return { now: () => now, advance: (ms) => { now += ms } }
 }
+
+test('C10：Control handled 使用 TTL/LRU 且容量不超过 4096', () => {
+  const clock = makeClock()
+  const handled = createHandledEvents({ capacity: 4, ttlMs: 1_000, now: clock.now })
+  for (let i = 0; i < 8; i += 1) handled.add(`e${i}`)
+  assert.equal(handled.size(), 4)
+  assert.equal(handled.has('e0'), false)
+  assert.equal(handled.has('e7'), true)
+  clock.advance(1_001)
+  assert.equal(handled.size(), 0)
+})
+
+test('C10：bus waiter 同时受全局与单 agent 容量限制', async () => {
+  const bus = createInboundBus({
+    maxWaiters: 3,
+    maxWaitersPerAgent: 2,
+    logger: { warn: () => {} },
+  })
+  const a1 = bus.wait('a1', 30_000, { agentId: 'agent-a' })
+  const a2 = bus.wait('a2', 30_000, { agentId: 'agent-a' })
+  assert.equal(await bus.wait('a3', 30_000, { agentId: 'agent-a' }), null)
+  const b1 = bus.wait('b1', 30_000, { agentId: 'agent-b' })
+  assert.equal(await bus.wait('b2', 30_000, { agentId: 'agent-b' }), null)
+  assert.equal(bus.pendingCount(), 3)
+  assert.equal(bus.pendingCountForAgent('agent-a'), 2)
+  bus.dispose()
+  await Promise.all([a1, a2, b1])
+})
 
 // ---------------------------------------------------------------- setBounded 基本
 

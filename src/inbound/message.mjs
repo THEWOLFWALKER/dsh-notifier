@@ -38,17 +38,39 @@ export const MAX_INBOUND_ATTACHMENTS_PER_MESSAGE = 8
 export const MAX_INBOUND_ATTACHMENTS_TOTAL_BYTES = 16 * 1024 * 1024
 /** 全局入站附件下载并发预算（跨消息共享）。 */
 export const MAX_INBOUND_DOWNLOAD_CONCURRENCY = 4
+export const MAX_INBOUND_DOWNLOAD_QUEUE = 32
+export const DEFAULT_INBOUND_DOWNLOAD_ACQUIRE_TIMEOUT_MS = 10_000
 
 const downloadSlots = { active: 0, queue: [] }
-async function withDownloadSlot(fn) {
+async function withDownloadSlot(fn, acquireTimeoutMs = DEFAULT_INBOUND_DOWNLOAD_ACQUIRE_TIMEOUT_MS) {
   if (downloadSlots.active >= MAX_INBOUND_DOWNLOAD_CONCURRENCY) {
-    await new Promise((resolve) => downloadSlots.queue.push(resolve))
+    if (downloadSlots.queue.length >= MAX_INBOUND_DOWNLOAD_QUEUE) return null
+    const acquired = await new Promise((resolve) => {
+      const entry = { done: false, resolve, timer: null }
+      entry.timer = setTimeout(() => {
+        if (entry.done) return
+        entry.done = true
+        const index = downloadSlots.queue.indexOf(entry)
+        if (index >= 0) downloadSlots.queue.splice(index, 1)
+        resolve(false)
+      }, Math.max(1, Math.min(10_000, Number(acquireTimeoutMs) || DEFAULT_INBOUND_DOWNLOAD_ACQUIRE_TIMEOUT_MS)))
+      entry.timer.unref?.()
+      downloadSlots.queue.push(entry)
+    })
+    if (!acquired) return null
   }
   downloadSlots.active += 1
   try { return await fn() } finally {
     downloadSlots.active -= 1
-    const next = downloadSlots.queue.shift()
-    if (typeof next === 'function') next()
+    for (;;) {
+      const next = downloadSlots.queue.shift()
+      if (next === undefined) break
+      if (next.done) continue
+      next.done = true
+      clearTimeout(next.timer)
+      next.resolve(true)
+      break
+    }
   }
 }
 
@@ -271,7 +293,7 @@ export async function downloadInboundImage(url, options = {}) {
     } finally {
       clearTimeout(timer)
     }
-  })
+  }, options.acquireTimeoutMs)
 }
 
 /**
@@ -327,7 +349,7 @@ async function downloadBoundedBytes(url, options, mediaTypePrefix) {
     } finally {
       clearTimeout(timer)
     }
-  })
+  }, options.acquireTimeoutMs)
 }
 
 /**

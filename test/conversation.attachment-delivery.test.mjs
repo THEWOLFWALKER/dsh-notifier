@@ -128,6 +128,28 @@ test('#36 图片 + 文件同条：块顺序保持入站顺序，且不重复图�
   rig.dispose()
 })
 
+test('C10：附件聚合预算按下载后的实际字节限制为 16MiB', async () => {
+  const agent = makeAgent()
+  const chunkSize = 3 * 1024 * 1024
+  const rig = makeRig({
+    agents: [agent],
+    downloadFileBytes: async () => ({
+      data: new Uint8Array(chunkSize), mediaType: 'application/octet-stream', size: chunkSize,
+    }),
+  })
+  rig.fire('agent/created', agent)
+  await rig.flush({
+    text: '批量附件',
+    attachments: Array.from({ length: 6 }, (_, index) => ({
+      kind: 'file', file: { name: `f${index}.bin`, url: `https://media.example.test/f${index}.bin` },
+    })),
+  })
+  assert.equal(rig.saved.files.length, 5, '第六个会令实际总量超过 16MiB，不能 admission')
+  assert.equal(agent.calls.followup[0].content.filter((block) => block.type === 'file').length, 5)
+  assert.ok(rig.replies.some((entry) => /文件/.test(entry.text)))
+  rig.dispose()
+})
+
 test('#36 纯文件（无正文）：占位正文不落进模型，只投 durable file 块', async () => {
   const agent = makeAgent()
   const rig = makeRig({ agents: [agent] })

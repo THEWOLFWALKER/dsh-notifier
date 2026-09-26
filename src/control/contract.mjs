@@ -1,6 +1,8 @@
 // Normalized desktop/mobile control envelope and fail-closed compatibility facade.
 // This module owns validation/receipts only; session policy and provider transport stay upstream.
 
+import { createHandledEvents } from './handled-events.mjs'
+
 const COMMANDS = new Set(['stop', 'question-answer', 'approval', 'steer', 'ordinary-message'])
 const RECEIPTS = new Set(['accepted', 'rejected', 'expired', 'already_handled', 'transport_failed', 'desktop_fallback'])
 const REQUIRED = ['eventId', 'sessionId', 'source', 'channel', 'accountId', 'userId', 'chatId', 'policyVersion', 'command', 'createdAt', 'expiresAt']
@@ -42,14 +44,15 @@ export function makeReceipt(status, event = null, reason = undefined) {
  * Build a compatibility facade around existing pending lookup and settlement callbacks.
  * Callbacks are injected so this layer cannot mutate unrelated state keys or approve on errors.
  */
-export function createControlContract({ getPending, settle, now = Date.now, handled = new Set(), onAudit = () => {} } = {}) {
+export function createControlContract({ getPending, settle, now = Date.now, handled = null, onAudit = () => {} } = {}) {
   if (typeof getPending !== 'function' || typeof settle !== 'function') throw new TypeError('getPending and settle are required')
+  const handledEvents = createHandledEvents({ now, seed: handled === null ? [] : handled })
   return {
     handle(input) {
       const normalized = normalizeControlEvent(input, now())
       if (!normalized.ok) return makeReceipt(normalized.reason === 'expired' ? 'expired' : 'rejected', input, normalized.reason)
       const event = normalized.event
-      if (handled.has(event.eventId)) return makeReceipt('already_handled', event, 'duplicate_event')
+      if (handledEvents.has(event.eventId)) return makeReceipt('already_handled', event, 'duplicate_event')
       let pending
       try { pending = getPending(event) } catch (error) {
         onAudit('lookup_failed', event, error)
@@ -60,10 +63,10 @@ export function createControlContract({ getPending, settle, now = Date.now, hand
         if (text(pending[key]) === null || pending[key] !== event[key]) return makeReceipt('rejected', event, `source_mismatch_${key}`)
       }
       if (Number(pending.expiresAt) <= now() || event.expiresAt <= now()) return makeReceipt('expired', event, 'expired')
-      handled.add(event.eventId)
       try {
         const result = settle(event, pending)
         if (result === false) return makeReceipt('desktop_fallback', event, 'settlement_failed')
+        handledEvents.add(event.eventId)
         onAudit('accepted', event)
         return makeReceipt('accepted', event)
       } catch (error) {
@@ -71,6 +74,7 @@ export function createControlContract({ getPending, settle, now = Date.now, hand
         return makeReceipt('desktop_fallback', event, 'settlement_failed')
       }
     },
+    handledCount: () => handledEvents.size(),
     receipts: Object.freeze({ commands: Object.freeze([...COMMANDS]), statuses: Object.freeze([...RECEIPTS]) }),
   }
 }

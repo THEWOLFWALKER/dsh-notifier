@@ -148,6 +148,18 @@ test('会话路由：合并窗内多条消息合并为一条投递', async () =>
   rig.dispose()
 })
 
+test('C10：合并窗单键最多 32 个片段，超限自动冲刷而非继续增长', async () => {
+  const agent = makeAgent('s1', 'idle')
+  const rig = makeRig({ agents: [agent], mergeWindowMs: 200 })
+  rig.fire('agent/created', agent)
+  for (let i = 0; i < 33; i += 1) rig.userSays(`p${i}`, { messageId: `merge-${i}` })
+  await sleep(260)
+  assert.equal(agent.calls.followup.length, 2)
+  assert.equal(agent.calls.followup[0].content[0].text.split('\n').length, 32)
+  assert.equal(agent.calls.followup[1].content[0].text, 'p32')
+  rig.dispose()
+})
+
 test('会话路由：.. 终止符立即冲刷（不等窗口）', async () => {
   const agent = makeAgent('s1', 'idle')
   const rig = makeRig({ agents: [agent], mergeWindowMs: 2000 })
