@@ -36,38 +36,35 @@ test('store：set/get/delete 往返，且原子落盘（新实例可读）', () 
   assert.equal(b.size(), 2)
 })
 
-test('store：损坏 JSON 启动回退空态；save 自愈转存现场并重建（v0.6.5 替代 v0.6.4 中止）', () => {
+test('store：损坏 JSON 启动回退空态；写路径 fail-closed，修复后恢复（v0.13 R3 替代 v0.6.5 自愈重建）', () => {
   const { path, dir } = tempStorePath()
   writeFileSync(path, '{oops not json', 'utf8')
   const store = createStore(path)
   assert.equal(store.size(), 0) // boot 仍 fail-open（无记忆好过误清空）
-  // P1-2（2026-08-20）：boot 损坏不再静默清零——对齐 v0.6.5 save 路径的取证惯例，
-  // 现场以 copy（非 rename，不打扰他进程）转存 .corrupt.<ts>，fail-open 语义不变。
-  let backups = readdirSync(dir).filter((name) => name.startsWith('state.json.corrupt.'))
+  assert.equal(store.bootStatus().status, 'corrupt', '解析失败 = 一等损坏状态（v0.13 R3）')
+  // P1-2（2026-08-20）：boot 损坏不再静默清零——对齐取证惯例，现场以 copy（非 rename，
+  // 不打扰他进程）转存 .corrupt.<ts>，读侧仍 fail-open 供诊断。
+  const backups = readdirSync(dir).filter((name) => name.startsWith('state.json.corrupt.'))
   assert.equal(backups.length, 1, 'boot 损坏立即取证一份副本（copy 不动原文件）')
   assert.equal(readFileSync(join(dir, backups[0]), 'utf8'), '{oops not json', 'boot 取证副本内容 = 损坏现场')
-  store.set('k', 'v') // 不抛错，内存态继续可用
-  assert.equal(store.get('k'), 'v')
-  // v0.6.5 自愈：save 现场转存 .corrupt.<ts>（取证保留），写路径以内存全量重建——
-  // 中止语义会让 dirty 无限积压、CLI↔宿主共享永久断裂（v0.6.4 审查遗留问题）
-  assert.equal(readFileSync(path, 'utf8'), '{"k":"v"}') // 重建后立即可读
-  backups = readdirSync(dir).filter((name) => name.startsWith('state.json.corrupt.'))
-  assert.equal(backups.length, 2, 'boot 取证 1 份 + save 自愈转存 1 份（同一损坏现场双取证，时间戳不同）')
-  for (const backup of backups) {
-    assert.equal(readFileSync(join(dir, backup), 'utf8'), '{oops not json')
-  }
-  // 自愈后新实例（重启模拟）读到重建内容——半截 JSON 本就解析不出任何键，重建零丢失
-  const healed = createStore(path)
-  assert.equal(healed.get('k'), 'v')
-  // 外部修复写回的键不被后续落盘清掉（键级合并不抹他进程写入）
+  // v0.13 R3：损坏 → stateful mutation fail-closed，绝不把不可信旧 state 当空世界覆盖重建。
+  assert.equal(store.set('k', 'v'), false, '损坏状态下写必须被拒绝')
+  assert.equal(store.get('k'), undefined, '内存态不得接受被拒的写')
+  assert.equal(readFileSync(path, 'utf8'), '{oops not json', '原现场不被覆写（不再自愈转存 + 内存态重建）')
+  assert.equal(
+    readdirSync(dir).filter((name) => name.startsWith('state.json.corrupt.')).length,
+    1,
+    '不再触发 save 自愈转存（boot 取证已保留现场）',
+  )
+  // operator 显式修复文件 → 写路径恢复，且保留修复后的既有键（键级合并语义不变）
   writeFileSync(path, '{"repaired":true}', 'utf8')
-  store.set('k2', 'v2')
+  assert.equal(store.set('k2', 'v2'), true, '磁盘修复后写路径必须恢复')
   const recovered = createStore(path)
   assert.equal(recovered.get('k2'), 'v2')
-  assert.equal(recovered.get('repaired'), true)
+  assert.equal(recovered.get('repaired'), true, '基于修复后的合法 state 提交，既有键不被抹')
 })
 
-test('P1-2 store：boot 损坏取证副本不得破坏并发写者（copy 而非 rename，原文件保持原位）', () => {
+test('P1-2 store：boot 损坏取证副本不得破坏并发写者（copy 而非 rename，写路径 fail-closed）', () => {
   const { path, dir } = tempStorePath()
   writeFileSync(path, '{"half":"written-but-trunc', 'utf8')
   const before = statSync(path).mtimeMs
@@ -79,9 +76,10 @@ test('P1-2 store：boot 损坏取证副本不得破坏并发写者（copy 而非
   assert.equal(backups.length, 1)
   assert.equal(readFileSync(join(dir, backups[0]), 'utf8'), '{"half":"written-but-trunc')
   assert.ok(statSync(path).mtimeMs === before, 'copy 不更新原文件 mtime（读收敛的 mtime 基线不受扰动）')
-  // 后续 save 自愈照常工作（与既有 v0.6.5 语义衔接）
-  store.set('k', 'v')
-  assert.equal(readFileSync(path, 'utf8'), '{"k":"v"}')
+  // v0.13 R3：损坏状态下写 fail-closed——并发写者的现场绝不被本进程覆写重建。
+  assert.equal(store.set('k', 'v'), false, '损坏状态下写必须被拒绝')
+  assert.equal(readFileSync(path, 'utf8'), '{"half":"written-but-trunc', '原文件保持原样，不被自愈重建覆写')
+  assert.ok(statSync(path).mtimeMs === before, '被拒的写不触碰原文件（冻结现场供排查）')
 })
 
 test('P1-2 store：读失败（非损坏）boot 仍静默 fail-open，不产生取证副本', () => {
