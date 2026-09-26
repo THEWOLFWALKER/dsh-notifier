@@ -13,6 +13,10 @@
 // 对比之下 `{oops` 反而有完整取证。取证保护等级反了。
 //
 // ⚠️ 本文件在修复前【必须失败】。
+//
+// v0.13（C11.5 / R3）修订：boot 时的「解析失败」与「形状异常」不再只是取证后自愈重建，
+// 而是升级为一等状态 corrupt —— 读侧仍 fail-open 供诊断，写侧 fail-closed，绝不把不可信
+// 旧 state 当空世界覆盖。仅当磁盘被修复成合法对象后写路径才恢复（见文件末 recovery 用例）。
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
@@ -89,22 +93,24 @@ for (const { label, raw } of SHAPE_ANOMALIES) {
   })
 }
 
-test('P2-06：形状异常文件在后续 save 时现场仍被保留（不得被覆写销毁）', () => {
+test('R3：形状异常文件在后续 save 时 fail-closed——现场不被覆写，写被拒绝', () => {
   const { dir, path } = tempStorePath()
   writeState(path, '[]')
 
+  let accepted = null
   const warnings = captureWarnings(() => {
     const store = createStore(path)
-    store.set('k', 'v') // 修复前：直接以 {} + dirty 覆写，[] 的现场从此消失
+    accepted = store.set('k', 'v') // v0.13 R3：boot 损坏 → stateful mutation fail-closed
   })
 
+  assert.equal(accepted, false, '不可信旧 state 下写必须被拒绝（旧行为：以 {} + dirty 覆写）')
   const backups = backupsOf(dir)
-  assert.ok(backups.length >= 1, `save 后必须仍有取证副本（实际 ${backups.length} 份）`)
+  assert.ok(backups.length >= 1, `boot 取证副本必须存在（实际 ${backups.length} 份）`)
   assert.ok(
     backups.some((name) => readFileSync(join(dir, name), 'utf8') === '[]'),
     '必须能找回原始 `[]` 现场',
   )
-  assert.equal(readFileSync(path, 'utf8'), '{"k":"v"}', '自愈重建语义与「解析失败」路径一致')
+  assert.equal(readFileSync(path, 'utf8'), '[]', '原现场不得被覆写销毁')
   assert.equal(corruptionWarnings(warnings).length >= 1, true, '整个过程必须出声')
 })
 
@@ -122,7 +128,7 @@ test('保持：空文件仍是静默空态，不取证不告警（无记忆可�
   assert.equal(corruptionWarnings(warnings).length, 0, '空文件不得产生取证相关告警（避免噪音）')
 })
 
-test('保持：解析失败仍取证 + 告警 + save 自愈重建', () => {
+test('R3：解析失败仍取证 + 告警，且写路径 fail-closed（不再自愈重建覆写现场）', () => {
   const { dir, path } = tempStorePath()
   writeState(path, '{oops not json')
 
@@ -131,10 +137,13 @@ test('保持：解析失败仍取证 + 告警 + save 自愈重建', () => {
   assert.equal(store.size(), 0)
   assert.equal(backupsOf(dir).length, 1)
   assert.equal(corruptionWarnings(warnings).length >= 1, true)
+  assert.equal(store.bootStatus().status, 'corrupt', '损坏必须是一等状态')
 
-  captureWarnings(() => store.set('k', 'v'))
-  assert.equal(readFileSync(path, 'utf8'), '{"k":"v"}')
-  assert.ok(backupsOf(dir).length >= 2, 'boot 取证 + save 自愈转存')
+  let accepted = null
+  captureWarnings(() => { accepted = store.set('k', 'v') })
+  assert.equal(accepted, false, '损坏状态下写必须 fail-closed')
+  assert.equal(readFileSync(path, 'utf8'), '{oops not json', '原现场保留，不被覆写')
+  assert.equal(backupsOf(dir).length, 1, '不再触发 save 自愈转存（boot 取证已保留现场）')
 })
 
 test('保持：读失败（非损坏）仍静默 fail-open，不产生取证副本', () => {
@@ -187,4 +196,58 @@ test('P2-07：正常读取时 readFailed 恒为 false', () => {
   assert.equal(store.bootStatus().readFailed, false)
   assert.equal(store.get('k'), 1)
   assert.equal(existsSync(path), true)
+})
+
+// ─────────────── R3（C11.5）：boot 不可信 → stateful mutation fail-closed + 修复后恢复 ───────────────
+
+for (const { label, raw } of SHAPE_ANOMALIES) {
+  test(`R3：形状异常（${label}）写路径 fail-closed，原现场不被覆写`, () => {
+    const { path } = tempStorePath()
+    writeState(path, raw)
+    const store = createStore(path)
+
+    assert.equal(store.bootStatus().status, 'corrupt', '损坏必须是一等状态')
+    assert.equal(store.bootStatus().corrupt, true)
+    assert.equal(store.set('k', 'v'), false, '损坏状态下写必须被拒绝')
+    assert.equal(store.delete('k'), false, '删除也是 stateful mutation，同样 fail-closed')
+    assert.equal(readFileSync(path, 'utf8'), raw, '原现场必须原样保留')
+  })
+}
+
+test('R3：读失败（unavailable）写路径 fail-closed', () => {
+  const { path } = tempStorePath()
+  mkdirSync(path, { recursive: true }) // 同名目录：readFileSync 抛 EISDIR
+  const store = createStore(path)
+
+  assert.equal(store.bootStatus().status, 'unavailable')
+  assert.equal(store.bootStatus().readFailed, true)
+  assert.equal(store.set('k', 'v'), false, '读失败下写必须被拒绝')
+})
+
+test('R3：修复损坏文件后写路径恢复（recovery），并保留修复后的既有键', () => {
+  const { path } = tempStorePath()
+  writeState(path, '[]')
+  const store = createStore(path)
+  assert.equal(store.set('k', 'v'), false, '前置：损坏时写被拒')
+
+  // operator 把损坏文件修复成合法对象（显式 recovery）
+  writeState(path, JSON.stringify({ repaired: true }))
+  const warnings = captureWarnings(() => { assert.equal(store.set('k', 'v'), true, '修复后写必须恢复') })
+
+  assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')), { repaired: true, k: 'v' }, '基于修复后的合法 state 提交')
+  assert.equal(store.bootStatus().status, 'ready', '恢复后状态回到 ready')
+  assert.equal(corruptionWarnings(warnings).length, 0, '恢复路径不再产生损坏告警')
+})
+
+test('R3：bootStatus 三态可区分——ready / corrupt / unavailable', () => {
+  const { path: absent } = tempStorePath()
+  assert.equal(createStore(absent).bootStatus().status, 'ready', '文件不存在 = 首次安装 ready')
+
+  const { path: corrupt } = tempStorePath()
+  writeState(corrupt, '[]')
+  assert.equal(createStore(corrupt).bootStatus().status, 'corrupt')
+
+  const { path: unavailable } = tempStorePath()
+  mkdirSync(unavailable, { recursive: true })
+  assert.equal(createStore(unavailable).bootStatus().status, 'unavailable')
 })

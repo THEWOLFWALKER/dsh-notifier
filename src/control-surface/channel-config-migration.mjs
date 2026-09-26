@@ -6,7 +6,7 @@
 // credential domain for several channels, but is never read by the outbound
 // runtime after migration.
 
-import { transactDurable } from '../inbound/store.mjs'
+import { isStorageUntrusted, transactDurable } from '../inbound/store.mjs'
 
 export const STATE_SCHEMA_KEY = 'state:schema-version'
 export const V013_MIGRATION_KEY = 'state:migration:v0.13'
@@ -46,9 +46,9 @@ export function migrateCanonicalChannelConfig({
   now = () => new Date().toISOString(),
 } = {}) {
   if (migrationComplete(store)) return { ok: true, already: true, migrated: [] }
-  if (store?.bootStatus?.()?.readFailed === true) {
-    warn('state 读取失败，跳过 v0.13 通道配置迁移（保持 fail-closed）')
-    return { ok: false, reason: 'state-read-failed', migrated: [] }
+  if (typeof store?.bootStatus === 'function' && isStorageUntrusted(store.bootStatus())) {
+    warn('state 不可信（读取失败或损坏），跳过 v0.13 通道配置迁移（保持 fail-closed）')
+    return { ok: false, reason: 'state-untrusted', migrated: [] }
   }
 
   const backup = typeof store?.backup === 'function'

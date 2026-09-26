@@ -126,3 +126,18 @@ test('v0.13：state 启动读失败时 fail-closed，不生成新 token 覆盖�
   )
   assert.deepEqual(writes, [])
 })
+
+test('R3：state 启动损坏（corrupt）时同样 fail-closed，不生成新 token 覆盖旧事实', () => {
+  const writes = []
+  const corrupt = {
+    bootStatus: () => ({ status: 'corrupt', readFailed: false, corrupt: true }),
+    get: () => undefined,
+    set: (...args) => { writes.push(args); return true },
+  }
+  assert.throws(
+    () => resolveAdminToken({ store: corrupt, explicitToken: '', info: () => {} }),
+    (error) => error?.code === 'storage-failed',
+    '损坏状态必须被当作不可信，绝不 bootstrap 出新的 admin token',
+  )
+  assert.deepEqual(writes, [], '不得写入任何 token 哈希')
+})

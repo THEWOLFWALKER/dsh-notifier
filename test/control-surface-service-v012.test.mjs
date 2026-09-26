@@ -171,3 +171,28 @@ test('v0.13：Native projection 默认不返回未声明字段或入站 secret',
   assert.deepEqual(row.control.editableValues, {})
   assert.doesNotMatch(JSON.stringify(row), /outbound-secret|inbound-secret/)
 })
+
+test('R3：storage 损坏（corrupt）时 surface.home 报 attention 且明确 storage degraded', async () => {
+  const service = createControlSurfaceService({
+    revision: createSurfaceRevision(),
+    channels: { list: () => [{
+      type: 'telegram',
+      notify: { configured: true, active: true },
+      control: null,
+      health: { state: 'ready' },
+    }], get: () => null },
+    outboundConfig: {},
+    tasks: { list: () => [] },
+    questions: { list: () => [], settle: () => ({ settled: false }) },
+    activity: createSurfaceActivity(),
+    health: createSurfaceHealth(),
+    storageStatus: () => ({ status: 'corrupt', readFailed: false, corrupt: true }),
+    launchTickets: { mint: () => ({ ticket: 'x', expiresAt: 1 }) },
+    adminLocation: () => null,
+  })
+
+  const home = await service.call('surface.home', {})
+  assert.equal(home.value.summary.status, 'attention', '损坏不得报告健康')
+  assert.match(home.value.summary.detail.zh, /损坏/, '必须明确说明 storage degraded，而不是伪装正常')
+  assert.equal(home.value.storage.corrupt, true)
+})

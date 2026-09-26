@@ -7,7 +7,7 @@
 // 纯函数：唯一副作用是 store.set('admin:token-hash', ...) 与 generated 分支的两条 info。
 
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
-import { setDurable } from '../inbound/store.mjs'
+import { isStorageUntrusted, setDurable } from '../inbound/store.mjs'
 
 const sha256HexOf = (text) => createHash('sha256').update(String(text), 'utf8').digest('hex')
 const HEX_64 = /^[0-9a-f]{64}$/
@@ -23,8 +23,8 @@ const HEX_64 = /^[0-9a-f]{64}$/
  */
 export function resolveAdminToken({ store, explicitToken, info }) {
   try {
-    if (store?.bootStatus?.()?.readFailed === true) {
-      const error = new Error('持久化状态读取失败，拒绝生成或覆盖 admin token')
+    if (isStorageUntrusted(store?.bootStatus?.())) {
+      const error = new Error('持久化状态不可信（读取失败或损坏），拒绝生成或覆盖 admin token')
       error.code = 'storage-failed'
       throw error
     }

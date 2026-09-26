@@ -4,6 +4,7 @@ const PUBLIC_ERROR_CODES = new Set([
 ])
 import { inboundApplyMode, isHotApplied } from './apply-mode.mjs'
 import { redactDiagnosticValue } from '../security/diagnostic.mjs'
+import { isStorageUntrusted } from '../inbound/store.mjs'
 
 function normalizeCode(error) {
   const raw = String(error?.code ?? 'internal').replace(/^dsh-notifier\//, '')
@@ -23,9 +24,11 @@ function failure(error) {
 const ok = (value) => ({ ok: true, value })
 
 function summaryOf(channelRows, questionRows, storageStatus = {}) {
-  if (storageStatus?.readFailed === true) return {
+  if (isStorageUntrusted(storageStatus)) return {
     status: 'attention',
-    detail: { en: 'Persistent state could not be read', zh: '持久化状态读取失败' },
+    detail: storageStatus?.corrupt === true || storageStatus?.status === 'corrupt'
+      ? { en: 'Persistent state is corrupt; writes are blocked until repaired', zh: '持久化状态已损坏，修复前禁止写入' }
+      : { en: 'Persistent state could not be read', zh: '持久化状态读取失败' },
   }
   const configured = channelRows.some((row) => row?.notify?.configured === true)
   if (!configured) return {
