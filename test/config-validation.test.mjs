@@ -235,7 +235,11 @@ test('G-62 pushplus：template 与 channel 两个枚举同一待遇——非空�
   assert.throws(() => resolveOf('pushplus')({ token: 't', template: 'h5' }), /template 仅支持 html\/txt\/json\/markdown/)
   assert.equal(resolveOf('pushplus')({ token: 't' }).template, 'markdown', '空值默认 markdown')
   assert.equal(resolveOf('pushplus')({ token: 't', template: 'html' }).template, 'html')
-  assert.throws(() => resolveOf('pushplus')({ token: 't', channel: 'sms' }), /channel 仅支持/)
+  // v0.13（C11.5）：旧 fixture 用 'sms' 当非法值——这是 test drift。PushPlus 官方消息接口
+  // V1.18（2026-09-14）已把 sms 列为合法 channel（见 adapters/metadata 与
+  // test/adapters.test.mjs 的官方枚举断言）。改实现去拒绝 sms 是错误方向；
+  // 用一个官方枚举里确实不存在的值来验证「非法枚举必须抛错」这条不变量。
+  assert.throws(() => resolveOf('pushplus')({ token: 't', channel: 'sms-typo' }), /channel 仅支持/)
 })
 
 // ---------------------------------------------------------------- G-39 discord 2000 上限

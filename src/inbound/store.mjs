@@ -45,6 +45,10 @@ const syncSleep = (ms) => {
 export function createStore(filePath) {
   // v0.12.1（P2-07）：本实例启动时 state 文件存在但读不到的可观测标志。
   let bootReadFailed = false
+  // v0.13（C11.5 / R3）：启动时 state 文件存在但语义损坏（坏 JSON / [] / null / 非法形状）
+  // 的一等标志——旧实现只告警取证后 fail-open 成 {}，上层会把「不可信旧 state」误当新实例
+  // （bootstrap owner / 重发 admin token / 空实例 migration）。损坏必须显式 fail-closed。
+  let bootCorrupt = false
 
   // 启动载入：损坏/缺省 fail-open 到空态（无记忆好过误清空——审批丢失只导致超时回退）
   const loadBoot = () => {
@@ -80,13 +84,17 @@ export function createStore(filePath) {
       if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed
       throw Object.assign(new Error('state 文件形状异常（合法 JSON 但非对象）'), { code: 'SHAPE' })
     } catch {
+      // v0.13（C11.5 / R3）：损坏不再只是告警——置 bootCorrupt，使 stateful mutation fail-closed，
+      // 上层（admin token / migration / owner bootstrap）据此拒绝把不可信旧 state 当新实例。
       // P1-2 错误可见性（2026-08-20，Trae1）：启动时损坏原先静默清零——绑定表/待审批/
       // 扫码凭证全部丢失且零日志，用户只见「绑定莫名失效」。对齐 v0.6.5 save 路径的
       // 取证惯例：现场 copy 为 .corrupt.<ts>（copy 而非 rename——boot 时他进程可能
-      // 持有该文件，rename 会把它抽走；copy 无副作用）+ 告警。fail-open 语义不变。
+      // 持有该文件，rename 会把它抽走；copy 无副作用）+ 告警。读侧仍 fail-open 供诊断，
+      // 但写侧由 bootCorrupt 屏蔽（R3），绝不把不可信旧 state 覆盖成新实例。
       // 对抗性 review（资源耗尽角度）：save 路径取证走 rename 是 O(1)，copy 会完整
       // 复制——异常巨物（历史事故写出的 GB 级垃圾）会翻倍占盘。超过 8MB 只告警
       // 不取证（正常 state.json 为 KB 级；巨物现场保留在原位，事后可手工处理）。
+      bootCorrupt = true
       let sizeBytes = -1
       try { sizeBytes = statSync(filePath).size } catch { /* stat 失败按未知处理 */ }
       const FORENSIC_COPY_MAX_BYTES = 8 * 1024 * 1024
@@ -107,7 +115,7 @@ export function createStore(filePath) {
           : skippedForSize
             ? `；文件异常巨大（${sizeBytes} bytes），跳过取证复制以免占满磁盘，原始现场保留在原位`
             : '；取证转存失败（备份目录不可写？）'
-        console.error('[dsh-notifier/store]', `state 文件启动时损坏，已按空状态起步（绑定/待审批等记忆丢失）: ${filePath}${detail}`)
+        console.error('[dsh-notifier/store]', `state 文件启动时损坏，读侧按空状态起步、写侧已 fail-closed（绑定/待审批等记忆丢失，修复文件后方可写）: ${filePath}${detail}`)
       } catch { /* 控制台不可用不致命 */ }
       return {}
     }
@@ -273,7 +281,17 @@ export function createStore(filePath) {
    */
   const transact = (mutator) => {
     if (typeof mutator !== 'function') return { ok: false, committed: false, durable: false, code: 'BAD_MUTATOR' }
-    if (bootReadFailed) return { ok: false, committed: false, durable: false, code: 'STATE_READ_FAILED' }
+    // v0.13（C11.5 / R3）：boot 时 state 不可信（读失败 / 损坏）→ stateful mutation 一律
+    // fail-closed，绝不把不可信旧 state 当空世界覆盖（含 save 路径的「转存现场 + 内存态重建」）。
+    // 仅当磁盘已被修复成合法对象（显式 operator recovery / 修好文件）才清除标志、恢复写路径。
+    if (bootReadFailed || bootCorrupt) {
+      const reread = tryLoad()
+      if (!reread.ok) {
+        return { ok: false, committed: false, durable: false, code: bootReadFailed ? 'STATE_READ_FAILED' : 'STATE_CORRUPT' }
+      }
+      bootReadFailed = false
+      bootCorrupt = false
+    }
     const acquired = acquireLock()
     if (acquired.ok !== true) return { ok: false, committed: false, durable: false, code: acquired.code }
     let tmp = null
@@ -324,9 +342,20 @@ export function createStore(filePath) {
   }
 
   return {
-    /** v0.12.1（P2-07）：启动读取状态，区分读失败与文件不存在/空文件。 */
+    /**
+     * v0.12.1（P2-07）/ v0.13（C11.5 / R3）：启动读取状态，区分三种一等状态。
+     *  - ready：文件不存在/空文件（首次安装）或成功读到合法对象；
+     *  - unavailable：文件存在但读不到（权限/占用等 I/O 失败）；
+     *  - corrupt：文件存在但语义损坏（坏 JSON / [] / null / 非法形状）。
+     * corrupt/unavailable 时 stateful mutation fail-closed，上层据此拒绝 bootstrap / 重发 token /
+     * 空实例 migration，并对外报 storage degraded。
+     */
     bootStatus() {
-      return { readFailed: bootReadFailed }
+      return {
+        status: bootReadFailed ? 'unavailable' : bootCorrupt ? 'corrupt' : 'ready',
+        readFailed: bootReadFailed,
+        corrupt: bootCorrupt,
+      }
     },
     /**
      * Create an idempotent forensic copy before an application-level migration.
@@ -381,7 +410,7 @@ export function createStore(filePath) {
     deleteDurable(key) {
       try { refreshIfChanged() } catch { /* 收敛失败：退回内存态 */ }
       const existed = key in state
-      if (!existed) return { existed: false, durable: !bootReadFailed }
+      if (!existed) return { existed: false, durable: !isStorageUntrusted({ readFailed: bootReadFailed, corrupt: bootCorrupt }) }
       const result = transact((draft) => { delete draft[key]; return true })
       return { existed: true, durable: result.committed === true }
     },
@@ -408,6 +437,15 @@ export function createStore(filePath) {
       return result.committed === true ? Number(result.value ?? 0) : 0
     },
   }
+}
+
+/**
+ * v0.13（C11.5 / R3）：storage 是否不可信（启动读失败或语义损坏）的唯一判据。
+ * 上层用它统一拒绝 bootstrap owner / 重发 admin token / 空实例 migration，并对外报 degraded。
+ * 兼容只暴露 readFailed 的旧形状。
+ */
+export function isStorageUntrusted(status) {
+  return status?.readFailed === true || status?.corrupt === true || (typeof status?.status === 'string' && status.status !== 'ready')
 }
 
 /**

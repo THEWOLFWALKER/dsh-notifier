@@ -6,6 +6,7 @@ import { toInboundChannelName } from './capability-matrix.mjs'
 import { deleteDurable, setDurable } from './store.mjs'
 import { isPublicExposure } from '../security/exposure.mjs'
 import { splitSecretPatch } from '../security/secret-patch.mjs'
+import { inboundApplyMode, isHotApplied } from '../control-surface/apply-mode.mjs'
 
 /** 入站通道的凭证字段表（与 Admin 既有表一致；wechat 为扫码产物，不手填）。 */
 export const INBOUND_FIELDS = Object.freeze({
@@ -74,22 +75,38 @@ export function describeBadChannelValue(key, value) {
   return `"${key}" 的值必须是字符串/数字/布尔/数组/对象`
 }
 
-export function createInboundChannelConfigPort({ store, warn = () => {}, audit = () => {} } = {}) {
+export function createInboundChannelConfigPort({ store, warn = () => {}, audit = () => {}, runtime = null } = {}) {
   let version = 0
   const read = (key) => {
     try { return store?.get?.(key) } catch { return undefined }
+  }
+  // v0.13（C11.5 / R6）：运行时真值查询（装配层注入薄聚合）。缺省 unknown——
+  // 绝不用 persisted 配置冒充「已在线」。
+  const runtimeOf = (type) => {
+    try {
+      const value = typeof runtime === 'function' ? runtime(type) : null
+      return plain(value) ?? null
+    } catch { return null }
   }
 
   function rows() {
     return INBOUND_CHANNELS.map((type) => {
       const config = plain(read(`${type}:account`)) ?? {}
+      const configured = Object.keys(config).length > 0
+      const runtimeState = runtimeOf(type)
+      // desired（configured）与 runtime（active）分层：configured=true 绝不推 active=true。
+      // 拿不到真实 lifecycle → active=false、restartPending=true（入站保存后需重启并入 transport）。
+      const active = runtimeState?.active === true
       return {
         type,
         direction: 'inbound',
-        configured: Object.keys(config).length > 0,
-        enabled: Object.keys(config).length > 0,
+        configured,
+        enabled: configured,
+        active,
+        applyMode: inboundApplyMode(),
+        restartPending: configured && !active,
+        restartRequired: !isHotApplied('inbound'),
         editable: true,
-        restartRequired: false,
         config: maskSecrets(config, inboundKeyWhitelist(type), type),
         fields: { ...(INBOUND_FIELDS[type] ?? {}) },
       }

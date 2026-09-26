@@ -237,9 +237,13 @@ export function apply(ctx, config = {}) {
   const adminSessions = createAdminSessions()
   let adminListenInfo = null
   // v0.12.1（P1-03）：Native inbound 读写不再依赖 admin.enabled。
+  // v0.13（C11.5 / R6）：运行时真值查询在 channelRegistry 装配完成后注入（惰性闭包），
+  // 未装配/未启动时返回 null → active=false / restartPending=true（绝不冒充已在线）。
+  let inboundRuntimeOf = null
   const inboundConfigPort = createInboundChannelConfigPort({
     store,
     warn: (message) => warn(`[dsh-notifier/inbound-config] ${message}`),
+    runtime: (type) => (inboundRuntimeOf === null ? null : inboundRuntimeOf(type)),
   })
   let surfaceAdminApi = {
     getChannels: () => inboundConfigPort.rows(),
@@ -626,7 +630,9 @@ export function apply(ctx, config = {}) {
       logger,
       warn,
     })
-    const { interactiveInstances, replyTargets } = channelRegistry
+    const { interactiveInstances, replyTargets, runtimeOf } = channelRegistry
+    // v0.13（C11.5 / R6）：入站 transport 装配成功后把运行时真值查询接进配置端口。
+    inboundRuntimeOf = runtimeOf
     disposers.push(() => channelRegistry.dispose())
 
     // v0.6.1：路由注册同样逐个守护——审批/会话路由炸了只丢对应能力，

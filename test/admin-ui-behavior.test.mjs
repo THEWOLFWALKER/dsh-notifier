@@ -994,11 +994,12 @@ test('阶段2A：无待决问题/空响应时面板显示空态文案，不崩',
   assert.match(rig.els.get('#pendingQuestionsPanel').innerHTML, /暂无待处理远程提问/, '空面板给出空态提示')
 })
 
-test('G-14：通道卡片角标——出站已配置标「重启后生效」（warn），入站已配置标「已配置」（ok），未配置标「未配置」', async () => {
+test('G-14：通道卡片角标——出站/入站已配置均标「重启后生效」（warn），未配置标「未配置」', async () => {
   const rig = boot()
   rig.setToken('TKN')
   const out = { type: 'telegram', direction: 'outbound', configured: true, enabled: true, editable: true, restartRequired: true, config: { botToken: '***' }, fields: {} }
-  const inn = { type: 'feishu', direction: 'inbound', configured: true, enabled: true, editable: true, restartRequired: false, config: { appId: '***' }, fields: {} }
+  // v0.13（C11.5 / R6）：入站凭证只在下次启动建立 transport，restartRequired 恒 true。
+  const inn = { type: 'feishu', direction: 'inbound', configured: true, enabled: true, active: false, editable: true, restartRequired: true, config: { appId: '***' }, fields: {} }
   const none = { type: 'pushplus', direction: 'outbound', configured: false, enabled: false, editable: true, restartRequired: true, config: {}, fields: {} }
   rig.setFetch(async (url) => {
     if (url === '/api/channels') return resp(200, [out, inn, none])
@@ -1008,9 +1009,9 @@ test('G-14：通道卡片角标——出站已配置标「重启后生效」（w
   })
   await rig.loadAll()
   const html = rig.els.get('#channelCards').innerHTML
-  assert.match(html, /badge warn">重启后生效/, `出站已配置卡片应标「重启后生效」（实际：${html.slice(0, 200)}）`)
-  assert.match(html, /badge ok">已配置/, '入站已配置卡片应标「已配置」')
+  assert.match(html, /badge warn">重启后生效/, `已配置卡片应标「重启后生效」（实际：${html.slice(0, 200)}）`)
   assert.match(html, /badge none">未配置/, '未配置卡片应标「未配置」')
+  assert.doesNotMatch(html, /badge ok">已配置/, '已配置的入站也必须提示重启后生效，不得谎称已生效')
 })
 
 test('入口复制：Clipboard 成功与失败/不可用均给出可读反馈', async () => {

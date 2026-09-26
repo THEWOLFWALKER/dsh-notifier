@@ -193,7 +193,9 @@ test('notifyAll 集成：路由 silent 覆盖落到 telegram disable_notificatio
     assert.equal(calls.length, 2)
     const ntfyCall = calls.find((call) => call.url.includes('ntfy'))
     const tgCall = calls.find((call) => call.url.includes('/bot'))
-    assert.equal(ntfyCall.url, 'https://ntfy.example.com')
+    // v0.13（C11.5）：按归一 URL 比较——Safe Network 用 `new URL().href` 构造请求地址，
+    // 会把 `https://ntfy.example.com` 补成带尾斜杠形态；对 ntfy 的 HTTP 语义等价。
+    assert.equal(new URL(ntfyCall.url).href, new URL('https://ntfy.example.com').href)
     const ntfyBody = JSON.parse(ntfyCall.body)
     assert.equal(ntfyBody.topic, 't')
     assert.equal(ntfyBody.title, '批准')

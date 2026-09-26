@@ -3,7 +3,9 @@ const PUBLIC_ERROR_CODES = new Set([
   'storage-failed', 'conflict', 'host-unavailable', 'internal',
 ])
 import { inboundApplyMode, isHotApplied } from './apply-mode.mjs'
+import { isConfirmedReceipt } from '../delivery-evidence.mjs'
 import { redactDiagnosticValue } from '../security/diagnostic.mjs'
+import { isStorageUntrusted } from '../inbound/store.mjs'
 
 function normalizeCode(error) {
   const raw = String(error?.code ?? 'internal').replace(/^dsh-notifier\//, '')
@@ -23,9 +25,11 @@ function failure(error) {
 const ok = (value) => ({ ok: true, value })
 
 function summaryOf(channelRows, questionRows, storageStatus = {}) {
-  if (storageStatus?.readFailed === true) return {
+  if (isStorageUntrusted(storageStatus)) return {
     status: 'attention',
-    detail: { en: 'Persistent state could not be read', zh: '持久化状态读取失败' },
+    detail: storageStatus?.corrupt === true || storageStatus?.status === 'corrupt'
+      ? { en: 'Persistent state is corrupt; writes are blocked until repaired', zh: '持久化状态已损坏，修复前禁止写入' }
+      : { en: 'Persistent state could not be read', zh: '持久化状态读取失败' },
   }
   const configured = channelRows.some((row) => row?.notify?.configured === true)
   if (!configured) return {
@@ -59,7 +63,7 @@ function testResult(result) {
   const at = new Date().toISOString()
   if (result?.ok === true) {
     // v0.12.1（P1-06 / D1 / D2）：provider 接受请求不等于端到端送达。
-    const confirmed = result?.confirmed === true || result?.receipt === true
+    const confirmed = isConfirmedReceipt(result)
     const detail = result?.detail ?? (confirmed
       ? { en: 'Delivered', zh: '已送达' }
       : { en: 'Sent to the provider — confirm receipt on your device', zh: '已发送到提供方，请到客户端确认收到' })

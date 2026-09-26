@@ -157,3 +157,24 @@ test('v0.13 diagnostics: configured values are absent from errors and audit-shap
     type: 'bark', secret: '***', nested: { token: '***' },
   })
 })
+
+test('R3 migration: 损坏 boot state 跳过迁移并 fail-closed（绝不把不可信旧 state 当空实例迁移）', () => {
+  const { dir, file } = tempState(undefined)
+  writeFileSync(file, '[]') // 合法 JSON 但形状异常 → corrupt
+  const store = createStore(file)
+  const reasons = []
+
+  const result = migrateCanonicalChannelConfig({
+    store,
+    channelTypes: ['bark'],
+    adminEnabled: true,
+    warn: (message) => reasons.push(message),
+  })
+
+  assert.equal(result.ok, false)
+  assert.equal(result.reason, 'state-untrusted')
+  assert.equal(store.get('state:migration:v0.13'), undefined, '不得写入迁移完成标记')
+  assert.equal(store.get('state:schema-version'), undefined, '不得写入 schema 版本')
+  assert.equal(readdirSync(dir).filter((name) => name.includes('.pre-v0.13.')).length, 0, '不得创建迁移备份')
+  assert.ok(reasons.length >= 1, '必须出声（warn 可见）')
+})

@@ -133,9 +133,11 @@ test('overview：渠道三态分类（出站 enabled/有凭证/全无；双域�
   // 键域与入站分离，双域也能网页保存出站 webhook）
   assert.deepEqual(byType('feishu', 'outbound'), { type: 'feishu', direction: 'outbound', configured: false, enabled: false, editable: true, restartRequired: true })
   assert.deepEqual(byType('dingtalk', 'outbound'), { type: 'dingtalk', direction: 'outbound', configured: false, enabled: false, editable: true, restartRequired: true })
-  // 入站：有 `<channel>:account` → 双 true；无 → 双 false；editable 恒 true（扫码/表单可写）
-  assert.deepEqual(byType('feishu', 'inbound'), { type: 'feishu', direction: 'inbound', configured: true, enabled: true, editable: true, restartRequired: false })
-  assert.deepEqual(byType('qq', 'inbound'), { type: 'qq', direction: 'inbound', configured: false, enabled: false, editable: true, restartRequired: false })
+  // 入站：有 `<channel>:account` → configured=true（desired）；无 → false；editable 恒 true（扫码/表单可写）
+  // v0.13（C11.5 / R6）：active 是运行时真值——本测试未注入 runtime，故恒 false（绝不
+  // configured → active）；入站写入只在下次启动并入 transport，restartRequired 恒 true。
+  assert.deepEqual(byType('feishu', 'inbound'), { type: 'feishu', direction: 'inbound', configured: true, enabled: true, active: false, editable: true, restartRequired: true })
+  assert.deepEqual(byType('qq', 'inbound'), { type: 'qq', direction: 'inbound', configured: false, enabled: false, active: false, editable: true, restartRequired: true })
 })
 
 test('overview：admin:channel:<type>:outbound 键使出站行 configured（含双域），与入站键互不污染', () => {
@@ -154,7 +156,7 @@ test('overview：admin:channel:<type>:outbound 键使出站行 configured（含�
   assert.equal(byType('serverchan', 'outbound').configured, true)
   // 入站行不受新出站键影响；入站凭证照旧使入站行 configured
   assert.equal(byType('dingtalk', 'inbound').configured, false)
-  assert.deepEqual(byType('feishu', 'inbound'), { type: 'feishu', direction: 'inbound', configured: true, enabled: true, editable: true, restartRequired: false })
+  assert.deepEqual(byType('feishu', 'inbound'), { type: 'feishu', direction: 'inbound', configured: true, enabled: true, active: false, editable: true, restartRequired: true })
 })
 
 test('overview：sessions active/total 与 agents.keys 计数', () => {
@@ -653,8 +655,9 @@ test('putChannel 422：双域通道携带 webhook 键 → 拒绝（键域归入�
 
 test('putChannel：双域通道写机器人凭证键（appId/appKey）合法（UI 表单 → 入站扫码域同键）', () => {
   const { api, store } = makeApi()
-  // 双域通道 UI 写的是入站机器人凭证域 → restartRequired=false（出站 webhook 只读走 YAML）
-  assert.deepEqual(api.putChannel('dingtalk', { appKey: 'k', appSecret: 's' }), { type: 'dingtalk', saved: true, restartRequired: false })
+  // 双域通道 UI 写的是入站机器人凭证域 → restartRequired=true（v0.13 / R6：入站凭证
+  // 只在下次启动才建立 transport，出站 webhook 只读走 YAML）
+  assert.deepEqual(api.putChannel('dingtalk', { appKey: 'k', appSecret: 's' }), { type: 'dingtalk', saved: true, restartRequired: true })
   assert.deepEqual(store.get('dingtalk:account'), { appKey: 'k', appSecret: 's' })
 })
 
@@ -709,7 +712,7 @@ test('putChannel：422（未知类型/空对象/非对象）与落盘读回（�
 
 // ———————— G-14（W12）：出站配置视图热/投递冷 ————————
 
-test('G-14：getChannels 出站行恒 restartRequired=true、入站行 false（UI 据此标「重启后生效」）', () => {
+test('G-14：getChannels 出站/入站行 restartRequired 恒 true（UI 据此标「重启后生效」）', () => {
   const { api } = makeApi({ enabled: ['telegram'] })
   const rows = api.getChannels()
   const byType = (type, direction) => rows.find((row) => row.type === type && row.direction === direction)
@@ -717,16 +720,18 @@ test('G-14：getChannels 出站行恒 restartRequired=true、入站行 false（U
   for (const type of CHANNEL_TYPES) {
     assert.equal(byType(type, 'outbound').restartRequired, true, `${type} 出站行 restartRequired 必须 true`)
   }
-  // 入站：恒 false——凭证保存即下次启动启用/重连，语义近似热
+  // v0.13（C11.5 / R6）：入站同样恒 true——入站凭证只在下次启动才建立 transport，
+  // 旧实现谎称 false 会让 UI 把「还未连上」显示成「已配置」。
   for (const channel of INBOUND_CHANNELS) {
-    assert.equal(byType(channel, 'inbound').restartRequired, false, `${channel} 入站行 restartRequired 必须 false`)
+    assert.equal(byType(channel, 'inbound').restartRequired, true, `${channel} 入站行 restartRequired 必须 true`)
   }
 })
 
-test('G-14：putChannel 返回值带 restartRequired——出站 true、双域入站凭证域 false', () => {
+test('G-14：putChannel 返回值带 restartRequired——出站与入站凭证域均 true', () => {
   const { api } = makeApi()
   assert.deepEqual(api.putChannel('bark', { key: 'k' }), { type: 'bark', saved: true, restartRequired: true })
-  assert.deepEqual(api.putChannel('feishu', { appId: 'a', appSecret: 's' }), { type: 'feishu', saved: true, restartRequired: false })
+  // 双域通道写的是入站机器人凭证：同样要重启才建立/替换 transport（v0.13 / R6 修正）
+  assert.deepEqual(api.putChannel('feishu', { appId: 'a', appSecret: 's' }), { type: 'feishu', saved: true, restartRequired: true })
 })
 
 // ———————— testChannel / scanChannel ————————

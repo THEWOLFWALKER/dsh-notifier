@@ -42,7 +42,10 @@ const DEFAULT_FACTORIES = Object.freeze({
  *   logger?: object, warn?: (message: string) => void,
  *   factories?: object, resolveWechat?: Function
  * }} deps
- * @returns {{ interactiveInstances: object[], replyTargets: Map<string, object>, dispose: () => Promise<void> }}
+ * @returns {{ interactiveInstances: object[], replyTargets: Map<string, object>,
+ *   runtimeOf: (name: string) => { state: string, active: boolean, restartPending: boolean },
+ *   runtimeSnapshot: () => Array<{ type: string, state: string, active: boolean, restartPending: boolean }>,
+ *   dispose: () => Promise<void> }}
  */
 export function createInboundChannelRegistry(deps = {}) {
   const {
@@ -60,6 +63,8 @@ export function createInboundChannelRegistry(deps = {}) {
   const factory = { ...DEFAULT_FACTORIES, ...factories }
   const interactiveInstances = []
   const replyTargets = new Map()
+  // v0.13（C11.5 / R6）：真实运行时真值——只有 start() 成功的实例才入表。
+  const running = new Map()
 
   const startInboundChannel = (name, boot) => {
     try {
@@ -83,6 +88,7 @@ export function createInboundChannelRegistry(deps = {}) {
       }
       interactiveInstances.push(value)
       replyTargets.set(name, value)
+      running.set(name, value)
       warn(readyMessage())
       return value
     })
@@ -141,6 +147,24 @@ export function createInboundChannelRegistry(deps = {}) {
     }, () => 'inbound 已启动：dingtalk Stream 长连接（文本审批通知 + 编号回复裁决）')
   }
 
+  /**
+   * v0.13（C11.5 / R6）：薄聚合 query——「已配置」是期望态，本函数回答「运行时是否真的在线」。
+   * 有 `clientState()` 的 provider（telegram/feishu）给细粒度状态；没有的按「transport
+   * 已 start 成功」计 online。绝不把 persisted 配置当成 online。
+   */
+  const runtimeOf = (name) => {
+    const instance = running.get(String(name ?? '').trim())
+    if (instance === undefined) return { state: 'stopped', active: false, restartPending: true }
+    let state = 'online'
+    try {
+      const raw = typeof instance?.clientState === 'function' ? String(instance.clientState() ?? '').trim() : ''
+      if (raw !== '') state = raw
+    } catch { state = 'unknown' }
+    const active = state === 'online' || state === 'connected'
+    return { state, active, restartPending: !active }
+  }
+  const runtimeSnapshot = () => [...running.keys()].map((name) => ({ type: name, ...runtimeOf(name) }))
+
   const dispose = async () => {
     const pending = []
     for (const instance of interactiveInstances) {
@@ -149,8 +173,9 @@ export function createInboundChannelRegistry(deps = {}) {
         if (result !== null && typeof result?.then === 'function') pending.push(result)
       } catch { /* 单通道停机失败不影响其它通道 */ }
     }
+    running.clear()
     await Promise.allSettled(pending)
   }
 
-  return { interactiveInstances, replyTargets, dispose }
+  return { interactiveInstances, replyTargets, runtimeOf, runtimeSnapshot, dispose }
 }
