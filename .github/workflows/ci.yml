@@ -25,15 +25,15 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
       - run: node --version
-      # 零运行时依赖：无需 npm install，直接跑 node:test
+      # 零强制运行时依赖：无需 npm install，直接跑 node:test；optionalDependencies 仍可声明
       # 显式钉到 test/ 下两种命名：默认发现 glob（test-*）会误吞 scripts/test-channel.mjs
       # （node --test 自 v21 起原生支持 glob 模式，Windows 上不经 shell 展开也能匹配）
       - name: Run tests
         run: npm test
-      - name: Verify zero runtime dependencies
+      - name: Verify zero mandatory runtime dependencies
         shell: bash # if [ -f ... ] 是 bash 语法，Windows runner 默认 pwsh 需显式指定
         run: |
           if [ -f package-lock.json ]; then npm ls --prod --all; fi
-          node -e "const p=require('./package.json'); const deps=Object.keys(p.dependencies??{}); if(deps.length>0){console.error('发现运行时依赖:',deps);process.exit(1)} console.log('OK: 零运行时依赖')"
+          node -e "const p=require('./package.json'); const deps=Object.keys(p.dependencies??{}); if(deps.length>0){console.error('发现强制运行时依赖:',deps);process.exit(1)} console.log('OK: 零强制运行时依赖')"
       - name: Regenerate channel matrix (check README drift)
         run: node scripts/gen-channel-matrix.mjs --check

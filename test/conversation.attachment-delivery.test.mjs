@@ -13,6 +13,7 @@ import { createInboundBus } from '../src/inbound/bus.mjs'
 import { createStore } from '../src/inbound/store.mjs'
 import { createAgentRouter } from '../src/routing/agent-router.mjs'
 import { createSessionRegistry } from '../src/routing/session-registry.mjs'
+import { stringsOf } from '../src/strings.mjs'
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const FLUSH_MS = 60
@@ -37,7 +38,7 @@ function makeAgent(id = SID, status = 'idle') {
   }
 }
 
-function makeRig({ agents = [], downloadImageBytes, downloadFileBytes, attachments } = {}) {
+function makeRig({ agents = [], downloadImageBytes, downloadFileBytes, attachments, logger = null, strings } = {}) {
   const store = createStore(tempPath())
   const bus = createInboundBus({ allowUsers: ['42'], store })
   const handlers = {}
@@ -67,13 +68,13 @@ function makeRig({ agents = [], downloadImageBytes, downloadFileBytes, attachmen
     ctx, bus, store,
     reply: (channel, chatId, text) => replies.push({ channel, chatId, text }),
     config: { mergeWindowMs: FLUSH_MS },
-    logger: null,
+    logger,
     router, registry,
     channelTypes: () => ['telegram'],
     downloadImageBytes: downloadImageBytes ?? (async () => PNG_BYTES),
     downloadFileBytes: downloadFileBytes ?? (async () => PDF_BYTES),
   }
-  const dispose = registerConversationRouter(deps)
+  const dispose = registerConversationRouter(deps, strings)
   const userSays = (payload) => {
     const { userId = '42', chatId = userId, text = '', image, file, attachments: list } = payload
     bus.accept({
@@ -232,6 +233,39 @@ test('#36 缺 attachment service：附件不可用降级为「正文照投 + 失
   assert.deepEqual(agent.calls.followup[0].content.map((b) => b.type), ['text'])
   assert.ok(rig.replies.some((r) => r.text.includes('文件获取失败')))
   rig.dispose()
+})
+
+test('#36 旧宿主缺 saveFile：文件 fail-closed，给出明确中英文能力诊断且告警去重', async () => {
+  const agent = makeAgent()
+  const warnings = []
+  const rig = makeRig({
+    agents: [agent],
+    attachments: { saveImage: async () => ({ attachmentId: 'img-1' }) },
+    logger: { warn: (_scope, message) => warnings.push(message) },
+  })
+  rig.fire('agent/created', agent)
+
+  await rig.flush({ text: '看看', file: { name: 'doc.pdf', url: FILE_URL } })
+  await rig.flush({ text: '再看一次', file: { name: 'doc-2.pdf', url: FILE_URL } })
+  assert.equal(agent.calls.followup.length, 2)
+  assert.deepEqual(agent.calls.followup[0].content.map((block) => block.type), ['text'])
+  assert.ok(rig.replies.filter((r) => r.text.includes('宿主不支持文件入站存储')).length >= 2)
+  assert.equal(warnings.filter((message) => message.includes('缺少 attachments.saveFile')).length, 1)
+  rig.dispose()
+
+  const englishWarnings = []
+  const englishAgent = makeAgent()
+  const englishRig = makeRig({
+    agents: [englishAgent],
+    attachments: { saveImage: async () => ({ attachmentId: 'img-1' }) },
+    logger: { warn: (_scope, message) => englishWarnings.push(message) },
+    strings: stringsOf('en'),
+  })
+  englishRig.fire('agent/created', englishAgent)
+  await englishRig.flush({ text: 'inspect', file: { name: 'doc.pdf', url: FILE_URL } })
+  assert.ok(englishRig.replies.some((r) => r.text.includes('This DSH host cannot store inbound files')))
+  assert.equal(englishWarnings.filter((message) => message.includes('attachments.saveFile is missing')).length, 1)
+  englishRig.dispose()
 })
 
 test('#36 文件名去路径/控制字符后才交给 saveFile（附件名是不可信输入）', async () => {

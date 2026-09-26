@@ -1,5 +1,9 @@
 # Changelog
 
+## [Unreleased]
+
+- v0.13 dev follow-up：管理台补齐中英文资源表与安全内联序列化，公开投递能力改为证据边界表述，npm 白名单覆盖 README 文档/图片并加入包内容回归；高风险专项复核与全量 `npm test` 均为 **2011/2011**（0 fail，0 skip）。本节未触发版本递增、npm 发布或 `main`/tag/GitHub Release 变更。
+
 ## [0.13.0] - 2026-09-26（Architecture convergence release gate）
 
 架构收敛发布门。把 v0.12 之后的耐久性、控制面、网络边界与前端生命周期修复合并为一条可复核的发布线；`v0.13.0` 已发布到 npm，本次 release closeout 继续完成 `main`、tag 与 GitHub Release。
@@ -14,7 +18,7 @@
 
 ### 验证边界
 
-- `npm test`：**1984 tests，1984 pass，0 fail，0 skip**。
+- `npm test`：**1985 tests，1985 pass，0 fail，0 skip**。
 - `npm run verify:release`：版本、文档、测试计数、Host 兼容性门禁通过。
 - 本次未新增真机 DSH、真实 provider 账号或真实投递回执验证；QQ/DingTalk/Feishu 等外部证据缺口继续登记在 [`docs/memory/risks.md`](docs/memory/risks.md)。
 
@@ -153,7 +157,7 @@
 - 测试：新增 `test/public-types.test.mjs` 11 项 focused（exports 解析 + 文件存在 / `files` 含 `types` / 无 root `types` 字段 / 14 个必要 symbol 全导出 / version 字面量 === `PUBLIC_API_VERSION` / push+flush 签名 / `NotifyMessage` 字段集 / `NotifyOptions` 字段集 / `SentEventRecord` metadata-only（含 4 个隐私字段断言缺席）/ `FakeNotifier` extends facade 且 `calls` 只读 / `FakeSimulation` 四值）；`node --test test/public-types.test.mjs` 11 全绿，`npm pack --dry-run` 确认 `types/index.d.ts` 进包，`npm run verify:release` 绿。
 - **消费方测试工具 `dsh-notifier/testing`（W1）**（`src/testing.mjs`、`package.json` `exports`、`scripts/verify-release.mjs`、`PLUGINS.md`、`test/public-testing-fake.test.mjs`）：声明 `inject: ['notifier']` 的消费方插件单测从此不必手写 stub——`import { createFakeNotifier } from 'dsh-notifier/testing'` 直接拿到行为与公共面逐项对齐的 fake。`version` 恒为公共面版本 `0.7`（与 `src/public.mjs` 的 `PUBLIC_API_VERSION` 同源，测试锁相等）；`push(message, options)` **永不 reject**，返回 `{ ok, delivered: ['fake'], skipped, failed, source: { kind:'plugin', name } }`；`title`/`content` 非字符串按空、双空 → `skipped:['(malformed)']`（`ok` 仍 true，与真服务一致）；`options.simulate` 支持 `rate-limited`/`disabled`/`budget`/`busy` 回放对应 `skipped`（未知值按正常成功）；`flush()` resolve `undefined`；`calls` 为只读深拷贝数组，元素 `{ message, options, at }`。fake **刻意不 import 任何内部实现**（createNotifier/router/adapters/`public.mjs`）——只依赖语言内建，避免随内部架构漂移；输入按已知键做防御式 primitive 提取（message 取 `title`/`content`/`level`/`group`、options 取 `sourceName`/`channel`/`simulate`），**绝不** `structuredClone`（消费方可控的 Proxy/getter 读取即抛），`sourceName` 归一化与真 facade 同口径（非字符串/空 → `anonymous`、trim、控制字符替换、64 码点）。`flush` 调用按 ROADMAP 要求内部计数，plan §6.13 裁定**不新增公开 `flushCount`**（不扩张 surface）。与公共面的两处刻意差异已在 PLUGINS.md 明写：fake 不做长度钳制/限流/预算记账（真实资源语义由真 facade 契约测试覆盖）、不提供 `enabled()`（诊断面，消费方按能力探测）；fake **不发** `sent` 事件（事件面不在本工具内）。`package.json` `exports` 增 `"./testing": "./src/testing.mjs"`（`files` 已含 `src`，无需改）；`verify-release` 新增公共子路径门（exports 目标必须是真实文件且被 `files` 覆盖）。
 - 测试：新增 `test/public-testing-fake.test.mjs` 13 项 focused（version 与 `PUBLIC_API_VERSION` 同源 / 正常 push 精确锁返回值与 calls 记录 / `source.kind` 恒 `plugin` / title-only 与 content-only / 双空与非字符串 malformed / 四个 simulate 分支 + 未知 simulate / calls copy-on-read（改返回值数组与内层对象均无效）/ calls copy-on-write（改输入对象不能改记录）/ flush resolve undefined 且幂等 / hostile Proxy 与抛错 getter（message 与 options）never reject / 抛错时钟不炸 / sourceName 归一化四态）；`node --test test/public-testing-fake.test.mjs` 13 全绿，`npm pack --dry-run` 确认 `src/testing.mjs` 进包且 `examples/` 未泄漏，`npm run verify:release` 绿。
-- **DSH 宿主兼容声明：evidence-backed peer range + 机器可校验 matrix（P1-C）**（`package.json`、`docs/compatibility-matrix.md`、`scripts/verify-host-compat.mjs`、`scripts/verify-release.mjs`、`test/host-compat-matrix.test.mjs`、`docs/memory/{project-state,risks}.md`）：此前只有 `@deepseek-ai/cordis` peer，没有任何 `@deepseek-ai/dsh` / `@deepseek-ai/dsh-*`——官方 boot 的 `evaluatePluginCompatibility()`（`packages/boot/app-boot/src/plugin-compatibility.ts`：`getDshRuntimeVersion()` 读 app-boot 版本 + `semver.satisfies(runtimeVersion, requirement, { includePrerelease: true })`，只扫 `peerDependencies` 里的 `@deepseek-ai/dsh` / `@deepseek-ai/dsh-*`）对本插件宿主版本实际上「不设限」。现在新增真实存在的公开包 **`@deepseek-ai/dsh-session`** 作为 compatibility peer marker，并声明为 **optional**（`peerDependenciesMeta.optional=true`）——evaluator 只读 `peerDependencies`、**忽略 `peerDependenciesMeta`**，故 optional 仅用于放行普通 npm 安装，不削弱宿主检查；本插件**运行时不 import** 该包（零运行时依赖不变，`dependencies`/`optionalDependencies`/`devDependencies` 均未增加）。range **不猜**：逐一比对官方 `dsh-v0.1.7-{alpha.1,alpha.2,rc.1,rc.2}` 的六个接缝源码（`packages/llm/llm/src/message.ts`、`packages/attachment/attachment/src/index.ts`、`packages/core/session/src/types.ts`、`vendor/cordis/src/{events,context}.ts`、`packages/interaction/user-questions/src/index.ts`）后，精确声明 `0.1.7-alpha.1 || 0.1.7-alpha.2 || 0.1.7-rc.1 || 0.1.7-rc.2`——alpha.1/alpha.2 与 rc.1 六文件逐字节相同，rc.2 仅 `core/session/src/types.ts` 的文档注释差异（无结构变化）。历史声明 `0.1.0-rc.6` 标 **unverified**（公开仓库无 `dsh-v0.1.0-rc.6` tag，无法取得 artifact 复验），**不**进 range，原 `dshWorkshop.compatibility.dshVersions=["0.1.0-rc.6"]` 同步改为四行 verified。新增机器可读 matrix block（markdown 内 `json dsh-host-matrix` 围栏）与 `scripts/verify-host-compat.mjs`：零依赖手写 parser，只接受 exact / `||`-exact（显式拒 `^`/`>=`/`*` 猜测），校验「verified 行必被覆盖 / 非 verified 行绝不被覆盖 / range 段必有 verified 行 / `peerDependenciesMeta.optional` 必须为 true / `dshWorkshop.compatibility.dshVersions` 恰等于 verified 列表」，并接入 `npm run verify:release`（`docs/compatibility-matrix.md` 与 `scripts/verify-host-compat.mjs` 随之进 `files` 与发布守卫清单），三处清单从此机械一致。
+- **DSH 宿主兼容声明：evidence-backed peer range + 机器可校验 matrix（P1-C）**（`package.json`、`docs/compatibility-matrix.md`、`scripts/verify-host-compat.mjs`、`scripts/verify-release.mjs`、`test/host-compat-matrix.test.mjs`、`docs/memory/{project-state,risks}.md`）：此前只有 `@deepseek-ai/cordis` peer，没有任何 `@deepseek-ai/dsh` / `@deepseek-ai/dsh-*`——官方 boot 的 `evaluatePluginCompatibility()`（`packages/boot/app-boot/src/plugin-compatibility.ts`：`getDshRuntimeVersion()` 读 app-boot 版本 + `semver.satisfies(runtimeVersion, requirement, { includePrerelease: true })`，只扫 `peerDependencies` 里的 `@deepseek-ai/dsh` / `@deepseek-ai/dsh-*`）对本插件宿主版本实际上「不设限」。现在新增真实存在的公开包 **`@deepseek-ai/dsh-session`** 作为 compatibility peer marker，并声明为 **optional**（`peerDependenciesMeta.optional=true`）——evaluator 只读 `peerDependencies`、**忽略 `peerDependenciesMeta`**，故 optional 仅用于放行普通 npm 安装，不削弱宿主检查；本插件**运行时不 import** 该包（零强制运行时依赖不变，`dependencies`/`optionalDependencies`/`devDependencies` 均未增加）。range **不猜**：逐一比对官方 `dsh-v0.1.7-{alpha.1,alpha.2,rc.1,rc.2}` 的六个接缝源码（`packages/llm/llm/src/message.ts`、`packages/attachment/attachment/src/index.ts`、`packages/core/session/src/types.ts`、`vendor/cordis/src/{events,context}.ts`、`packages/interaction/user-questions/src/index.ts`）后，精确声明 `0.1.7-alpha.1 || 0.1.7-alpha.2 || 0.1.7-rc.1 || 0.1.7-rc.2`——alpha.1/alpha.2 与 rc.1 六文件逐字节相同，rc.2 仅 `core/session/src/types.ts` 的文档注释差异（无结构变化）。历史声明 `0.1.0-rc.6` 标 **unverified**（公开仓库无 `dsh-v0.1.0-rc.6` tag，无法取得 artifact 复验），**不**进 range，原 `dshWorkshop.compatibility.dshVersions=["0.1.0-rc.6"]` 同步改为四行 verified。新增机器可读 matrix block（markdown 内 `json dsh-host-matrix` 围栏）与 `scripts/verify-host-compat.mjs`：零依赖手写 parser，只接受 exact / `||`-exact（显式拒 `^`/`>=`/`*` 猜测），校验「verified 行必被覆盖 / 非 verified 行绝不被覆盖 / range 段必有 verified 行 / `peerDependenciesMeta.optional` 必须为 true / `dshWorkshop.compatibility.dshVersions` 恰等于 verified 列表」，并接入 `npm run verify:release`（`docs/compatibility-matrix.md` 与 `scripts/verify-host-compat.mjs` 随之进 `files` 与发布守卫清单），三处清单从此机械一致。
 - 测试：新增 `test/host-compat-matrix.test.mjs` 11 项 focused（manifest+matrix 干净通过 / peer marker 是真实 `@deepseek-ai/dsh*` 且 optional / range 为 exact-OR 且无 `^~><*` / dshVersions 恰等于 verified / 历史 rc.6 标 unverified 且被排除 / 五类漂移反例：非 verified 进 range、verified 未覆盖、caret 猜测、dshVersions 漂移、optional 或 peer 缺失 / parser 对缺失与坏 JSON fail-closed）；`node scripts/verify-host-compat.mjs` 与 `npm run verify:release` 均绿。
 
 - **QQ 机器人出站默认 markdown（#33）**（`src/adapters/qq-bot.mjs`、`src/config.mjs`）：`qq-bot` 出站主动消息由固定 `msg_type=0` 纯文本改为默认 `msg_type=2` + `markdown.content`（与 `qq-gw` 审批卡片的富文本能力对齐）；新增可选配置 `markdown`（非秘密），仅显式 `markdown: false` 才回退纯文本——**默认开启是所有者对「新能力默认关」fail-closed 惯例的明确例外，taskbook v0.11 已拍板**。单条上限按 Unicode 码点计（markdown 3000 / 文本 2000），超长复用既有 `splitByCodePoints` 码点语义分段逐条投递（码元切片会切出孤立代理项，G-22 同根），每段独立 `msg_seq` 递增、服务端按 `msg_seq`+内容去重，整条重试时每段沿用同一 `(seq, 内容)` 组合保证幂等；任一失败即抛错且不推进 `_msgSeq`。管理台字段提示同步（`markdown` 可选）。
@@ -1412,7 +1416,7 @@ Web 管理台：本机 HTTP 服务 + REST API + 单文件 UI + 网页扫码授�
 
 ## [0.3.0] - 2026-08-15
 
-多通道双向回传：远程审批 / 远程会话从 telegram 单通道扩展到 5 通道（telegram / feishu / qq / wxpusher / wechat）。全部零运行时依赖（fetch + node:crypto + 原生 WebSocket）；飞书 SDK 与 qrcode-terminal 进 optionalDependencies，缺省优雅降级。测试 228 → 329（+101）。
+多通道双向回传：远程审批 / 远程会话从 telegram 单通道扩展到 5 通道（telegram / feishu / qq / wxpusher / wechat）。全部零强制运行时依赖（fetch + node:crypto + 原生 WebSocket）；飞书 SDK 与 qrcode-terminal 进 optionalDependencies，缺省优雅降级。测试 228 → 329（+101）。
 
 ### Added（阶段 0：入站通道契约泛化）
 
@@ -1452,7 +1456,7 @@ Web 管理台：本机 HTTP 服务 + REST API + 单文件 UI + 网页扫码授�
 
 ### Added（阶段 0：仓库基建）
 
-- GitHub Actions CI：`node --test` + 零运行时依赖断言 + 渠道矩阵漂移检查（`.github/workflows/ci.yml`）。
+- GitHub Actions CI：`node --test` + 零强制运行时依赖断言 + 渠道矩阵漂移检查（`.github/workflows/ci.yml`）。
 - `README.zh.md` 中文文档（修复「README 英文 / package.json 中文」的 i18n 倒挂）。
 - `THIRD_PARTY_NOTICES.md`：移植代码来源声明（push-all-in-one / all-pusher-api）。
 - `ADAPTER.md`：适配器接口契约、spec 声明表编写守则、契约测试模板、good first issue 指引。
@@ -1528,4 +1532,4 @@ Web 管理台：本机 HTTP 服务 + REST API + 单文件 UI + 网页扫码授�
 ## [0.1.0] - 2026-08（基线）
 
 首个发布：8 渠道（telegram/dingtalk/feishu/wxpusher/pushplus/serverchan/bark/webhook）单向推送，
-双触发线（session/event 自动推送 + `notify` 工具），零运行时依赖，72 个 `node:test` 用例。
+双触发线（session/event 自动推送 + `notify` 工具），零强制运行时依赖，72 个 `node:test` 用例。

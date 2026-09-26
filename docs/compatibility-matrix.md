@@ -48,6 +48,24 @@ Peer range: `0.1.7-alpha.1 || 0.1.7-alpha.2 || 0.1.7-rc.1 || 0.1.7-rc.2`.
 
 No row is `real-device-verified`; every row is source/artifact or host-smoke evidence.
 
+### Inbound file attachment boundary
+
+File admission requires the Host AttachmentStore capability `attachments.saveFile`. A
+legacy host that exposes the attachment service but not `saveFile` is outside the current
+file-inbound support boundary: the plugin fails closed, does not pass a remote URL into the
+Session, and emits a bounded diagnostic in both Chinese and English. The current supported
+host matrix above is the 0.1.7 family; the older 0.1.1-rc.2 shape is retained as a
+compatibility risk, not as a supported target.
+
+The closed #36 follow-up now has one real QQ C2C file-download sample: the URL used
+`grouptalk.c2c.qq.com`, returned HTTP 200 without redirect or authentication, used
+`application/octet-stream`, and its declared `content-length` matched the downloaded bytes.
+The sample had no usable `content-disposition` filename. This confirms the download-side
+shape for that sample only; it does not certify all QQ payloads. QQ GROUP attachment
+evidence remains unreachable under the existing upstream group-control deny policy, so
+`fileInbound` remains disabled until a supported-host end-to-end image/file admission run
+is available.
+
 Machine-readable block (the source of truth for `scripts/verify-host-compat.mjs` and
 `npm run verify:release`):
 

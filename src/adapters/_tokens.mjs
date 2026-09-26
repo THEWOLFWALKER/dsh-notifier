@@ -1,7 +1,7 @@
 // dsh-notifier adapters/_tokens.mjs
 // 共用 token 管理器：「换 token → 缓存 → 过期前刷新 → 失效作废」。
 // QQ 官方机器人（getAppAccessToken）与企微应用消息（gettoken）共用此逻辑（约 40 行）。
-// 零运行时依赖；fetchToken 由各渠道适配器提供。
+// 零强制运行时依赖；fetchToken 由各渠道适配器提供。
 
 import { NotifyError, ERROR_CODES } from './_shared.mjs'
 

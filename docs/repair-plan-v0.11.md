@@ -88,9 +88,9 @@ pull_request:
 
 # 2. 执行红线
 
-## 2.1 零运行时依赖
+## 2.1 零强制运行时依赖
 
-禁止新增 `dependencies` / `optionalDependencies`。宿主适配只使用 Node 22+、现有代码和当前宿主公开 service。不能为了 V4 attachment 引图片处理运行时依赖。
+禁止新增强制 `dependencies`。`optionalDependencies` 仍可保留用于惰性加载的可选集成；宿主适配只使用 Node 22+、现有代码和当前宿主公开 service。不能为了 V4 attachment 引图片处理运行时依赖。
 
 ## 2.2 公共面不 breaking
 
@@ -2775,7 +2775,7 @@ i18n user-surface audit
 zh/en key parity
 lang=en 用户可见硬编码中文 = 0（仅白名单例外）
 public notifier version = 0.7
-zero runtime dependencies
+zero mandatory runtime dependencies
 ```
 
 ---

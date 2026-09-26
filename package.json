@@ -1,7 +1,7 @@
 {
   "name": "dsh-notifier",
   "version": "0.13.0",
-  "description": "DSH 通知与远程操作控制面：28 个出站渠道、6 条入站控制通道、原生「通知与控制」UI、出站热生效；零运行时依赖。",
+  "description": "DSH 通知与远程操作控制面：28 个出站渠道、6 条入站控制通道、原生「通知与控制」UI、出站热生效；零强制运行时依赖。",
   "type": "module",
   "main": "src/plugin-entry.mjs",
   "exports": {
@@ -28,13 +28,31 @@
     "scripts/wechat-login.mjs",
     "cordis.patch.yml",
     "CHANGELOG.md",
+    "README.md",
+    "README.zh-CN.md",
     "PLUGINS.md",
     "PLUGINS.en.md",
     "THIRD_PARTY_NOTICES.md",
+    "AGENTS.md",
+    "docs/AI_INSTALL.md",
+    "docs/AI_INSTALL.en.md",
+    "docs/DIAGNOSTICS.md",
+    "docs/DIAGNOSTICS.en.md",
+    "docs/OPERATIONS.md",
+    "docs/SUPPORT.md",
+    "docs/SUPPORT.en.md",
+    "docs/TROUBLESHOOTING.md",
+    "docs/TROUBLESHOOTING.en.md",
+    "docs/architecture.md",
     "docs/guide.md",
+    "docs/guide.en.md",
     "docs/compatibility-matrix.md",
     "docs/upgrade-guide.md",
     "docs/upgrade-guide.en.md",
+    "docs/assets/readme-hero.png",
+    "docs/assets/qq-group.png",
+    "docs/screenshots/fresh-wizard-desktop.png",
+    "docs/screenshots/configured-channels-desktop.png",
     "client.js"
   ],
   "scripts": {
@@ -42,7 +60,7 @@
     "verify:release": "node scripts/verify-release.mjs"
   },
   "dshQuality": {
-    "testCount": 1984
+    "testCount": 2011
   },
   "dsh": {
     "bundle": {
@@ -146,7 +164,7 @@
       "id": "notify",
       "kind": "tool",
       "invocation": "invoke the model-facing notify tool with a message and an optional target channel through the DSH ToolRuntime",
-      "expected": "the message is delivered to the configured channel (e.g. Telegram) and a structured result is returned; an unreachable or unconfigured channel returns a structured skipped/failed result without blocking the turn"
+      "expected": "the notifier attempts delivery to the configured channel (e.g. Telegram) and returns a structured result; only provider-specific end-to-end receipt evidence establishes confirmed delivery; an unreachable or unconfigured channel returns a structured skipped/failed result without blocking the turn"
     },
     "evidence": {
       "install": null,

@@ -2,6 +2,11 @@
 // Local HTTP integration tests may still use loopback; all other destinations
 // must be explicitly enabled with DSH_REAL_PROVIDER_TESTS=1.
 
+import {
+  __setBaselineLookupForTests,
+  __setRequestImplForTests,
+} from '../src/security/network-policy.mjs'
+
 export const REAL_PROVIDER_TESTS = process.env.DSH_REAL_PROVIDER_TESTS === '1'
 
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1'])
@@ -29,5 +34,11 @@ if (!REAL_PROVIDER_TESTS) {
       + 'set DSH_REAL_PROVIDER_TESTS=1 only for explicit provider evidence',
     )
   }
+
+  // The production network policy has no "test mode" branch: it always resolves, validates
+  // and pins addresses. The suite therefore injects the seams explicitly here — a stub DNS
+  // that keeps CI hermetic, and a transport that reuses the guarded global fetch above.
+  __setBaselineLookupForTests(async () => [{ address: '93.184.216.34', family: 4 }])
+  __setRequestImplForTests((target, init) => globalThis.fetch(target.url.href, { ...init, redirect: 'manual' }))
 }
 
