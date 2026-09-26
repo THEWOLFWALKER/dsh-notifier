@@ -1,6 +1,6 @@
 # dsh-notifier Upgrade Guide
 
-> For DSH users: update, verify the installed build, migrate from v0.11 to v0.12, triage stale installs, and roll back.
+> For DSH users: update, verify the installed build, migrate from v0.12.1 to v0.13, triage stale installs, and roll back.
 >
 > 中文版：[`upgrade-guide.md`](upgrade-guide.md)
 
@@ -30,7 +30,7 @@ pnpm add dsh-notifier@latest
 
 Restart DSH once so the new Host plugin and `client.js` are loaded.
 
-That restart is required to **load the upgrade**. It does not mean v0.12 outbound edits are restart-bound: once v0.12 is running, outbound channel saves Hot Apply.
+That restart is required to **load the upgrade**. It does not mean v0.13 outbound edits are restart-bound: once v0.13 is running, outbound channel saves Hot Apply through the shared canonical runtime truth.
 
 ## 2. What changes from v0.11 to v0.12
 
@@ -90,14 +90,14 @@ v0.12 intentionally does not implement a generic hot-reloader for every inbound 
 | Evidence | How | v0.12 expected |
 |---|---|---|
 | Native UI | DSH Sidebar / Plugins | `Notify & Control` entry exists |
-| CLI | `npm ls dsh-notifier` / `pnpm ls dsh-notifier` | `0.12.1` or newer |
+| CLI | `npm ls dsh-notifier` / `pnpm ls dsh-notifier` | `0.13.0` or newer |
 | Registry | `npm view dsh-notifier version` | matches the release you intended to install |
 
 Developers can also inspect the installed package:
 
 ```text
 exports["./client"] = "./client.js"
-dshQuality.testCount = 1889    # v0.12.1 remediation line
+dshQuality.testCount = 1984    # v0.13.0 convergence line
 ```
 
 ## 4. Version says 0.12, behavior looks old
@@ -129,7 +129,7 @@ Restart DSH afterwards.
 
 Check:
 
-1. installed package is `0.12.1+`;
+1. installed package is `0.13.0+`;
 2. DSH restarted;
 3. Host version is in the declared range;
 4. installed package contains `client.js`;

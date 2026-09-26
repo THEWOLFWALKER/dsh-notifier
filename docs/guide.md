@@ -1,6 +1,6 @@
-# dsh-notifier 使用指南（v0.12：从安装到日常）
+# dsh-notifier 使用指南（v0.13：从安装到日常）
 
-> 面向普通 DSH 用户。v0.12 起，**DSH Native「通知与控制」是日常主入口**；本机 Web 管理台保留为 Advanced / Recovery。
+> 面向普通 DSH 用户。v0.13 起，**DSH Native「通知与控制」是日常主入口**；本机 Web 管理台保留为 Advanced / Recovery，Native/Admin 共享 canonical runtime truth。
 >
 > 如果你是插件作者，请看 [PLUGINS.md](../PLUGINS.md)；如果你在升级旧版本，请先看 [upgrade-guide.md](upgrade-guide.md)。
 
@@ -266,9 +266,9 @@ node scripts/route.mjs show
 
 | 现象 | 先看什么 |
 |---|---|
-| 侧栏没有「通知与控制」 | 确认安装的是 `0.12.1+`、重启 DSH、检查 Host 版本是否在兼容范围；headless profile 用 Advanced Console/YAML |
+| 侧栏没有「通知与控制」 | 确认安装的是 `0.13.0+`、重启 DSH、检查 Host 版本是否在兼容范围；headless profile 用 Advanced Console/YAML |
 | Plugins 里能看到插件但 Native 页面空 | 看 DSH Client/slot 错误；确认 `client.js` 被 package manifest 加载 |
-| 保存出站后下一条仍走旧配置 | 这是异常；v0.12 出站应 Hot Apply。检查是否真的运行 registry 的 0.12.1，而不是旧 `file:`/残留包 |
+| 保存出站后下一条仍走旧配置 | 这是异常；v0.13 出站应 Hot Apply。检查是否真的运行 registry 的 0.13.0，而不是旧 `file:`/残留包 |
 | 测试发送失败 | 直接按页面的 provider/校验错误修；保存失败不会切换 live runtime |
 | 入站保存后没连接 | 看 UI 是否标「等待重启」；如果是，重启 DSH |
 | 高级管理台未启用 | 检查 `admin.enabled`；Native 不会擅自启动它 |

@@ -1,6 +1,6 @@
 # dsh-notifier 升级指南
 
-> 面向 DSH 用户：更新、确认版本、排查残留、v0.11 → v0.12 迁移、降级回滚。
+> 面向 DSH 用户：更新、确认版本、排查残留、v0.12.1 → v0.13 迁移、降级回滚。
 >
 > 英文版：[`upgrade-guide.en.md`](upgrade-guide.en.md)
 
@@ -30,9 +30,9 @@ pnpm add dsh-notifier@latest
 
 升级包以后先重启一次 DSH，让新的 Host 插件和 `client.js` 装载。
 
-**这次重启是“加载新版本”需要的，不代表 v0.12 的出站配置仍然要靠重启生效。**
+**这次重启是“加载新版本”需要的，不代表 v0.13 的出站配置仍然要靠重启生效。**
 
-v0.12 装载完成后，后续修改出站渠道是 Hot Apply。
+v0.13 装载完成后，后续修改出站渠道是 Hot Apply；Native 与 Advanced Console 共享 canonical runtime truth。
 
 ## 二、v0.11 → v0.12 有什么变化
 
@@ -71,7 +71,7 @@ save
 → 下一次发送直接使用
 ```
 
-如果升级后你仍看到“出站必须重启才能生效”，先怀疑实际运行的不是 registry `0.12.1` 或更高版本。
+如果升级后你仍看到“出站必须重启才能生效”，先怀疑实际运行的不是 registry `0.13.0` 或更高版本。
 
 ### 3. 出站 state key 迁移
 
@@ -109,7 +109,7 @@ canonical key 与 `admin.enabled` 无关；关闭 Advanced Console 不会让 Nat
 | 证据 | 怎么看 | v0.12 正常表现 |
 |---|---|---|
 | DSH Native | 左侧栏 / Plugins | 有「通知与控制」与 dsh-notifier 设置入口 |
-| CLI | `npm ls dsh-notifier` / `pnpm ls dsh-notifier` | `0.12.1`（或更高） |
+| CLI | `npm ls dsh-notifier` / `pnpm ls dsh-notifier` | `0.13.0`（或更高） |
 | Registry | `npm view dsh-notifier version` | 与你期望的发布版一致 |
 
 也可以核包：
@@ -122,7 +122,7 @@ node -p "require('./node_modules/dsh-notifier/package.json').version"
 
 ```text
 exports["./client"] = "./client.js"
-dshQuality.testCount = 1889    # 对 v0.12.1 修复线
+dshQuality.testCount = 1984    # 对 v0.13.0 收敛线
 ```
 
 ## 四、版本对，但功能像旧版
@@ -156,7 +156,7 @@ dsh plugin add dsh-notifier@latest --profile <profile名>
 
 检查：
 
-1. 实际版本 `0.12.1+`；
+1. 实际版本 `0.13.0+`；
 2. DSH 已重启；
 3. Host 在声明范围；
 4. `client.js` 确实在已安装包里；
@@ -172,7 +172,7 @@ dsh plugin add dsh-notifier@latest --profile <profile名>
 
 这是 v0.12 的异常表现。核：
 
-- 是否真的运行 `0.12.1` 或更高 registry 包；
+- 是否真的运行 `0.13.0` 或更高 registry 包；
 - 是否是**出站**而不是 inbound；
 - 页面/运行时是否都读 canonical `channel:<type>:outbound`；
 - 是否有旧 `file:` 包残留。

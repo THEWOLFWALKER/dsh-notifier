@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.13.0] - 2026-09-26（Architecture convergence release gate）
+
+架构收敛发布门。把 v0.12 之后的耐久性、控制面、网络边界与前端生命周期修复合并为一条可复核的发布线；本次 dev 收口不打 tag、不发布 npm。
+
+### 收口
+
+- **配置与运行时真源统一**：Native 与 Admin 共用 canonical outbound config 和运行时服务；保存、测试、撤销与投影不再各自维护渠道状态。
+- **有界 provider 生命周期**：握手、等待者、合并窗、去重和队列均有明确上限；provider cursor 可持久化，超时与取消不会留下未收束状态。
+- **控制面生命周期与错误语义**：epoch/revision 负责隔离迟到结果；断连/过期状态可见；前端 ErrorBoundary 与结构化 RPC 错误避免白屏和原始异常泄漏。
+- **迁移与诊断安全**：state 迁移只报告安全摘要，不暴露备份路径或 secret；损坏/不可信启动状态继续 fail closed。
+- **PushPlus 合同**：当前 enum/options 口径与 canonical channel contract 对齐。
+
+### 验证边界
+
+- `npm test`：**1984 tests，1984 pass，0 fail，0 skip**。
+- `npm run verify:release`：版本、文档、测试计数、Host 兼容性门禁通过。
+- 本次未新增真机 DSH、真实 provider 账号或真实投递回执验证；QQ/DingTalk/Feishu 等外部证据缺口继续登记在 [`docs/memory/risks.md`](docs/memory/risks.md)。
+
 ## [0.12.1] - 2026-09-25（Durability + control-surface truthfulness）
 
 修复发布。聚焦持久化成功语义、控制面 admission、渠道真实状态与前端并发/生命周期边界；真实设备、真实账号与远端 provider 回执仍未在本地门禁中宣称通过。

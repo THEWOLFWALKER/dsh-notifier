@@ -1,8 +1,8 @@
 # Technical debt and release gates
 
-状态更新：2026-09-25。当前发布线 **v0.12.0** 已发布（Native Control Surface + canonical 出站态 + Hot Apply，1831/1831 tests；真实 DSH 0.1.7-rc.2 Native 视觉/交互与 alpha.1 兼容性冒烟已通过）。v0.11.0（1816 tests）为上一发布线。当前剩余门主要是 provider/device 级真实验证、dark/light/窄屏的持续视觉回归与生态目录描述刷新；这些不得被误写成“v0.12 功能尚未实现”。
+状态更新：2026-09-26。当前开发线 **v0.13.0** 已完成架构收敛：canonical outbound config、Native/Admin 服务统一、provider handshake/deadline、durable cursor、epoch/revision 生命周期、结构化 RPC 错误、安全迁移诊断与前端 ErrorBoundary 均已通过回归。`npm test` 为 **1984/1984 pass**，0 fail、0 skip；`npm run verify:release` 通过。
 
-开发线 `v0.12.1` 已完成 Phase A-E 的代码与契约修复，登记 1889 tests；全量 npm 门禁和 Phase F 真实设备/provider 证据仍是发布前债务，未被本地 focused 通过替代。
+本次收口没有新增真实 DSH 真机、provider 账号或真实投递回执证据。剩余技术债主要是 QQ HELLO/READY 与 DingTalk Stream soak、Feishu P2P 真实 payload、QQ mention/media/rendering、WxPusher forged UID、DNS rebinding、Native host 回归、dark/light/窄屏视觉回归，以及真实 provider hot-apply delivery；均登记在 `docs/memory/risks.md`，不得误写成 v0.13 合同未实现。
 
 ### 已知工具面坑（2026-08-28 登记）
 

@@ -16,13 +16,13 @@
 ![Zero deps](https://img.shields.io/badge/runtime%20deps-0-000000?style=flat-square)
 ![Channels](https://img.shields.io/badge/channels-28-00B4D8?style=flat-square)
 ![npm version](https://img.shields.io/npm/v/dsh-notifier?style=flat-square&logo=npm&logoColor=white)
-![tests](https://img.shields.io/badge/tests-1889-brightgreen?style=flat-square)
+![tests](https://img.shields.io/badge/tests-1984-brightgreen?style=flat-square)
 ![license](https://img.shields.io/badge/license-MIT-brightgreen?style=flat-square)
 [![dshfind](https://dshfind.com/api/badge/THEWOLFWALKER/dsh-notifier?lang=en)](https://dshfind.com/en/plugins/THEWOLFWALKER/dsh-notifier?ref=badge)
 
-`dsh-notifier@0.12.1` is the notification and remote-operations control plane for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness): **28 outbound channels**, **6 inbound control channels**, remote approvals/questions/conversation, task visibility, health/activity projections, and a **native DSH Sidebar/Main experience** — with zero runtime dependencies.
+`dsh-notifier@0.13.0` is the notification and remote-operations control plane for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness): **28 outbound channels**, **6 inbound control channels**, remote approvals/questions/conversation, task visibility, health/activity projections, and a **native DSH Sidebar/Main experience** — with zero runtime dependencies.
 
-Package metadata: `dsh-notifier@0.12.1` · 1889 automated contract tests · MIT licensed.
+Package metadata: `dsh-notifier@0.13.0` · 1984 automated contract tests · MIT licensed.
 
 [Get started](docs/guide.md) · [Upgrade](docs/upgrade-guide.en.md) · [Compatibility](docs/compatibility-matrix.md) · [Plugin API](PLUGINS.en.md) · [Changelog](CHANGELOG.md)
 
@@ -255,9 +255,9 @@ npm pack --dry-run --json
 git diff --check
 ```
 
-v0.12.1 remediation line: **1889 registered contract tests**; the focused remediation suites pass, while real-provider/device evidence remains an external gate.
+v0.13.0 convergence line: **1984 registered contract tests**; the full hermetic suite passes, while real-provider/device evidence remains an external gate.
 
-test/ 1889 tests in the current line; the historical 0.8.6 package carried 909 tests.
+test/ 1984 tests in the current line; the historical 0.8.6 package carried 909 tests.
 
 ## License
 
