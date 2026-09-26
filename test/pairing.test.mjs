@@ -16,6 +16,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createStore } from '../src/inbound/store.mjs'
 import { createPairing } from '../src/inbound/pairing.mjs'
+import { createIdentity } from '../src/inbound/identity.mjs'
 
 function tempStore() {
   const dir = mkdtempSync(join(tmpdir(), 'dsh-notifier-pairing-'))
@@ -23,6 +24,26 @@ function tempStore() {
 }
 
 const quiet = { warn: () => {}, info: () => {} }
+
+test('C4：配对应用事务失败时码、绑定、锁出清理都不发布', () => {
+  const { store } = tempStore()
+  const identity = createIdentityForPairing(store)
+  const pairing = createPairing({ store, logger: quiet })
+  const minted = pairing.mint({ origin: 'admin', mintedBy: 'boss' })
+  const beforeCodes = JSON.parse(JSON.stringify(store.get('inbound:pairing', {})))
+  store.transact = () => ({ committed: false, durable: false, code: 'STATE_BUSY' })
+
+  const result = pairing.redeemAndBind(minted.code, { channel: 'telegram', userId: 'atomic' },
+    (draft, binding) => identity.addBindingToDraft(draft, binding))
+  assert.deepEqual(result, { ok: false, reason: 'storage-failed' })
+  assert.deepEqual(store.get('inbound:pairing', {}), beforeCodes)
+  assert.deepEqual(store.get('inbound:bindings', {}), {})
+  assert.deepEqual(store.get('inbound:pairing:lockout', {}), {})
+})
+
+function createIdentityForPairing(store) {
+  return createIdentity({ store, logger: quiet })
+}
 
 test('G-59 TTL 过期：码超时后核销 → expired 回执，翻转即落盘 + expire 审计', () => {
   const { store } = tempStore()

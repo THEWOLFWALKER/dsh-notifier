@@ -411,6 +411,27 @@ export function setDurable(store, key, value) {
 }
 
 /**
+ * v0.13：跨键 durable transaction。没有真实 transact 能力时不伪造原子成功，
+ * 让需要跨域一致性的 application service 明确失败，而不是退回多次单键写。
+ */
+export function transactDurable(store, mutator) {
+  if (typeof store?.transact !== 'function' || typeof mutator !== 'function') {
+    return { ok: false, committed: false, durable: false, code: 'TRANSACTION_UNAVAILABLE' }
+  }
+  try {
+    const result = store.transact(mutator)
+    return {
+      ...(result ?? {}),
+      ok: result?.committed === true,
+      committed: result?.committed === true,
+      durable: result?.durable === true,
+    }
+  } catch (error) {
+    return { ok: false, committed: false, durable: false, code: 'STATE_WRITE_FAILED', error }
+  }
+}
+
+/**
  * v0.12.1：一致化 durable 删除，返回 { existed, durable }。
  * 真 store 有 deleteDurable 时优先使用；遗留 mock 只有 delete 时，沿用 existed 语义。
  */

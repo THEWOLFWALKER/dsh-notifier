@@ -250,6 +250,20 @@ test('identity：待确认绑定 add/confirm/dismiss 生命周期', () => {
   assert.equal(identity.confirmPending('qq', 'q1').reason, 'not-found')
 })
 
+test('C4：confirmPending 事务失败时 pending 与 bindings 都保持原样', () => {
+  const { store } = tempStore()
+  const identity = createIdentity({ store, logger: quiet })
+  assert.equal(identity.addPending({ channel: 'feishu', userId: 'ou_atomic' }).ok, true)
+  const beforePending = JSON.parse(JSON.stringify(store.get('inbound:pending', {})))
+  const beforeBindings = JSON.parse(JSON.stringify(store.get('inbound:bindings', {})))
+  store.transact = () => ({ committed: false, durable: false, code: 'STATE_BUSY' })
+
+  const result = identity.confirmPending('feishu', 'ou_atomic')
+  assert.deepEqual(result, { ok: false, reason: 'storage-failed' })
+  assert.deepEqual(store.get('inbound:pending', {}), beforePending)
+  assert.deepEqual(store.get('inbound:bindings', {}), beforeBindings)
+})
+
 // ---------------------------------------------------------------- G-49 键归一（休眠边界封口）
 
 test('G-49：bindingKey 单一构造点——空白/大小写漂移的分量同键，allows 读写同源', () => {

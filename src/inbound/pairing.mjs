@@ -14,7 +14,7 @@
 // 码级 locked 态保留，由管理台显式锁定（可疑活动人工处置）触达。
 
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
-import { setDurable } from './store.mjs'
+import { setDurable, transactDurable } from './store.mjs'
 
 const KEY_CODES = 'inbound:pairing'
 const KEY_LOCKOUT = 'inbound:pairing:lockout'
@@ -78,6 +78,10 @@ export function createPairing(options = {}) {
   /** 读全部码条目（读盘防御：坏形状整条丢弃）。 */
   function readCodes() {
     const raw = store !== null ? store.get(KEY_CODES, {}) : memoryCodes
+    return normalizeCodes(raw)
+  }
+
+  function normalizeCodes(raw) {
     if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return {}
     const out = {}
     for (const [hash, value] of Object.entries(raw)) {
@@ -123,6 +127,10 @@ export function createPairing(options = {}) {
 
   function readLockout() {
     const raw = store !== null ? store.get(KEY_LOCKOUT, {}) : memoryLockout
+    return normalizeLockout(raw)
+  }
+
+  function normalizeLockout(raw) {
     if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return {}
     const out = {}
     for (const [key, value] of Object.entries(raw)) {
@@ -202,6 +210,22 @@ export function createPairing(options = {}) {
     return { locked: now < entry.lockedUntil, durable }
   }
 
+  function isLockedOutFromTable(table, userKey, now) {
+    const entry = table[userKey]
+    if (entry === undefined) return false
+    if (typeof entry.lockedUntil === 'number' && now < entry.lockedUntil) return true
+    const fails = entry.fails.filter((ts) => now - ts < ATTEMPT_WINDOW_MS)
+    return fails.length >= MAX_ATTEMPTS && now < fails[fails.length - 1] + LOCKOUT_MS
+  }
+
+  function recordFailureInTable(table, userKey, now) {
+    const entry = table[userKey] ?? { fails: [], lockedUntil: 0 }
+    entry.fails = [...entry.fails.filter((ts) => now - ts < ATTEMPT_WINDOW_MS), now]
+    if (entry.fails.length >= MAX_ATTEMPTS) entry.lockedUntil = now + LOCKOUT_MS
+    table[userKey] = entry
+    return { locked: now < entry.lockedUntil }
+  }
+
   function clearFailures(userKey) {
     const table = readLockout()
     if (table[userKey] === undefined) return
@@ -251,6 +275,77 @@ export function createPairing(options = {}) {
       if (writeCodes(table, now) !== true) return { ok: false, reason: 'storage-failed' }
       audit('mint', { id: entry.id, origin, mintedBy, expiresAt })
       return { ok: true, id: entry.id, code, expiresAt }
+    },
+
+    /**
+     * C4 application transaction：配对成功路径把 code、binding、lockout 清理放进
+     * 同一个 detached state draft。bindInDraft 只能改 draft，不能自行写盘。
+     */
+    redeemAndBind(code, { channel, userId, label = '', now = Date.now() } = {}, bindInDraft) {
+      if (store === null || typeof bindInDraft !== 'function') {
+        return { ok: false, reason: 'transaction-unavailable' }
+      }
+      const userKey = `${String(channel ?? '')}:${String(userId ?? '')}`
+      const normalized = String(code ?? '').trim().toUpperCase()
+      const outcome = { ok: false, reason: 'invalid-code' }
+      const audits = []
+      const tx = transactDurable(store, (draft) => {
+        const codes = normalizeCodes(draft[KEY_CODES] ?? {})
+        const lockout = normalizeLockout(draft[KEY_LOCKOUT] ?? {})
+        if (isLockedOutFromTable(lockout, userKey, now)) {
+          outcome.reason = 'locked-out'
+          audits.push({ event: 'lockout', detail: { user: userKey, phase: 'rejected' } })
+          return false
+        }
+        if (normalized === '' || !/^[A-Z2-9]{1,64}$/.test(normalized)) {
+          const failure = recordFailureInTable(lockout, userKey, now)
+          draft[KEY_LOCKOUT] = lockout
+          outcome.reason = failure.locked ? 'locked-out' : 'invalid-code'
+          if (failure.locked) audits.push({ event: 'lockout', detail: { user: userKey, phase: 'tripped' } })
+          return true
+        }
+        const hash = hashPairingCode(normalized)
+        const entry = codes[hash]
+        if (entry === undefined || !safeEqual(entry.hash, hash)) {
+          const failure = recordFailureInTable(lockout, userKey, now)
+          draft[KEY_LOCKOUT] = lockout
+          outcome.reason = failure.locked ? 'locked-out' : 'invalid-code'
+          if (failure.locked) audits.push({ event: 'lockout', detail: { user: userKey, phase: 'tripped' } })
+          return true
+        }
+        if (entry.state === 'redeemed') { outcome.reason = 'already-redeemed'; return false }
+        if (entry.state === 'revoked') { outcome.reason = 'revoked'; return false }
+        if (entry.state === 'locked') { outcome.reason = 'locked'; return false }
+        if (entry.state === 'expired' || now >= entry.expiresAt) {
+          entry.state = 'expired'
+          codes[hash] = entry
+          draft[KEY_CODES] = codes
+          outcome.reason = 'expired'
+          audits.push({ event: 'expire', detail: { id: entry.id, origin: entry.origin } })
+          return true
+        }
+        const added = bindInDraft(draft, { channel, userId, label, origin: 'paired' })
+        if (added?.ok !== true) {
+          outcome.reason = added?.reason ?? 'storage-failed'
+          return false
+        }
+        entry.state = 'redeemed'
+        entry.redeemedAt = now
+        entry.redeemedBy = userKey
+        if (label !== '') entry.label = String(label).slice(0, 64)
+        codes[hash] = entry
+        delete lockout[userKey]
+        draft[KEY_CODES] = codes
+        draft[KEY_LOCKOUT] = lockout
+        outcome.ok = true
+        outcome.record = added.record
+        outcome.entry = { ...entry, code: normalized }
+        audits.push({ event: 'redeem', detail: { id: entry.id, origin: entry.origin, user: userKey } })
+        return true
+      })
+      if (tx.committed !== true) return { ok: false, reason: 'storage-failed' }
+      for (const item of audits) audit(item.event, item.detail)
+      return outcome
     },
 
     /**

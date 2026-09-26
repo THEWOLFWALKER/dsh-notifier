@@ -10,7 +10,7 @@
 
 import { isValidTargetId } from './target-guard.mjs'
 import { INBOUND_CHANNEL_SET } from './channels-registry.mjs'
-import { setDurable } from './store.mjs'
+import { setDurable, transactDurable } from './store.mjs'
 
 const KEY_BINDINGS = 'inbound:bindings'
 const KEY_PENDING = 'inbound:pending'
@@ -94,6 +94,10 @@ export function createIdentity(options = {}) {
   function readBindings() {
     if (store === null) return {}
     const raw = store.get(KEY_BINDINGS, {})
+    return normalizeBindings(raw)
+  }
+
+  function normalizeBindings(raw) {
     if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return {}
     const out = {}
     for (const [key, value] of Object.entries(raw)) {
@@ -153,10 +157,29 @@ export function createIdentity(options = {}) {
   function readPending() {
     if (store === null) return {}
     const raw = store.get(KEY_PENDING, {})
-    if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return {}
+    const normalized = normalizePending(raw)
+    const out = normalized.out
+    const expired = normalized.expired
+    if (expired > 0 || Object.keys(out).length !== normalized.rawCount) {
+      try {
+        if (setDurable(store, KEY_PENDING, out) !== true) {
+          warn('待确认绑定清扫写回未落盘（不致命）')
+          return out
+        }
+        warn(`待确认绑定清扫：${expired} 条过期、${normalized.rawCount - Object.keys(out).length - expired} 条坏形状被移除`)
+      } catch (error) {
+        warn(`待确认绑定清扫写回失败（不致命）: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+    return out
+  }
+
+  function normalizePending(raw, now = Date.now()) {
+    if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+      return { out: {}, expired: 0, rawCount: 0 }
+    }
     const out = {}
     let expired = 0
-    const now = Date.now()
     for (const [key, value] of Object.entries(raw)) {
       if (value === null || typeof value !== 'object') continue
       // TTL 清扫：超期条目跳过（下面统一写回）
@@ -174,19 +197,30 @@ export function createIdentity(options = {}) {
         extra: value.extra !== null && typeof value.extra === 'object' ? value.extra : {},
       }
     }
-    // 顺带剔除形状损坏的键（value 非对象/渠道非法）：与过期清扫一起写回，零额外写放大
-    if (expired > 0 || Object.keys(out).length !== Object.keys(raw).length) {
-      try {
-        if (setDurable(store, KEY_PENDING, out) !== true) {
-          warn('待确认绑定清扫写回未落盘（不致命）')
-          return out
-        }
-        warn(`待确认绑定清扫：${expired} 条过期、${Object.keys(raw).length - Object.keys(out).length - expired} 条坏形状被移除`)
-      } catch (error) {
-        warn(`待确认绑定清扫写回失败（不致命）: ${error instanceof Error ? error.message : String(error)}`)
-      }
+    return { out, expired, rawCount: Object.keys(raw).length }
+  }
+
+  function addBindingToTable(table, { channel, userId, label = '', origin = 'paired' } = {}) {
+    if (!VALID_CHANNELS.has(channel)) return { ok: false, reason: 'invalid-channel' }
+    const uid = String(userId ?? '').trim()
+    if (uid === '' || uid.length > 128) return { ok: false, reason: 'invalid-user' }
+    if (uid.includes(':')) {
+      warn(`拒绝含冒号的 userId 绑定（复合键截断风险）：${channel}:${uid.slice(0, 32)}`)
+      return { ok: false, reason: 'invalid-user' }
     }
-    return out
+    const key = `${channel}:${uid}`
+    if (table[key] !== undefined) return { ok: false, reason: 'already-bound' }
+    const record = {
+      channel,
+      userId: uid,
+      label: String(label ?? '').slice(0, 64),
+      role: Object.keys(table).length === 0 ? 'owner' : 'member',
+      pairedAt: Date.now(),
+      lastSeenAt: 0,
+      origin: VALID_ORIGINS.has(origin) ? origin : 'paired',
+    }
+    table[key] = record
+    return { ok: true, record }
   }
 
   return {
@@ -286,30 +320,26 @@ export function createIdentity(options = {}) {
      * @returns {{ ok: boolean, record?: object, reason?: string }}
      */
     addBinding({ channel, userId, label = '', origin = 'paired' }) {
-      if (!VALID_CHANNELS.has(channel)) return { ok: false, reason: 'invalid-channel' }
-      const uid = String(userId ?? '').trim()
-      if (uid === '' || uid.length > 128) return { ok: false, reason: 'invalid-user' }
-      if (uid.includes(':')) {
-        warn(`拒绝含冒号的 userId 绑定（复合键截断风险）：${channel}:${uid.slice(0, 32)}`)
-        return { ok: false, reason: 'invalid-user' }
-      }
       const table = readBindings()
-      const key = `${channel}:${uid}`
-      const existing = table[key]
-      if (existing !== undefined) return { ok: false, reason: 'already-bound' }
-      const isFirst = Object.keys(table).length === 0
-      const record = {
-        channel,
-        userId: uid,
-        label: String(label ?? '').slice(0, 64),
-        role: isFirst ? 'owner' : 'member',
-        pairedAt: Date.now(),
-        lastSeenAt: 0,
-        origin: VALID_ORIGINS.has(origin) ? origin : 'paired',
-      }
-      table[key] = record
+      const result = addBindingToTable(table, { channel, userId, label, origin })
+      if (result.ok !== true) return result
       if (writeBindings(table) !== true) return { ok: false, reason: 'storage-failed' }
-      return { ok: true, record }
+      return result
+    },
+
+    /**
+     * C4 application transaction hook：只在 detached state draft 上准备绑定，
+     * 供 pairing 将「码核销 + 绑定 + 锁出清理」一次提交。不会自行写盘。
+     */
+    addBindingToDraft(draft, { channel, userId, label = '', origin = 'paired' } = {}) {
+      if (draft === null || typeof draft !== 'object' || Array.isArray(draft)) {
+        return { ok: false, reason: 'storage-failed' }
+      }
+      const table = normalizeBindings(draft[KEY_BINDINGS] ?? {})
+      const result = addBindingToTable(table, { channel, userId, label, origin })
+      if (result.ok !== true) return result
+      draft[KEY_BINDINGS] = table
+      return result
     },
 
     /** 移除绑定；末位 owner 不可删（守卫在调用方 admin/命令层，这里只做数据操作）。 */
@@ -368,20 +398,52 @@ export function createIdentity(options = {}) {
 
     /** 确认待确认绑定 → 转正为正式成员。 */
     confirmPending(channel, userId) {
-      const pending = readPending()
-      const key = `${channel}:${String(userId ?? '')}`
-      const entry = pending[key]
-      if (entry === undefined) return { ok: false, reason: 'not-found' }
-      delete pending[key]
-      if (store !== null && setDurable(store, KEY_PENDING, pending) !== true) {
-        return { ok: false, reason: 'storage-failed' }
+      if (store === null) return { ok: false, reason: 'not-found' }
+      // 遗留第三方/mock store 没有跨键 transact：保留兼容路径；正式 createStore
+      // 始终走下面的单事务路径，避免真实状态出现 pending/binding 半提交。
+      if (typeof store.transact !== 'function') {
+        const pending = readPending()
+        const key = `${channel}:${String(userId ?? '')}`
+        const entry = pending[key]
+        if (entry === undefined) return { ok: false, reason: 'not-found' }
+        const bindings = readBindings()
+        if (bindings[key] !== undefined) return { ok: false, reason: 'already-bound' }
+        const added = addBindingToTable(bindings, { channel, userId: entry.userId, origin: 'confirmed' })
+        if (added.ok !== true) return added
+        delete pending[key]
+        if (setDurable(store, KEY_PENDING, pending) !== true) return { ok: false, reason: 'storage-failed' }
+        if (setDurable(store, KEY_BINDINGS, bindings) !== true) return { ok: false, reason: 'storage-failed' }
+        return added
       }
-      const result = this.addBinding({ channel, userId: entry.userId, origin: 'confirmed' })
-      if (result.ok !== true && store !== null) {
-        pending[key] = entry
-        setDurable(store, KEY_PENDING, pending)
-      }
-      return result
+      const outcome = { ok: false, reason: 'not-found' }
+      const tx = transactDurable(store, (draft) => {
+        const pending = normalizePending(draft[KEY_PENDING] ?? {}).out
+        const bindings = normalizeBindings(draft[KEY_BINDINGS] ?? {})
+        const key = `${channel}:${String(userId ?? '')}`
+        const entry = pending[key]
+        if (entry === undefined) return false
+        if (bindings[key] !== undefined) {
+          outcome.reason = 'already-bound'
+          return false
+        }
+        delete pending[key]
+        const added = addBindingToTable(bindings, {
+          channel,
+          userId: entry.userId,
+          origin: 'confirmed',
+        })
+        if (added.ok !== true) {
+          outcome.reason = added.reason
+          return false
+        }
+        draft[KEY_PENDING] = pending
+        draft[KEY_BINDINGS] = bindings
+        outcome.ok = true
+        outcome.record = added.record
+        return true
+      })
+      if (tx.committed !== true) return { ok: false, reason: 'storage-failed' }
+      return outcome
     },
 
     dismissPending(channel, userId) {

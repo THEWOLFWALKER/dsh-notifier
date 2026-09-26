@@ -129,10 +129,15 @@ export function createTaskSelection(options = {}) {
     } catch { return false }
   }
   const safeDelete = (key) => {
+    if (store === null) {
+      const existed = memory.has(key)
+      memory.delete(key)
+      return { existed, durable: true }
+    }
     try {
       const result = deleteDurable(store, key)
-      return result.existed === true && result.durable === true
-    } catch { return false }
+      return result
+    } catch { return { existed: false, durable: false } }
   }
   const safeKeys = () => {
     try {
@@ -169,7 +174,7 @@ export function createTaskSelection(options = {}) {
 
   /** 从任意来源读一条待决（内存优先：单进程内内存态恒为最新；盘上作持久兜底）。 */
   function readEntry(key) {
-    const raw = memory.get(key) ?? safeGet(key)
+    const raw = store === null ? memory.get(key) : safeGet(key)
     if (!isRecord(raw)) return undefined
     const candidates = normalizeCandidates(raw.candidates)
     if (candidates.length === 0) return undefined
@@ -206,8 +211,11 @@ export function createTaskSelection(options = {}) {
     for (const key of safeKeys()) {
       const entry = readEntry(key)
       if (entry === undefined || entry.expiresAt < nowMs) {
-        if (safeDelete(key)) removed += 1
-        memory.delete(key)
+        const deleted = safeDelete(key)
+        if (deleted.durable === true) {
+          removed += deleted.existed === true ? 1 : 0
+          memory.delete(key)
+        }
       }
     }
     return removed
@@ -235,8 +243,7 @@ export function createTaskSelection(options = {}) {
       const nowMs = now()
       const entry = { candidates: live, originalText: text, createdAt: nowMs, expiresAt: nowMs + ttlMs }
       if (items.length > 0) entry.attachments = items
-      // 尽力持久化；durable 失败也照常降级内存态（本模块是单进程暂态，内存态即可闭环）。
-      safeSet(key, entry)
+      if (store !== null && safeSet(key, entry) !== true) return null
       memory.set(key, entry)
       return { candidates: live, originalText: text, ...attachmentsView(items) }
     },
@@ -277,9 +284,12 @@ export function createTaskSelection(options = {}) {
       if (!Number.isInteger(index) || index < 1 || index > entry.candidates.length) {
         return { ok: false, reason: 'invalid', candidates: [...entry.candidates] }
       }
-      // 命中：清待决（先删后读，防重入二次命中原消息）。
-      if (safeDelete(key)) memory.delete(key)
-      else memory.delete(key)
+      // 命中：先 durable 删除，再把原消息交给调用方，避免 API 已成功但重启后复活。
+      const removed = safeDelete(key)
+      if (removed.durable !== true) {
+        return { ok: false, reason: 'storage-failed', candidates: [...entry.candidates] }
+      }
+      memory.delete(key)
       return {
         ok: true,
         sessionId: entry.candidates[index - 1],
@@ -288,12 +298,32 @@ export function createTaskSelection(options = {}) {
       }
     },
 
+    /** 用 /use 命中的会话 durable 消费待决，并返回原消息。 */
+    take(envelope, sessionId) {
+      prune()
+      const key = keyOf(envelope)
+      if (key === null) return { ok: false, reason: 'no-pending', candidates: [] }
+      const entry = readEntry(key)
+      if (entry === undefined) return { ok: false, reason: 'no-pending', candidates: [] }
+      if (!entry.candidates.includes(sessionId)) {
+        return { ok: false, reason: 'invalid', candidates: [...entry.candidates] }
+      }
+      const removed = safeDelete(key)
+      if (removed.durable !== true) {
+        return { ok: false, reason: 'storage-failed', candidates: [...entry.candidates] }
+      }
+      memory.delete(key)
+      return { ok: true, sessionId, originalText: entry.originalText, ...attachmentsView(entry.attachments) }
+    },
+
     /** 撤销当前待决（envelope 维度）。 */
     cancel(envelope) {
       const key = keyOf(envelope)
       if (key === null) return false
+      const removed = safeDelete(key)
+      if (removed.durable !== true) return false
       memory.delete(key)
-      return safeDelete(key)
+      return true
     },
 
     /** 待决选择清理（供停机/测试显式调用）。 */

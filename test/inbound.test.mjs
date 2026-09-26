@@ -137,7 +137,7 @@ test('P1-3 store：属主已死的新鲜锁（kill -9 残留）当场回收，�
   assert.equal(existsSync(lockPath), false, '回收后正常写入并清理锁文件')
 })
 
-test('P1-3 store：属主存活的新鲜锁绝不误抢——探测到存活进程仍走双轮降级', () => {
+test('P1-3 store：属主存活的新鲜锁绝不误抢——探测到存活进程返回 STATE_BUSY', () => {
   const { path } = tempStorePath()
   const store = createStore(path)
   store.set('k', 'v')
@@ -149,7 +149,7 @@ test('P1-3 store：属主存活的新鲜锁绝不误抢——探测到存活进�
   const start = Date.now()
   store.set('k2', 'v2')
   assert.ok(Date.now() - start >= 300, `活锁照常双轮等待后降级（实际 ${Date.now() - start}ms）`)
-  assert.equal(store.get('k2'), 'v2', '降级强写保底可用性')
+  assert.equal(store.get('k2'), undefined, '活锁超时不得无锁写入')
   // 属主校验：内容不是自己 → 绝不误删他人锁
   assert.equal(readFileSync(lockPath, 'utf8'), `${process.pid}:alive`)
 })
@@ -169,7 +169,7 @@ test('P1-3 store：探测宽限期内（<500ms）的未知新鲜锁不做死亡�
   const start = Date.now()
   store.set('k2', 'v2')
   assert.ok(Date.now() - start >= 300, `宽限期内照常等待降级（实际 ${Date.now() - start}ms）`)
-  assert.equal(store.get('k2'), 'v2')
+  assert.equal(store.get('k2'), undefined, '宽限期内活锁不得无锁写入')
   assert.equal(existsSync(lockPath), true, '宽限期内不误删外来锁')
 })
 
@@ -184,11 +184,11 @@ test('P1-3 store：畸形/外来锁内容（无 pid 章）不做死亡推断，�
   const start = Date.now()
   store.set('k2', 'v2')
   assert.ok(Date.now() - start >= 300, `不可解析锁照常等待降级（实际 ${Date.now() - start}ms）`)
-  assert.equal(store.get('k2'), 'v2')
+  assert.equal(store.get('k2'), undefined, '外来锁不可判死时不得无锁写入')
   assert.equal(readFileSync(lockPath, 'utf8'), 'garbage-without-pid-stamp', '外来锁内容不被触碰')
 })
 
-test('store：跨进程写锁——新鲜锁占位时两轮等待后降级强写，他人锁绝不误删（v0.6.5 R4-1-P2-2 双轮等待）', () => {
+test('store：跨进程写锁——新鲜锁占位时两轮等待后返回 STATE_BUSY，他人锁绝不误删', () => {
   const { path } = tempStorePath()
   const store = createStore(path)
   store.set('k', 'v')
@@ -200,9 +200,9 @@ test('store：跨进程写锁——新鲜锁占位时两轮等待后降级强写
   const future = new Date(Date.now() + 60_000)
   utimesSync(lockPath, future, future)
   const start = Date.now()
-  store.set('k2', 'v2') // 等满两轮自旋（≈480ms）后降级无锁写入（保底不丢可用性）
+  store.set('k2', 'v2') // 等满两轮自旋（≈480ms）后拒绝无锁写入
   assert.ok(Date.now() - start >= 300, `确实等待了锁（实际 ${Date.now() - start}ms）`)
-  assert.equal(store.get('k2'), 'v2') // 降级写成功
+  assert.equal(store.get('k2'), undefined) // C2：失败不发布内存态
   // 属主校验：降级路径不碰他人锁文件（内容不是自己 → 绝不误删重抢的新锁）
   assert.equal(existsSync(lockPath), true)
   assert.equal(readFileSync(lockPath, 'utf8'), '1:alive')

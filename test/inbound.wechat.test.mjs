@@ -435,9 +435,17 @@ test('wechat:ctx 值未变不重复写盘（省一次全量 save）；值变化�
     { ret: 0, msgs: [textMsg({ from_user_id: 'WX_SAME', message_id: 'A2', context_token: 'CTX_SAME' })] },
     { ret: 0, msgs: [textMsg({ from_user_id: 'WX_SAME', message_id: 'A3', context_token: 'CTX_CHANGED' })] },
   ] } })
-  const realSet = rig.store.set.bind(rig.store)
   const writes = []
-  rig.store.set = (key, value) => { if (String(key).startsWith('wechat:ctx:')) writes.push(value); return realSet(key, value) }
+  const realTransact = rig.store.transact.bind(rig.store)
+  rig.store.transact = (mutator) => realTransact((draft) => {
+    const before = Object.fromEntries(Object.entries(draft).filter(([key]) => key.startsWith('wechat:ctx:')))
+    const result = mutator(draft)
+    const after = Object.fromEntries(Object.entries(draft).filter(([key]) => key.startsWith('wechat:ctx:')))
+    for (const [key, value] of Object.entries(after)) {
+      if (before[key] !== value) writes.push(value)
+    }
+    return result
+  })
   rig.inbound.start()
   await tick(30)
   assert.deepEqual(writes, ['CTX_SAME', 'CTX_CHANGED'], '相同 token 第二次不写盘，变化时才写')

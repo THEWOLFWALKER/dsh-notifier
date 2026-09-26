@@ -665,7 +665,14 @@ say(t.helpLines.join('\n'))
     if (matched.sid === null) { say(matched.message); return }
     const pending = taskSelection !== null ? taskSelection.get(envelope) : undefined
     if (pending !== undefined) {
-      if (await selectAndDeliver(envelope, matched.sid, pending.originalText, say, pending.attachments ?? [])) taskSelection.cancel(envelope)
+      const taken = typeof taskSelection.take === 'function'
+        ? taskSelection.take(envelope, matched.sid)
+        : { ok: false, reason: 'storage-failed' }
+      if (taken.ok !== true) {
+        say(taken.reason === 'storage-failed' ? '任务选择保存失败，请稍后重试' : '该任务不在当前选择项中，请重新选择')
+        return
+      }
+      await selectAndDeliver(envelope, matched.sid, taken.originalText, say, taken.attachments ?? [])
       return
     }
     if (applyBinding(envelope, matched.sid) !== true) {
@@ -904,6 +911,10 @@ say(t.helpLines.join('\n'))
       if (selection.ok === true) {
         await selectAndDeliver(envelope, selection.sessionId, selection.originalText,
           (message) => reply(envelope.channel, envelope.chatId, message), selection.attachments ?? [])
+        return
+      }
+      if (selection.reason === 'storage-failed') {
+        reply(envelope.channel, envelope.chatId, '任务选择保存失败，请稍后重试')
         return
       }
       if (selection.reason === 'invalid') {

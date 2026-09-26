@@ -115,6 +115,17 @@ test('task selection: resolving by number clears pending so original text delive
   assert.deepEqual(sel.resolve(eg, '1'), { ok: false, reason: 'no-pending', candidates: [] })
 })
 
+test('C4：任务选择 durable 删除失败时不消费内存态、不返回成功', () => {
+  const store = memoryStore()
+  const sel = createTaskSelection({ store })
+  const eg = { channel: 'telegram', userId: 'u1', chatId: 'u1' }
+  sel.begin(eg, ['sid-a'], 'msg')
+  store.delete = () => { throw new Error('disk unavailable') }
+  const result = sel.resolve(eg, '1')
+  assert.deepEqual(result, { ok: false, reason: 'storage-failed', candidates: ['sid-a'] })
+  assert.equal(sel.has(eg), true)
+})
+
 test('task selection: out-of-range number does not clear pending', () => {
   const store = memoryStore()
   const sel = createTaskSelection({ store })

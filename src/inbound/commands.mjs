@@ -179,7 +179,13 @@ export function createCommandHandler(options = {}, strings) {
     if (typeof identity.allows === 'function' && identity.allows(envelope.channel, envelope.userId)) {
       return t.commands.alreadyBound
     }
-    const verdict = pairing.redeem(code, { channel: envelope.channel, userId: envelope.userId, label })
+    const verdict = typeof pairing.redeemAndBind === 'function'
+      ? pairing.redeemAndBind(
+        code,
+        { channel: envelope.channel, userId: envelope.userId, label },
+        (draft, binding) => identity.addBindingToDraft?.(draft, binding) ?? { ok: false, reason: 'storage-failed' },
+      )
+      : pairing.redeem(code, { channel: envelope.channel, userId: envelope.userId, label })
     if (!verdict.ok) {
       // 引导态自愈：bootstrap 过期且无在铸码 → 重铸一枚（新码写 0600 码文件），提示取新码
       if (verdict.reason === 'expired' && identity.isEmpty()) {
@@ -204,12 +210,14 @@ export function createCommandHandler(options = {}, strings) {
       }
       return reasons[verdict.reason] ?? t.commands.pairFailed(verdict.reason)
     }
-    const added = identity.addBinding({
-      channel: envelope.channel,
-      userId: envelope.userId,
-      label,
-      origin: 'paired',
-    })
+    const added = typeof pairing.redeemAndBind === 'function'
+      ? verdict
+      : identity.addBinding({
+        channel: envelope.channel,
+        userId: envelope.userId,
+        label,
+        origin: 'paired',
+      })
     if (!added.ok) {
       if (added.reason === 'already-bound') {
         return t.commands.alreadyBound
