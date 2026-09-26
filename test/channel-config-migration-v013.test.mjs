@@ -98,6 +98,42 @@ test('v0.13 shared service: Admin write/read and Native runtime observe the same
   assert.equal(existsSync(file), true)
 })
 
+test('v0.13 control-surface facade: Admin test and revoke stay on the canonical service', async () => {
+  const { file } = tempState()
+  const store = createStore(file)
+  const source = createOutboundSource([])
+  const service = createOutboundConfigService({
+    store,
+    yamlRows: new Map(),
+    source,
+    allowLegacy: false,
+  })
+  const tested = []
+  const api = createAdminApi({
+    store,
+    outboundConfig: service,
+    channelTest: async (type, raw) => {
+      tested.push({ type, raw })
+      return { ok: true, confirmed: true }
+    },
+  })
+
+  api.putOutboundChannel('bark', { key: 'canonical-only' })
+  const result = await api.testOutboundChannel('bark')
+  assert.equal(result.confirmed, true)
+  assert.deepEqual(tested, [{ type: 'bark', raw: { key: 'canonical-only' } }])
+  const removed = api.deleteOutboundChannel('bark', { mode: 'revoke' })
+  assert.equal(removed.type, 'bark')
+  assert.equal(removed.deleted, true)
+  assert.equal(removed.direction, 'outbound')
+  assert.equal(removed.applied, true)
+  assert.equal(removed.applyMode, 'hot')
+  assert.equal(typeof removed.configRevision, 'number')
+  assert.equal(store.get('channel:bark:outbound'), undefined)
+  assert.equal(store.get('admin:channel:bark:outbound'), undefined)
+  assert.equal(source.has('bark'), false)
+})
+
 test('v0.13 apply failure: durable desired config is saved while runtime is marked restart-pending', () => {
   const { file } = tempState()
   const store = createStore(file)
