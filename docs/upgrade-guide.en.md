@@ -97,7 +97,7 @@ Developers can also inspect the installed package:
 
 ```text
 exports["./client"] = "./client.js"
-dshQuality.testCount = 1985    # v0.13.0 convergence line
+dshQuality.testCount = 2011    # current dev follow-up; last published v0.13.0 snapshot was 1985
 ```
 
 ## 4. Version says 0.12, behavior looks old

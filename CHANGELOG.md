@@ -1,5 +1,9 @@
 # Changelog
 
+## [Unreleased]
+
+- v0.13 dev follow-up：管理台补齐中英文资源表与安全内联序列化，公开投递能力改为证据边界表述，npm 白名单覆盖 README 文档/图片并加入包内容回归；高风险专项复核与全量 `npm test` 均为 **2011/2011**（0 fail，0 skip）。本节未触发版本递增、npm 发布或 `main`/tag/GitHub Release 变更。
+
 ## [0.13.0] - 2026-09-26（Architecture convergence release gate）
 
 架构收敛发布门。把 v0.12 之后的耐久性、控制面、网络边界与前端生命周期修复合并为一条可复核的发布线；`v0.13.0` 已发布到 npm，本次 release closeout 继续完成 `main`、tag 与 GitHub Release。

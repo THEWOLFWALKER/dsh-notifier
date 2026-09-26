@@ -21,8 +21,8 @@
 </div>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/tests-1985-brightgreen" alt="1985 个测试">
-  `dsh-notifier@0.13.0` · test/ 1985 个测试 · 1985 个自动化契约测试
+  <img src="https://img.shields.io/badge/tests-2011-brightgreen" alt="2011 个测试">
+  `dsh-notifier@0.13.0` · test/ 2011 个测试 · 2011 个自动化契约测试
 </p>
 
 ## 它解决什么
