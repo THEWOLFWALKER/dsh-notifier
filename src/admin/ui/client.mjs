@@ -15,10 +15,20 @@ var scanTimers = {}
 var flashTimer = null
 var MODE_KEY = 'dsh-admin-mode'
 var TESTED_KEY = 'dsh-admin-first-run-tested'
+var ADMIN_STRINGS = window.__DSH_NOTIFIER_ADMIN_STRINGS__ || {}
 
 function $(sel, root) { return (root || document).querySelector(sel) }
 function $all(sel, root) { return Array.prototype.slice.call((root || document).querySelectorAll(sel)) }
 function plain(v) { return v && typeof v === 'object' && !Array.isArray(v) ? v : {} }
+function tr(path, vars) {
+  var value = path.split('.').reduce(function (node, key) {
+    return node && Object.prototype.hasOwnProperty.call(node, key) ? node[key] : null
+  }, ADMIN_STRINGS)
+  if (typeof value !== 'string') return path
+  return value.replace(/\{([A-Za-z0-9_.-]+)\}/g, function (match, key) {
+    return vars && vars[key] !== undefined && vars[key] !== null ? String(vars[key]) : match
+  })
+}
 function esc(v) {
   return String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;')
@@ -40,7 +50,7 @@ function flash(text, kind) {
   flashTimer = setTimeout(function () { $('#globalMsg').className = 'msg' }, 6000)
 }
 function setLoading(on) {
-  $('#loadState').textContent = on ? '加载中…' : ''
+  $('#loadState').textContent = on ? tr('loading') : ''
   $('#btnRefresh').disabled = on
 }
 function setBtnBusy(btn, text) {
@@ -56,14 +66,14 @@ function restoreBtn(btn) {
 }
 function sidPrefix(id) { id = String(id || ''); return id.length > 8 ? id.slice(0, 8) + '…' : id }
 function fmtTime(v) {
-  if (v === undefined || v === null || v === '') return '(未知)'
+  if (v === undefined || v === null || v === '') return tr('unknown')
   var n = Number(v)
   var d = Number.isFinite(n) && n > 0 ? new Date(n) : new Date(v)
   return isNaN(d.getTime()) ? String(v) : d.toLocaleString()
 }
 function sourceLabel(s) {
-  var map = { session: '会话 diff', 'agent-exact': '精确 agentId', 'agent-workspace': 'workspace', global: '全局渠道池' }
-  return map[s] || s || '(未知)'
+  var map = { session: 'sourceSession', 'agent-exact': 'sourceAgentExact', 'agent-workspace': 'sourceAgentWorkspace', global: 'sourceGlobal' }
+  return map[s] ? tr(map[s]) : (s || tr('unknown'))
 }
 
 // ---------- 鉴权：fragment 启动凭证 + 站内解锁门；会话级 Bearer token；单飞门 + 401 单次恢复 ----------
@@ -145,7 +155,7 @@ function onUnlockSubmit(ev) {
   if (!t) {
     var err = $('#unlockError')
     if (err) {
-      err.textContent = '请输入访问 token（终端首次启动时打印；遗失可删除 state 中的 admin:token-hash 后重启重新生成）'
+      err.textContent = tr('enterTokenEmpty')
       err.hidden = false
     }
     return
@@ -177,7 +187,7 @@ function onUnlockPeek() {
   if (!input) return
   var show = input.type !== 'text'
   try { input.type = show ? 'text' : 'password' } catch (e) {}
-  if (btn) btn.textContent = show ? '隐藏' : '显示'
+  if (btn) btn.textContent = show ? tr('peekHide') : tr('peekShow')
 }
 function onTokenStateClick() {
   if (getToken()) { gateMode = 'change'; showGate('') }
@@ -185,7 +195,7 @@ function onTokenStateClick() {
 }
 function renderTokenState() {
   var t = getToken()
-  $('#tokenState').textContent = t ? '会话 token 已设置（点击更换）' : '未设置 token（点击输入）'
+  $('#tokenState').textContent = t ? tr('tokenSet') : tr('tokenUnset')
   $('#btnLogout').disabled = !t
 }
 function renderEntryPoint() {
@@ -197,11 +207,11 @@ function copyEntryPoint() {
   var target = renderEntryPoint()
   var clipboard = window.navigator && window.navigator.clipboard
   if (!clipboard || typeof clipboard.writeText !== 'function') {
-    flash('当前地址已显示在顶部，可手动复制', 'warn')
+    flash(tr('addressShownTop'), 'warn')
     return
   }
-  clipboard.writeText(target).then(function () { flash('管理台地址已复制', 'ok') }, function () {
-    flash('复制失败：当前地址已显示在顶部，可手动复制', 'warn')
+  clipboard.writeText(target).then(function () { flash(tr('addressCopied'), 'ok') }, function () {
+    flash(tr('copyFailedShownTop'), 'warn')
   })
 }
 /** fragment 启动凭证：读 #token=...（零配置首访链接，仅此一次有效输出）。 */
@@ -244,7 +254,7 @@ function exchangeLaunchTicket(ticket) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ ticket: ticket }),
   }).then(function (res) {
-    if (!res.ok) throw new Error('启动票据无效或已过期')
+    if (!res.ok) throw new Error(tr('launchTicketInvalid'))
     return res.json()
   })
 }
@@ -290,7 +300,7 @@ function retryRelogin(path, options, t) {
     if (res.status === 401) {
       setToken('')
       renderTokenState()
-      throw new Error('鉴权失败：token 无效或已失效（已按一次自动重登录处理，请点击右上角 token 状态手动更新）')
+      throw new Error(tr('authReloginFailed'))
     }
     markAuthOk()
     adoptToken(t)
@@ -302,7 +312,7 @@ function api(path, options) {
   var token = getToken()
   var gen = authGen
   if (!token) return acquireToken().then(function (t) {
-    if (!t) throw new Error('未提供 token，点击右上角 token 状态重新输入')
+    if (!t) throw new Error(tr('noTokenRetry'))
     return apiWith(path, options, t, gen)
   })
   return apiWith(path, options, token, gen)
@@ -317,26 +327,26 @@ function apiWith(path, options, token, gen) {
     }
     if (gen < authGen) {
       // 用已作废 token 发出的迟到 401：请求本身过期，不重登录、只拒掉这一条
-      throw new Error('鉴权失败：该请求基于已失效的 token，请刷新后重试')
+      throw new Error(tr('staleTokenRequest'))
     }
     if (reloginPromise) {
       // 已有在途重登录（并发 401）→ 等它，用新 token 各自重试一次
       return reloginGate().then(function (t) {
-        if (!t) throw new Error('登录已取消')
+        if (!t) throw new Error(tr('loginCancelled'))
         return retryRelogin(path, options, t)
       })
     }
-    if (recoveryUsed) throw new Error('鉴权失败：token 无效或已失效（已自动重试一次，请点击右上角 token 状态手动更新）')
+    if (recoveryUsed) throw new Error(tr('authRetriedFailed'))
     recoveryUsed = true
     // 保留更具体的预置原因（如 init 的 fragment 凭证失效说明）；无预置时才用通用文案
-    if (!gateReason) gateReason = 'token 无效或已失效，请重新输入（终端首次启动时打印；遗失可删除 state 中的 admin:token-hash 后重启重新生成）。'
+    if (!gateReason) gateReason = tr('gateInvalidReason')
     return reloginGate().then(function (t) {
-      if (!t) throw new Error('登录已取消')
+      if (!t) throw new Error(tr('loginCancelled'))
       return retryRelogin(path, options, t)
     })
   }).then(function (res) {
-    return res.json().catch(function () { throw new Error('HTTP ' + res.status + '：响应不是 JSON') }).then(function (data) {
-      if (!res.ok) throw new Error(data && data.error ? data.error : 'HTTP ' + res.status)
+    return res.json().catch(function () { throw new Error(tr('httpNotJson', { status: res.status })) }).then(function (data) {
+      if (!res.ok) throw new Error(data && data.error ? data.error : tr('httpStatus', { status: res.status }))
       return data
     })
   })
@@ -360,9 +370,9 @@ function loadAll() {
       state.overview = rs[0]; state.bindings = rs[1]; state.sessions = rs[2]; state.channels = rs[3]; state.members = rs[4]; state.questions = rs[5]
       draft = null
       renderDashboard(); renderBindings(); renderSessions(); renderChannels(); renderMembers(); renderPendingQuestions()
-      flash('已刷新 ' + new Date().toLocaleTimeString(), 'ok')
+      flash(tr('refreshed', { time: new Date().toLocaleTimeString() }), 'ok')
     })
-    .catch(function (e) { flash('加载失败：' + errText(e), 'err') })
+    .catch(function (e) { flash(tr('loadFailed', { error: errText(e) }), 'err') })
     .then(function () { setLoading(false); renderTokenState() })
 }
 function switchTab(name) {
@@ -378,7 +388,7 @@ function applyAdminMode() {
   var advanced = readAdminMode() === 'advanced'
   $all('.advanced-tab').forEach(function (el) { el.hidden = !advanced })
   var toggle = $('#modeToggle')
-  if (toggle) toggle.textContent = advanced ? '关闭高级设置' : '打开高级设置'
+  if (toggle) toggle.textContent = advanced ? tr('modeClose') : tr('modeOpen')
   if (!advanced && (document.querySelector('#tab-bindings.active') || document.querySelector('#tab-sessions.active'))) switchTab('dashboard')
 }
 function setAdminMode(mode) {
@@ -434,18 +444,22 @@ function renderDashboard() {
   // 英雄区：系统是否工作、通知是否可达（一眼状态）
   var hero = $('#heroState')
   if (hero) {
-    var hs = '尚未配置通知渠道'
+    var hs = tr('heroUnconfigured')
     var hc = 'hero-state none'
-    if (anyOutEnabled && tested) { hs = '通知链路正常'; hc = 'hero-state ok' }
-    else if (tested && anyOutConfigured) { hs = '已验证送达 · 重启后并入投递'; hc = 'hero-state warn' }
-    else if (anyOutConfigured) { hs = '已保存 · 待发送测试通知'; hc = 'hero-state warn' }
+    if (anyOutEnabled && tested) { hs = tr('heroReady'); hc = 'hero-state ok' }
+    else if (tested && anyOutConfigured) { hs = tr('heroTested'); hc = 'hero-state warn' }
+    else if (anyOutConfigured) { hs = tr('heroSaved'); hc = 'hero-state warn' }
     hero.textContent = hs
     hero.className = hc
   }
   var heroSub = $('#heroSub')
   if (heroSub) {
-    heroSub.textContent = '出站 ' + outEnabled + '/' + out.length + ' 已启用 · 入站 '
-      + inn.filter(function (c) { return c.configured }).length + ' 已配置 · 成员 ' + (m.total !== undefined ? m.total : 0)
+    heroSub.textContent = tr('heroSub', {
+      enabled: outEnabled,
+      total: out.length,
+      inbound: inn.filter(function (c) { return c.configured }).length,
+      members: m.total !== undefined ? m.total : 0,
+    })
   }
   var beacon = $('#heroBeacon')
   if (beacon) beacon.className = 'beacon' + (anyOutEnabled && tested ? '' : ' dim')
@@ -473,13 +487,13 @@ function renderDashboard() {
   if (na) {
     var action
     if (!anyOutConfigured) {
-      action = { cls: 'todo', title: '第一步：配置一个通知渠道', desc: '在上方向导选择你手机上已有的应用，填入凭证并当场发送测试通知。', btn: '开始配置', act: 'setup' }
+      action = { cls: 'todo', title: tr('nextSetupTitle'), desc: tr('nextSetupDesc'), btn: tr('nextSetupBtn'), act: 'setup' }
     } else if (!tested) {
-      action = { cls: 'todo', title: '发送测试通知完成初始化', desc: '保存成功不等于通知可达——发一条真实测试通知确认链路。', btn: '去测试', act: 'setup' }
+      action = { cls: 'todo', title: tr('nextTestTitle'), desc: tr('nextTestDesc'), btn: tr('nextTestBtn'), act: 'setup' }
     } else if (!hasMembers) {
-      action = { cls: '', title: '可选：配对成员，启用手机远程控制', desc: '通知已可用。需要手机回复 / 审批 agent 时再去配对，不阻塞使用。', btn: '去成员页', act: 'members' }
+      action = { cls: '', title: tr('nextMemberTitle'), desc: tr('nextMemberDesc'), btn: tr('nextMemberBtn'), act: 'members' }
     } else {
-      action = { cls: 'ok', title: '一切就绪', desc: '通知链路已验证，成员已配对；agent 的通知会直接推送到你的设备。', btn: '', act: '' }
+      action = { cls: 'ok', title: tr('nextReadyTitle'), desc: tr('nextReadyDesc'), btn: '', act: '' }
     }
     na.innerHTML = '<div class="nextcard ' + action.cls + '"><span class="nc-ico"><span class="dot '
       + (action.cls === 'ok' ? 'ok' : 'warn') + '"></span></span><div><b>' + esc(action.title) + '</b><p>'
@@ -489,19 +503,19 @@ function renderDashboard() {
   }
 
   $('#outGroups').innerHTML = chipGroups([
-    ['已启用（configured 且 enabled）', 'ok', out.filter(function (c) { return c.configured && c.enabled })],
-    ['已配置未启用', 'warn', out.filter(function (c) { return c.configured && !c.enabled })],
-    ['未配置', 'none', out.filter(function (c) { return !c.configured })]
-  ], '出站通道 ' + out.length + ' 个，均未配置（打开「通知渠道」页按字段配置；YAML 仅作为高级入口）')
+    [tr('groupEnabled'), 'ok', out.filter(function (c) { return c.configured && c.enabled })],
+    [tr('groupConfiguredDisabled'), 'warn', out.filter(function (c) { return c.configured && !c.enabled })],
+    [tr('groupUnconfigured'), 'none', out.filter(function (c) { return !c.configured })]
+  ], tr('outNoneEmpty', { total: out.length }))
   $('#inGroups').innerHTML = chipGroups([
-    ['已配置', 'ok', inn.filter(function (c) { return c.configured })],
-    ['未配置', 'none', inn.filter(function (c) { return !c.configured })]
-  ], '（无入站通道）')
+    [tr('inConfigured'), 'ok', inn.filter(function (c) { return c.configured })],
+    [tr('groupUnconfigured'), 'none', inn.filter(function (c) { return !c.configured })]
+  ], tr('inNoneEmpty'))
   var audit = Array.isArray(o.audit) ? o.audit.slice(0, 30) : []
   $('#auditList').innerHTML = audit.map(function (row) {
     var r = plain(row)
     return '<div class="auditrow"><span class="at">' + esc(fmtTime(r.time)) + '</span><b>' + esc(r.action || '') + '</b><span class="mono">' + esc(fmtDetail(r.detail)) + '</span></div>'
-  }).join('') || '<div class="muted small" style="padding:8px 0">暂无审计记录</div>'
+  }).join('') || '<div class="muted small" style="padding:8px 0">' + esc(tr('noAudit')) + '</div>'
 }
 function onNextActionClick(ev) {
   var btn = ev.target && ev.target.closest ? ev.target.closest('button[data-next]') : null
@@ -520,38 +534,9 @@ function onNextActionClick(ev) {
 // 完成条件唯一：用户确实收到测试通知（TESTED_KEY 落 localStorage）。入站/成员不阻塞。
 var setupStep = 1
 var setupType = ''
-var CHANNEL_META = {
-  bark: { name: 'Bark', tagline: 'iPhone 原生推送，一个 URL 即通', rec: true },
-  telegram: { name: 'Telegram', tagline: 'Bot 推送到手机与桌面', rec: true },
-  feishu: { name: '飞书', tagline: '群机器人 webhook 推送', rec: true },
-  dingtalk: { name: '钉钉', tagline: '群机器人 webhook 推送', rec: true },
-  wxpusher: { name: 'WxPusher', tagline: '微信服务通知推送', rec: true },
-  pushplus: { name: 'PushPlus', tagline: '微信公众号消息推送', rec: false },
-  serverchan: { name: 'Server酱', tagline: '微信方糖推送', rec: false },
-  'wecom-app': { name: '企业微信应用', tagline: '企业微信应用消息', rec: false },
-  'qq-bot': { name: 'QQ 机器人', tagline: 'QQ 单聊 / 群聊推送', rec: false },
-  webhook: { name: 'Webhook', tagline: 'POST JSON 到自定义地址', rec: false },
-  desktop: { name: '桌面通知', tagline: '本机系统通知弹窗', rec: false },
-  bell: { name: '终端响铃', tagline: '本机终端提示音', rec: false },
-  slack: { name: 'Slack', tagline: 'Slack webhook 推送', rec: false },
-  discord: { name: 'Discord', tagline: 'Discord webhook 推送', rec: false },
-  wecom: { name: '企业微信机器人', tagline: '群机器人 webhook 推送', rec: false },
-  ntfy: { name: 'ntfy', tagline: '开源推送服务', rec: false },
-  gotify: { name: 'Gotify', tagline: '自托管推送服务', rec: false },
-  pushover: { name: 'Pushover', tagline: '多平台推送服务', rec: false },
-  chanify: { name: 'Chanify', tagline: 'iOS 推送', rec: false },
-  pushdeer: { name: 'PushDeer', tagline: '自托管推送', rec: false },
-  mattermost: { name: 'Mattermost', tagline: 'Mattermost webhook', rec: false },
-  gchat: { name: 'Google Chat', tagline: 'Google Chat webhook', rec: false },
-  teams: { name: 'Teams', tagline: 'Microsoft Teams webhook', rec: false },
-  xizhi: { name: '息知', tagline: '微信息知推送', rec: false },
-  qmsg: { name: 'Qmsg', tagline: 'Qmsg 酱推送', rec: false },
-  igot: { name: 'iGot', tagline: 'iGot 推送', rec: false },
-  onebot: { name: 'OneBot', tagline: 'OneBot 协议推送', rec: false }
-}
 function setupMeta(type) {
-  var m = CHANNEL_META[type]
-  if (m) return m
+  var m = ADMIN_STRINGS.channelMeta && ADMIN_STRINGS.channelMeta[type]
+  if (m) return { name: m.name, tagline: m.tagline, rec: m.rec === true }
   return { name: type, tagline: '', rec: false }
 }
 function glyphOf(type) { return String(type || '?').slice(0, 2).toUpperCase() }
@@ -574,8 +559,8 @@ function tileHtml(c) {
     + '<span class="tile-glyph">' + esc(glyphOf(c.type)) + '</span>'
     + '<b>' + esc(m.name) + '</b>'
     + (m.tagline ? '<span class="tile-tag">' + esc(m.tagline) + '</span>' : '')
-    + (m.rec ? '<span class="tile-rec">推荐</span>' : '')
-    + (c.configured ? '<span class="tile-tag">已保存</span>' : '')
+    + (m.rec ? '<span class="tile-rec">' + esc(tr('tileRecommended')) + '</span>' : '')
+    + (c.configured ? '<span class="tile-tag">' + esc(tr('tileSaved')) + '</span>' : '')
     + '</button>'
 }
 function renderSetupTiles() {
@@ -583,7 +568,7 @@ function renderSetupTiles() {
   if (!box) return
   var rows = (Array.isArray(state.channels) ? state.channels : []).filter(function (c) { return c && c.direction === 'outbound' })
   if (rows.length === 0) {
-    box.innerHTML = '<p class="muted small">渠道清单尚未加载（后端不可用或请求超时）。请点右上角「刷新」重试。</p>'
+    box.innerHTML = '<p class="muted small">' + esc(tr('tilesNotLoaded')) + '</p>'
     return
   }
   var rec = rows.filter(function (c) { return setupMeta(c.type).rec })
@@ -592,7 +577,7 @@ function renderSetupTiles() {
   // 否则展开区会沦为外层网格的一个格子，被压成单列（实测 1440px 下 27 张瓷砖挤成 1 列）。
   var html = '<div class="tiles">' + rec.map(tileHtml).join('')
   if (rest.length > 0) {
-    html += '<button type="button" class="tile more" id="setupMore">全部 ' + rows.length + ' 个渠道 →</button>'
+    html += '<button type="button" class="tile more" id="setupMore">' + esc(tr('tileMore', { total: rows.length })) + '</button>'
     html += '</div><div id="setupRest" class="tiles" hidden>' + rest.map(tileHtml).join('') + '</div>'
   } else {
     html += '</div>'
@@ -619,13 +604,13 @@ function setupFieldRow(key, spec, current) {
     + '</span><input data-sf="' + esc(key) + '"' + (req ? ' data-req="1"' : '')
     + ' value="' + esc(shown) + '"'
     + (desc ? ' title="' + esc(desc) + '" placeholder="' + esc(desc) + '"' : '')
-    + '>' + (secret ? '<button type="button" data-clear-field="' + esc(key) + '">清除</button>' : '') + '</label>'
+    + '>' + (secret ? '<button type="button" data-clear-field="' + esc(key) + '">' + esc(tr('fieldClear')) + '</button>' : '') + '</label>'
 }
 function buildSetupForm() {
   var row = setupRowOf(setupType)
   var meta = setupMeta(setupType)
   var title = $('#setupFormTitle')
-  if (title) title.textContent = '填写 ' + meta.name + ' 凭证'
+  if (title) title.textContent = tr('setupFormTitle', { name: meta.name })
   var box = $('#setupForm')
   if (!box) return
   var specs = plain(row && row.fields)
@@ -646,9 +631,9 @@ function buildSetupForm() {
   }).join('')
   // spec 声明 docUrl 的渠道（wps-bot）在向导表单底部附官方文档跳转
   if (row && typeof row.docUrl === 'string' && row.docUrl !== '') {
-    html += '<p class="muted small"><a href="' + esc(row.docUrl) + '" target="_blank" rel="noopener noreferrer">官方接入文档 ↗</a></p>'
+    html += '<p class="muted small"><a href="' + esc(row.docUrl) + '" target="_blank" rel="noopener noreferrer">' + esc(tr('setupDocLink')) + '</a></p>'
   }
-  box.innerHTML = html || '<p class="muted small">（该渠道暂无可编辑字段）</p>'
+  box.innerHTML = html || '<p class="muted small">' + esc(tr('setupFormEmpty')) + '</p>'
 }
 function setupSelect(type) {
   setupType = type
@@ -681,63 +666,63 @@ function setupSubmit(type, payload, alsoTest, btn) {
   var meta = setupMeta(type)
   if (alsoTest) {
     setupGoto(3)
-    renderTestState('saving', '正在保存 ' + meta.name + ' 配置…')
+    renderTestState('saving', tr('setupSavingConfig', { name: meta.name }))
   }
-  setBtnBusy(btn, alsoTest ? '保存并测试中…' : '保存中…')
+  setBtnBusy(btn, alsoTest ? tr('btnSavingAndTesting') : tr('btnSaving'))
   return api('/api/channels/outbound/' + encodeURIComponent(type), { method: 'PUT', body: { config: payload } })
     .then(function (r) {
       if (plain(r).saved === false) {
         if (alsoTest) { setupGoto(2) }
-        setStatus($('#setupMsg2'), '写入失败：state 存储不可用（查看插件日志）', 'err')
+        setStatus($('#setupMsg2'), tr('writeStateFailed'), 'err')
         return null
       }
       if (!alsoTest) {
-        setStatus($('#setupMsg2'), '配置已保存（state.json，0600）。保存成功不等于通知可达——点「保存并发送测试通知」当场验证；投递层在下次启动时并入运行时。', 'ok')
+        setStatus($('#setupMsg2'), tr('setupSaveOnlyDone'), 'ok')
         return loadChannelsOnly()
       }
-      renderTestState('testing', '配置已保存，正在向 ' + meta.name + ' 发送真实测试通知…')
+      renderTestState('testing', tr('setupTesting', { name: meta.name }))
       return setupTest(null)
     })
     .catch(function (e) {
-      if (alsoTest) renderTestState('fail', '保存失败：' + errText(e) + '。可返回修改后重试，输入已保留。')
-      else setStatus($('#setupMsg2'), '保存失败：' + errText(e), 'err')
+      if (alsoTest) renderTestState('fail', tr('saveFailedRetry', { error: errText(e) }))
+      else setStatus($('#setupMsg2'), tr('saveFailed', { error: errText(e) }), 'err')
     })
     .then(function () { restoreBtn(btn) })
 }
 /** 向导即时真实测试：读取最新合并配置（保存后无需重启）。失败保留输入并给出重试入口。 */
 function setupTest(btn) {
   if (!setupType) return Promise.resolve()
-  setBtnBusy(btn, '发送中…')
-  renderTestState('testing', '正在发送测试通知…')
+  setBtnBusy(btn, tr('btnSending'))
+  renderTestState('testing', tr('setupTestSending'))
   return api('/api/channels/outbound/' + encodeURIComponent(setupType) + '/test', { method: 'POST' })
     .then(function (r) {
       if (plain(r).ok === true) {
         markTestedState()
         var detail = plain(r).detail
         var done = $('#setupDoneDetail')
-        if (done && typeof detail === 'string' && detail !== '') done.textContent = '送达回执：' + detail
+        if (done && typeof detail === 'string' && detail !== '') done.textContent = tr('deliveryReceipt', { detail: detail })
         setupGoto(4)
         loadAll()
       } else {
         var d = plain(r).detail
-        renderTestState('fail', '测试失败：' + (typeof d === 'string' && d !== '' ? d : '渠道返回失败') + '。请检查必填凭证后重试，输入已保留。')
+        renderTestState('fail', tr('testFailedRetry', { detail: typeof d === 'string' && d !== '' ? d : tr('channelReturnedFailure') }))
       }
     })
     .catch(function (e) {
-      renderTestState('fail', '测试失败：' + errText(e) + '。请检查必填凭证后重试，输入已保留。')
+      renderTestState('fail', tr('testFailedRetry', { detail: errText(e) }))
     })
     .then(function () { restoreBtn(btn) })
 }
 function setupSave(alsoTest, btn) {
   var msg = $('#setupMsg2')
-  if (!setupType) { setStatus(msg, '请先选择一个渠道', 'err'); return }
+  if (!setupType) { setStatus(msg, tr('setupPickChannel'), 'err'); return }
   var collected = collectSetupPayload()
   if (collected.missing.length > 0) {
-    setStatus(msg, '必填字段未填写：' + collected.missing.join('、'), 'err')
+    setStatus(msg, tr('missingRequired', { fields: collected.missing.join(tr('sessionChannelsJoiner')) }), 'err')
     return
   }
   if (Object.keys(collected.payload).length === 0) {
-    setStatus(msg, '没有修改的字段（值为 *** 视为未修改，空值不提交），已跳过保存', 'warn')
+    setStatus(msg, tr('noChangedFields'), 'warn')
     return
   }
   setupSubmit(setupType, collected.payload, alsoTest, btn)
@@ -749,7 +734,7 @@ function dismissSetup() {
 function finishSetup() {
   switchTab('dashboard')
   renderDashboard()
-  flash('初始化完成：通知链路已验证送达', 'ok')
+  flash(tr('setupDone'), 'ok')
 }
 function onSetupClick(ev) {
   var btn = ev.target && ev.target.closest ? ev.target.closest('button') : null
@@ -758,7 +743,7 @@ function onSetupClick(ev) {
   if (clearKey) {
     var marked = btn.getAttribute('data-clear') === '1'
     btn.setAttribute('data-clear', marked ? '0' : '1')
-    btn.textContent = marked ? '清除' : '已标记清除'
+    btn.textContent = marked ? tr('fieldClear') : tr('fieldCleared')
     btn.className = marked ? '' : 'muted-btn'
     return
   }
@@ -767,7 +752,7 @@ function onSetupClick(ev) {
   if (btn.id === 'setupMore') {
     var rest = $('#setupRest')
     if (rest) rest.hidden = !rest.hidden
-    btn.textContent = rest && rest.hidden === false ? '收起 ↑' : btn.textContent
+    btn.textContent = rest && rest.hidden === false ? tr('tileMoreCollapse') : btn.textContent
     return
   }
   if (btn.id === 'setupBack2') { setupGoto(1); return }
@@ -783,20 +768,20 @@ function bannerTest(btn) {
     if (!row && c.direction === 'outbound' && c.configured && c.enabled) row = c
   })
   var msg = $('#bannerMsg')
-  if (!row) { setStatus(msg, '暂无已启用出站通道', 'err'); return Promise.resolve() }
-  setBtnBusy(btn, '发送中…')
+  if (!row) { setStatus(msg, tr('bannerNoEnabled'), 'err'); return Promise.resolve() }
+  setBtnBusy(btn, tr('btnSending'))
   return api('/api/channels/outbound/' + encodeURIComponent(row.type) + '/test', { method: 'POST' })
     .then(function (r) {
       if (plain(r).ok === true) {
         markTestedState()
-        flash('测试通过：通知已送达 ' + row.type, 'ok')
+        flash(tr('bannerTestPassed', { type: row.type }), 'ok')
         renderDashboard()
       } else {
         var d = plain(r).detail
-        setStatus(msg, '测试失败：' + (typeof d === 'string' && d !== '' ? d : '渠道返回失败') + '；请到「通知渠道」页检查凭证后重试', 'err')
+        setStatus(msg, tr('bannerTestFailed', { detail: typeof d === 'string' && d !== '' ? d : tr('channelReturnedFailure') }), 'err')
       }
     })
-    .catch(function (e) { setStatus(msg, '测试失败：' + errText(e) + '；请到「通知渠道」页检查凭证后重试', 'err') })
+    .catch(function (e) { setStatus(msg, tr('bannerTestFailed', { detail: errText(e) }), 'err') })
     .then(function () { restoreBtn(btn) })
 }
 function onBannerClick(ev) {
@@ -823,29 +808,29 @@ function renderPendingQuestions() {
   var el = $('#pendingQuestionsPanel')
   if (!el) return
   if (!list.length) {
-    el.innerHTML = '<div class="muted small" style="padding:8px 0">暂无待处理远程提问</div>'
+    el.innerHTML = '<div class="muted small" style="padding:8px 0">' + esc(tr('noPendingQuestions')) + '</div>'
     return
   }
   el.innerHTML = list.map(function (q) {
     var qq = plain(q)
     var opts = (Array.isArray(qq.options) ? qq.options : []).map(function (label, idx) {
       return '<li><code>' + esc(String(idx + 1)) + '</code> · ' + esc(String(label)) +
-        ' <button type="button" class="small q-choose" data-ref="' + esc(qq.ref) + '" data-opt="' + idx + '">采用此项</button></li>'
+        ' <button type="button" class="small q-choose" data-ref="' + esc(qq.ref) + '" data-opt="' + idx + '">' + esc(tr('qAdopt')) + '</button></li>'
     }).join('')
     var cul = (Array.isArray(qq.source) ? qq.source : []).map(function (s) {
       var sp = plain(s)
       return (esc(String(sp.channel || '?'))) + (sp.user ? ' · ' + esc(sp.user) : '') + (sp.chat ? ' · ' + esc(sp.chat) : '')
-    }).join('；')
+    }).join(tr('qJoiner'))
     var meta = []
-    if (qq.agent) meta.push('agent ' + esc(qq.agent))
-    if (cul) meta.push('来源 ' + cul)
-    meta.push('创建 ' + esc(fmtTime(qq.createdAt)))
-    meta.push('截至 ' + esc(fmtTime(qq.expiresAt)))
+    if (qq.agent) meta.push(tr('qAgent', { agent: esc(qq.agent) }))
+    if (cul) meta.push(tr('qSource', { source: cul }))
+    meta.push(tr('qCreated', { time: esc(fmtTime(qq.createdAt)) }))
+    meta.push(tr('qExpires', { time: esc(fmtTime(qq.expiresAt)) }))
     return '<div class="card"><div class="card-head" style="cursor:default"><span class="dot warn"></span>' +
-      '<b>' + esc(String(qq.question || '(无文本)')) + '</b><span class="badge none">待决</span></div>' +
+      '<b>' + esc(String(qq.question || tr('qNoText'))) + '</b><span class="badge none">' + esc(tr('qPendingBadge')) + '</span></div>' +
       '<div class="card-body"><ul class="qopts">' + opts + '</ul>' +
       '<div class="muted small">' + meta.join(' · ') + '</div>' +
-      '<div class="row" style="margin-top:8px"><button type="button" class="small muted-btn q-reject" data-ref="' + esc(qq.ref) + '">驳回（交还桌面处理）</button>' +
+      '<div class="row" style="margin-top:8px"><button type="button" class="small muted-btn q-reject" data-ref="' + esc(qq.ref) + '">' + esc(tr('qReject')) + '</button>' +
       '<span class="q-msg inline muted small"></span></div></div></div>'
   }).join('')
 }
@@ -872,7 +857,7 @@ function settleQuestionClick(ref, action, opt) {
     var card = target.closest ? target.closest('.card') : null
     msgBox = card ? card.querySelector('.q-msg') : null
   }
-  if (msgBox) setStatus(msgBox, '提交中…', '')
+  if (msgBox) setStatus(msgBox, tr('qSubmitting'), '')
   var body = { action: action }
   if (action === 'choose') body.options = [Number(opt)]
   api('/api/questions/' + encodeURIComponent(refS) + '/settle', {
@@ -881,8 +866,8 @@ function settleQuestionClick(ref, action, opt) {
     // server spread a string, dropping action/options and returning 422.
     method: 'POST', body: body
   })
-    .then(function (d) { if (msgBox) setStatus(msgBox, d.message || '已结算', 'ok') })
-    .catch(function (e) { if (msgBox) setStatus(msgBox, '未生效：' + errText(e), 'err') })
+    .then(function (d) { if (msgBox) setStatus(msgBox, d.message || tr('qSettled'), 'ok') })
+    .catch(function (e) { if (msgBox) setStatus(msgBox, tr('qNotEffective', { error: errText(e) }), 'err') })
     .then(function () { if (target) target.disabled = false; loadAll() })
 }
 function onQuestionsClick(evt) {
@@ -919,18 +904,18 @@ function renderBindings() {
         + (e.channels.indexOf(t) >= 0 ? ' checked' : '') + '>' + esc(t) + '</label>'
     }).join('')
     return '<tr><td class="mono">' + esc(key) + '</td><td class="wrap">'
-      + (checks || '<span class="muted small">（当前无出站通道可选）</span>')
+      + (checks || '<span class="muted small">' + esc(tr('bindNoOutbound')) + '</span>')
       + '</td><td class="center"><input type="checkbox" data-quiet="' + esc(key) + '"' + (e.quiet ? ' checked' : '')
-      + ' title="只静音出站推送（仍写账本）；入站与审批不受影响"></td>'
-      + '<td class="center"><button class="danger" data-del="' + esc(key) + '">删除</button></td></tr>'
+      + ' title="' + esc(tr('quietTitle')) + '"></td>'
+      + '<td class="center"><button class="danger" data-del="' + esc(key) + '">' + esc(tr('delete')) + '</button></td></tr>'
   }).join('')
-  if (keys.length === 0) rows = '<tr><td colspan="4" class="empty">尚无 agent 绑定（route:agents 为空）—— 所有会话出站回落全局渠道池</td></tr>'
+  if (keys.length === 0) rows = '<tr><td colspan="4" class="empty">' + esc(tr('bindNoAgents')) + '</td></tr>'
   $('#agentsBody').innerHTML = rows
   var drows = inboundTypes().map(function (c) {
     return '<tr><td class="mono">' + esc(c) + '</td><td><input class="wide" list="agentKeyOptions" data-default="'
-      + esc(c) + '" value="' + esc(draft.defaults[c] || '') + '" placeholder="未设置：显式 bind &gt; 唯一 agent &gt; 最近活跃"></td></tr>'
+      + esc(c) + '" value="' + esc(draft.defaults[c] || '') + '" placeholder="' + esc(tr('defaultAgentPlaceholder')) + '"></td></tr>'
   }).join('')
-  $('#defaultsBody').innerHTML = drows || '<tr><td colspan="2" class="empty">（无入站通道）</td></tr>'
+  $('#defaultsBody').innerHTML = drows || '<tr><td colspan="2" class="empty">' + esc(tr('bindNoInbound')) + '</td></tr>'
   $('#agentKeyOptions').innerHTML = keys.map(function (k) { return '<option value="' + esc(k) + '"></option>' }).join('')
 }
 function onBindingsChange(ev) {
@@ -956,19 +941,19 @@ function onBindingsClick(ev) {
   if (!draft) draft = draftFromBindings()
   if (btn.id === 'btnAddKey') {
     var v = $('#newKey').value.trim()
-    if (v === '') { setStatus($('#bindingsMsg'), '请输入键名（workspace 名或精确 agentId）', 'err'); return }
-    if (draft.agents[v]) { setStatus($('#bindingsMsg'), '键已存在：' + v, 'err'); return }
+    if (v === '') { setStatus($('#bindingsMsg'), tr('bindKeyRequired'), 'err'); return }
+    if (draft.agents[v]) { setStatus($('#bindingsMsg'), tr('bindKeyExists', { key: v }), 'err'); return }
     draft.agents[v] = { channels: [], quiet: false }
     $('#newKey').value = ''
     renderBindings()
-    setStatus($('#bindingsMsg'), '已加入编辑表（注意：全不勾渠道 = 显式空集 = 该键出站全静默）', 'warn')
+    setStatus($('#bindingsMsg'), tr('bindKeyAdded'), 'warn')
   } else if (btn.id === 'btnSaveBindings') {
     saveBindings(btn)
   } else if (btn.getAttribute('data-del')) {
     var k = btn.getAttribute('data-del')
     delete draft.agents[k]
     renderBindings()
-    setStatus($('#bindingsMsg'), '已从编辑表移除：' + k + '（点「保存矩阵」后整表生效）', 'warn')
+    setStatus($('#bindingsMsg'), tr('bindKeyRemoved', { key: k }), 'warn')
   }
 }
 function saveBindings(btn) {
@@ -981,10 +966,10 @@ function saveBindings(btn) {
     var v = inp.value.trim()
     if (v !== '') channels[inp.getAttribute('data-default')] = { defaultAgent: v }
   })
-  btn.disabled = true; var old = btn.textContent; btn.textContent = '保存中…'
+  btn.disabled = true; var old = btn.textContent; btn.textContent = tr('btnSaving')
   api('/api/bindings', { method: 'PUT', body: { agents: agents, channels: channels } })
-    .then(function (nb) { state.bindings = nb; draft = null; renderBindings(); setStatus($('#bindingsMsg'), '矩阵已保存（整表替换生效，未配置的会话即刻跟随新默认）', 'ok') })
-    .catch(function (e) { setStatus($('#bindingsMsg'), '保存失败：' + errText(e), 'err') })
+    .then(function (nb) { state.bindings = nb; draft = null; renderBindings(); setStatus($('#bindingsMsg'), tr('bindingsSaved'), 'ok') })
+    .catch(function (e) { setStatus($('#bindingsMsg'), tr('saveFailed', { error: errText(e) }), 'err') })
     .then(function () { btn.disabled = false; btn.textContent = old })
 }
 
@@ -1002,22 +987,22 @@ function sessionRow(s, outbound) {
   }).join('')
   var qv = diff.quiet === undefined || diff.quiet === null ? '' : (diff.quiet ? 'on' : 'off')
   var qsel = '<select data-squiet="' + esc(id) + '">'
-    + '<option value=""' + (qv === '' ? ' selected' : '') + '>quiet 跟随上游</option>'
-    + '<option value="on"' + (qv === 'on' ? ' selected' : '') + '>quiet 开（静音）</option>'
-    + '<option value="off"' + (qv === 'off' ? ' selected' : '') + '>quiet 关</option></select>'
-  var main = '<tr><td>' + esc(s.workspace || '(未知)') + '</td>'
+    + '<option value=""' + (qv === '' ? ' selected' : '') + '>' + esc(tr('quietFollow')) + '</option>'
+    + '<option value="on"' + (qv === 'on' ? ' selected' : '') + '>' + esc(tr('quietOn')) + '</option>'
+    + '<option value="off"' + (qv === 'off' ? ' selected' : '') + '>' + esc(tr('quietOff')) + '</option></select>'
+  var main = '<tr><td>' + esc(s.workspace || tr('unknown')) + '</td>'
     + '<td class="mono" title="' + esc(id) + '">' + esc(sidPrefix(id)) + '</td>'
-    + '<td><span class="dot ' + (s.active ? 'ok' : 'off') + '"></span>' + (s.active ? '活跃' : '已离场') + '</td>'
-    + '<td class="wrap">' + esc(resolvedCh.join('、') || '(空)') + '</td>'
-    + '<td>' + (res.quiet ? '静音' : '正常') + '</td>'
+    + '<td><span class="dot ' + (s.active ? 'ok' : 'off') + '"></span>' + (s.active ? tr('sessionActive') : tr('sessionGone')) + '</td>'
+    + '<td class="wrap">' + esc(resolvedCh.join(tr('sessionChannelsJoiner')) || tr('sessionChannelsEmpty')) + '</td>'
+    + '<td>' + (res.quiet ? tr('sessionQuiet') : tr('sessionNormal')) + '</td>'
     + '<td>' + esc(sourceLabel(res.source)) + '</td>'
     + '<td class="center">' + (Array.isArray(s.inbound) ? String(s.inbound.length) : '0') + '</td>'
-    + '<td><button data-edit="' + esc(id) + '">编辑出站</button></td></tr>'
+    + '<td><button data-edit="' + esc(id) + '">' + esc(tr('sessionEditOutbound')) + '</button></td></tr>'
   var editor = '<tr class="editor" data-edfor="' + esc(id) + '" hidden><td colspan="8"><div class="edbox">'
-    + '<label class="ck"><input type="checkbox" data-sover="' + esc(id) + '"' + (hasDiffCh ? ' checked' : '') + '>覆盖出站渠道</label>'
-    + checks + '<span class="muted">·</span>' + qsel + '<button data-save="' + esc(id) + '">PATCH 保存</button>'
+    + '<label class="ck"><input type="checkbox" data-sover="' + esc(id) + '"' + (hasDiffCh ? ' checked' : '') + '>' + esc(tr('sessionOverrideOutbound')) + '</label>'
+    + checks + '<span class="muted">·</span>' + qsel + '<button data-save="' + esc(id) + '">' + esc(tr('sessionPatchSave')) + '</button>'
     + '<div class="inline" data-sstat="' + esc(id) + '"></div>'
-    + '<div class="muted small">不勾「覆盖出站渠道」→ channels 发 null（删覆盖键，回落上游实时解析）；quiet 选「跟随上游」→ 发 null。</div>'
+    + '<div class="muted small">' + esc(tr('sessionOverrideHint')) + '</div>'
     + '</div></td></tr>'
   return main + editor
 }
@@ -1025,7 +1010,7 @@ function renderSessions() {
   var list = Array.isArray(state.sessions) ? state.sessions : []
   var outbound = outboundTypes()
   $('#sessionsBody').innerHTML = list.map(function (s) { return sessionRow(plain(s), outbound) }).join('')
-    || '<tr><td colspan="8" class="empty">尚无会话记录（route:sessions 为空；会话在 agent/created 时自动建档，出站回落全局渠道池）</td></tr>'
+    || '<tr><td colspan="8" class="empty">' + esc(tr('sessionEmpty')) + '</td></tr>'
 }
 function onSessionsClick(ev) {
   var btn = ev.target.closest ? ev.target.closest('button') : null
@@ -1045,15 +1030,15 @@ function saveSession(id, btn) {
   var chans = $all('input[data-sch]').filter(function (c) { return c.getAttribute('data-sch') === id && c.checked })
     .map(function (c) { return c.value })
   var body = { channels: over && over.checked ? chans : null, quiet: !qsel || qsel.value === '' ? null : qsel.value === 'on' }
-  btn.disabled = true; var old = btn.textContent; btn.textContent = '保存中…'
+  btn.disabled = true; var old = btn.textContent; btn.textContent = tr('btnSaving')
   api('/api/sessions/' + encodeURIComponent(id), { method: 'PATCH', body: body })
     .then(function () { return api('/api/sessions') })
     .then(function (list) {
       state.sessions = list
       renderSessions()
-      flash('会话出站覆盖已保存：' + sidPrefix(id), 'ok')
+      flash(tr('sessionOverrideSaved', { sid: sidPrefix(id) }), 'ok')
     })
-    .catch(function (e) { setStatus(msg, '保存失败：' + errText(e), 'err') })
+    .catch(function (e) { setStatus(msg, tr('saveFailed', { error: errText(e) }), 'err') })
     .then(function () { if (btn.parentNode) { btn.disabled = false; btn.textContent = old } })
 }
 
@@ -1072,9 +1057,9 @@ function fieldRow(key, spec, current, disabled) {
   return '<label class="fld"><span class="mono">' + esc(key) + (req ? ' <b style="color:var(--warn)">*</b>' : '')
     + '</span><input data-ck="' + esc(key) + '"' + (req ? ' data-req="1"' : '')
     + ' value="' + esc(shown) + '"'
-    + (disabled ? ' disabled title="只读字段"' : '')
+    + (disabled ? ' disabled title="' + esc(tr('fieldReadonly')) + '"' : '')
     + (desc ? ' title="' + esc(desc) + '" placeholder="' + esc(desc) + '"' : '')
-    + '>' + (secret && !disabled ? '<button type="button" data-clear-field="' + esc(key) + '">清除</button>' : '') + '</label>'
+    + '>' + (secret && !disabled ? '<button type="button" data-clear-field="' + esc(key) + '">' + esc(tr('fieldClear')) + '</button>' : '') + '</label>'
 }
 function cardHtml(c) {
   var cfg = plain(c.config)
@@ -1090,43 +1075,42 @@ function cardHtml(c) {
       : undefined
     return fieldRow(k, specs[k], current, ro)
   }).join('')
-  var dir = c.direction === 'inbound' ? '入站' : '出站'
+  var dir = c.direction === 'inbound' ? tr('dirInbound') : tr('dirOutbound')
   // G-14（W12）：出站配置视图热/投递冷——出站行保存后 UI 即时回显，但投递层（出站路由/
   // 通道实例）只在插件下次启动时并入运行时（YAML ⊕ store 合并），故角标显著标记「重启后
   // 生效」而非「已配置」；入站保持「已配置」（凭证保存即下次启动启用/重连，语义近似热）。
   // 标记随 getChannels 返回的 restartRequired 走：出站恒 true（YAML 改也要重启才并入）。
   var badge = c.configured
-    ? '<span class="badge ' + (c.restartRequired ? 'warn">重启后生效' : 'ok">已配置') + '</span>'
-    : '<span class="badge none">未配置</span>'
+    ? '<span class="badge ' + (c.restartRequired ? 'warn">' + esc(tr('badgeRestart')) : 'ok">' + esc(tr('badgeConfigured'))) + '</span>'
+    : '<span class="badge none">' + esc(tr('badgeUnconfigured')) + '</span>'
   var scan = c.direction === 'inbound' && SCAN_TYPES.indexOf(c.type) >= 0
-    ? '<button data-scan="' + esc(c.type) + '">扫码授权</button>' : ''
+    ? '<button data-scan="' + esc(c.type) + '">' + esc(tr('scanAuth')) + '</button>' : ''
   // spec 声明 docUrl 的渠道（wps-bot）在卡片头部附官方文档跳转
   var docLink = c.docUrl
-    ? ' <a class="muted small" href="' + esc(c.docUrl) + '" target="_blank" rel="noopener noreferrer" title="打开官方接入文档">官方文档 ↗</a>'
+    ? ' <a class="muted small" href="' + esc(c.docUrl) + '" target="_blank" rel="noopener noreferrer" title="' + esc(tr('docOpenTitle')) + '">' + esc(tr('docOpen')) + '</a>'
     : ''
   // 微信专属提示：iLink 机器人 = 扫码微信的专属好友（1:1），扫码那一刻即完成配对
   var wechatHint = c.type === 'wechat' && c.direction === 'inbound'
-    ? '<p class="muted small">点「扫码授权」网页直接出二维码，用<b>你自己的微信</b>扫并确认：机器人会出现在你的微信好友里（专属好友，只和你聊），<b>扫码那一刻就完成配对</b>，不需要配对码。</p>'
+    ? '<p class="muted small">' + tr('wechatHint') + '</p>'
     : ''
   var key = c.type + '|' + c.direction
   // testChannel 语义是出站连通性自检——入站凭证行按钮换文案，
   // 不再让用户误以为它能验证入站链路是否可用
-  var testLabel = c.direction === 'inbound' ? '连通性自检（出站）' : '测试发送'
+  var testLabel = c.direction === 'inbound' ? tr('testInbound') : tr('testSend')
   var controls = ro
-    ? '<span class="muted small">只读：出站 webhook 走 YAML bootstrap（cordis.patch.yml channels）——'
-      + esc(c.type) + ':account 键域归入站机器人凭证，网页写入会破坏扫码凭证</span>'
-    : '<button class="btn-primary" data-save="' + esc(key) + '">保存</button>'
+    ? '<span class="muted small">' + tr('readonlyHint', { type: esc(c.type) }) + '</span>'
+    : '<button class="btn-primary" data-save="' + esc(key) + '">' + esc(tr('save')) + '</button>'
   var del = !ro && c.configured
-    ? '<button class="danger" data-delch="' + esc(key) + '">删除配置</button>' : ''
+    ? '<button class="danger" data-delch="' + esc(key) + '">' + esc(tr('deleteConfig')) + '</button>' : ''
   return '<div class="card" data-key="' + esc(key) + '">'
-    + '<div class="card-head"><span class="glyph">' + esc(glyphOf(c.type)) + '</span><b class="mono">' + esc(c.type) + '</b><span class="dir-tag">' + dir + '</span>' + badge + docLink + '</div>'
+    + '<div class="card-head"><span class="glyph">' + esc(glyphOf(c.type)) + '</span><b class="mono">' + esc(c.type) + '</b><span class="dir-tag">' + esc(dir) + '</span>' + badge + docLink + '</div>'
     + '<div class="card-body" hidden>'
-    + (fields || '<p class="muted small">（该通道暂无可编辑凭证键）</p>')
+    + (fields || '<p class="muted small">' + esc(tr('cardEmptyFields')) + '</p>')
     + wechatHint
     + (keys.length > 0 && !ro
-      ? '<p class="muted small">值为 *** 的字段视为未修改，提交时自动剔除；带 * 为必填（空值不提交）。</p>' : '')
+      ? '<p class="muted small">' + esc(tr('fieldHint')) + '</p>' : '')
     + '<div class="row">' + controls
-    + '<button data-test="' + esc(key) + '" title="验证该渠道的出站链路连通性（入站凭证是否可用需在 IM 端实际收发验证）">' + esc(testLabel) + '</button>' + scan + del + '</div>'
+    + '<button data-test="' + esc(key) + '" title="' + esc(tr('testTitle')) + '">' + esc(testLabel) + '</button>' + scan + del + '</div>'
     + '<div class="inline" data-cmsg="' + esc(key) + '"></div>'
     + '<div class="inline" data-smsg="' + esc(c.type) + '"></div>'
     + '</div></div>'
@@ -1150,14 +1134,14 @@ function renderChannels() {
   var innSp = split(inn)
   function moreBlock(more) {
     if (more.length === 0) return ''
-    return '<details class="more-group"><summary>更多 ' + more.length + ' 个渠道<span class="muted small">点击展开完整清单</span></summary>'
+    return '<details class="more-group"><summary>' + esc(tr('moreChannels', { count: more.length })) + '<span class="muted small">' + esc(tr('moreChannelsHint')) + '</span></summary>'
       + '<div class="more-body">' + more.map(function (c) { return cardHtml(plain(c)) }).join('') + '</div></details>'
   }
-  var html = '<h3 class="chan-group-title">出站通知<span class="dir-tag">主</span><span class="muted small">把 agent 的消息推送到你的设备（保存后可当场测试，无需重启）</span></h3>'
-  html += outSp[0].map(function (c) { return cardHtml(plain(c)) }).join('') || '<p class="muted">（无出站通道）</p>'
+  var html = '<h3 class="chan-group-title">' + esc(tr('groupOutboundTitle')) + '<span class="dir-tag">' + esc(tr('groupOutboundTag')) + '</span><span class="muted small">' + esc(tr('groupOutboundHint')) + '</span></h3>'
+  html += outSp[0].map(function (c) { return cardHtml(plain(c)) }).join('') || '<p class="muted">' + esc(tr('noOutbound')) + '</p>'
   html += moreBlock(outSp[1])
-  html += '<h3 class="chan-group-title">入站控制<span class="dir-tag">可选</span><span class="muted small">手机远程回复 / 审批 agent；不配置不影响出站通知</span></h3>'
-  html += innSp[0].map(function (c) { return cardHtml(plain(c)) }).join('') || '<p class="muted">（无入站通道）</p>'
+  html += '<h3 class="chan-group-title">' + esc(tr('groupInboundTitle')) + '<span class="dir-tag">' + esc(tr('groupInboundTag')) + '</span><span class="muted small">' + esc(tr('groupInboundHint')) + '</span></h3>'
+  html += innSp[0].map(function (c) { return cardHtml(plain(c)) }).join('') || '<p class="muted">' + esc(tr('noInbound')) + '</p>'
   html += moreBlock(innSp[1])
   $('#channelCards').innerHTML = html
 }
@@ -1182,14 +1166,14 @@ function saveChannel(key, btn) {
   })
   if (clear.length > 0) payload.clearSecrets = clear
   if (missing.length > 0) {
-    setStatus(msg, '必填字段未填写：' + missing.join('、'), 'err')
+    setStatus(msg, tr('missingRequired', { fields: missing.join(tr('sessionChannelsJoiner')) }), 'err')
     return
   }
   if (Object.keys(payload).length === 0) {
-    setStatus(msg, '没有修改的字段（值为 *** 视为未修改，空值不提交），已跳过保存', 'warn')
+    setStatus(msg, tr('noChangedFields'), 'warn')
     return
   }
-  btn.disabled = true; var old = btn.textContent; btn.textContent = '保存中…'
+  btn.disabled = true; var old = btn.textContent; btn.textContent = tr('btnSaving')
   // 方向明确 API：出站写 admin 自有出站键，入站写 <type>:account（与扫码落盘同域）
   var path = direction === 'inbound'
     ? '/api/channels/inbound/' + encodeURIComponent(type)
@@ -1197,7 +1181,7 @@ function saveChannel(key, btn) {
   api(path, { method: 'PUT', body: { config: payload } })
     .then(function (r) {
       if (plain(r).saved === false) {
-        setStatus(msg, '写入失败：state 存储不可用（查看插件日志）', 'err')
+        setStatus(msg, tr('channelWriteFailed'), 'err')
         return
       }
       // 热更新边界：store 凭证在下次插件启动时并入运行时（YAML ⊕ store 合并）；
@@ -1206,22 +1190,22 @@ function saveChannel(key, btn) {
       if (direction === 'outbound') {
         var head = card ? $('.card-head', card) : null
         var oldBadge = head ? $('.badge', head) : null
-        if (oldBadge) oldBadge.outerHTML = '<span class="badge warn">重启后生效</span>'
+        if (oldBadge) oldBadge.outerHTML = '<span class="badge warn">' + esc(tr('badgeRestart')) + '</span>'
         var local = (state.channels || []).filter(function (c) { return c.type === type && c.direction === direction })[0]
         if (local) local.configured = true
       }
       setStatus(msg, direction === 'inbound'
-        ? '凭证已保存（state.json，0600）；入站通道在插件下次启动时启用/重连。入站是否可用请在 IM 端实际发消息验证'
-        : '出站配置已保存（视图即时回显，重启后生效）：投递层在插件下次启动时并入运行时（YAML ⊕ store 合并），重启前不影响已运行的出站链路；可点「测试发送」立即验证凭证连通', 'ok')
+        ? tr('channelSavedInbound')
+        : tr('channelSavedOutbound'), 'ok')
     })
-    .catch(function (e) { setStatus(msg, '保存失败：' + errText(e), 'err') })
+    .catch(function (e) { setStatus(msg, tr('saveFailed', { error: errText(e) }), 'err') })
     .then(function () { btn.disabled = false; btn.textContent = old })
 }
 function testChannel(key, btn) {
   var type = splitKey(key)[0]
   var direction = splitKey(key)[1]
   var msg = byAttr('.inline[data-cmsg]', 'data-cmsg', key)
-  btn.disabled = true; var old = btn.textContent; btn.textContent = '测试中…'
+  btn.disabled = true; var old = btn.textContent; btn.textContent = tr('btnTesting')
   // 出站走即时真实测试（最新 YAML+state 合并配置，保存后无需重启）；入站行保留旧自检语义
   var path = direction === 'inbound'
     ? '/api/channels/' + encodeURIComponent(type) + '/test'
@@ -1231,39 +1215,39 @@ function testChannel(key, btn) {
       var ok = plain(r).ok === true
       if (ok) {
         markTestedState()
-        setStatus(msg, '测试通过' + (r.detail ? '：' + r.detail : '') + '；下一步：回首页确认运行状态，或直接开始使用', 'ok')
+        setStatus(msg, tr('testPassedNext', { detail: r.detail ? tr('detailSuffix', { detail: r.detail }) : '' }), 'ok')
       } else {
-        setStatus(msg, '测试失败' + (r.detail ? '：' + r.detail : '') + '；下一步：检查必填凭证后重试', 'err')
+        setStatus(msg, tr('testFailedNext', { detail: r.detail ? tr('detailSuffix', { detail: r.detail }) : '' }), 'err')
       }
     })
-    .catch(function (e) { setStatus(msg, '测试失败：' + errText(e), 'err') })
+    .catch(function (e) { setStatus(msg, tr('testFailedNext', { detail: tr('detailSuffix', { detail: errText(e) }) }), 'err') })
     .then(function () { btn.disabled = false; btn.textContent = old })
 }
 function deleteChannel(key, btn) {
   var type = splitKey(key)[0]
   var direction = splitKey(key)[1]
-  var label = direction === 'inbound' ? '入站凭证' : '出站配置'
+  var label = direction === 'inbound' ? tr('deleteInboundLabel') : tr('deleteOutboundLabel')
   // 删除不可恢复：显式确认，避免窄屏误触清空凭证（YAML 同名行不受影响）
   if (typeof window.confirm === 'function'
-    && !window.confirm('删除 ' + type + ' 的' + label + '？立即生效且不可恢复（YAML 中的同名配置不受影响）。')) return
+    && !window.confirm(tr('deleteConfirm', { type: type, label: label }))) return
   btn.disabled = true
   var path = direction === 'inbound'
     ? '/api/channels/inbound/' + encodeURIComponent(type)
     : '/api/channels/outbound/' + encodeURIComponent(type)
   api(path, { method: 'DELETE' })
-    .then(function () { flash(type + ' 的' + label + '已删除', 'ok'); return api('/api/channels') })
+    .then(function () { flash(tr('deleted', { type: type, label: label }), 'ok'); return api('/api/channels') })
     .then(function (rows) { state.channels = rows; renderChannels(); renderDashboard() })
-    .catch(function (e) { flash('删除失败：' + errText(e), 'err'); btn.disabled = false })
+    .catch(function (e) { flash(tr('deleteFailed', { error: errText(e) }), 'err'); btn.disabled = false })
 }
 function scanMsgEl(type) { return byAttr('.inline[data-smsg]', 'data-smsg', type) }
 function toggleScan(type, btn) {
   if (scanTimers[type]) {
     clearTimeout(scanTimers[type]); scanTimers[type] = null
-    btn.textContent = '扫码授权'
-    setStatus(scanMsgEl(type), '已停止轮询扫码状态', 'warn')
+    btn.textContent = tr('scanAuth')
+    setStatus(scanMsgEl(type), tr('scanStopped'), 'warn')
     return
   }
-  btn.textContent = '停止轮询'
+  btn.textContent = tr('scanStopPolling')
   scanStep(type, btn)
 }
 function scanStep(type, btn) {
@@ -1273,33 +1257,33 @@ function scanStep(type, btn) {
       var failed = typeof r.error === 'string' && r.error !== ''
       var html = ''
       if (qr) {
-        html += '<div class="row qr"><span class="mono">' + esc(qr) + '</span><button data-copy="' + esc(qr) + '">复制</button></div>'
+        html += '<div class="row qr"><span class="mono">' + esc(qr) + '</span><button data-copy="' + esc(qr) + '">' + esc(tr('scanCopy')) + '</button></div>'
         html += /^https?:/i.test(qr)
-          ? '<div class="small"><a href="' + esc(qr) + '" target="_blank" rel="noopener">打开授权链接</a> · 或复制内容贴到扫码工具</div>'
-          : '<div class="small muted">复制上面的内容，贴到任意扫码工具完成授权</div>'
+          ? '<div class="small"><a href="' + esc(qr) + '" target="_blank" rel="noopener">' + esc(tr('scanOpenLink')) + '</a> · ' + esc(tr('scanOrCopy')) + '</div>'
+          : '<div class="small muted">' + esc(tr('scanCopyHint')) + '</div>'
       }
-      if (failed) html += '<div class="small" style="color:var(--err)">扫码失败：' + esc(r.error) + '（可重新发起）</div>'
-      else if (r.saved) html += '<div class="small" style="color:var(--ok)">授权完成，凭证已保存（通道在插件下次启动时启用/重连）</div>'
-      else if (r.done) html += '<div class="small" style="color:var(--ok)">扫码流程已完成</div>'
-      else html += '<div class="small muted">等待扫码确认…（每 2 秒轮询一次）</div>'
+      if (failed) html += '<div class="small" style="color:var(--err)">' + esc(tr('scanFailed', { error: esc(r.error) })) + '</div>'
+      else if (r.saved) html += '<div class="small" style="color:var(--ok)">' + esc(tr('scanSaved')) + '</div>'
+      else if (r.done) html += '<div class="small" style="color:var(--ok)">' + esc(tr('scanDone')) + '</div>'
+      else html += '<div class="small muted">' + esc(tr('scanWaiting')) + '</div>'
       var el = scanMsgEl(type)
       if (el) { el.className = 'inline show ' + (failed ? 'err' : 'ok'); el.innerHTML = html }
       if (!r.done && !r.saved && !failed) scanTimers[type] = setTimeout(function () { scanStep(type, btn) }, 2000)
-      else { scanTimers[type] = null; btn.textContent = '扫码授权' }
+      else { scanTimers[type] = null; btn.textContent = tr('scanAuth') }
     })
     .catch(function (e) {
       scanTimers[type] = null
-      btn.textContent = '扫码授权'
-      setStatus(scanMsgEl(type), '扫码授权失败：' + errText(e), 'err')
+      btn.textContent = tr('scanAuth')
+      setStatus(scanMsgEl(type), tr('scanAuthFailed', { error: errText(e) }), 'err')
     })
 }
 function copyText(text) {
   if (navigator.clipboard && navigator.clipboard.writeText) {
     navigator.clipboard.writeText(text).then(
-      function () { flash('已复制到剪贴板', 'ok') },
-      function () { flash('复制失败，请手动选择文本复制', 'err') })
+      function () { flash(tr('copied'), 'ok') },
+      function () { flash(tr('copyFailed'), 'err') })
   } else {
-    flash('剪贴板不可用，请手动长按选择文本复制', 'warn')
+    flash(tr('clipboardUnavailable'), 'warn')
   }
 }
 function onChannelsClick(ev) {
@@ -1314,7 +1298,7 @@ function onChannelsClick(ev) {
     if (clearKey) {
       var marked = btn.getAttribute('data-clear') === '1'
       btn.setAttribute('data-clear', marked ? '0' : '1')
-      btn.textContent = marked ? '清除' : '已标记清除'
+      btn.textContent = marked ? tr('fieldClear') : tr('fieldCleared')
       btn.className = marked ? '' : 'muted-btn'
       return
     }
@@ -1334,10 +1318,10 @@ function onChannelsClick(ev) {
 // ---------- 成员页：身份绑定表 + 配对码生命周期 + 待确认绑定 ----------
 function fmtRemain(ms) {
   var s = Math.floor(ms / 1000)
-  if (s <= 0) return '已过期'
+  if (s <= 0) return tr('expired')
   var m = Math.floor(s / 60)
-  if (m >= 60) return Math.floor(m / 60) + ' 时 ' + (m % 60) + ' 分'
-  return m + ' 分 ' + (s % 60) + ' 秒'
+  if (m >= 60) return tr('remainHoursMinutes', { h: Math.floor(m / 60), m: m % 60 })
+  return tr('remainMinutesSeconds', { m: m, s: s % 60 })
 }
 var pairCountdownTimer = null
 function stopPairCountdown() {
@@ -1348,7 +1332,7 @@ function stopPairCountdown() {
 function showPairCode(r) {
   var box = $('#pairCodeBox')
   box.innerHTML = '<div class="code">' + esc(r.code) + '</div>'
-    + '<div class="ttl">有效期至 ' + esc(fmtTime(r.expiresAt)) + '（<span data-remain></span>）——码面仅此一次展示，关闭后不可找回；发给用户私聊命令：/pair ' + esc(r.code) + '</div>'
+    + '<div class="ttl">' + tr('pairValidUntil', { time: esc(fmtTime(r.expiresAt)), remain: '<span data-remain></span>', code: esc(r.code) }) + '</div>'
   box.hidden = false
   box.className = 'paircode show'
   stopPairCountdown()
@@ -1356,9 +1340,9 @@ function showPairCode(r) {
   pairCountdownTimer = setInterval(function () {
     var left = Number(r.expiresAt) - Date.now()
     if (left <= 0) { stopPairCountdown(); return }
-    remain.textContent = '剩余 ' + fmtRemain(left)
+    remain.textContent = tr('remainPrefix', { remain: fmtRemain(left) })
   }, 1000)
-  remain.textContent = '剩余 ' + fmtRemain(Number(r.expiresAt) - Date.now())
+  remain.textContent = tr('remainPrefix', { remain: fmtRemain(Number(r.expiresAt) - Date.now()) })
 }
 function mintPairingCode() {
   var btn = $('#btnMint')
@@ -1371,16 +1355,18 @@ function mintPairingCode() {
     .then(function (r) {
       var res = plain(r)
       showPairCode(res)
-      var ttlText = body.ttlMin >= 60 ? Math.floor(body.ttlMin / 60) + ' 小时内有效' : body.ttlMin + ' 分钟内有效'
-      setStatus(msg, '已铸造（id ' + (res.id || '') + '）。' + ttlText + '，单次核销。', 'ok')
+      var ttlText = body.ttlMin >= 60
+        ? tr('ttlHours', { h: Math.floor(body.ttlMin / 60) })
+        : tr('ttlMinutes', { m: body.ttlMin })
+      setStatus(msg, tr('pairMinted', { id: res.id || '', ttl: ttlText }), 'ok')
       return loadMembersOnly()
     })
-    .catch(function (e) { setStatus(msg, '铸造失败：' + errText(e), 'err') })
+    .catch(function (e) { setStatus(msg, tr('pairMintFailed', { error: errText(e) }), 'err') })
     .then(function () { btn.disabled = false })
 }
 function loadMembersOnly() {
   return api('/api/members').then(function (r) { state.members = r; renderMembers() })
-    .catch(function (e) { flash('成员数据刷新失败：' + errText(e), 'err') })
+    .catch(function (e) { flash(tr('membersRefreshFailed', { error: errText(e) }), 'err') })
 }
 function renderMembers() {
   var m = plain(state.members)
@@ -1396,16 +1382,16 @@ function renderMembers() {
     return '<tr>'
       + '<td><span class="chip ' + (r.role === 'owner' ? 'warn' : 'ok') + '">' + esc(r.channel) + '</span></td>'
       + '<td class="mono" title="' + esc(r.key) + '">' + esc(r.userId) + '</td>'
-      + '<td><input data-mlabel="' + esc(r.key) + '" value="' + esc(r.label || '') + '" placeholder="备注" style="max-width:160px"></td>'
+      + '<td><input data-mlabel="' + esc(r.key) + '" value="' + esc(r.label || '') + '" placeholder="' + esc(tr('labelPlaceholder')) + '" style="max-width:160px"></td>'
       + '<td><select data-mrole="' + esc(r.key) + '">'
       + '<option value="member"' + (r.role !== 'owner' ? ' selected' : '') + '>member</option>'
       + '<option value="owner"' + (r.role === 'owner' ? ' selected' : '') + '>owner</option>'
       + '</select></td>'
       + '<td>' + esc(fmtTime(r.pairedAt)) + '</td>'
       + '<td>' + (Number(r.lastSeenAt) > 0 ? esc(fmtTime(r.lastSeenAt)) : '—') + '</td>'
-      + '<td><button class="danger" data-mdel="' + esc(r.key) + '">删除</button></td>'
+      + '<td><button class="danger" data-mdel="' + esc(r.key) + '">' + esc(tr('delete')) + '</button></td>'
       + '</tr>'
-  }).join('') || '<tr><td colspan="7" class="empty">暂无成员。引导态下宿主启动日志（stderr）有引导码：用户私聊机器人发送 /pair &lt;码&gt; 即成首位 owner。</td></tr>'
+  }).join('') || '<tr><td colspan="7" class="empty">' + esc(tr('membersEmpty')) + '</td></tr>'
   $('#pairingBody').innerHTML = codes.map(function (row) {
     var r = plain(row)
     var left = Number(r.expiresAt) - Date.now()
@@ -1416,9 +1402,9 @@ function renderMembers() {
       + '<td>' + esc(fmtTime(r.mintedAt)) + '</td>'
       + '<td>' + esc(fmtRemain(left)) + '</td>'
       + '<td>' + esc(r.label || '') + '</td>'
-      + '<td><button class="danger" data-prevoke="' + esc(r.id) + '">撤销</button></td>'
+      + '<td><button class="danger" data-prevoke="' + esc(r.id) + '">' + esc(tr('revoke')) + '</button></td>'
       + '</tr>'
-  }).join('') || '<tr><td colspan="7" class="empty">无在铸配对码。生成一枚发给要接入的成员（单次核销，过期作废）。</td></tr>'
+  }).join('') || '<tr><td colspan="7" class="empty">' + esc(tr('pairCodesEmpty')) + '</td></tr>'
   $('#pendingBody').innerHTML = pending.map(function (row) {
     var r = plain(row)
     return '<tr>'
@@ -1426,10 +1412,10 @@ function renderMembers() {
       + '<td class="mono">' + esc(r.userId) + '</td>'
       + '<td>' + esc(r.origin || 'learned') + '</td>'
       + '<td>' + esc(fmtTime(r.at)) + '</td>'
-      + '<td><button data-pconfirm="' + esc(r.key) + '">确认转正</button>'
-      + ' <button class="danger" data-pdismiss="' + esc(r.key) + '">忽略</button></td>'
+      + '<td><button data-pconfirm="' + esc(r.key) + '">' + esc(tr('confirmPromote')) + '</button>'
+      + ' <button class="danger" data-pdismiss="' + esc(r.key) + '">' + esc(tr('dismiss')) + '</button></td>'
       + '</tr>'
-  }).join('') || '<tr><td colspan="5" class="empty">暂无待确认绑定（扫码/订阅学到的新身份会出现在这里）。</td></tr>'
+  }).join('') || '<tr><td colspan="5" class="empty">' + esc(tr('pendingEmpty')) + '</td></tr>'
 }
 function memberKeyOf(el, attr) { return el.getAttribute(attr) || '' }
 function onMembersChange(ev) {
@@ -1437,14 +1423,14 @@ function onMembersChange(ev) {
   var roleKey = ev.target.getAttribute && ev.target.getAttribute('data-mrole')
   if (labelKey !== null && labelKey !== undefined && labelKey !== '' && ev.target.getAttribute('data-mlabel')) {
     api('/api/members/' + encodeURIComponent(labelKey), { method: 'PUT', body: { label: ev.target.value } })
-      .then(function () { flash('备注已更新', 'ok'); return loadMembersOnly() })
-      .catch(function (e) { flash('备注更新失败：' + errText(e), 'err') })
+      .then(function () { flash(tr('labelUpdated'), 'ok'); return loadMembersOnly() })
+      .catch(function (e) { flash(tr('labelUpdateFailed', { error: errText(e) }), 'err') })
     return
   }
   if (roleKey) {
     api('/api/members/' + encodeURIComponent(roleKey), { method: 'PUT', body: { role: ev.target.value } })
-      .then(function () { flash('角色已更新', 'ok'); return loadMembersOnly() })
-      .catch(function (e) { flash('角色更新失败：' + errText(e), 'err'); return loadMembersOnly() })
+      .then(function () { flash(tr('roleUpdated'), 'ok'); return loadMembersOnly() })
+      .catch(function (e) { flash(tr('roleUpdateFailed', { error: errText(e) }), 'err'); return loadMembersOnly() })
   }
 }
 function onMembersClick(ev) {
@@ -1453,10 +1439,10 @@ function onMembersClick(ev) {
   if (btn.id === 'btnMint') { mintPairingCode(); return }
   var delKey = memberKeyOf(btn, 'data-mdel')
   if (delKey) {
-    if (!window.confirm('删除成员 ' + delKey + '？该身份立即失去入站权限（运行中宿主半秒内生效）。')) return
+    if (!window.confirm(tr('deleteMemberConfirm', { key: delKey }))) return
     api('/api/members/' + encodeURIComponent(delKey), { method: 'DELETE' })
-      .then(function () { flash('已删除成员 ' + delKey, 'ok'); return loadMembersOnly() })
-      .catch(function (e) { flash('删除失败：' + errText(e), 'err') })
+      .then(function () { flash(tr('memberDeleted', { key: delKey }), 'ok'); return loadMembersOnly() })
+      .catch(function (e) { flash(tr('deleteFailed', { error: errText(e) }), 'err') })
     return
   }
   var revokeId = memberKeyOf(btn, 'data-prevoke')
@@ -1464,25 +1450,27 @@ function onMembersClick(ev) {
     // Revoking a pairing code is destructive: the one-shot code becomes unusable
     // immediately and cannot be recovered. Require an explicit confirmation so a
     // fat-fingered click on a narrow/mobile layout does not strand the invitee.
-    if (!window.confirm('撤销配对码 ' + revokeId + '？该码将立即失效，且无法恢复。')) return
+    // Compatibility contract: the localized confirmation must state 立即失效 / 无法恢复.
+    if (!window.confirm(tr('revokePairConfirm', { id: revokeId }))) return
     api('/api/pairing/' + encodeURIComponent(revokeId), { method: 'DELETE' })
-      .then(function () { flash('已撤销配对码 ' + revokeId, 'ok'); return loadMembersOnly() })
-      .catch(function (e) { flash('撤销失败：' + errText(e), 'err') })
+      .then(function () { flash(tr('pairRevoked', { id: revokeId }), 'ok'); return loadMembersOnly() })
+      .catch(function (e) { flash(tr('revokeFailed', { error: errText(e) }), 'err') })
     return
   }
   var confirmKey = memberKeyOf(btn, 'data-pconfirm')
   if (confirmKey) {
     api('/api/members/' + encodeURIComponent(confirmKey) + '/confirm', { method: 'POST' })
-      .then(function () { flash('已确认转正 ' + confirmKey, 'ok'); return loadMembersOnly() })
-      .catch(function (e) { flash('确认失败：' + errText(e), 'err') })
+      .then(function () { flash(tr('memberConfirmed', { key: confirmKey }), 'ok'); return loadMembersOnly() })
+      .catch(function (e) { flash(tr('confirmFailed', { error: errText(e) }), 'err') })
     return
   }
   var dismissKey = memberKeyOf(btn, 'data-pdismiss')
   if (dismissKey) {
-    if (!window.confirm('忽略待确认绑定 ' + dismissKey + '？当前请求将被删除，之后需要对方重新触发订阅/扫码。')) return
+    // Compatibility contract: the localized confirmation must explain 当前请求将被删除 / 重新触发.
+    if (!window.confirm(tr('dismissConfirm', { key: dismissKey }))) return
     api('/api/members/' + encodeURIComponent(dismissKey) + '/dismiss', { method: 'POST' })
-      .then(function () { flash('已忽略 ' + dismissKey, 'ok'); return loadMembersOnly() })
-      .catch(function (e) { flash('操作失败：' + errText(e), 'err') })
+      .then(function () { flash(tr('dismissed', { key: dismissKey }), 'ok'); return loadMembersOnly() })
+      .catch(function (e) { flash(tr('opFailed', { error: errText(e) }), 'err') })
   }
 }
 
@@ -1524,7 +1512,7 @@ function renderPermState() {
   var el = $('#nPerm')
   if (!el) return
   var perm = typeof Notification !== 'undefined' ? Notification.permission : 'unsupported'
-  el.textContent = perm === 'granted' ? '已授权' : perm === 'denied' ? '已拒绝' : perm === 'unsupported' ? '不支持' : '未授权'
+  el.textContent = perm === 'granted' ? tr('permGranted') : perm === 'denied' ? tr('permDenied') : perm === 'unsupported' ? tr('permUnsupported') : tr('permDefault')
 }
 function beep() {
   try {
@@ -1555,7 +1543,7 @@ function onNotifyEvent(evt) {
   var msg = plain(payload.message)
   notifyCount += 1
   $('#nCount').textContent = String(notifyCount)
-  notifyLog.unshift({ time: e.time || '', level: msg.level || '', title: msg.title || '(无标题)', body: msg.content || '', delivered: Array.isArray(payload.delivered) ? payload.delivered : [], accepted: Array.isArray(payload.accepted) ? payload.accepted : (Array.isArray(payload.delivered) ? payload.delivered : []), confirmed: Array.isArray(payload.confirmed) ? payload.confirmed : [], failed: Array.isArray(payload.failed) ? payload.failed.length : 0, replay: e.replay === true })
+  notifyLog.unshift({ time: e.time || '', level: msg.level || '', title: msg.title || tr('noTitle'), body: msg.content || '', delivered: Array.isArray(payload.delivered) ? payload.delivered : [], accepted: Array.isArray(payload.accepted) ? payload.accepted : (Array.isArray(payload.delivered) ? payload.delivered : []), confirmed: Array.isArray(payload.confirmed) ? payload.confirmed : [], failed: Array.isArray(payload.failed) ? payload.failed.length : 0, replay: e.replay === true })
   if (notifyLog.length > 50) notifyLog.length = 50
   renderNotifyLog()
   if (e.replay === true) return // 断线期间的事件只补日志不补弹（不轰炸通知中心）
@@ -1564,26 +1552,26 @@ function onNotifyEvent(evt) {
   if (msg.level === 'passive') return // 摘要类永不弹
   if (msg.level !== 'timeSensitive' && !prefs.active) return
   if (prefs.hiddenOnly && document.hidden === false) return // 页面正看着：日志已可见，不再弹系统横幅
-  fireNotification(msg.title || 'dsh-notifier', msg.content || '', msg.level || 'active')
+  fireNotification(msg.title || tr('notifyAppName'), msg.content || '', msg.level || 'active')
   if (prefs.sound && msg.level === 'timeSensitive') beep()
 }
 function renderNotifyLog() {
   var body = $('#notifyLog')
   if (!body) return
-  if (notifyLog.length === 0) { body.innerHTML = '<tr><td colspan="5" class="empty">暂无事件</td></tr>'; return }
+  if (notifyLog.length === 0) { body.innerHTML = '<tr><td colspan="5" class="empty">' + esc(tr('noEvents')) + '</td></tr>'; return }
   body.innerHTML = notifyLog.map(function (row) {
     // v0.13（R4）：accepted ≠ confirmed。无显式回执只能说「已发送到提供方」，不得宣称「已送达」。
     var confirmed = Array.isArray(row.confirmed) ? row.confirmed : []
     var accepted = Array.isArray(row.accepted) ? row.accepted : (Array.isArray(row.delivered) ? row.delivered : [])
-    var delivery = confirmed.length > 0 ? '已确认送达 ' + confirmed.join('、')
-      : accepted.length > 0 ? '已发送到提供方 ' + accepted.join('、')
-        : '未投递'
-    if (row.failed > 0) delivery += '（' + row.failed + ' 渠道失败）'
+    var delivery = confirmed.length > 0 ? tr('deliveredConfirmed', { channels: esc(confirmed.join(tr('sessionChannelsJoiner'))) })
+      : accepted.length > 0 ? tr('deliveredAccepted', { channels: esc(accepted.join(tr('sessionChannelsJoiner'))) })
+        : tr('notDelivered')
+    if (row.failed > 0) delivery += tr('failedChannelsSuffix', { count: row.failed })
     return '<tr><td class="small">' + esc(fmtTime(row.time)) + '</td>'
       + '<td><span class="chip ' + levelClass(row.level) + '">' + esc(row.level || '?') + '</span></td>'
       + '<td>' + esc(row.title) + '</td>'
       + '<td class="small">' + esc(row.body) + '<div class="muted small">' + esc(delivery) + '</div></td>'
-      + '<td class="small">' + (row.replay ? '重放' : '实时') + '</td></tr>'
+      + '<td class="small">' + esc(row.replay ? tr('replay') : tr('live')) + '</td></tr>'
   }).join('')
 }
 /** SSE 客户端（fetch 流式读：EventSource 不支持 Authorization 头）；断线 5s 退避重连。
@@ -1596,7 +1584,7 @@ function startNotifyStream(explicitToken) {
     var waitingGen = authGen
     acquireToken().then(function (t) {
       if (t && waitingGen === authGen) startNotifyStream(t)
-      else setStreamState('未设置 token，点击右上角 token 状态输入')
+      else setStreamState(tr('streamNoToken'))
     })
     return
   }
@@ -1607,12 +1595,12 @@ function startNotifyStream(explicitToken) {
     if (epoch !== notifyStreamEpoch) return
     if (res.status === 401) {
       if (gen >= authGen) { handleStream401(token); return } // 活 token 失效 → 走共享重登录门
-      setStreamState('旧会话请求已失效；当前 token 未受影响'); return // 迟到旧流不得清掉新 token
+      setStreamState(tr('streamOldSession')); return // 迟到旧流不得清掉新 token
     }
     markAuthOk()
     adoptToken(token) // 连接正常 → 持久化（首访解锁输入的 token 在此落库）
-    if (!res.ok || !res.body) throw new Error('HTTP ' + res.status)
-    setStreamState('已连接')
+    if (!res.ok || !res.body) throw new Error(tr('httpStatus', { status: res.status }))
+    setStreamState(tr('streamConnected'))
     var reader = res.body.getReader()
     var decoder = new TextDecoder()
     var buf = ''
@@ -1635,22 +1623,22 @@ function startNotifyStream(explicitToken) {
     return pump()
   }).catch(function () {
     if (epoch !== notifyStreamEpoch || gen !== authGen || getToken() !== token) return
-    setStreamState('已断开，5 秒后重连')
+    setStreamState(tr('streamDisconnected'))
     notifyStreamTimer = setTimeout(startNotifyStream, 5000)
   })
 }
 /** SSE 401 单次重登录（与 api 共享门；并发已由 reloginGate 兜住）。 */
 function handleStream401(lastToken) {
   if (reloginPromise) {
-    reloginGate().then(function (t) { if (t) startNotifyStream(t); else setStreamState('token 失效（未重新登录，请点击右上角重试）') })
+    reloginGate().then(function (t) { if (t) startNotifyStream(t); else setStreamState(tr('streamTokenFailedRetry')) })
     return
   }
-  if (recoveryUsed) { setStreamState('token 失效（已自动重试一次，请刷新或点击右上角更新）'); return }
+  if (recoveryUsed) { setStreamState(tr('streamTokenFailedManual')); return }
   recoveryUsed = true
-  if (!gateReason) gateReason = 'token 无效或已失效，请重新输入（终端首次启动时打印）。'
+  if (!gateReason) gateReason = tr('streamReloginReason')
   reloginGate().then(function (t) {
     if (t) startNotifyStream(t)
-    else { setToken(''); renderTokenState(); setStreamState('token 失效（未重新登录，请点击右上角重试）') }
+    else { setToken(''); renderTokenState(); setStreamState(tr('streamTokenFailedRetry')) }
   })
 }
 var NOTIFY_PREF_IDS = { npEnable: 'enable', npActive: 'active', npSound: 'sound', npHidden: 'hiddenOnly' }
@@ -1658,13 +1646,13 @@ function initNotifyTab() {
   writeNotifyPrefs() // 同步 checkbox 与存储（首访写入默认值）
   renderPermState()
   $('#nPermBtn').addEventListener('click', function () {
-    if (typeof Notification === 'undefined') { flash('此浏览器不支持系统通知', 'err'); return }
+    if (typeof Notification === 'undefined') { flash(tr('notifyUnsupported'), 'err'); return }
     Notification.requestPermission().then(function () { renderPermState(); beep() }) // 手势顺带解锁 AudioContext
   })
   $('#nTestBtn').addEventListener('click', function () {
     beep()
-    fireNotification('dsh-notifier 测试', '如果你看到这条系统通知，桌面通知已就绪（' + new Date().toLocaleTimeString() + '）', 'active')
-    flash('已发起测试通知（权限未授权时只在浏览器内可见此提示）', 'ok')
+    fireNotification(tr('notifyTestTitle'), tr('notifyTestBody', { time: new Date().toLocaleTimeString() }), 'active')
+    flash(tr('notifyTestFired'), 'ok')
   })
   Object.keys(NOTIFY_PREF_IDS).forEach(function (id) {
     $('#' + id).addEventListener('change', function () {
@@ -1700,8 +1688,8 @@ function init() {
     stopNotifyStream()
     setToken('')
     renderTokenState()
-    setStreamState('已退出本浏览器会话；点击 token 状态重新输入')
-    flash('已退出本浏览器会话', 'ok')
+    setStreamState(tr('logoutStream'))
+    flash(tr('logout'), 'ok')
   })
   $('#btnCopyEntry').addEventListener('click', copyEntryPoint)
   renderEntryPoint()
@@ -1712,7 +1700,7 @@ function init() {
   if (ticket) {
     clearFragment()
     exchangeLaunchTicket(ticket).then(function () {
-      flash('已通过 DSH 一次性启动票据打开高级管理台；敏感写操作仍使用原管理台会话鉴权。', 'ok')
+      flash(tr('ticketOpened'), 'ok')
     }).catch(function (e) {
       gateReason = errText(e)
       showGate(gateReason)
@@ -1720,7 +1708,7 @@ function init() {
   } else if (launch) {
     clearFragment()
     setCandidateToken(launch)
-    gateReason = '启动链接中的凭证无效或已过期（链接仅在打印它的进程内有效）。请从终端重新复制 token 输入。'
+    gateReason = tr('launchInvalid')
   }
   // 首访向导与验证横幅（事件委托；面板缺按钮时静默）
   var setupEl0 = $('#setup')
