@@ -114,19 +114,21 @@ export function createStore(filePath) {
   }
 
   /**
-   * save 时刻的重读：区分「无文件/空」与「解析失败」。
-   * @returns {{ ok: true, value: object } | { ok: false, reason: 'corrupt' }}
+   * transaction 时刻的重读：区分「无文件」「读失败」与「解析失败」。
+   * @returns {{ ok: true, value: object, missing?: boolean } | { ok: false, reason: 'read-failed'|'corrupt' }}
    */
   const tryLoad = () => {
+    if (!existsSync(filePath)) return { ok: true, value: {}, missing: true }
+    let raw
+    try { raw = readFileSync(filePath, 'utf8') } catch { return { ok: false, reason: 'read-failed' } }
     try {
-      if (!existsSync(filePath)) return { ok: true, value: {} }
-      const parsed = JSON.parse(readFileSync(filePath, 'utf8'))
+      const parsed = JSON.parse(raw)
       if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
         return { ok: false, reason: 'corrupt' }
       }
       return { ok: true, value: parsed }
     } catch {
-      return { ok: false, reason: 'corrupt' } // 半截 JSON/坏块：save 必须中止，绝不覆写
+      return { ok: false, reason: 'corrupt' } // 半截 JSON/坏块：transaction 必须保留现场
     }
   }
 
@@ -147,15 +149,15 @@ export function createStore(filePath) {
 
   // ---- v0.6.4 跨进程写锁（R2-P1-2）：唯一 tmp 只解决了 ENOENT，没解决两进程
   // load→rename 区间交错的 last-writer-wins 整文件丢写。锁文件抢占（'wx' 独占创建）
-  // + mtime>10s 视为持锁进程已死的陈锁可清 + 有界自旋（60 拍×4ms≈240ms）+ 超时强写
-  // 降级（保底不丢可用性，退回 v0.6.3 行为并 warn）。锁内完成 load→merge→write→rename。
+  // + mtime>10s 视为持锁进程已死的陈锁可清 + 有界自旋（60 拍×4ms≈240ms）。
+  // v0.13 起超时返回 STATE_BUSY，绝不再无锁写入。
   // v0.6.5 加固（审查 R4-1-P2-1/P2-2）：
   //  - 属主校验：抢到锁即在锁文件写入 pid:random，release 比对一致才删——
   //    持锁超 10s 的慢进程被陈锁回收后，绝不误删他人已重抢的新锁（经典 lockfile 竞态）；
   //  - 自旋内复查陈锁：每 8 拍 stat 一次，残锁到期当次 save 即恢复锁序，
   //    不必白等 240ms 降级裸写（降级写与持锁者的 load→rename 交错仍可能整文件丢写）；
-  //  - 双轮等待：首轮超时后若锁仍新鲜（<10s，持锁者大概率活着），再等一轮，
-  //    两轮 ≈480ms 仍持锁才降级——把降级裸写压到「持锁进程挂死/极慢盘」的罕见分支。
+  //  - 双轮等待：首轮超时后若锁仍新鲜（<10s，持锁者大概率活着），再等一轮；
+  //    两轮 ≈480ms 仍持锁即 busy，不牺牲原子性换可用性。
   const lockPath = `${filePath}.lock`
   let warnedLockTimeout = false
   const isStaleLock = () => {
@@ -199,15 +201,21 @@ export function createStore(filePath) {
         let fd = -1
         try {
           fd = openSync(lockPath, 'wx')
-          // 属主落章：release 时比对，锁被他人回收重抢后绝不误删（R4-1-P2-2）
-          try { writeSync(fd, ownerId, 0, 'utf8') } catch { /* 写不进章：释放退化为旧语义，仅保护降级 */ }
-          return () => {
+          // 属主落章：release 时比对，锁被他人回收重抢后绝不误删（R4-1-P2-2）。
+          // 落章失败时必须关闭并清理空锁，不能留下永不释放的 lockfile。
+          const written = writeSync(fd, ownerId, 0, 'utf8')
+          if (written !== Buffer.byteLength(ownerId, 'utf8')) throw new Error('lock owner write incomplete')
+          return { ok: true, release: () => {
             try { closeSync(fd) } catch { /* fd 已关不致命 */ }
             try {
               if (readFileSync(lockPath, 'utf8') === ownerId) unlinkSync(lockPath)
             } catch { /* 锁已被回收：内容比对失败即放弃（锁已易主，不能删） */ }
-          }
+          } }
         } catch {
+          try { if (fd >= 0) closeSync(fd) } catch { /* cleanup best effort */ }
+          try {
+            if (readFileSync(lockPath, 'utf8') === '') unlinkSync(lockPath)
+          } catch { /* 其他持有者/文件系统错误交给下一轮 */ }
           // 锁被占：自旋等待（首拍立即重试撞运气，之后 4ms 一拍；每 8 拍复查陈锁/死锁）
           if (attempt > 0) {
             syncSleep(4)
@@ -226,9 +234,9 @@ export function createStore(filePath) {
     }
     if (!warnedLockTimeout) {
       warnedLockTimeout = true
-      try { console.error('[dsh-notifier/store]', `写锁等待超时（${lockPath}），降级无锁写入`) } catch { /* 控制台不可用不致命 */ }
+      try { console.error('[dsh-notifier/store]', `写锁等待超时（${lockPath}），返回 STATE_BUSY`) } catch { /* 控制台不可用不致命 */ }
     }
-    return () => {} // 两轮超时强写：降级为 v0.6.3 的无锁行为（比永远写不进强；窗口毫秒级）
+    return { ok: false, code: 'STATE_BUSY', release: () => {} }
   }
 
   let warnedSaveError = false
@@ -253,68 +261,66 @@ export function createStore(filePath) {
     lastKnownMtimeMs = current
   }
 
-  const save = () => {
-    const release = acquireLock()
-    // v0.8.7（对抗评审 Stage-4 P1-2）：save 原先在裸 catch 里吞掉一切磁盘失败并**不返回可辨识信号**，
-    // 调用方（store.set → agent-router.safeSet → admin PATCH control）据此把「没写上去」误判为「成功」
-    // 返回 200，而状态重启即丢。改为返回持久化是否真正到达磁盘的布尔：只有 write+rename 全部完成才算
-    // durable=true；磁盘异常 catch 与「损坏转存失败中止」两条路径保持 durable=false，向上显式传播失败。
-    // 既有调用方只看副作用、忽略返回值；唯一新消费方是 router.safeSet（把 false 当写失败）。行为不破坏。
-    let durable = false
+  const cloneState = (value) => {
+    if (value === null || value === undefined || typeof value !== 'object') return value
+    try { return JSON.parse(JSON.stringify(value)) } catch { return { ...value } }
+  }
+
+  /**
+   * v0.13 transactional state commit.
+   * The mutator only receives a detached draft. Disk and live memory are published
+   * after the atomic rename; any lock/read/mutator/write failure leaves both unchanged.
+   */
+  const transact = (mutator) => {
+    if (typeof mutator !== 'function') return { ok: false, committed: false, durable: false, code: 'BAD_MUTATOR' }
+    if (bootReadFailed) return { ok: false, committed: false, durable: false, code: 'STATE_READ_FAILED' }
+    const acquired = acquireLock()
+    if (acquired.ok !== true) return { ok: false, committed: false, durable: false, code: acquired.code }
+    let tmp = null
     try {
       mkdirSync(dirname(filePath), { recursive: true })
       let disk = tryLoad()
+      if (!disk.ok && disk.reason === 'read-failed') {
+        return { ok: false, committed: false, durable: false, code: 'STATE_READ_FAILED' }
+      }
       if (!disk.ok) {
-        // v0.6.5 损坏自愈（审查 R4-1-P2-3，替代 v0.6.4 的「中止保现场」）：
-        // 中止会让 dirty 无限积压、CLI↔宿主共享永久断裂（外部不修复就永远写不进）。
-        // 自愈 = 现场转存为 .corrupt.<ts>（取证可手工恢复，保护等级不降）后，
-        // 以内存全量 + dirty 重建写路径。半截 JSON 本就解析不出任何键，
-        // 重建丢失的只有「损坏文件里已不可读的内容」，且已留副本。
         const backup = corruptBackupPath(filePath)
         try {
           renameSync(filePath, backup)
           console.error('[dsh-notifier/store]', `state 文件损坏，已转存现场为 ${backup} 并以内存态重建（副本可手工排查恢复）`)
         } catch (renameError) {
-          // 转存失败（如备份不可写）：退回 v0.6.4 中止语义，保留 dirty 待外部修复。
-          // 未写入磁盘 → durable 保持 false。
           if (!warnedCorrupt) {
             warnedCorrupt = true
             try { console.error('[dsh-notifier/store]', `state 文件损坏且转存失败（${renameError instanceof Error ? renameError.message : String(renameError)}），暂停写盘保留现场: ${filePath}`) } catch { /* 控制台不可用不致命 */ }
           }
-          return durable
+          return { ok: false, committed: false, durable: false, code: 'STATE_CORRUPT' }
         }
-        // 现场已转存：磁盘不可读，最大可用快照就是本实例内存全量（boot 载入 + 此后更新；
-        // 他进程 boot 后的写入本就读不出来——副本里留了取证）。绝不能从 {} 起步：
-        // 那会把本实例 boot 载入的非脏键（凭证/路由）一并抹掉。
         disk = { ok: true, value: state }
       }
-      // 唯一 tmp：多进程共用固定 .tmp 路径时 write/rename 交错会 ENOENT 丢写
-      const tmp = `${filePath}.${process.pid}.${Math.random().toString(36).slice(2, 8)}.tmp`
-      const merged = { ...disk.value }
-      for (const key of dirty) {
-        if (key in state) merged[key] = state[key]
-        else delete merged[key]
-      }
-      // v0.6.5（审查 R4-1-P3-6）：创建即 0600——chmod 前的 umask 窗口里凭证对他账号可读
-      writeFileSync(tmp, JSON.stringify(merged), { encoding: 'utf8', mode: 0o600 })
+      // 文件被外部删除时，保留本实例已知快照，避免一次 unrelated write 抹掉其他键。
+      const base = disk.missing && Object.keys(state).length > 0 ? state : disk.value
+      const draft = cloneState(base)
+      const value = mutator(draft)
+      tmp = `${filePath}.${process.pid}.${Math.random().toString(36).slice(2, 8)}.tmp`
+      writeFileSync(tmp, JSON.stringify(draft), { encoding: 'utf8', mode: 0o600 })
       try { chmodSync(tmp, 0o600) } catch { /* Windows/受限环境无 chmod：尽力而为 */ }
       renameSync(tmp, filePath)
-      state = merged
+      tmp = null
+      state = draft
       dirty.clear()
       lastKnownMtimeMs = mtimeOf()
       lastRefreshCheckMs = Date.now()
-      durable = true
-    } catch {
-      // 磁盘失败不致命：内存态继续工作（重启后丢失）；dirty 保留下次再试。
-      // durable 保持 false —— 写没有真正到达盘上，向上显式传播失败。
+      return { ok: true, committed: true, durable: true, value }
+    } catch (error) {
+      if (tmp !== null) try { unlinkSync(tmp) } catch { /* temp cleanup best effort */ }
       if (!warnedSaveError) {
         warnedSaveError = true
-        try { console.error('[dsh-notifier/store]', `state 写盘失败（内存态继续，重启后丢失）: ${filePath}`) } catch { /* 控制台不可用不致命 */ }
+        try { console.error('[dsh-notifier/store]', `state 事务写盘失败（内存与磁盘保持不变）: ${filePath}`) } catch { /* 控制台不可用不致命 */ }
       }
+      return { ok: false, committed: false, durable: false, code: error?.code === 'STATE_BUSY' ? 'STATE_BUSY' : 'STATE_WRITE_FAILED', error }
     } finally {
-      release()
+      acquired.release()
     }
-    return durable
   }
 
   return {
@@ -327,19 +333,20 @@ export function createStore(filePath) {
       const value = state[key]
       return value === undefined ? fallback : value
     },
+    /** v0.13：跨 key 事务入口；mutator 只改 detached draft，成功后一次性发布。 */
+    transact,
     set(key, value) {
-      state[key] = value
-      dirty.add(key)
-      // v0.8.7（对抗评审 Stage-4 P1-2）：向上传播持久化成功与否（save 的 durable 布尔），
-      // router.safeSet 据此把「写盘失败」与「写盘成功」区分开。忽略返回值的既有调用方不受影响。
-      return save()
+      const result = transact((draft) => {
+        draft[key] = cloneState(value)
+        return true
+      })
+      return result.committed === true
     },
     delete(key) {
+      try { refreshIfChanged() } catch { /* 收敛失败：退回内存态 */ }
       const existed = key in state
-      delete state[key]
       if (existed) {
-        dirty.add(key)
-        save()
+        transact((draft) => { delete draft[key]; return true })
       }
       // 返回语义保持 existed（R1：task-selection.mjs:133 依赖 store.delete(key) === true）。
       // 需要 durable 结论的调用方走 deleteDurable。
@@ -351,11 +358,11 @@ export function createStore(filePath) {
      * @returns {{ existed: boolean, durable: boolean }}
      */
     deleteDurable(key) {
+      try { refreshIfChanged() } catch { /* 收敛失败：退回内存态 */ }
       const existed = key in state
-      delete state[key]
-      if (!existed) return { existed: false, durable: true }
-      dirty.add(key)
-      return { existed: true, durable: save() }
+      if (!existed) return { existed: false, durable: !bootReadFailed }
+      const result = transact((draft) => { delete draft[key]; return true })
+      return { existed: true, durable: result.committed === true }
     },
     keys(prefix = '') {
       try { refreshIfChanged() } catch { /* 收敛失败：退回内存态 */ }
@@ -366,17 +373,18 @@ export function createStore(filePath) {
     },
     /** 清理超期的键（如去重窗口），返回清理数量（v0.6.3 走脏键合并，单次落盘）。 */
     sweepPrefix(prefix, isExpired) {
-      let removed = 0
-      for (const key of Object.keys(state)) {
-        if (!key.startsWith(prefix)) continue
-        if (isExpired(key, state[key])) {
-          delete state[key]
-          dirty.add(key)
-          removed += 1
+      const result = transact((draft) => {
+        let removed = 0
+        for (const key of Object.keys(draft)) {
+          if (!key.startsWith(prefix)) continue
+          if (isExpired(key, draft[key])) {
+            delete draft[key]
+            removed += 1
+          }
         }
-      }
-      if (removed > 0) save()
-      return removed
+        return removed
+      })
+      return result.committed === true ? Number(result.value ?? 0) : 0
     },
   }
 }
@@ -386,6 +394,14 @@ export function createStore(filePath) {
  * 显式 false 才是失败；undefined 是遗留 mock store 的合法返回值，必须当作成功（I9）。
  */
 export function setDurable(store, key, value) {
+  if (typeof store?.transact === 'function') {
+    try {
+      const result = store.transact((draft) => { draft[key] = value; return true })
+      return result?.committed === true
+    } catch {
+      return false
+    }
+  }
   if (typeof store?.set !== 'function') return false
   try {
     return store.set(key, value) !== false
@@ -399,6 +415,18 @@ export function setDurable(store, key, value) {
  * 真 store 有 deleteDurable 时优先使用；遗留 mock 只有 delete 时，沿用 existed 语义。
  */
 export function deleteDurable(store, key) {
+  if (typeof store?.transact === 'function') {
+    try {
+      const result = store.transact((draft) => {
+        const existed = key in draft
+        delete draft[key]
+        return existed
+      })
+      return { existed: result?.committed === true && result?.value === true, durable: result?.committed === true }
+    } catch {
+      return { existed: false, durable: false }
+    }
+  }
   if (typeof store?.deleteDurable === 'function') {
     try {
       const result = store.deleteDurable(key)

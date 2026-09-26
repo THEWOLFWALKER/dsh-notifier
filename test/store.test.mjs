@@ -5,7 +5,7 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { chmodSync, mkdtempSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdtempSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createStore } from '../src/inbound/store.mjs'
@@ -29,6 +29,52 @@ test('set：父路径被常规文件占用 → 落盘失败返回 false（不抛
   // 失败显式传播：false 让上层（router.safeSet → admin 500）能把写失败与成功区分开，
   // 而不是「重启即丢」还被当作 200。
   assert.equal(store.set('k', { v: 1 }), false)
+})
+
+test('v0.13 C2：mutator 失败时 draft 不发布，memory/disk 都保持原样', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-store-tx-fail-'))
+  const file = join(dir, 'state.json')
+  const store = createStore(file)
+  assert.equal(store.set('stable', { value: 1 }), true)
+  const before = readFileSync(file, 'utf8')
+  const result = store.transact((draft) => {
+    draft.stable = { value: 2 }
+    draft.late = true
+    throw new Error('abort')
+  })
+  assert.equal(result.committed, false)
+  assert.equal(store.get('late'), undefined)
+  assert.deepEqual(store.get('stable'), { value: 1 })
+  assert.equal(readFileSync(file, 'utf8'), before)
+})
+
+test('v0.13 C2：live lock 超时返回 STATE_BUSY，绝不 unlocked write', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-store-busy-'))
+  const file = join(dir, 'state.json')
+  const store = createStore(file)
+  assert.equal(store.set('stable', 1), true)
+  const lock = `${file}.lock`
+  writeFileSync(lock, `${process.pid}:live-test-holder`)
+  try {
+    const result = store.transact((draft) => { draft.late = true; return true })
+    assert.equal(result.committed, false)
+    assert.equal(result.code, 'STATE_BUSY')
+    assert.equal(store.get('late'), undefined)
+    assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { stable: 1 })
+  } finally {
+    try { unlinkSync(lock) } catch {}
+  }
+})
+
+test('v0.13 C2：每个事务 fresh-read disk，两个 store 的无关 key 不互相覆盖', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-store-fresh-'))
+  const file = join(dir, 'state.json')
+  const first = createStore(file)
+  const second = createStore(file)
+  assert.equal(first.set('a', 1), true)
+  assert.equal(second.set('b', 2), true)
+  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { a: 1, b: 2 })
+  assert.deepEqual(createStore(file).keys().sort(), ['a', 'b'])
 })
 
 test('S-04：加载时权限自检——mode 非 0600 → warn + chmod 收紧尝试（失败仅 warn 不阻塞启动）', () => {
