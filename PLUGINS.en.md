@@ -56,6 +56,8 @@ The public surface also applies a bounded resource budget per underlying notifie
 const result = { ok: true, delivered: ['telegram'], skipped: [], failed: [], source: { kind: 'plugin', name: 'my-email-plugin' } }
 ```
 
+`delivered` is the provider-level result from the configured channel path; it does not by itself prove that the client displayed the message. Interpret it as confirmed delivery only when the provider supplies explicit end-to-end receipt evidence. Keep `accepted`, `delivered`, and client confirmation distinct under the three-state semantics.
+
 - Common `skipped` values: `(malformed)` both empty / `(disabled)` service off / `(rate-limited)` over quota / `(quiet)` conversation muted / `(channel name)` targeted channel not configured
 - A targeted push (`channel` present) takes the single-channel path; like a broadcast it writes one audit record and emits one `sent` event, and the outcome is still read only from the return value
 

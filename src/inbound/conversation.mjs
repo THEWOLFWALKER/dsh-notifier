@@ -78,7 +78,8 @@ const placeholderTextFor = (attachments) =>
   (attachments.some((item) => item.kind === INBOUND_KINDS.image) ? IMAGE_PLACEHOLDER_TEXT : FILE_PLACEHOLDER_TEXT)
 
 /** 附件 admission 失败回执文案（按失败的附件种类取，zh/en 均来自 strings 表）。 */
-function attachmentFailureText(t, failures) {
+function attachmentFailureText(t, failures, diagnostics = {}) {
+  if (diagnostics.fileCapabilityUnavailable === true) return t.fileCapabilityUnavailable
   const hasImage = failures.includes(INBOUND_KINDS.image)
   const hasFile = failures.includes(INBOUND_KINDS.file)
   if (hasImage && hasFile) return t.attachmentFetchFailed
@@ -161,6 +162,14 @@ export function registerConversationRouter(deps, strings) {
     try { deps.logger?.warn?.('[dsh-notifier/conversation]', message) } catch { /* 日志失败绝不致命 */ }
     // v0.6.1 双写 stderr：宿主 logger 不落 stdout 时告警仍可见（真机事故复盘）
     try { console.error('[dsh-notifier/conversation]', message) } catch { /* 控制台不可用不致命 */ }
+  }
+  // Old supported-matrix hosts may expose AttachmentStore without saveFile. Warn once per
+  // router instance; each affected file still gets a localized fail-closed user receipt.
+  let missingFileAdmissionWarned = false
+  const warnMissingFileAdmission = () => {
+    if (missingFileAdmissionWarned) return
+    missingFileAdmissionWarned = true
+    warn(t.fileCapabilityUnavailableLog)
   }
   // Host P0-A：异步投递链 fire-and-forget 统一兜底（总线 handler 同步、无法 await）。
   // 任何未捕获 rejection 只记 warn，绝不弄崩宿主/总线。
@@ -651,8 +660,8 @@ say(t.helpLines.join('\n'))
       say('绑定保存失败，请稍后重试')
       return false
     }
-    const outcome = await deliver(agent, originalText, items, (failures) => {
-      try { say(attachmentFailureText(t, failures)) } catch { /* 回执失败不致命 */ }
+    const outcome = await deliver(agent, originalText, items, (failures, diagnostics) => {
+      try { say(attachmentFailureText(t, failures, diagnostics)) } catch { /* 回执失败不致命 */ }
     })
     if (outcome === 'error') { say('投递失败（详见宿主日志）'); return false }
     if (outcome === 'empty') { say(`已选择 ${sessionId}（原消息为空，未投递）`); return true }
@@ -825,10 +834,15 @@ say(t.helpLines.join('\n'))
 
     const blocks = []
     const failures = []
+    const failureReasons = []
     let aggregateBytes = 0
     for (const item of parts) {
       const admitted = await admitAttachmentBlock(item, MAX_INBOUND_ATTACHMENTS_TOTAL_BYTES - aggregateBytes)
       if (admitted === null) failures.push(item.kind)
+      else if (admitted.ok !== true) {
+        failures.push(item.kind)
+        failureReasons.push(admitted.reason)
+      }
       else {
         blocks.push(admitted.block)
         aggregateBytes += admitted.size
@@ -836,7 +850,11 @@ say(t.helpLines.join('\n'))
     }
     if (failures.length > 0) {
       if (typeof onAttachmentFailure === 'function') {
-        try { onAttachmentFailure(failures) } catch { /* 回执失败不致命 */ }
+        try {
+          onAttachmentFailure(failures, {
+            fileCapabilityUnavailable: failureReasons.includes('file-capability'),
+          })
+        } catch { /* 回执失败不致命 */ }
       } else {
         warn(`附件 admission 失败（已按纯文本投递，附件未随附）: ${failures.join(',')}`)
       }
@@ -874,14 +892,18 @@ say(t.helpLines.join('\n'))
       if (bytes === null || bytes === undefined) return null
       if (!Number.isFinite(Number(bytes.size)) || bytes.size < 0 || bytes.size > remainingBytes) return null
       const ref = await admitInboundImage(attachments, bytes.data, bytes.mediaType)
-      return ref === null ? null : { block: { type: 'image', attachment: ref }, size: bytes.size }
+      return ref === null ? null : { ok: true, block: { type: 'image', attachment: ref }, size: bytes.size }
     }
     if (item.kind === INBOUND_KINDS.file) {
+      if (typeof attachments.saveFile !== 'function') {
+        warnMissingFileAdmission()
+        return { ok: false, reason: 'file-capability' }
+      }
       const bytes = await downloadFileBytes(item.file.url)
       if (bytes === null || bytes === undefined) return null
       if (!Number.isFinite(Number(bytes.size)) || bytes.size < 0 || bytes.size > remainingBytes) return null
       const ref = await admitInboundFile(attachments, bytes.data, item.file.name)
-      return ref === null ? null : { block: { type: 'file', attachment: ref }, size: bytes.size }
+      return ref === null ? null : { ok: true, block: { type: 'file', attachment: ref }, size: bytes.size }
     }
     return null
   }
@@ -983,8 +1005,8 @@ say(t.helpLines.join('\n'))
       reply(envelope.channel, envelope.chatId, t.sessionGone(bound))
       return
     }
-    const outcome = await deliver(agent, text, items, (failures) => {
-      reply(envelope.channel, envelope.chatId, attachmentFailureText(t, failures))
+    const outcome = await deliver(agent, text, items, (failures, diagnostics) => {
+      reply(envelope.channel, envelope.chatId, attachmentFailureText(t, failures, diagnostics))
     })
     if (outcome === 'error') {
       reply(envelope.channel, envelope.chatId, t.deliverFailed)

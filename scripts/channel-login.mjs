@@ -12,8 +12,8 @@
 
 import { spawn } from 'node:child_process'
 import { dirname, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
-import { createStore, defaultStateDir } from '../src/inbound/store.mjs'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+import { createStore, defaultStateDir, setDurable } from '../src/inbound/store.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 
@@ -101,6 +101,26 @@ async function loginQq(args, store) {
   return 1
 }
 
+/**
+ * 处理钉钉授权成功：凭证必须以 durable 结果为准，落盘失败绝不输出成功文案。
+ * 可测入口（tests 注入 store / log / error sink），返回退出码。
+ */
+export function applyDingtalkCredentials({ store, stateFile, credentials, log = console.log, error = console.error }) {
+  const { appKey = '', appSecret = '' } = credentials ?? {}
+  if (appKey === '' || appSecret === '') {
+    error('\n授权成功但凭证不完整（appKey/appSecret 缺失），请重新执行。')
+    return 1
+  }
+  if (setDurable(store, 'dingtalk:account', { appKey, appSecret, at: Date.now() }) !== true) {
+    error('\n钉钉授权成功，但凭证写入失败（磁盘/权限/锁）。登录未完成，请检查 state 目录后重试。')
+    return 1
+  }
+  log(`\n钉钉连接成功：appKey=${appKey}`)
+  log(`凭证已写入 ${stateFile}（dingtalk:account）。插件配置 inbound.dingtalk: {} 即可启用。`)
+  log('提醒：机器人可见范围即入站访问范围，请在钉钉管理后台将其开放给信任的组织成员。')
+  return 0
+}
+
 async function loginDingtalk(args, store, stateFile) {
   const { createDingtalkAuth } = await import('../src/inbound/_dingtalk-auth.mjs')
   const auth = createDingtalkAuth({})
@@ -146,16 +166,7 @@ async function loginDingtalk(args, store, stateFile) {
       console.error(`\n钉钉授权失败：${result.error ?? '服务端返回失败'}。可在开放平台检查账号/组织状态后重试。`)
       return 1
     } else if (result.status === 'SUCCESS') {
-      const { appKey = '', appSecret = '' } = result.credentials ?? {}
-      if (appKey === '' || appSecret === '') {
-        console.error('\n授权成功但凭证不完整（appKey/appSecret 缺失），请重新执行。')
-        return 1
-      }
-      store.set('dingtalk:account', { appKey, appSecret, at: Date.now() })
-      console.log(`\n钉钉连接成功：appKey=${appKey}`)
-      console.log(`凭证已写入 ${stateFile}（dingtalk:account）。插件配置 inbound.dingtalk: {} 即可启用。`)
-      console.log('提醒：机器人可见范围即入站访问范围，请在钉钉管理后台将其开放给信任的组织成员。')
-      return 0
+      return applyDingtalkCredentials({ store, stateFile, credentials: result.credentials })
     }
     await sleep(1000)
   }
@@ -206,7 +217,13 @@ async function main() {
   return loginFeishu(args, store)
 }
 
-main().then((code) => process.exit(code), (error) => {
-  console.error(`扫码登录异常退出：${error instanceof Error ? error.stack ?? error.message : String(error)}`)
-  process.exit(1)
-})
+// 直接运行守卫：被测试文件 import 时不执行 main（对齐 scripts/route.mjs 约定）。
+const invokedDirectly = process.argv[1] !== undefined
+  && import.meta.url === pathToFileURL(resolve(process.argv[1])).href
+
+if (invokedDirectly) {
+  main().then((code) => process.exit(code), (error) => {
+    console.error(`扫码登录异常退出：${error instanceof Error ? error.stack ?? error.message : String(error)}`)
+    process.exit(1)
+  })
+}

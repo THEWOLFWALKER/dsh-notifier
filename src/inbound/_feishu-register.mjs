@@ -10,6 +10,7 @@
 // 结果对象形态由 scripts/channel-login.mjs 的 loginFeishu 消费（status/appId/openId/message）。
 
 import { normalizeTtlMs } from '../adapters/_tokens.mjs'
+import { setDurable } from './store.mjs'
 
 const SDK_PACKAGE = '@larksuiteoapi/node-sdk'
 const MIN_SDK_VERSION = '1.61.1'
@@ -152,7 +153,11 @@ export async function feishuRegister({ store, onQr, timeoutMs = 480000, logger, 
     }
     if (timedOut) return { status: 'failed', message: '扫码超时' }
     const openId = String(outcome?.user_info?.open_id ?? '')
-    store?.set?.(ACCOUNT_KEY, { appId, appSecret, at: Date.now() })
+    // 「已写入」必须以 durable 结果为准：落盘失败绝不返回 ok（避免假成功）。
+    if (store === undefined || store === null
+      || setDurable(store, ACCOUNT_KEY, { appId, appSecret, at: Date.now() }) !== true) {
+      return { status: 'failed', message: '扫码建应用成功，但凭证写入失败（磁盘/权限/锁），登录未完成；请检查 state 目录后重试' }
+    }
     emitLog(`飞书扫码建应用成功：appId=${appId}（已写入 ${ACCOUNT_KEY}）`)
     // openId 兜底空串（CLI 用 result.openId !== '' 判断是否提示白名单，绝不能是 undefined）
     return { status: 'ok', appId, openId }

@@ -55,6 +55,8 @@ const result = await notifier.push(message, options)
 const result = { ok: true, delivered: ['telegram'], skipped: [], failed: [], source: { kind: 'plugin', name: 'my-email-plugin' } }
 ```
 
+`delivered` 表示已走到配置渠道的提供方结果，并不自动证明终端已经展示消息；只有提供方明确给出端到端回执时，才可把它解释为确认送达。`accepted`、`delivered` 与终端确认应按三态语义区分。
+
 - `skipped` 常见值:`(malformed)` 双空 / `(disabled)` 服务关闭 / `(rate-limited)` 超额 / `(quiet)` 会话静音 / `(渠道名)` 定向未配置
 - 定向推送(`channel` 有值)走单渠道路径；与广播一样写入一次审计记录并发出一次 `sent` 事件，结果仍只看返回值
 

@@ -70,9 +70,15 @@ for (const [index, v] of documentedVersions.entries()) {
 }
 
 const requiredPackageFiles = [
-  'src', 'test', 'types', 'cordis.patch.yml', 'CHANGELOG.md', 'PLUGINS.md', 'PLUGINS.en.md',
-  'THIRD_PARTY_NOTICES.md', 'docs/guide.md', 'docs/compatibility-matrix.md',
+  'src', 'test', 'types', 'cordis.patch.yml', 'CHANGELOG.md', 'README.md', 'README.zh-CN.md',
+  'PLUGINS.md', 'PLUGINS.en.md', 'THIRD_PARTY_NOTICES.md', 'AGENTS.md',
+  'docs/AI_INSTALL.md', 'docs/AI_INSTALL.en.md', 'docs/DIAGNOSTICS.md', 'docs/DIAGNOSTICS.en.md',
+  'docs/OPERATIONS.md', 'docs/SUPPORT.md', 'docs/SUPPORT.en.md',
+  'docs/TROUBLESHOOTING.md', 'docs/TROUBLESHOOTING.en.md', 'docs/architecture.md',
+  'docs/guide.md', 'docs/guide.en.md', 'docs/compatibility-matrix.md',
   'docs/upgrade-guide.md', 'docs/upgrade-guide.en.md',
+  'docs/assets/readme-hero.png', 'docs/assets/qq-group.png',
+  'docs/screenshots/fresh-wizard-desktop.png', 'docs/screenshots/configured-channels-desktop.png',
 ]
 // S-11（W13）：files 从「含整个 scripts 目录」改为显式列举发布脚本（hook-server.mjs
 // 开发用不随包分发）——校验每个发布脚本都在 files 清单里，缺一个即失败。
@@ -84,7 +90,7 @@ const requiredScripts = [
 const packageFiles = Array.isArray(packageJson.files) ? packageJson.files : []
 for (const file of requiredPackageFiles) check(packageFiles.includes(file), `package.json files is missing ${file}`)
 for (const script of requiredScripts) check(packageFiles.includes(script), `package.json files is missing ${script} (S-11 发布脚本须显式列举)`)
-for (const file of ['PLUGINS.md', 'PLUGINS.en.md', 'THIRD_PARTY_NOTICES.md', 'docs/guide.md', 'docs/compatibility-matrix.md', 'docs/upgrade-guide.md', 'docs/upgrade-guide.en.md']) {
+for (const file of requiredPackageFiles.filter((entry) => !['src', 'test', 'types'].includes(entry) && !entry.endsWith('/'))) {
   check(existsSync(resolve(root, file)), `release documentation is missing from the tree: ${file}`)
 }
 

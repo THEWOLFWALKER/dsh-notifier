@@ -122,7 +122,7 @@ node -p "require('./node_modules/dsh-notifier/package.json').version"
 
 ```text
 exports["./client"] = "./client.js"
-dshQuality.testCount = 1984    # 对 v0.13.0 收敛线
+dshQuality.testCount = 2011    # 当前 dev 后续收口；上一发布线 v0.13.0 快照为 1985
 ```
 
 ## 四、版本对，但功能像旧版

@@ -39,7 +39,7 @@ import { createAdminApi, INBOUND_CHANNELS } from './admin/api.mjs'
 // v0.4.0：通知事件 hub（SSE 数据源）
 import { createEventHub } from './admin/events.mjs'
 import { createAdminServer } from './admin/server.mjs'
-import { ADMIN_UI_HTML } from './admin/ui.mjs'
+import { createAdminUiHtml } from './admin/ui.mjs'
 import { createScanHandlers } from './admin/scan.mjs'
 import { runChannelTest } from './health.mjs'
 import { createOutboundSource } from './runtime/outbound-source.mjs'
@@ -943,7 +943,7 @@ export function apply(ctx, config = {}) {
         verifySession: (token) => adminSessions.verify(token),
         host: '127.0.0.1', // 红线：永不绑公网（§0.5-6，config.mjs 已写死不可配）
         port: resolved.admin.port,
-        ui: ADMIN_UI_HTML,
+        ui: createAdminUiHtml(resolved.lang),
         events: eventHub, // v0.4.0 通知事件流（GET /api/events，SSE）
         logger,
       })

@@ -7,7 +7,7 @@
 
 ## 执行红线（任何工作项不得违反）
 
-1. **零运行时依赖**：不新增 `dependencies`/`optionalDependencies`。只用了 Node 22+ 标准库与既有代码。
+1. **零强制运行时依赖**：不新增 `dependencies`；`optionalDependencies` 可保留用于惰性加载的可选集成。只用 Node 22+ 标准库与既有代码。
 2. **公共面无 breaking**：`ctx.notifier` 服务形态、`push(message, options)` 签名、`sent` 事件 payload、`flush()` 语义全部不变，`ctx.notifier.version` 保持 `0.7`。只做**新增**，不做修改/删除。
 3. **双语**：所有面向手机/管理台的新增文案必须进 `src/strings.mjs`，zh 与 en 键一一对应，禁止硬编码字符串进 UI/命令回执。
 4. **fail-closed 默认**：新能力默认关闭或最小权限，需显式开启；未知来源/未配对身份一律拒绝。

@@ -13,7 +13,7 @@
 
 ## 2. 执行红线（任何工作项不得违反）
 
-1. **零运行时依赖**：不新增 `dependencies`/`optionalDependencies`；只用 Node 22+ 标准库与既有代码（可选依赖须 lazy-load）。
+1. **零强制运行时依赖**：不新增 `dependencies`；`optionalDependencies` 仍可按需声明并 lazy-load；其余只用 Node 22+ 标准库与既有代码。
 2. **公共面无 breaking**：`ctx.notifier.version` 锁 `0.7`；`push(message, options)` 签名、`sent` payload、`flush()` 语义不变；只做新增。
 3. **接口铁律——禁止瞎猜**：宿主 API（cordis ctx、session.events、userQuestions、tools、agent 生命周期等）以官方仓库 https://github.com/deepseek-ai/deepseek-harness 对应版本的【实际源码】为准；渠道侧（QQ/飞书/钉钉等）以对应官方开放平台文档为准。每个设计/实现依据在 commit message 与设计书中引用「官方仓库 文件+符号」。拿不到证据标「待验证」，不得直接实现。**特别注意：DSH 0.1.2 起 `session.events` 已移除（issue #32），别按旧文档写。**
 4. **双语**：新增手机/管理台文案进 `src/strings.mjs`，zh/en 键成对；禁机翻味/硬编码。
