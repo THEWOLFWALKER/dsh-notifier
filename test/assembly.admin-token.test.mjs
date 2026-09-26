@@ -16,7 +16,7 @@ function fakeStore(initial = {}) {
   const data = new Map(Object.entries(initial))
   const store = {
     get: (key) => (data.has(key) ? data.get(key) : undefined),
-    set: (key, value) => data.set(key, value),
+    set: (key, value) => { data.set(key, value); return true },
   }
   store.raw = data
   return store
@@ -91,10 +91,38 @@ test('verifyToken 恒时安全面：length 检查 + 任何异常一律 false', (
 test('store.get 抛错（损坏 store）→ 视为无既有哈希，不影响显式路径', () => {
   const brokenStore = {
     get: () => { throw new Error('store corrupt') },
-    set: () => {}, // 本场景仅验证 get 抛错被吞；set 抛错属于宿主 store 损坏面，由 apply 的 try/catch warn 降级
+    set: () => true, // 本场景仅验证 get 抛错被吞；set 抛错属于宿主 store 损坏面，由 apply 的 try/catch warn 降级
   }
   const r = resolveAdminToken({ store: brokenStore, explicitToken: 'tok', info: () => {} })
   assert.equal(r.tokenMode, 'explicit')
   assert.equal(r.verifyToken('tok'), true, 'verifyToken 依赖 activeHash 闭包，不读 store')
   assert.equal(r.activeHash, sha256HexOf('tok'))
+})
+
+test('v0.13：哈希写盘失败时不得宣布 token 生效或打印 generated 明文', () => {
+  const failing = {
+    get: () => undefined,
+    set: () => false,
+    bootStatus: () => ({ readFailed: false }),
+  }
+  const infos = []
+  assert.throws(
+    () => resolveAdminToken({ store: failing, explicitToken: '', info: (message) => infos.push(message) }),
+    (error) => error?.code === 'storage-failed',
+  )
+  assert.deepEqual(infos, [])
+})
+
+test('v0.13：state 启动读失败时 fail-closed，不生成新 token 覆盖旧事实', () => {
+  const writes = []
+  const broken = {
+    bootStatus: () => ({ readFailed: true }),
+    get: () => undefined,
+    set: (...args) => { writes.push(args); return true },
+  }
+  assert.throws(
+    () => resolveAdminToken({ store: broken, explicitToken: '', info: () => {} }),
+    (error) => error?.code === 'storage-failed',
+  )
+  assert.deepEqual(writes, [])
 })

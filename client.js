@@ -349,9 +349,14 @@ window.__ModuleLoader__.load({
         const loop = async () => {
           while (!disposed && !paused && !signal.aborted) {
             try {
-              const value = await rpc.call('surface.wait', { after: snapshot.revision, timeoutMs: 25_000 }, signal)
-              if (signal.aborted || disposed || paused) break
-              if (Number(value?.revision ?? 0) > snapshot.revision) {
+          const value = await rpc.call('surface.wait', { after: snapshot.revision, timeoutMs: 25_000 }, signal)
+          if (signal.aborted || disposed || paused) break
+          if (value?.capacity === true) {
+            const retryAfterMs = Math.max(500, Math.min(30_000, Number(value.retryAfterMs) || 1_000))
+            await new Promise(resolve => setTimeout(resolve, retryAfterMs))
+            continue
+          }
+          if (Number(value?.revision ?? 0) > snapshot.revision) {
                 const refreshed = await refreshCurrent()
                 if (refreshed === true) updateRevision(value.revision)
               }

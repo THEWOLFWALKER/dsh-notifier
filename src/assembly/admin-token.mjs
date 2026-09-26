@@ -21,6 +21,32 @@ const HEX_64 = /^[0-9a-f]{64}$/
  *   launchToken: string | null, verifyToken: (candidate: unknown) => boolean }}
  */
 export function resolveAdminToken({ store, explicitToken, info }) {
+  try {
+    if (store?.bootStatus?.()?.readFailed === true) {
+      const error = new Error('持久化状态读取失败，拒绝生成或覆盖 admin token')
+      error.code = 'storage-failed'
+      throw error
+    }
+  } catch (error) {
+    if (error?.code === 'storage-failed') throw error
+    // 不具备 bootStatus 的兼容 store 仍走原有读取路径；真正的 store 会提供该信号。
+  }
+
+  const persistHash = (hash) => {
+    let durable = false
+    try { durable = store.set('admin:token-hash', hash) === true } catch (cause) {
+      const error = new Error('admin token 哈希写入失败')
+      error.code = 'storage-failed'
+      error.cause = cause
+      throw error
+    }
+    if (!durable) {
+      const error = new Error('admin token 哈希未落盘，拒绝宣布 token 生效')
+      error.code = 'storage-failed'
+      throw error
+    }
+  }
+
   let storedHash = null
   try { storedHash = store.get('admin:token-hash') } catch { storedHash = null }
   const storedHashOk = typeof storedHash === 'string' && HEX_64.test(storedHash)
@@ -30,7 +56,7 @@ export function resolveAdminToken({ store, explicitToken, info }) {
   let launchToken = null // 零配置首访：仅 generated 分支返回，供拼接 fragment 启动链接
   if (explicitToken !== '') {
     activeHash = sha256HexOf(explicitToken)
-    if (storedHash !== activeHash) store.set('admin:token-hash', activeHash) // 同步到 state
+    if (storedHash !== activeHash) persistHash(activeHash) // 同步到 state，确认 durable 后才生效
     tokenMode = 'explicit'
   } else if (storedHashOk) {
     activeHash = storedHash // 沿用首启打印过的 token（校验靠哈希，不重发明文）
@@ -40,7 +66,7 @@ export function resolveAdminToken({ store, explicitToken, info }) {
     // 端口被占等启动失败时 token 已可知，重启成功后凭哈希继续有效。
     const generated = randomBytes(24).toString('base64url')
     activeHash = sha256HexOf(generated)
-    store.set('admin:token-hash', activeHash)
+    persistHash(activeHash)
     info(`admin token（仅此一次打印，请妥善保存）: ${generated}`)
     info('忘记 token 时：删除 state.json 的 admin:token-hash 键（或在配置写 admin.token）后重启即重新生成')
     tokenMode = 'generated'

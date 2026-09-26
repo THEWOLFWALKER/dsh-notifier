@@ -71,7 +71,13 @@ export function createLedger(options = {}) {
   const now = options.now ?? Date.now
   const file = `${dir}/ledger.jsonl`
   const stateFile = `${dir}/ledger-state.json`
+  // v0.13（A09）：重启后沿用现有文件规模，避免 entryCount 从 0 重新计数导致 prune 永不触发。
   let entryCount = 0
+  try {
+    if (existsSync(file)) {
+      entryCount = readFileSync(file, 'utf8').split('\n').filter((line) => line.trim() !== '').length
+    }
+  } catch { entryCount = 0 }
 
   const ensureDir = () => {
     try { mkdirSync(dir, { recursive: true }) } catch { /* 已存在或不可写：append 时自然暴露 */ }

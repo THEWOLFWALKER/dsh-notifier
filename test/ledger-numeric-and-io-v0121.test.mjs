@@ -21,7 +21,7 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createLedger } from '../src/ledger.mjs'
@@ -139,6 +139,20 @@ test('P1-22：非法 maxEntries 下 append 仍绝不抛错（容错优先不变�
     assert.doesNotThrow(() => {
       for (let index = 0; index < 20; index += 1) ledger.append(record(index))
     })
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('v0.13 A09：重启后已有 ledger 行参与 prune 计数', () => {
+  const dir = tempDir()
+  try {
+    const file = join(dir, 'ledger.jsonl')
+    writeFileSync(file, `${Array.from({ length: 101 }, (_, index) => `${JSON.stringify({ at: new Date(Date.parse('2026-08-14T00:00:00Z') + index * 1000).toISOString(), kind: 'completed' })}\n`).join('')}`)
+    const ledger = createLedger({ dir, maxEntries: 50 })
+    ledger.append(record(102))
+    const lines = readFileSync(file, 'utf8').trim().split('\n')
+    assert.equal(lines.length, 50)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

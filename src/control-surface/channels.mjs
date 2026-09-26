@@ -6,6 +6,13 @@ import { healthView } from './health.mjs'
 
 const labelOf = (type) => ({ en: type, zh: type })
 
+// v0.13（I7）：secret 默认 deny。secret:false/plain:true 是旧字段表的显式公开声明；
+// 新字段应使用 exposure:'public'，未声明 exposure 且没有旧公开标记的字段一律不可回显。
+function isPublicField(meta) {
+  return meta?.exposure === 'public'
+    || (meta?.exposure === undefined && (meta?.secret === false || meta?.plain === true))
+}
+
 /** Native 列表 = 出站渠道 + 仅入站渠道；别名渠道只保留出站代表行。 */
 const SURFACE_TYPES = Object.freeze([
   ...CHANNEL_TYPES,
@@ -18,7 +25,8 @@ function fieldViews(fields, rawConfig = {}) {
   for (const [key, meta] of Object.entries(fields ?? {})) {
     out[key] = {
       required: meta?.required === true,
-      secret: meta?.secret === true,
+      secret: !isPublicField(meta),
+      exposure: isPublicField(meta) ? 'public' : 'secret',
       configured: Object.prototype.hasOwnProperty.call(rawConfig, key) && rawConfig[key] !== '' && rawConfig[key] !== null && rawConfig[key] !== undefined,
       label: { en: key, zh: key },
       ...(meta?.desc ? { description: { en: String(meta.desc), zh: String(meta.desc) } } : {}),
@@ -30,7 +38,7 @@ function fieldViews(fields, rawConfig = {}) {
 function editableValues(fields, rawConfig) {
   const out = {}
   for (const [key, meta] of Object.entries(fields ?? {})) {
-    if (meta?.secret === true) continue
+    if (!isPublicField(meta)) continue
     if (Object.prototype.hasOwnProperty.call(rawConfig ?? {}, key)) out[key] = rawConfig[key]
   }
   return out

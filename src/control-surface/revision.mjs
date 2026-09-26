@@ -33,7 +33,13 @@ export function createSurfaceRevision({ now = Date.now, maxWaiters = DEFAULT_MAX
     if (disposed || revision > cursor) return Promise.resolve(last)
     if (signal?.aborted) return Promise.reject(signal.reason ?? new DOMException('Aborted', 'AbortError'))
     if (waiters.size >= waiterCap) {
-      return Promise.resolve(Object.freeze({ revision, topic: 'capacity', at: now() }))
+      return Promise.resolve(Object.freeze({
+        revision,
+        topic: 'capacity',
+        capacity: true,
+        retryAfterMs: 1_000,
+        at: now(),
+      }))
     }
 
     return new Promise((resolve, reject) => {

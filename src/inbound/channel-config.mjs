@@ -18,7 +18,7 @@ export const INBOUND_FIELDS = Object.freeze({
   },
   wxpusher: {
     appToken: { required: true, desc: 'WxPusher 应用 APP_TOKEN（回调鉴权即凭证）' },
-    accountId: { required: false, desc: '本地账号标识（多账号/多应用时建议填写；不要填 APP_TOKEN）' },
+    accountId: { required: false, secret: false, exposure: 'public', desc: '本地账号标识（多账号/多应用时建议填写；不要填 APP_TOKEN）' },
   },
   wechat: {},
   dingtalk: {
@@ -87,7 +87,7 @@ export function createInboundChannelConfigPort({ store, warn = () => {}, audit =
         enabled: Object.keys(config).length > 0,
         editable: true,
         restartRequired: false,
-        config: maskSecrets(config, inboundKeyWhitelist(type)),
+        config: maskSecrets(config, inboundKeyWhitelist(type), type),
         fields: { ...(INBOUND_FIELDS[type] ?? {}) },
       }
     })
@@ -144,11 +144,23 @@ export function createInboundChannelConfigPort({ store, warn = () => {}, audit =
   return { rows, put, remove }
 }
 
-function maskSecrets(config, allowed) {
+function maskSecrets(config, allowed, type) {
   const out = {}
   for (const [key, value] of Object.entries(config ?? {})) {
     if (!allowed.has(key)) continue
-    out[key] = value
+    const meta = INBOUND_FIELDS[type]?.[key]
+    out[key] = meta?.exposure === 'public' || meta?.secret === false ? value : maskValue(value)
   }
   return out
+}
+
+function maskValue(value) {
+  if (typeof value === 'string') return '***'
+  if (Array.isArray(value)) return value.map(maskValue)
+  if (value !== null && typeof value === 'object') {
+    const out = {}
+    for (const [key, item] of Object.entries(value)) out[key] = maskValue(item)
+    return out
+  }
+  return value
 }

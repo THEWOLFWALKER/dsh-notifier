@@ -21,18 +21,31 @@ function failure(error) {
 }
 const ok = (value) => ({ ok: true, value })
 
-function summaryOf(channelRows, questionRows) {
+function summaryOf(channelRows, questionRows, storageStatus = {}) {
+  if (storageStatus?.readFailed === true) return {
+    status: 'attention',
+    detail: { en: 'Persistent state could not be read', zh: '持久化状态读取失败' },
+  }
   const configured = channelRows.some((row) => row?.notify?.configured === true)
   if (!configured) return {
     status: 'unconfigured',
     detail: { en: 'No notification channel configured', zh: '尚未配置通知渠道' },
   }
   const degraded = channelRows.find((row) => row?.health?.state === 'degraded')
-  if (questionRows.length > 0 || degraded) return {
+  const inactive = channelRows.find((row) => row?.notify?.configured === true && row?.notify?.active !== true)
+  if (questionRows.length > 0 || inactive || degraded) return {
     status: 'attention',
     detail: {
-      en: questionRows.length > 0 ? `${questionRows.length} question(s) need attention` : `${degraded.type} recently failed`,
-      zh: questionRows.length > 0 ? `${questionRows.length} 个问题待处理` : `${degraded.type} 最近发送失败`,
+      en: questionRows.length > 0
+        ? `${questionRows.length} question(s) need attention`
+        : inactive
+          ? `${inactive.type} is configured but inactive`
+          : `${degraded.type} recently failed`,
+      zh: questionRows.length > 0
+        ? `${questionRows.length} 个问题待处理`
+        : inactive
+          ? `${inactive.type} 已配置但运行时未激活`
+          : `${degraded.type} 最近发送失败`,
     },
   }
   return {
@@ -52,6 +65,7 @@ function testResult(result) {
     return {
       status: confirmed ? 'delivered' : 'accepted',
       delivered: confirmed,
+      confirmed,
       accepted: true,
       detail,
       providerDetail: result?.detail ?? null,
@@ -86,6 +100,7 @@ export function createControlSurfaceService({
   questions,
   activity,
   health,
+  storageStatus,
   launchTickets,
   adminLocation,
 } = {}) {
@@ -98,7 +113,8 @@ export function createControlSurfaceService({
         const activityRows = activity.list({ limit: 5 })
         return ok({
           revision: revision.current().revision,
-          summary: summaryOf(channelRows, questionRows),
+          summary: summaryOf(channelRows, questionRows, typeof storageStatus === 'function' ? storageStatus() : storageStatus),
+          storage: typeof storageStatus === 'function' ? storageStatus() : (storageStatus ?? { readFailed: false }),
           questions: questionRows.slice(0, 3),
           tasks: taskRows.slice(0, 5),
           channels: channelRows.filter((row) => row.notify?.configured || row.control?.configured).slice(0, 5),
@@ -109,7 +125,12 @@ export function createControlSurfaceService({
       if (method === 'surface.wait') {
         const before = Number(payload?.after ?? 0)
         const value = await revision.wait({ after: before, timeoutMs: payload?.timeoutMs, signal })
-        return ok({ revision: value.revision, changed: value.revision > before })
+        return ok({
+          revision: value.revision,
+          changed: value.revision > before,
+          ...(value.topic ? { topic: value.topic } : {}),
+          ...(value.capacity === true ? { capacity: true, retryAfterMs: Math.max(500, Number(value.retryAfterMs) || 1_000) } : {}),
+        })
       }
 
       if (method === 'channels.list') {
@@ -138,8 +159,13 @@ export function createControlSurfaceService({
             throw error
           }
           const saved = await saveInbound(payload?.type, payload?.patch)
+          if (saved?.saved !== true) {
+            const error = new Error('入站配置写入失败：未落盘，已保留当前状态')
+            error.code = 'storage-failed'
+            throw error
+          }
           result = {
-            saved: saved?.saved === true,
+            saved: true,
             applied: isHotApplied('inbound'),
             applyMode: inboundApplyMode(),
             configRevision: 0,

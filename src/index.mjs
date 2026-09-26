@@ -778,6 +778,7 @@ export function apply(ctx, config = {}) {
     questions: surfaceQuestions,
     activity: surfaceActivity,
     health: surfaceHealth,
+    storageStatus: () => (typeof store.bootStatus === 'function' ? store.bootStatus() : { readFailed: false }),
     launchTickets,
     adminLocation: () => adminListenInfo,
   })
