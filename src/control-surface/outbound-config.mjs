@@ -151,6 +151,12 @@ export function createOutboundConfigService({
   })
   const rawOf = (type) => ({ ...baseRawOf(type), ...overlayOf(type) })
   const applyState = new Map()
+  const runtimeOf = (type) => {
+    try {
+      if (typeof source.runtimeState === 'function') return source.runtimeState(type)
+    } catch {}
+    return applyState.get(type) ?? { state: source.has(type) ? 'online' : 'stopped', restartPending: false }
+  }
 
   const applyRuntime = (type, resolved) => {
     try {
@@ -290,11 +296,15 @@ export function createOutboundConfigService({
       return {
         type: key,
         configured: Object.keys(raw).length > 0,
-        active: source.has(key),
+        valid: (() => {
+          try { resolveCandidate(key, raw); return true } catch { return false }
+        })(),
+        active: runtimeOf(key).state === 'online',
         fields: channelFieldsOf(key),
         docUrl: channelDocUrlOf(key),
         applyMode: 'hot',
-        runtime: applyState.get(key) ?? { state: source.has(key) ? 'online' : 'stopped', applyMode: 'hot' },
+        restartPending: runtimeOf(key).restartPending === true,
+        runtime: { ...runtimeOf(key), applyMode: runtimeOf(key).state === 'failed' ? 'restart-pending' : 'hot' },
         configRevision: source.version,
       }
     },

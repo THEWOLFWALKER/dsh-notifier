@@ -104,6 +104,10 @@ export function createControlSurfaceService({
   launchTickets,
   adminLocation,
 } = {}) {
+  const revisionView = () => {
+    const current = revision.current()
+    return { epoch: current.epoch, revision: current.revision }
+  }
   const call = async (method, payload = {}, signal) => {
     try {
       if (method === 'surface.home') {
@@ -112,7 +116,7 @@ export function createControlSurfaceService({
         const questionRows = questions.list()
         const activityRows = activity.list({ limit: 5 })
         return ok({
-          revision: revision.current().revision,
+          ...revisionView(),
           summary: summaryOf(channelRows, questionRows, typeof storageStatus === 'function' ? storageStatus() : storageStatus),
           storage: typeof storageStatus === 'function' ? storageStatus() : (storageStatus ?? { readFailed: false }),
           questions: questionRows.slice(0, 3),
@@ -126,6 +130,7 @@ export function createControlSurfaceService({
         const before = Number(payload?.after ?? 0)
         const value = await revision.wait({ after: before, timeoutMs: payload?.timeoutMs, signal })
         return ok({
+          epoch: value.epoch,
           revision: value.revision,
           changed: value.revision > before,
           ...(value.topic ? { topic: value.topic } : {}),
@@ -134,7 +139,7 @@ export function createControlSurfaceService({
       }
 
       if (method === 'channels.list') {
-        return ok({ revision: revision.current().revision, channels: channels.list() })
+        return ok({ ...revisionView(), channels: channels.list() })
       }
 
       if (method === 'channels.get') {
@@ -144,7 +149,7 @@ export function createControlSurfaceService({
           error.code = 'not-found'
           throw error
         }
-        return ok({ revision: revision.current().revision, channel })
+        return ok({ ...revisionView(), channel })
       }
 
       if (method === 'channels.save') {
@@ -168,7 +173,7 @@ export function createControlSurfaceService({
             saved: true,
             applied: isHotApplied('inbound'),
             applyMode: inboundApplyMode(),
-            configRevision: 0,
+            configRevision: Number(saved?.configRevision) || 0,
           }
         } else {
           const error = new Error('direction 必须是 outbound 或 inbound')
@@ -209,11 +214,11 @@ export function createControlSurfaceService({
       }
 
       if (method === 'tasks.list') {
-        return ok({ revision: revision.current().revision, tasks: tasks.list() })
+        return ok({ ...revisionView(), tasks: tasks.list() })
       }
 
       if (method === 'questions.list') {
-        return ok({ revision: revision.current().revision, questions: questions.list() })
+        return ok({ ...revisionView(), questions: questions.list() })
       }
 
       if (method === 'questions.settle') {
@@ -224,7 +229,7 @@ export function createControlSurfaceService({
       }
 
       if (method === 'activity.list') {
-        return ok({ revision: revision.current().revision, items: activity.list(payload) })
+        return ok({ ...revisionView(), items: activity.list(payload) })
       }
 
       if (method === 'standalone.createLaunch') {

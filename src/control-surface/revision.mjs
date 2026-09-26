@@ -1,16 +1,19 @@
-// dsh-notifier v0.12 — process-local revision stream for Native Control Surface.
+import { randomUUID } from 'node:crypto'
+
+// dsh-notifier v0.13 — process-local revision stream for Native Control Surface.
 // It is intentionally transport-agnostic. Connection RPC consumes wait().
 
 // v0.12.1（P1-16）：waiter 全局上限。对齐 Admin SSE 的 64 口径，超限立即返回
 // capacity，让客户端退避重试，而不是继续堆积 Promise、timer 与 abort listener。
 const DEFAULT_MAX_WAITERS = 64
 
-export function createSurfaceRevision({ now = Date.now, maxWaiters = DEFAULT_MAX_WAITERS } = {}) {
+export function createSurfaceRevision({ now = Date.now, maxWaiters = DEFAULT_MAX_WAITERS, epoch = randomUUID() } = {}) {
   const rawCap = Number(maxWaiters)
   const waiterCap = Number.isFinite(rawCap) && rawCap > 0 ? Math.trunc(rawCap) : DEFAULT_MAX_WAITERS
+  const currentEpoch = String(epoch || randomUUID())
   let revision = 1
   let disposed = false
-  let last = Object.freeze({ revision, topic: 'boot', at: now() })
+  let last = Object.freeze({ epoch: currentEpoch, revision, topic: 'boot', at: now() })
   const waiters = new Set()
 
   const settleWaiter = (waiter, value) => {
@@ -23,7 +26,7 @@ export function createSurfaceRevision({ now = Date.now, maxWaiters = DEFAULT_MAX
   const touch = (topic = 'unknown') => {
     if (disposed) return last
     revision += 1
-    last = Object.freeze({ revision, topic: String(topic || 'unknown'), at: now() })
+    last = Object.freeze({ epoch: currentEpoch, revision, topic: String(topic || 'unknown'), at: now() })
     for (const waiter of [...waiters]) settleWaiter(waiter, last)
     return last
   }
@@ -34,6 +37,7 @@ export function createSurfaceRevision({ now = Date.now, maxWaiters = DEFAULT_MAX
     if (signal?.aborted) return Promise.reject(signal.reason ?? new DOMException('Aborted', 'AbortError'))
     if (waiters.size >= waiterCap) {
       return Promise.resolve(Object.freeze({
+        epoch: currentEpoch,
         revision,
         topic: 'capacity',
         capacity: true,
@@ -50,6 +54,7 @@ export function createSurfaceRevision({ now = Date.now, maxWaiters = DEFAULT_MAX
         reject(signal.reason ?? new DOMException('Aborted', 'AbortError'))
       }
       waiter.timer = setTimeout(() => settleWaiter(waiter, Object.freeze({
+        epoch: currentEpoch,
         revision,
         topic: 'timeout',
         at: now(),
@@ -69,6 +74,7 @@ export function createSurfaceRevision({ now = Date.now, maxWaiters = DEFAULT_MAX
       if (disposed) return
       disposed = true
       for (const waiter of [...waiters]) settleWaiter(waiter, Object.freeze({
+        epoch: currentEpoch,
         revision,
         topic: 'disposed',
         at: now(),

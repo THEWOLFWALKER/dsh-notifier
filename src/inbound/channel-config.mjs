@@ -73,6 +73,7 @@ export function describeBadChannelValue(key, value) {
 }
 
 export function createInboundChannelConfigPort({ store, warn = () => {}, audit = () => {} } = {}) {
+  let version = 0
   const read = (key) => {
     try { return store?.get?.(key) } catch { return undefined }
   }
@@ -121,8 +122,9 @@ export function createInboundChannelConfigPort({ store, warn = () => {}, audit =
       warn(`入站通道配置写入失败: ${normalized}`)
       return { type: normalized, saved: false, direction: 'inbound' }
     }
+    version += 1
     audit('putInboundChannel', { type: normalized })
-    return { type: normalized, saved: true, direction: 'inbound' }
+    return { type: normalized, saved: true, direction: 'inbound', configRevision: version }
   }
 
   function remove(type) {
@@ -137,11 +139,12 @@ export function createInboundChannelConfigPort({ store, warn = () => {}, audit =
       warn(`入站通道配置删除失败: ${normalized}`)
       throw Object.assign(new Error('入站配置删除失败'), { status: 500 })
     }
+    version += 1
     audit('deleteInboundChannel', { type: normalized })
-    return { type: normalized, deleted: true, direction: 'inbound' }
+    return { type: normalized, deleted: true, direction: 'inbound', configRevision: version }
   }
 
-  return { rows, put, remove }
+  return { rows, put, remove, get version() { return version } }
 }
 
 function maskSecrets(config, allowed, type) {

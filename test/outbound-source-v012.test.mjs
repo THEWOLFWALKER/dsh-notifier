@@ -13,3 +13,10 @@ test('outbound source swaps snapshots atomically and exposes dynamic getters', (
   assert.equal(source.remove('telegram'), true)
   assert.deepEqual(source.types(), ['bark'])
 })
+
+test('outbound source deep-freezes runtime config snapshots', () => {
+  const source = createOutboundSource([{ type: 'webhook', config: { headers: { Authorization: 'secret' } } }])
+  const current = source.get('webhook')
+  assert.throws(() => { current.config.headers.Authorization = 'changed' }, TypeError)
+  assert.equal(source.get('webhook').config.headers.Authorization, 'secret')
+})

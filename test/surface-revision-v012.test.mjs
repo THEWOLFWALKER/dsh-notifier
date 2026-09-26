@@ -12,3 +12,13 @@ test('surface revision wakes one wait on touch and times out without spinning', 
   assert.ok(next.revision > cursor)
   rev.dispose()
 })
+
+test('surface revision carries an epoch and restarts reset cursor identity', () => {
+  const first = createSurfaceRevision({ epoch: 'boot-a' })
+  const second = createSurfaceRevision({ epoch: 'boot-b' })
+  assert.equal(first.current().epoch, 'boot-a')
+  assert.equal(second.current().epoch, 'boot-b')
+  assert.equal(first.current().revision, 1)
+  assert.equal(second.current().revision, 1)
+  assert.notEqual(first.current().epoch, second.current().epoch)
+})

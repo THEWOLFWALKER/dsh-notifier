@@ -44,7 +44,7 @@ function editableValues(fields, rawConfig) {
   return out
 }
 
-export function createChannelProjection({ outboundSource, outboundConfig, adminApi, health } = {}) {
+export function createChannelProjection({ outboundSource, outboundConfig, inboundConfig, adminApi, health } = {}) {
   const list = () => {
     let adminRows = []
     try { adminRows = typeof adminApi?.getChannels === 'function' ? adminApi.getChannels() : [] } catch { adminRows = [] }
@@ -90,7 +90,7 @@ export function createChannelProjection({ outboundSource, outboundConfig, adminA
           editable: inRow.editable !== false,
           active: inRow.enabled === true,
           applyMode: inboundApplyMode(),
-          configRevision: 0,
+          configRevision: Number(inboundConfig?.version) || 0,
           fields: fieldViews(inFields, inConfig),
           editableValues: editableValues(inFields, inConfig),
         } : null,

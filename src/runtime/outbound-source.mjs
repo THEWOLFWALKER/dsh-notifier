@@ -2,12 +2,24 @@
 // This module deliberately owns only the current resolved outbound channel set.
 // Persistence, validation, UI and RPC belong elsewhere.
 
+function clone(value) {
+  try { return JSON.parse(JSON.stringify(value)) } catch { return value }
+}
+
+function freezeDeep(value) {
+  if (value !== null && typeof value === 'object' && !Object.isFrozen(value)) {
+    for (const child of Object.values(value)) freezeDeep(child)
+    Object.freeze(value)
+  }
+  return value
+}
+
 function normalize(entries) {
   const map = new Map()
   for (const entry of Array.isArray(entries) ? entries : []) {
     const type = typeof entry?.type === 'string' ? entry.type.trim() : ''
     if (type === '' || entry?.config === null || typeof entry?.config !== 'object' || Array.isArray(entry.config)) continue
-    map.set(type, Object.freeze({ type, config: entry.config }))
+    map.set(type, Object.freeze({ type, config: freezeDeep(clone(entry.config)) }))
   }
   return map
 }
@@ -49,7 +61,7 @@ export function createOutboundSource(initial = []) {
         throw new TypeError('replace(type, config) requires a non-empty type and object config')
       }
       const next = new Map(byType)
-      next.set(key, Object.freeze({ type: key, config }))
+      next.set(key, Object.freeze({ type: key, config: freezeDeep(clone(config)) }))
       byType = next
       emit({ topic: 'replace', type: key })
       return api.get(key)

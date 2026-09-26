@@ -43,6 +43,7 @@ import { ADMIN_UI_HTML } from './admin/ui.mjs'
 import { createScanHandlers } from './admin/scan.mjs'
 import { runChannelTest } from './health.mjs'
 import { createOutboundSource } from './runtime/outbound-source.mjs'
+import { createRuntimeChannelManager } from './runtime/channel-manager.mjs'
 import { createSurfaceRevision } from './control-surface/revision.mjs'
 import { createSurfaceActivity } from './control-surface/activity.mjs'
 import { createSurfaceHealth } from './control-surface/health.mjs'
@@ -220,7 +221,10 @@ export function apply(ctx, config = {}) {
     warn,
     allowLegacy: false,
   })
-  const outboundSource = createOutboundSource(overlay.channels)
+  const outboundSource = createRuntimeChannelManager({
+    source: createOutboundSource(overlay.channels),
+    initial: overlay.channels,
+  })
   resolved.channels = outboundSource.snapshot()
   const testRawConfigOf = overlay.testRawConfigOf
   const resolvedOutboundRows = new Map(overlay.channels.map((entry) => [entry.type, entry.config]))
@@ -279,6 +283,11 @@ export function apply(ctx, config = {}) {
   const notifier = createNotifier(ctx, outboundSource, { segment: resolved.segment, routing: resolved.routing, onSend })
 
   const disposers = []
+  // Runtime lifecycle changes are revision-visible without conflating them
+  // with desired config changes.  Consumers still read the live manager.
+  disposers.push(outboundSource.subscribe((event) => {
+    surfaceRevision.touch(event?.topic === 'runtime' ? 'runtime' : 'channels')
+  }))
 
   // v0.6 公共面装配（设计稿 §2.5）：notifier 之后创建 facade 并注册服务。public.enabled:false
   // → stub 形态（push 返回 skipped:(disabled)），服务照常提供（消费插件的启动依赖不能断）。
@@ -729,7 +738,7 @@ export function apply(ctx, config = {}) {
         router, // v0.3.2 入站解析链（bind > 通道默认 > 单 agent > 最近活跃）
         registry, // 会话台账（/agent 命令族数据源、活跃信号、入站对话挂钩）
         control,
-        channelTypes: () => resolved.channels.map((entry) => entry.type), // 全局渠道池快照（分流过滤白名单）
+        channelTypes: () => outboundSource.types(), // 全局渠道池动态白名单（分流过滤随热应用收敛）
         // v0.10 移动任务路由（任务书提交5）：歧义前置选择卡 + /tasks ⚠ 待关注标记
         taskSelection,
         attentionOf,
@@ -768,12 +777,14 @@ export function apply(ctx, config = {}) {
     list: () => createChannelProjection({
       outboundSource,
       outboundConfig: outboundConfigService,
+      inboundConfig: inboundConfigPort,
       adminApi: surfaceAdminApi,
       health: surfaceHealth,
     }).list(),
     get: (type) => createChannelProjection({
       outboundSource,
       outboundConfig: outboundConfigService,
+      inboundConfig: inboundConfigPort,
       adminApi: surfaceAdminApi,
       health: surfaceHealth,
     }).get(type),

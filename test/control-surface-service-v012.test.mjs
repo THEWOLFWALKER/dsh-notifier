@@ -153,6 +153,7 @@ test('v0.13：Native projection 默认不返回未声明字段或入站 secret',
         configRevision: 1,
       }),
     },
+    inboundConfig: { version: 7 },
     adminApi: {
       getChannels: () => [{
         type: 'telegram', direction: 'inbound', configured: true, enabled: true,
@@ -166,6 +167,7 @@ test('v0.13：Native projection 默认不返回未声明字段或入站 secret',
   assert.equal(row.notify.editableValues.token, undefined)
   assert.equal(row.notify.editableValues.accountId, 'acct')
   assert.equal(row.control.fields.botToken.secret, true)
+  assert.equal(row.control.configRevision, 7)
   assert.deepEqual(row.control.editableValues, {})
   assert.doesNotMatch(JSON.stringify(row), /outbound-secret|inbound-secret/)
 })
