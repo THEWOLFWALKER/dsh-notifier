@@ -27,6 +27,8 @@ import { createInboundChannelConfigPort, INBOUND_FIELDS, describeBadChannelValue
 import { tasksSnapshot } from '../routing/task-projection.mjs'
 import { createHostCapabilitySnapshot } from '../host/capability.mjs'
 import { deleteDurable, setDurable } from '../inbound/store.mjs'
+import { isPublicExposure } from '../security/exposure.mjs'
+import { splitSecretPatch } from '../security/secret-patch.mjs'
 import {
   CONTROL_OVERLAY_MAX_MEMBERS,
   CONTROL_OVERLAY_MAX_STRING,
@@ -1002,6 +1004,7 @@ export function createAdminApi(options = {}) {
         throw new ApiError(422, `${type} 的 <type>:account 键域归入站机器人凭证（appId/appKey），写入 webhook 会抹掉扫码凭证；${type} 出站 webhook 请走 YAML bootstrap（cordis.patch.yml channels）`)
       }
       const allowed = channelKeyWhitelist(type)
+      const fields = channelFieldsOf(type)
       if (allowed.size === 0) {
         throw new ApiError(422, `${type} 凭证由扫码登录自动写入，不支持手工配置（可用 scripts/channel-login.mjs）`)
       }
@@ -1405,22 +1408,46 @@ export function createAdminApi(options = {}) {
           throw new ApiError(status, errorMessage(error))
         }
       }
-      if (plainObjectOf(config) === null || Object.keys(config).length === 0) {
+      let split
+      try {
+        split = splitSecretPatch(config)
+      } catch (error) {
+        throw new ApiError(422, error.message)
+      }
+      const patch = split.patch
+      const clear = new Set(split.clear)
+      if (patch === null || (Object.keys(patch).length === 0 && clear.size === 0)) {
         throw new ApiError(422, 'config 必须是非空对象')
       }
       const allowed = channelKeyWhitelist(type)
       if (allowed.size === 0) {
         throw new ApiError(422, `${type} 暂不支持手工配置`)
       }
-      if (Object.keys(config).length > MAX_CHANNEL_KEYS) {
+      if (Object.keys(patch).length + clear.size > MAX_CHANNEL_KEYS) {
         throw new ApiError(422, `字段数超过上限（最多 ${MAX_CHANNEL_KEYS} 个）`)
       }
-      for (const [key, value] of Object.entries(config)) {
+      for (const key of clear) {
+        if (DANGEROUS_KEYS.has(key) || !allowed.has(key)) {
+          throw new ApiError(422, `未知字段 "${key}"（${type} 可用字段：${[...allowed].join('/')}）`)
+        }
+        if (isPublicExposure(fields[key])) {
+          throw new ApiError(422, `公共字段 "${key}" 不支持清除`)
+        }
+      }
+      for (const [key, value] of Object.entries(patch)) {
         if (DANGEROUS_KEYS.has(key)) {
           throw new ApiError(422, `保留键 "${key}" 不可写入`)
         }
         if (!allowed.has(key)) {
           throw new ApiError(422, `未知字段 "${key}"（${type} 可用字段：${[...allowed].join('/')}）`)
+        }
+        if (value === null) {
+          if (isPublicExposure(fields[key])) {
+            throw new ApiError(422, `公共字段 "${key}" 不支持清除`)
+          }
+          clear.add(key)
+          delete patch[key]
+          continue
         }
         const bad = describeBadChannelValue(key, value)
         if (bad !== null) throw new ApiError(422, bad)
@@ -1428,7 +1455,9 @@ export function createAdminApi(options = {}) {
       try {
         if (typeof store?.set !== 'function') throw new Error('store 不可用')
         const existing = plainObjectOf(safeGet(`admin:channel:${type}:outbound`)) ?? {}
-        if (setDurable(store, `admin:channel:${type}:outbound`, deepCopyPlain({ ...existing, ...config })) !== true) {
+        const next = { ...existing, ...patch }
+        for (const key of clear) delete next[key]
+        if (setDurable(store, `admin:channel:${type}:outbound`, deepCopyPlain(next)) !== true) {
           throw new Error('store 写入未落盘')
         }
       } catch (error) {

@@ -11,6 +11,9 @@ import {
   resolveEnvRefs,
 } from '../config.mjs'
 import { deleteDurable, setDurable, transactDurable } from '../inbound/store.mjs'
+import { diagnosticErrorMessage } from '../security/diagnostic.mjs'
+import { isPublicExposure } from '../security/exposure.mjs'
+import { splitSecretPatch } from '../security/secret-patch.mjs'
 
 const OUTBOUND = new Set(CHANNEL_TYPES)
 const DUAL_INBOUND_DOMAIN = new Set(['feishu', 'dingtalk'])
@@ -89,19 +92,34 @@ function valueError(path, value) {
   return `${path} 的值必须是字符串/数字/布尔/数组/对象`
 }
 
-function validatePatch(type, patch) {
+function validatePatch(type, patch, clear = []) {
   if (!OUTBOUND.has(type)) throw Object.assign(new Error(`未知出站通道类型 "${type}"`), { code: 'bad-request' })
   const obj = plain(patch)
-  if (obj === null || Object.keys(obj).length === 0) {
+  if (obj === null || (Object.keys(obj).length === 0 && clear.length === 0)) {
     throw Object.assign(new Error('patch 必须是非空对象'), { code: 'bad-request' })
   }
-  if (Object.keys(obj).length > MAX_KEYS) {
+  if (Object.keys(obj).length + clear.length > MAX_KEYS) {
     throw Object.assign(new Error(`字段数超过上限（最多 ${MAX_KEYS} 个）`), { code: 'bad-request' })
   }
   const allowed = allowedKeys(type)
+  const fields = channelFieldsOf(type)
+  for (const key of clear) {
+    if (RESERVED.has(key) || !allowed.has(key)) {
+      throw Object.assign(new Error(`未知或保留字段 "${key}"`), { code: 'bad-request' })
+    }
+    if (isPublicExposure(fields[key])) {
+      throw Object.assign(new Error(`公共字段 "${key}" 不支持清除`), { code: 'bad-request' })
+    }
+  }
   for (const [key, value] of Object.entries(obj)) {
     if (RESERVED.has(key) || !allowed.has(key)) {
       throw Object.assign(new Error(`未知或保留字段 "${key}"`), { code: 'bad-request' })
+    }
+    if (value === null) {
+      if (isPublicExposure(fields[key])) {
+        throw Object.assign(new Error(`公共字段 "${key}" 不支持清除`), { code: 'bad-request' })
+      }
+      continue
     }
     const bad = valueError(key, value)
     if (bad !== null) throw Object.assign(new Error(bad), { code: 'bad-request' })
@@ -114,7 +132,7 @@ function resolveCandidate(type, raw) {
   try {
     return adapter.resolve(resolveEnvRefs(raw))
   } catch (cause) {
-    const error = new Error(cause instanceof Error ? cause.message : String(cause))
+    const error = new Error(diagnosticErrorMessage(cause, raw))
     error.code = 'not-configured'
     error.cause = cause
     throw error
@@ -166,7 +184,7 @@ export function createOutboundConfigService({
     } catch (error) {
       // Desired state is already durable.  A failed live swap is a runtime
       // failure/restart-pending, never a false storage failure.
-      applyState.set(type, { state: 'failed', applyMode: 'restart-pending', error: error?.message ?? String(error) })
+      applyState.set(type, { state: 'failed', applyMode: 'restart-pending', error: diagnosticErrorMessage(error, resolved) })
       return error
     }
   }
@@ -199,15 +217,52 @@ export function createOutboundConfigService({
 
     save(type, patch) {
       const key = String(type ?? '').trim()
-      validatePatch(key, patch)
+      const split = splitSecretPatch(patch)
+      const clear = new Set(split.clear)
+      const actualPatch = { ...(split.patch ?? {}) }
+      const allowed = allowedKeys(key)
+      const inputKeys = Object.keys(actualPatch)
+      const allKnownBlank = inputKeys.length > 0
+        && inputKeys.every((field) => allowed.has(field) && typeof actualPatch[field] === 'string' && actualPatch[field].trim() === '')
+      for (const field of inputKeys) {
+        if (allowed.has(field) && typeof actualPatch[field] === 'string' && actualPatch[field].trim() === '') delete actualPatch[field]
+      }
+      const fields = channelFieldsOf(key)
+      for (const [field, value] of Object.entries(actualPatch)) {
+        if (value === null) {
+          if (isPublicExposure(fields[field])) {
+            throw Object.assign(new Error(`公共字段 "${field}" 不支持清除`), { code: 'bad-request' })
+          }
+          clear.add(field)
+          delete actualPatch[field]
+        }
+      }
+      if (allKnownBlank && clear.size === 0) {
+        if (!OUTBOUND.has(key)) validatePatch(key, split.patch, split.clear)
+        const result = { type: key, saved: true, applied: true, applyMode: 'hot', unchanged: true, configRevision: source.version }
+        emit('channel-saved', result)
+        return result
+      }
+      validatePatch(key, actualPatch, [...clear])
 
       const currentCanonical = plain(safeGet(store, canonicalKey(key)))
       const seed = currentCanonical ?? overlayOf(key)
-      const nextCanonical = { ...seed, ...clone(patch) }
+      const nextCanonical = { ...seed, ...clone(actualPatch) }
+      for (const field of clear) delete nextCanonical[field]
       const nextRaw = { ...baseRawOf(key), ...nextCanonical }
 
       // Phase 1 — resolve before mutation.
-      const resolved = resolveCandidate(key, nextRaw)
+      let resolved = null
+      let resolveError = null
+      try {
+        resolved = resolveCandidate(key, nextRaw)
+      } catch (error) {
+        // Explicit secret clearing is allowed to leave the desired state
+        // temporarily unconfigured. Persist the deletion and keep the live
+        // source unchanged until a valid replacement or restart is available.
+        if (clear.size === 0) throw error
+        resolveError = error
+      }
 
       // Phase 2 — canonical persistence is the commit point.
       // v0.12.1（P0-01）：store.set 失败时返回 false 而不抛，必须显式消费 durable 判据。
@@ -222,10 +277,18 @@ export function createOutboundConfigService({
 
       // Phase 3 — synchronous live swap.  Durable desired state remains truth
       // even if the runtime adapter rejects the hot apply.
-      const applyError = applyRuntime(key, resolved)
+      const applyError = resolveError === null ? applyRuntime(key, resolved) : resolveError
       const result = applyError === null
         ? { type: key, saved: true, applied: true, applyMode: 'hot', configRevision: source.version }
         : { type: key, saved: true, applied: false, applyMode: 'restart-pending', runtimeState: 'failed', configRevision: source.version }
+      if (clear.size > 0) result.cleared = [...clear]
+      if (resolveError !== null) {
+        applyState.set(key, {
+          state: 'failed',
+          applyMode: 'restart-pending',
+          error: diagnosticErrorMessage(resolveError, nextRaw),
+        })
+      }
       emit('channel-saved', result)
       return result
     },
@@ -281,7 +344,7 @@ export function createOutboundConfigService({
           source.remove(key)
           applyState.set(key, { state: 'stopped', applyMode: 'hot' })
         } catch (error) {
-          applyState.set(key, { state: 'failed', applyMode: 'restart-pending', error: error?.message ?? String(error) })
+          applyState.set(key, { state: 'failed', applyMode: 'restart-pending', error: diagnosticErrorMessage(error, existing) })
         }
       } else if (fallback === null) source.remove(key)
       else source.replace(key, fallback)

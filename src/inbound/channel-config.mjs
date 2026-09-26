@@ -5,6 +5,7 @@ import { INBOUND_CHANNELS, INBOUND_CHANNEL_SET } from './channels-registry.mjs'
 import { toInboundChannelName } from './capability-matrix.mjs'
 import { deleteDurable, setDurable } from './store.mjs'
 import { isPublicExposure } from '../security/exposure.mjs'
+import { splitSecretPatch } from '../security/secret-patch.mjs'
 
 /** 入站通道的凭证字段表（与 Admin 既有表一致；wechat 为扫码产物，不手填）。 */
 export const INBOUND_FIELDS = Object.freeze({
@@ -100,32 +101,74 @@ export function createInboundChannelConfigPort({ store, warn = () => {}, audit =
     if (typeof type !== 'string' || !INBOUND_CHANNEL_SET.has(normalized)) {
       throw Object.assign(new Error(`未知入站通道类型 "${String(type)}"（可用：${INBOUND_CHANNELS.join('/')}）`), { status: 422 })
     }
-    const obj = plain(config)
-    if (obj === null || Object.keys(obj).length === 0) {
+    let split
+    try {
+      split = splitSecretPatch(config)
+    } catch (error) {
+      error.status = 422
+      throw error
+    }
+    const clear = new Set(split.clear)
+    const obj = { ...(split.patch ?? {}) }
+    if (plain(config) === null || (Object.keys(obj).length === 0 && clear.size === 0)) {
       throw Object.assign(new Error('config 必须是非空对象'), { status: 422 })
     }
     const allowed = inboundKeyWhitelist(normalized)
     if (allowed.size === 0) {
       throw Object.assign(new Error(`${normalized} 凭证由扫码登录自动写入，不支持手工配置`), { status: 422 })
     }
-    if (Object.keys(obj).length > MAX_CHANNEL_KEYS) {
+    if (Object.keys(obj).length + clear.size > MAX_CHANNEL_KEYS) {
       throw Object.assign(new Error(`字段数超过上限（最多 ${MAX_CHANNEL_KEYS} 个）`), { status: 422 })
+    }
+    const fields = INBOUND_FIELDS[normalized] ?? {}
+    const inputKeys = Object.keys(obj)
+    const allKnownBlank = inputKeys.length > 0
+      && inputKeys.every((key) => allowed.has(key) && typeof obj[key] === 'string' && obj[key].trim() === '')
+    for (const key of inputKeys) {
+      if (allowed.has(key) && typeof obj[key] === 'string' && obj[key].trim() === '') delete obj[key]
+    }
+    if (allKnownBlank && clear.size === 0) {
+      return { type: normalized, saved: true, direction: 'inbound', unchanged: true, configRevision: version }
+    }
+    for (const key of clear) {
+      if (DANGEROUS_KEYS.has(key) || !allowed.has(key)) {
+        throw Object.assign(new Error(`未知字段 "${key}"（${normalized} 可用字段：${[...allowed].join('/')}）`), { status: 422 })
+      }
+      if (isPublicExposure(fields[key])) {
+        throw Object.assign(new Error(`公共字段 "${key}" 不支持清除`), { status: 422 })
+      }
     }
     for (const [key, value] of Object.entries(obj)) {
       if (DANGEROUS_KEYS.has(key)) throw Object.assign(new Error(`保留键 "${key}" 不可写入`), { status: 422 })
       if (!allowed.has(key)) throw Object.assign(new Error(`未知字段 "${key}"（${normalized} 可用字段：${[...allowed].join('/')}）`), { status: 422 })
+      if (value === null) {
+        if (isPublicExposure(fields[key])) {
+          throw Object.assign(new Error(`公共字段 "${key}" 不支持清除`), { status: 422 })
+        }
+        clear.add(key)
+        delete obj[key]
+        continue
+      }
       const bad = describeBadChannelValue(key, value)
       if (bad !== null) throw Object.assign(new Error(bad), { status: 422 })
     }
     const existing = plain(read(`${normalized}:account`)) ?? {}
-    const okSaved = setDurable(store, `${normalized}:account`, clone({ ...existing, ...obj }))
+    const next = { ...existing, ...obj }
+    for (const key of clear) delete next[key]
+    const okSaved = setDurable(store, `${normalized}:account`, clone(next))
     if (okSaved !== true) {
       warn(`入站通道配置写入失败: ${normalized}`)
       return { type: normalized, saved: false, direction: 'inbound' }
     }
     version += 1
     audit('putInboundChannel', { type: normalized })
-    return { type: normalized, saved: true, direction: 'inbound', configRevision: version }
+    return {
+      type: normalized,
+      saved: true,
+      direction: 'inbound',
+      configRevision: version,
+      ...(clear.size > 0 ? { cleared: [...clear] } : {}),
+    }
   }
 
   function remove(type) {

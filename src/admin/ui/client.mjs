@@ -612,13 +612,14 @@ function setupRowOf(type) {
 function setupFieldRow(key, spec, current) {
   var specObj = plain(spec)
   var req = specObj.required === true
+  var secret = !(specObj.exposure === 'public' || (specObj.exposure === undefined && (specObj.secret === false || specObj.plain === true)))
   var desc = typeof specObj.desc === 'string' && specObj.desc !== '' ? specObj.desc : ''
   var shown = current === undefined ? '' : current
   return '<label class="fld"><span class="mono">' + esc(key) + (req ? ' <b style="color:var(--warn)">*</b>' : '')
     + '</span><input data-sf="' + esc(key) + '"' + (req ? ' data-req="1"' : '')
     + ' value="' + esc(shown) + '"'
     + (desc ? ' title="' + esc(desc) + '" placeholder="' + esc(desc) + '"' : '')
-    + '></label>'
+    + '>' + (secret ? '<button type="button" data-clear-field="' + esc(key) + '">清除</button>' : '') + '</label>'
 }
 function buildSetupForm() {
   var row = setupRowOf(setupType)
@@ -656,13 +657,16 @@ function setupSelect(type) {
 }
 function collectSetupPayload() {
   var payload = {}
+  var clear = $all('#setupForm button[data-clear-field][data-clear="1"]').map(function (btn) { return btn.getAttribute('data-clear-field') })
   var missing = []
   $all('#setupForm input[data-sf]').forEach(function (inp) {
     var k = inp.getAttribute('data-sf')
+    if (clear.indexOf(k) >= 0) return
     if (inp.getAttribute('data-req') === '1' && inp.value !== '***' && inp.value.trim() === '') { missing.push(k); return }
-    if (inp.value === '***' || inp.value === '') return // *** 未修改 / 空值，均不提交
+    if (inp.value === '***' || inp.value.trim() === '') return // *** 未修改 / 空值，均不提交
     payload[k] = inp.value
   })
+  if (clear.length > 0) payload.clearSecrets = clear
   return { payload: payload, missing: missing }
 }
 function renderTestState(phase, text) {
@@ -750,6 +754,14 @@ function finishSetup() {
 function onSetupClick(ev) {
   var btn = ev.target && ev.target.closest ? ev.target.closest('button') : null
   if (!btn || btn.disabled) return
+  var clearKey = btn.getAttribute('data-clear-field')
+  if (clearKey) {
+    var marked = btn.getAttribute('data-clear') === '1'
+    btn.setAttribute('data-clear', marked ? '0' : '1')
+    btn.textContent = marked ? '清除' : '已标记清除'
+    btn.className = marked ? '' : 'muted-btn'
+    return
+  }
   var type = btn.getAttribute('data-setup-type')
   if (type) { setupSelect(type); return }
   if (btn.id === 'setupMore') {
@@ -1054,6 +1066,7 @@ function splitKey(key) { var i = key.indexOf('|'); return [key.slice(0, i), key.
 function fieldRow(key, spec, current, disabled) {
   var specObj = plain(spec)
   var req = specObj.required === true
+  var secret = !(specObj.exposure === 'public' || (specObj.exposure === undefined && (specObj.secret === false || specObj.plain === true)))
   var desc = typeof specObj.desc === 'string' && specObj.desc !== '' ? specObj.desc : ''
   var shown = current === undefined ? '' : current
   return '<label class="fld"><span class="mono">' + esc(key) + (req ? ' <b style="color:var(--warn)">*</b>' : '')
@@ -1061,7 +1074,7 @@ function fieldRow(key, spec, current, disabled) {
     + ' value="' + esc(shown) + '"'
     + (disabled ? ' disabled title="只读字段"' : '')
     + (desc ? ' title="' + esc(desc) + '" placeholder="' + esc(desc) + '"' : '')
-    + '></label>'
+    + '>' + (secret && !disabled ? '<button type="button" data-clear-field="' + esc(key) + '">清除</button>' : '') + '</label>'
 }
 function cardHtml(c) {
   var cfg = plain(c.config)
@@ -1154,17 +1167,20 @@ function saveChannel(key, btn) {
   var card = byAttr('.card[data-key]', 'data-key', key)
   var msg = byAttr('.inline[data-cmsg]', 'data-cmsg', key)
   var payload = {}
+  var clear = $all('button[data-clear-field][data-clear="1"]', card).map(function (button) { return button.getAttribute('data-clear-field') })
   var missing = []
   $all('input[data-ck]', card).forEach(function (inp) {
     var k = inp.getAttribute('data-ck')
+    if (clear.indexOf(k) >= 0) return
     // 必填字段被清空（值非 *** 即代表用户动过）→ 记入缺失清单提示，不静默剔除
     if (inp.getAttribute('data-req') === '1' && inp.value !== '***' && inp.value.trim() === '') {
       missing.push(k)
       return
     }
-    if (inp.value === '***' || inp.value === '') return // *** 未修改 / 空值，均不提交
+    if (inp.value === '***' || inp.value.trim() === '') return // *** 未修改 / 空值，均不提交
     payload[k] = inp.value
   })
+  if (clear.length > 0) payload.clearSecrets = clear
   if (missing.length > 0) {
     setStatus(msg, '必填字段未填写：' + missing.join('、'), 'err')
     return
@@ -1294,6 +1310,14 @@ function onChannelsClick(ev) {
     var scanType = btn.getAttribute('data-scan')
     var copyVal = btn.getAttribute('data-copy')
     var delKey = btn.getAttribute('data-delch')
+    var clearKey = btn.getAttribute('data-clear-field')
+    if (clearKey) {
+      var marked = btn.getAttribute('data-clear') === '1'
+      btn.setAttribute('data-clear', marked ? '0' : '1')
+      btn.textContent = marked ? '清除' : '已标记清除'
+      btn.className = marked ? '' : 'muted-btn'
+      return
+    }
     if (saveKey) { saveChannel(saveKey, btn); return }
     if (testKey) { testChannel(testKey, btn); return }
     if (scanType) { toggleScan(scanType, btn); return }

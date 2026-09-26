@@ -8,6 +8,7 @@ import { createAdminApi } from '../src/admin/api.mjs'
 import { migrateCanonicalChannelConfig } from '../src/control-surface/channel-config-migration.mjs'
 import { createOutboundConfigService } from '../src/control-surface/outbound-config.mjs'
 import { createOutboundSource } from '../src/runtime/outbound-source.mjs'
+import { createInboundChannelConfigPort } from '../src/inbound/channel-config.mjs'
 import { createStore } from '../src/inbound/store.mjs'
 
 const tempState = (initial) => {
@@ -112,4 +113,38 @@ test('v0.13 apply failure: durable desired config is saved while runtime is mark
   assert.equal(result.applyMode, 'restart-pending')
   assert.deepEqual(store.get('channel:bark:outbound'), { key: 'durable-key' })
   assert.equal(service.describe('bark').runtime.state, 'failed')
+})
+
+test('v0.13 secret patch contract: blank keeps, non-empty replaces, explicit clear deletes', () => {
+  const { file } = tempState()
+  const store = createStore(file)
+  const source = createOutboundSource([])
+  const service = createOutboundConfigService({ store, yamlRows: new Map(), source, allowLegacy: false })
+
+  service.save('bark', { key: 'first-secret' })
+  const kept = service.save('bark', { key: '   ' })
+  assert.equal(kept.unchanged, true)
+  assert.deepEqual(store.get('channel:bark:outbound'), { key: 'first-secret' })
+  service.save('bark', { key: 'second-secret' })
+  assert.deepEqual(store.get('channel:bark:outbound'), { key: 'second-secret' })
+  const cleared = service.save('bark', { clearSecrets: ['key'] })
+  assert.deepEqual(cleared.cleared, ['key'])
+  assert.deepEqual(store.get('channel:bark:outbound'), {})
+  assert.equal(source.has('bark'), true, 'invalid desired state does not tear down the live runtime')
+})
+
+test('v0.13 inbound secret patch contract: blank keeps, null and clearSecrets delete', () => {
+  const { file } = tempState({ 'telegram:account': { botToken: 'first-secret' } })
+  const store = createStore(file)
+  const port = createInboundChannelConfigPort({ store })
+
+  assert.equal(port.put('telegram', { botToken: ' ' }).unchanged, true)
+  assert.deepEqual(store.get('telegram:account'), { botToken: 'first-secret' })
+  port.put('telegram', { botToken: 'second-secret' })
+  assert.deepEqual(store.get('telegram:account'), { botToken: 'second-secret' })
+  port.put('telegram', { botToken: null })
+  assert.deepEqual(store.get('telegram:account'), {})
+  port.put('telegram', { botToken: 'third-secret' })
+  port.put('telegram', { clearSecrets: ['botToken'] })
+  assert.deepEqual(store.get('telegram:account'), {})
 })
