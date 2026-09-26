@@ -267,9 +267,15 @@ export function createOutboundConfigService({
       // Phase 2 — canonical persistence is the commit point.
       // v0.12.1（P0-01）：store.set 失败时返回 false 而不抛，必须显式消费 durable 判据。
       if (setDurable(store, canonicalKey(key), nextCanonical) !== true) {
-        // store.set 可能已经改了内存但没有落盘，回滚内存，避免 runtime/disk 分裂。
-        if (currentCanonical === null) deleteDurable(store, canonicalKey(key))
-        else setDurable(store, canonicalKey(key), currentCanonical)
+        // v0.13（C11.5 / R1）：transactional store 的契约是「commit 失败 ⇒ 内存与磁盘都不变」，
+        // 所以这里绝不能再写「旧值」回滚——并发下那会覆盖别处刚成功提交的新值：
+        //   A 读 old=v1 → A 提交 v2 失败 → B 成功提交 v3 → A 回滚写 v1 → B 的 v3 被抹掉（lost update）。
+        // 只有不具备事务语义的遗留 store（set() 先改内存再宣告失败）才需要调用方补回滚，
+        // 否则会留下「内存新值 / 磁盘旧值」分裂。判据即 store 是否提供 transact。
+        if (typeof store?.transact !== 'function') {
+          if (currentCanonical === null) deleteDurable(store, canonicalKey(key))
+          else setDurable(store, canonicalKey(key), currentCanonical)
+        }
         const error = new Error('出站配置写入失败：未落盘，已放弃本次变更')
         error.code = 'storage-failed'
         throw error
@@ -331,7 +337,9 @@ export function createOutboundConfigService({
         ])
         : removeDurable([canonicalKey(key)])
       if (removal.durable !== true) {
-        setDurable(store, canonicalKey(key), existing)
+        // v0.13（C11.5 / R1）：同 save —— transactional store 失败即未提交，回写旧值只会
+        // 制造 lost update；仅遗留 store 需要补回滚，避免内存/磁盘分裂。
+        if (typeof store?.transact !== 'function') setDurable(store, canonicalKey(key), existing)
         const error = new Error('出站配置删除失败：未落盘，已放弃本次变更')
         error.code = 'storage-failed'
         throw error
