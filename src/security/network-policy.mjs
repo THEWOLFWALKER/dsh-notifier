@@ -31,7 +31,12 @@ const BLOCKED_HOSTNAMES = new Set([
 ])
 const BLOCKED_HOST_SUFFIXES = ['.localhost', '.local', '.internal', '.home.arpa', '.lan']
 const cache = new Map()
-let activeLookup = defaultLookup
+const realLookup = defaultLookup
+// The policy never inspects the process for a "test mode". Tests inject seams explicitly:
+// `__setBaselineLookupForTests` installs a suite-wide default, `__setLookupForTests`
+// temporarily overrides a single case, and both restore to real DNS when passed null.
+let baselineLookup = realLookup
+let activeLookup = baselineLookup
 
 export class NetworkPolicyError extends Error {
   constructor(message, code = 'UNSAFE_TARGET', detail = '') {
@@ -43,7 +48,13 @@ export class NetworkPolicyError extends Error {
 }
 
 export function __setLookupForTests(fn) {
-  activeLookup = typeof fn === 'function' ? fn : defaultLookup
+  activeLookup = typeof fn === 'function' ? fn : baselineLookup
+  cache.clear()
+}
+
+export function __setBaselineLookupForTests(fn) {
+  baselineLookup = typeof fn === 'function' ? fn : realLookup
+  activeLookup = baselineLookup
   cache.clear()
 }
 
@@ -208,7 +219,7 @@ export function pinnedLookupFor(target) {
   }
 }
 
-function nativeRequest(target, init) {
+export function nativeRequest(target, init) {
   return new Promise((resolve, reject) => {
     const client = target.url.protocol === 'https:' ? https : http
     const request = client.request(target.url, {
@@ -240,17 +251,21 @@ function nativeRequest(target, init) {
   })
 }
 
+let activeRequestImpl = nativeRequest
+
+// Production default stays the native pinned request. Tests swap this seam explicitly
+// (or pass `requestImpl` per call); the module itself never branches on test context.
+export function __setRequestImplForTests(fn) {
+  activeRequestImpl = typeof fn === 'function' ? fn : nativeRequest
+}
+
 export async function guardedNetworkFetch(url, init = {}, options = {}) {
-  const policyOptions = { ...options }
-  if (process.env.NODE_TEST_CONTEXT && options.lookupImpl === undefined) {
-    policyOptions.lookupImpl = async () => [{ address: '93.184.216.34', family: 4 }]
-  }
-  const target = await resolveNetworkTarget(url, policyOptions)
-  if (typeof options.fetchImpl === 'function') {
-    return options.fetchImpl(target.url.href, { ...init, redirect: 'manual' })
-  }
-  if (process.env.NODE_TEST_CONTEXT && typeof globalThis.fetch === 'function') {
-    return globalThis.fetch(target.url.href, { ...init, redirect: 'manual' })
-  }
-  return nativeRequest(target, init)
+  const target = await resolveNetworkTarget(url, options)
+  // Resolution (DNS validation + address pinning) always runs; only the transport is swapped.
+  const requestImpl = typeof options.requestImpl === 'function'
+    ? options.requestImpl
+    : (typeof options.fetchImpl === 'function'
+      ? (resolved, requestInit) => options.fetchImpl(resolved.url.href, { ...requestInit, redirect: 'manual' })
+      : activeRequestImpl)
+  return requestImpl(target, init)
 }
