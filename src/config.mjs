@@ -18,6 +18,7 @@ import * as bell from './adapters/bell.mjs'
 // 阶段 1 新增：spec 引擎吃声明表产出 adapter + token 型代码适配器。
 import { SPEC_CHANNELS } from './adapters/spec-channels.mjs'
 import { makeSpecAdapters, secretFieldsOfTable } from './adapters/_engine.mjs'
+import { isPublicExposure } from './security/exposure.mjs'
 import * as qqBot from './adapters/qq-bot.mjs'
 import * as wecomApp from './adapters/wecom-app.mjs'
 import * as desktop from './adapters/desktop.mjs'
@@ -80,7 +81,7 @@ export function secretFieldsOf(type) {
 const FIELD_HINTS = {
   telegram: {
     botToken: { required: true, secret: true, desc: 'Telegram Bot Token（@BotFather 获取）' },
-    chatId: { required: true, secret: true, desc: '接收者的 chat id（可向 @userinfobot 查询）' },
+    chatId: { required: true, secret: false, exposure: 'public', desc: '接收者的 chat id（可向 @userinfobot 查询）' },
   },
   dingtalk: {
     webhook: { required: true, secret: true, desc: '钉钉群自定义机器人完整地址' },
@@ -215,9 +216,11 @@ function maskValue(value) {
 /** 把某渠道配置脱敏成可安全打印的摘要（只回「是否配置」+ 末 4 位）。 */
 export function maskChannelConfig(type, cfg) {
   const secrets = new Set(secretFieldsOf(type))
+  const fields = channelFieldsOf(type)
   const masked = {}
   for (const [key, value] of Object.entries(cfg ?? {})) {
-    masked[key] = secrets.has(key) ? maskValue(value) : value
+    const knownPublic = Object.prototype.hasOwnProperty.call(fields, key) && isPublicExposure(fields[key])
+    masked[key] = !knownPublic || secrets.has(key) ? maskValue(value) : value
   }
   return masked
 }

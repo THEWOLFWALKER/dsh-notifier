@@ -135,6 +135,13 @@ test('未知渠道的 SECRET_FIELDS 返回空数组（不会误脱敏未知字�
   assert.deepEqual(secretFieldsOf('nope'), [])
 })
 
+test('maskChannelConfig：未知字段默认按 secret 处理，公开字段必须显式声明', () => {
+  const masked = maskChannelConfig('telegram', { botToken: 'secret-token', chatId: '42', futureCredential: 'do-not-leak' })
+  assert.equal(masked.chatId, '42')
+  assert.equal(masked.futureCredential, '••••••••leak')
+  assert.equal(masked.botToken, '••••••••oken')
+})
+
 test('webhook.headers 对象整体脱敏，不泄露 Authorization 头', () => {
   const masked = maskChannelConfig('webhook', { url: 'http://h', headers: { Authorization: 'Bearer sk-abc12345', 'x-token': 'xyz' } })
   assert.ok(!JSON.stringify(masked.headers).includes('sk-abc12345'))

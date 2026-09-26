@@ -4,6 +4,7 @@
 import { INBOUND_CHANNELS, INBOUND_CHANNEL_SET } from './channels-registry.mjs'
 import { toInboundChannelName } from './capability-matrix.mjs'
 import { deleteDurable, setDurable } from './store.mjs'
+import { isPublicExposure } from '../security/exposure.mjs'
 
 /** 入站通道的凭证字段表（与 Admin 既有表一致；wechat 为扫码产物，不手填）。 */
 export const INBOUND_FIELDS = Object.freeze({
@@ -152,7 +153,7 @@ function maskSecrets(config, allowed, type) {
   for (const [key, value] of Object.entries(config ?? {})) {
     if (!allowed.has(key)) continue
     const meta = INBOUND_FIELDS[type]?.[key]
-    out[key] = meta?.exposure === 'public' || meta?.secret === false ? value : maskValue(value)
+    out[key] = isPublicExposure(meta) ? value : maskValue(value)
   }
   return out
 }
