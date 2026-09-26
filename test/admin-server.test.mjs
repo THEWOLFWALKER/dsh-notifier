@@ -62,6 +62,9 @@ async function withServer(options = {}, fn) {
   const server = createAdminServer({
     api,
     verifyToken: options.verifyToken ?? ((token) => token === 'secret'),
+    verifyLaunchTicket: options.verifyLaunchTicket,
+    createSession: options.createSession,
+    verifySession: options.verifySession,
     host: '127.0.0.1',
     port: 0, // 随机端口
     ui: options.ui ?? '',
@@ -80,8 +83,10 @@ async function withServer(options = {}, fn) {
  * 发请求。token=null 不带鉴权头；rawAuth 直接指定 authorization 原文（测 Bearer 格式错误）。
  * body 为字符串原样发（测非 JSON），对象 JSON.stringify。
  */
-async function call(rig, path, { method = 'GET', token = 'secret', rawAuth, body } = {}) {
+async function call(rig, path, options = {}) {
+  const { method = 'GET', token = 'secret', rawAuth, body, cookie } = options
   const headers = {}
+  if (cookie !== undefined) headers.cookie = cookie
   if (rawAuth !== undefined) headers.authorization = rawAuth
   else if (token !== null) headers.authorization = `Bearer ${token}`
   const init = { method, headers }
@@ -148,6 +153,39 @@ test('Issue #10/#13：入口查询串不回显也不能充当 token，API 仍只
     assert.equal((await textOf(page)).includes(urlToken), false, '入口页不得回显 URL 中的 token')
     const api = await call(rig, `/api/overview?token=${encodeURIComponent('secret')}`, { token: null })
     assert.equal(api.status, 401, '查询串 token 绝不替代 Bearer 鉴权')
+  })
+})
+
+test('C8：一次性启动票据兑换为 HttpOnly 短会话；Bearer 仍保留为恢复通道', async () => {
+  let ticketUses = 0
+  await withServer({
+    verifyLaunchTicket: (ticket) => ticket === 'launch-ticket' && (++ticketUses === 1),
+    createSession: () => ({ token: 'session-secret', expiresAt: Date.now() + 300_000 }),
+    verifySession: (token) => token === 'session-secret',
+  }, async (rig) => {
+    const exchange = await call(rig, '/api/auth/exchange-ticket', {
+      method: 'POST', token: null, body: { ticket: 'launch-ticket' },
+    })
+    assert.equal(exchange.status, 200)
+    const body = await jsonOf(exchange)
+    assert.deepEqual(body, { accepted: true })
+    assert.equal(JSON.stringify(body).includes('session-secret'), false, '会话明文不得进入响应体')
+    const cookie = exchange.headers.get('set-cookie')
+    assert.match(cookie ?? '', /dsh_notifier_session=session-secret/)
+    assert.match(cookie ?? '', /HttpOnly/)
+    assert.match(cookie ?? '', /SameSite=Strict/)
+    assert.match(cookie ?? '', /Max-Age=\d+/)
+
+    const viaCookie = await call(rig, '/api/overview', { token: null, cookie })
+    assert.equal(viaCookie.status, 200, 'HttpOnly 会话应可访问 API')
+    const viaBadCookie = await call(rig, '/api/overview', { token: null, cookie: 'dsh_notifier_session=wrong' })
+    assert.equal(viaBadCookie.status, 401)
+    assert.equal((await call(rig, '/api/overview')).status, 200, 'Bearer 恢复路径不得被短会话替换')
+
+    const replay = await call(rig, '/api/auth/exchange-ticket', {
+      method: 'POST', token: null, body: { ticket: 'launch-ticket' },
+    })
+    assert.equal(replay.status, 401, '启动票据仍然只能兑换一次')
   })
 })
 

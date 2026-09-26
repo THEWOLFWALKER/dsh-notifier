@@ -57,6 +57,8 @@ function apiStatusOf(error) {
  *                               mintPairingCode/revokePairingCode/getPendingQuestions/settleQuestion/
  *                               getAudit/getTasks/getHostCapabilities）
  * @param {(token: string) => boolean} options.verifyToken - Bearer token 校验（严格 === true 才放行）
+ * @param {() => { token: string, expiresAt?: number }} [options.createSession] - 一次性票据兑换后的短会话创建器
+ * @param {(token: string) => boolean} [options.verifySession] - HttpOnly 浏览器会话校验器
  * @param {string} [options.host='127.0.0.1'] - 只绑本机回环（红线：永不绑公网）
  * @param {number} [options.port=8104] - 监听端口；0 = 随机可用端口（测试用）
  * @param {string} [options.ui=''] - 单文件内嵌 HTML 串（空串时 GET / 返回最小占位页）
@@ -72,7 +74,7 @@ function apiStatusOf(error) {
  *             stop: () => Promise<void>,
  *             get port(): number | null }}
  */
-export function createAdminServer({ api, verifyToken, verifyLaunchTicket = null, host = '127.0.0.1', port = 8104, ui = '', events = null, heartbeatMs = DEFAULT_HEARTBEAT_MS, allowedOrigins = [], allowedHosts = [], logger } = {}) {
+export function createAdminServer({ api, verifyToken, verifyLaunchTicket = null, createSession = null, verifySession = null, host = '127.0.0.1', port = 8104, ui = '', events = null, heartbeatMs = DEFAULT_HEARTBEAT_MS, allowedOrigins = [], allowedHosts = [], logger } = {}) {
   const warn = (message) => {
     // stderr 双写（R5 审查 R5-2-P1-2：与 api.mjs 同款纪律，web profile 下 logger 不落 stdout）
     try { logger?.warn?.('[dsh-notifier/admin:server]', message) } catch { /* 日志失败绝不致命 */ }
@@ -136,7 +138,20 @@ export function createAdminServer({ api, verifyToken, verifyLaunchTicket = null,
         error.status = 401
         throw error
       }
-      return { accepted: true }
+      if (typeof createSession !== 'function') return { accepted: true }
+      const session = createSession()
+      if (session === null || typeof session !== 'object' || typeof session.token !== 'string' || session.token === '') {
+        const error = new Error('管理台会话创建失败')
+        error.status = 503
+        throw error
+      }
+      const seconds = Number.isFinite(session.expiresAt)
+        ? Math.max(1, Math.ceil((session.expiresAt - Date.now()) / 1000))
+        : 300
+      return {
+        accepted: true,
+        __setCookie: `dsh_notifier_session=${encodeURIComponent(session.token)}; Max-Age=${seconds}; Path=/; HttpOnly; SameSite=Strict`,
+      }
     } },
     { method: 'GET', segments: ['api', 'overview'], handler: () => api.overview() },
     { method: 'GET', segments: ['api', 'bindings'], handler: () => api.getBindings() },
@@ -206,19 +221,24 @@ export function createAdminServer({ api, verifyToken, verifyLaunchTicket = null,
   }
 
   /**
-   * Bearer 鉴权：头缺失 / 非 `Bearer <token>` 格式 / verifyToken 非 true / 校验抛异常，一律 false。
+   * Bearer 鉴权为恢复通道；浏览器首访兑换后的短会话走 HttpOnly cookie。
    * @param {import('node:http').IncomingMessage} request
    * @returns {boolean}
    */
   function authorized(request) {
     try {
       const header = request.headers.authorization
-      if (typeof header !== 'string') return false
-      const match = /^Bearer (.+)$/.exec(header)
+      if (typeof header === 'string') {
+        const match = /^Bearer (.+)$/.exec(header)
+        if (match !== null && verifyToken(match[1]) === true) return true
+      }
+      if (typeof verifySession !== 'function') return false
+      const cookieHeader = typeof request.headers.cookie === 'string' ? request.headers.cookie : ''
+      const match = /(?:^|;\s*)dsh_notifier_session=([^;]+)/.exec(cookieHeader)
       if (match === null) return false
-      return verifyToken(match[1]) === true
+      return verifySession(decodeURIComponent(match[1])) === true
     } catch {
-      return false // verifyToken 自身异常按未授权处理，绝不冒泡
+      return false // 校验器自身异常按未授权处理，绝不冒泡
     }
   }
 
@@ -377,22 +397,30 @@ export function createAdminServer({ api, verifyToken, verifyLaunchTicket = null,
       return respond.json(500, { error: '内部错误' }) // 堆栈只进日志，绝不回给客户端
     }
     if (matched.route.html) return respond.html(200, String(result))
-    respond.json(200, result === undefined ? {} : result)
+    let payload = result === undefined ? {} : result
+    let headers
+    if (payload !== null && typeof payload === 'object' && typeof payload.__setCookie === 'string') {
+      const cookie = payload.__setCookie
+      payload = { ...payload }
+      delete payload.__setCookie
+      headers = { 'set-cookie': cookie }
+    }
+    respond.json(200, payload, headers)
   }
 
   const server = createServer((request, response) => {
     let responded = false // 413 destroy 与后续事件可能竞态：只允许写一次响应
-    const write = (status, payload, contentType) => {
+    const write = (status, payload, contentType, headers = {}) => {
       if (responded) return
       responded = true
       const body = typeof payload === 'string' ? payload : JSON.stringify(payload === undefined ? {} : payload)
       try {
-        response.writeHead(status, { 'content-type': contentType, 'content-length': Buffer.byteLength(body) })
+        response.writeHead(status, { 'content-type': contentType, 'content-length': Buffer.byteLength(body), ...headers })
         response.end(body)
       } catch { /* 响应写失败（客户端已断）：绝不向上抛 */ }
     }
     const respond = {
-      json: (status, payload) => write(status, payload, JSON_TYPE),
+      json: (status, payload, headers) => write(status, payload, JSON_TYPE, headers),
       html: (status, text) => write(status, text, HTML_TYPE),
       taken: () => { responded = true }, // SSE 流接管响应：一次性写通道让位（幂等闸防双写）
     }

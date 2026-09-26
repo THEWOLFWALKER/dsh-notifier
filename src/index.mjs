@@ -53,6 +53,7 @@ import { createChannelProjection } from './control-surface/channels.mjs'
 import { createTaskProjection } from './control-surface/tasks.mjs'
 import { createQuestionProjection } from './control-surface/questions.mjs'
 import { createLaunchTickets } from './control-surface/launch-ticket.mjs'
+import { createAdminSessions } from './control-surface/admin-session.mjs'
 import { createControlSurfaceService } from './control-surface/service.mjs'
 import { registerControlSurfaceRpc } from './control-surface/rpc.mjs'
 // lang 文案表：入站回执 / 晨报标题等手机可见文案取词（未知 lang 已在 resolveConfig 归一回落 zh）
@@ -233,6 +234,7 @@ export function apply(ctx, config = {}) {
   const surfaceActivity = createSurfaceActivity()
   const surfaceHealth = createSurfaceHealth()
   const launchTickets = createLaunchTickets()
+  const adminSessions = createAdminSessions()
   let adminListenInfo = null
   // v0.12.1（P1-03）：Native inbound 读写不再依赖 admin.enabled。
   const inboundConfigPort = createInboundChannelConfigPort({
@@ -829,6 +831,7 @@ export function apply(ctx, config = {}) {
   disposers.push(() => {
     surfaceRevision.dispose()
     launchTickets.dispose()
+    adminSessions.dispose()
   })
 
   // v0.3.3 Web 管理台装配（设计稿 §5 + §0.5-6）：admin.enabled 开启时起 HTTP 壳 + API
@@ -911,6 +914,8 @@ export function apply(ctx, config = {}) {
         api: adminApi,
         verifyToken,
         verifyLaunchTicket: (ticket) => launchTickets.consume(ticket),
+        createSession: () => adminSessions.mint(),
+        verifySession: (token) => adminSessions.verify(token),
         host: '127.0.0.1', // 红线：永不绑公网（§0.5-6，config.mjs 已写死不可配）
         port: resolved.admin.port,
         ui: ADMIN_UI_HTML,
