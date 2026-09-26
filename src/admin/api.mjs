@@ -26,7 +26,7 @@ import { INBOUND_CHANNELS, INBOUND_CHANNEL_SET } from '../inbound/channels-regis
 import { createInboundChannelConfigPort, INBOUND_FIELDS, describeBadChannelValue, inboundKeyWhitelist } from '../inbound/channel-config.mjs'
 import { tasksSnapshot } from '../routing/task-projection.mjs'
 import { createHostCapabilitySnapshot } from '../host/capability.mjs'
-import { setDurable } from '../inbound/store.mjs'
+import { deleteDurable, setDurable } from '../inbound/store.mjs'
 import {
   CONTROL_OVERLAY_MAX_MEMBERS,
   CONTROL_OVERLAY_MAX_STRING,
@@ -1413,8 +1413,7 @@ export function createAdminApi(options = {}) {
         throw new ApiError(404, `出站配置不存在：${type}`)
       }
       try {
-        if (typeof store?.delete !== 'function') throw new Error('store 不可用')
-        store.delete(key)
+        if (deleteDurable(store, key).durable !== true) throw new Error('store 删除未落盘')
       } catch (error) {
         warn(`出站通道配置删除失败: ${errorMessage(error)}`)
         throw new ApiError(500, '出站配置删除失败')

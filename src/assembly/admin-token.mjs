@@ -7,6 +7,7 @@
 // 纯函数：唯一副作用是 store.set('admin:token-hash', ...) 与 generated 分支的两条 info。
 
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
+import { setDurable } from '../inbound/store.mjs'
 
 const sha256HexOf = (text) => createHash('sha256').update(String(text), 'utf8').digest('hex')
 const HEX_64 = /^[0-9a-f]{64}$/
@@ -34,7 +35,7 @@ export function resolveAdminToken({ store, explicitToken, info }) {
 
   const persistHash = (hash) => {
     let durable = false
-    try { durable = store.set('admin:token-hash', hash) === true } catch (cause) {
+    try { durable = setDurable(store, 'admin:token-hash', hash) } catch (cause) {
       const error = new Error('admin token 哈希写入失败')
       error.code = 'storage-failed'
       error.cause = cause

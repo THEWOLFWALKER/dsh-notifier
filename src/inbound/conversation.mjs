@@ -20,6 +20,7 @@ import { CHANNEL_TYPES, REMOTE_LOG_DEFAULT_LINES, REMOTE_LOG_HARD_MAX_LINES, REM
 import { maskSecrets } from '../redact.mjs'
 import { chatScopeOf } from '../control/session-arbiter.mjs'
 import { bindingKey as identityBindingKey } from './identity.mjs'
+import { deleteDurable, setDurable } from './store.mjs'
 import { MESSAGE_PRIORITY } from './bus.mjs'
 import { normalizeImageAttachment, normalizeFileAttachment, normalizeAttachmentItem, downloadInboundImageBytes, downloadInboundFileBytes, INBOUND_KINDS } from './message.mjs'
 import { readAttachments, admitInboundImage, admitInboundFile, buildRemoteUserMessage } from '../host/messages.mjs'
@@ -315,7 +316,10 @@ say(t.helpLines.join('\n'))
       // 不做摘挂写放大）；旧值缺失（首绑）无钩可摘。registry.detachInbound 幂等：旧 sid
       // 无记录/无该挂钩时安全无操作，不抛。
       const previous = store.get(bindingKey(envelope))
-      store.set(bindingKey(envelope), target)
+      if (setDurable(store, bindingKey(envelope), target) !== true) {
+        say('绑定保存失败，请稍后重试')
+        return true
+      }
       if (typeof previous === 'string' && previous !== '' && previous !== target) {
         registryCall('detachInbound', previous, inboundBindingOf(envelope))
       }
@@ -329,7 +333,10 @@ say(t.helpLines.join('\n'))
       // 先读旧值再删：detachInbound 需要旧 sid 才能摘掉台账上的入站挂钩
       const key = bindingKey(envelope)
       const old = store.get(key)
-      store.delete(key)
+      if (deleteDurable(store, key).durable !== true) {
+        say('解绑保存失败，请稍后重试')
+        return true
+      }
       if (typeof old === 'string' && old !== '') {
         registryCall('detachInbound', old, inboundBindingOf(envelope))
       }
@@ -619,19 +626,23 @@ say(t.helpLines.join('\n'))
   /** 把本对话绑定到指定会话（store bind 键 + 台账反查挂钩 + 活跃信号），复用 /bind 的摘挂语义。 */
   function applyBinding(envelope, sessionId) {
     const previous = store.get(bindingKey(envelope))
-    store.set(bindingKey(envelope), sessionId)
+    if (setDurable(store, bindingKey(envelope), sessionId) !== true) return false
     if (typeof previous === 'string' && previous !== '' && previous !== sessionId) {
       registryCall('detachInbound', previous, inboundBindingOf(envelope))
     }
     registryCall('attachInbound', sessionId, inboundBindingOf(envelope))
     registryCall('touch', sessionId)
+    return true
   }
 
   /** 选定会话后投递原消息（恰好一次，任务书「选择成功后原消息只投一次」）；附件可选随投。 */
   async function selectAndDeliver(envelope, sessionId, originalText, say, items = []) {
     const agent = agentOf(sessionId)
     if (agent === undefined) { say(`会话 ${sessionId} 不存在或已退出（用 /tasks 重选）`); return false }
-    applyBinding(envelope, sessionId)
+    if (applyBinding(envelope, sessionId) !== true) {
+      say('绑定保存失败，请稍后重试')
+      return false
+    }
     const outcome = await deliver(agent, originalText, items, (failures) => {
       try { say(attachmentFailureText(t, failures)) } catch { /* 回执失败不致命 */ }
     })
@@ -657,7 +668,10 @@ say(t.helpLines.join('\n'))
       if (await selectAndDeliver(envelope, matched.sid, pending.originalText, say, pending.attachments ?? [])) taskSelection.cancel(envelope)
       return
     }
-    applyBinding(envelope, matched.sid)
+    if (applyBinding(envelope, matched.sid) !== true) {
+      say('绑定保存失败，请稍后重试')
+      return
+    }
     const workspace = workspaceOfSid(matched.sid)
     say(`已选择 ${workspace === '' ? '(未知 workspace)' : workspace} / ${matched.sid}（${matched.matchedBy}）`)
   }
@@ -722,7 +736,10 @@ say(t.helpLines.join('\n'))
     const workspace = workspaceOfSid(sid)
     // G-48：同 /bind——覆盖绑定先摘旧会话挂钩（防一 user 双挂；旧值 === 新目标跳过）
     const previous = store.get(bindingKey(envelope))
-    store.set(bindingKey(envelope), sid)
+    if (setDurable(store, bindingKey(envelope), sid) !== true) {
+      say('绑定保存失败，请稍后重试')
+      return
+    }
     if (typeof previous === 'string' && previous !== '' && previous !== sid) {
       registryCall('detachInbound', previous, inboundBindingOf(envelope))
     }
@@ -736,7 +753,10 @@ say(t.helpLines.join('\n'))
     const key = bindingKey(envelope)
     const old = store.get(key)
     if (typeof old === 'string' && old !== '') {
-      store.delete(key)
+      if (deleteDurable(store, key).durable !== true) {
+        say('解绑保存失败，请稍后重试')
+        return
+      }
       registryCall('detachInbound', old, inboundBindingOf(envelope))
       say(t.agentBackBound(old))
     } else {

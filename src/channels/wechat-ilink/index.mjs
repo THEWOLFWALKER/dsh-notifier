@@ -18,6 +18,7 @@ import {
   MAX_CURSOR_LENGTH,
   MAX_CONTEXT_TOKEN_LENGTH,
 } from './protocol.mjs'
+import { deleteDurable } from '../../inbound/store.mjs'
 
 /** 只有协议/契约测试证据；没有把 mock 当真实设备支持。 */
 export const WECHAT_ILINK_CAPABILITIES = Object.freeze({
@@ -46,7 +47,9 @@ export function createWechatIlinkInbound(options = {}) {
     onSessionExpired: (detail) => {
       // Login CLI historically writes wechat:account. Remove only that provider credential;
       // unrelated channels and identity bindings are untouched.
-      try { store?.delete(ACCOUNT_KEY) } catch { /* state cleanup is best effort */ }
+      if (store !== null && deleteDurable(store, ACCOUNT_KEY).durable !== true) {
+        try { options.logger?.warn?.('[dsh-notifier/channel:wechat-ilink] account cleanup 未落盘') } catch {}
+      }
       try { options.onSessionExpired?.(detail) } catch { /* callback isolation */ }
     },
   })

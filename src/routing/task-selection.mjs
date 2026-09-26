@@ -25,6 +25,8 @@ const KEY_PREFIX = 'taskselect:'
 const DEFAULT_TTL_MS = 10 * 60 * 1000 // 待决选择 10 分钟过期（对齐审批 qa 窗语义）
 const SWEEP_EVERY_MS = 60000 // 内联过期回收摊销间隔（60s 至多一次真扫）
 
+import { deleteDurable, setDurable } from '../inbound/store.mjs'
+
 const isRecord = (value) => value !== null && typeof value === 'object' && !Array.isArray(value)
 
 /**
@@ -123,14 +125,13 @@ export function createTaskSelection(options = {}) {
   }
   const safeSet = (key, value) => {
     try {
-      if (typeof store?.set !== 'function') return false
-      return store.set(key, value) !== false
+      return setDurable(store, key, value)
     } catch { return false }
   }
   const safeDelete = (key) => {
     try {
-      if (typeof store?.delete !== 'function') return false
-      return store.delete(key) === true
+      const result = deleteDurable(store, key)
+      return result.existed === true && result.durable === true
     } catch { return false }
   }
   const safeKeys = () => {

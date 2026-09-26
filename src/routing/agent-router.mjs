@@ -30,6 +30,7 @@ const KEY_SESSIONS = 'route:sessions'
 
 import { normalizeControlOverlay } from '../control/session-arbiter.mjs'
 import { bindingKey } from '../inbound/identity.mjs'
+import { setDurable } from '../inbound/store.mjs'
 
 /** 入站显式绑定键前缀（与 conversation.mjs 键格式一致：bind:<channel>:<userId>，分量经
  * identity.bindingKey 归一——G-49 单一构造点，读写两侧同键）。 */
@@ -112,11 +113,7 @@ export function createAgentRouter({ store, agentsList } = {}) {
   }
   const safeSet = (key, value) => {
     try {
-      if (typeof store?.set !== 'function') return false
-      // v0.8.7（对抗评审 Stage-4 P1-2）：真实 createStore.set 现在把「写盘是否真正落盘」作为布尔返回
-      // （磁盘失败不再被吞掉）。这里把显式 false 视为写失败；遗留 mock store 的 set 返回 undefined
-      // 没有失败信号，维持旧的「非抛即成功」语义——向后兼容。
-      return store.set(key, value) !== false
+      return setDurable(store, key, value)
     } catch {
       return false
     }

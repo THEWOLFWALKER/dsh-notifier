@@ -28,6 +28,7 @@ import { splitByCodePoints } from '../../inbound/segment.mjs'
 import { DEFAULT_INBOUND_MEDIA_TIMEOUT_MS, MAX_INBOUND_IMAGE_BYTES } from '../../inbound/message.mjs'
 import { normalizeInboundMessage, normalizeUpdateBatch, boundedCursor, validAccountId } from './protocol.mjs'
 import { stringsOf } from '../../strings.mjs'
+import { deleteDurable, setDurable } from '../../inbound/store.mjs'
 
 const SYNC_BUF_KEY = 'wechat:sync_buf'
 const ACCOUNT_KEY = 'wechat:account'
@@ -196,8 +197,7 @@ export function createWechatIlinkInbound(options = {}) {
           for (const stale of keys) {
             if (overflow <= 0) break
             if (stale === key) continue
-            store.delete(stale)
-            evicted += 1
+            if (deleteDurable(store, stale).durable === true) evicted += 1
             overflow -= 1
           }
           if (evicted > 0) {
@@ -205,7 +205,7 @@ export function createWechatIlinkInbound(options = {}) {
           }
         }
       }
-      store.set(key, contextToken)
+      if (setDurable(store, key, contextToken) !== true) warn('context_token 缓存未落盘，仍继续本次消息处理')
     } catch { /* 落盘/清扫失败不致命 */ }
   }
 
@@ -241,9 +241,11 @@ export function createWechatIlinkInbound(options = {}) {
   function sessionExpired(detail) {
     warn(`iLink 会话过期（${detail}）：已清空游标/context_token/凭证并停用通道，请重新执行 node scripts/wechat-login.mjs 扫码登录`)
     try {
-      for (const key of store?.keys(accountScoped ? `${accountPrefix}ctx:` : CTX_PREFIX) ?? []) store.delete(key)
-      store?.delete(syncBufKey)
-      store?.delete(accountKey)
+      for (const key of store?.keys(accountScoped ? `${accountPrefix}ctx:` : CTX_PREFIX) ?? []) deleteDurable(store, key)
+      if (store !== null) {
+        deleteDurable(store, syncBufKey)
+        deleteDurable(store, accountKey)
+      }
     } catch { /* 清理失败不致命 */ }
     syncBuf = ''
     running = false
@@ -348,8 +350,8 @@ export function createWechatIlinkInbound(options = {}) {
         if (!fullyConsumed) continue // 保留旧游标：让 provider 重投本批，不丢未接受的控制命令
         const nextBuf = batch.cursor
         if (nextBuf !== '' && nextBuf !== syncBuf) {
-          syncBuf = nextBuf
-          try { store?.set(syncBufKey, syncBuf) } catch { /* 落盘失败不致命 */ }
+          if (store === null || setDurable(store, syncBufKey, nextBuf) === true) syncBuf = nextBuf
+          else warn('微信 sync_buf 未落盘，保留旧游标等待下一批重试')
         }
       } catch (error) {
         if (!running) break // stop() 打断在途长轮询
@@ -395,7 +397,9 @@ export function createWechatIlinkInbound(options = {}) {
         if (!retriedTokenless && contextToken !== '') {
           retriedTokenless = true
           contextToken = ''
-          try { store?.delete(ctxKey(chatId)) } catch { /* 清理失败不致命 */ }
+          if (store !== null && deleteDurable(store, ctxKey(chatId)).durable !== true) {
+            warn('过期 context_token 清理未落盘')
+          }
           warn(`context_token 已过期（ret=${verdict.ret}）：剥除后重试一次（不计熔断）`)
           continue
         }

@@ -14,6 +14,7 @@ import { buildQuestionAction } from './_contract.mjs'
 import { stripCommandMention } from './commands.mjs'
 import { verdictFailureText, cardMissingText } from './verdict-text.mjs'
 import { stringsOf } from '../strings.mjs'
+import { setDurable } from './store.mjs'
 
 const DEFAULT_API_BASE = 'https://api.telegram.org'
 const POLL_TIMEOUT_S = 25
@@ -315,8 +316,12 @@ export function createTelegramInbound({ config, bus, vault, store = null, logger
           const next = (update.update_id ?? 0) + 1
           try {
             await handleUpdate(update)
-            offset = Math.max(offset, next)
-            store?.set('tg:offset', offset)
+            const nextOffset = Math.max(offset, next)
+            if (store !== null && setDurable(store, 'tg:offset', nextOffset) !== true) {
+              warn(`update ${update.update_id} 已处理但 offset 未落盘，暂停推进避免重启丢游标`)
+              break
+            }
+            offset = nextOffset
           } catch (error) {
             const reason = error instanceof Error ? error.message : String(error)
             warn(`update ${update.update_id} 处理失败，offset 未前移（下轮重投，靠 messageId/eventId 去重）: ${reason}`)

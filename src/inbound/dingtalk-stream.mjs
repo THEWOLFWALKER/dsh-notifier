@@ -43,6 +43,7 @@ import { resolveNotifyTargets } from './target-guard.mjs'
 import { normalizeImageAttachment } from './message.mjs'
 import { stripCommandMention, stripLeadingMention } from './commands.mjs'
 import { stringsOf } from '../strings.mjs'
+import { setDurable } from './store.mjs'
 
 const DEFAULT_API_BASE = 'https://api.dingtalk.com'
 const DEFAULT_OAPI_BASE = 'https://oapi.dingtalk.com'
@@ -341,8 +342,8 @@ export function createDingtalkInbound(options = {}) {
     breaker.reset() // 任一入站消息复位熔断（新消息即解锁配额）
     const code = String(msg.robotCode ?? '')
     if (code !== '' && code !== robotCode) {
-      robotCode = code
-      try { store?.set(ROBOT_CODE_KEY, robotCode) } catch { /* 落盘失败不致命 */ }
+      if (store === null || setDurable(store, ROBOT_CODE_KEY, code) === true) robotCode = code
+      else warn('robotCode 学习值未落盘，保留旧值避免重启后运行时事实分裂')
     }
     const webhook = String(msg.sessionWebhook ?? '')
     if (webhook !== '') {

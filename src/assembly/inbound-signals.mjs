@@ -10,6 +10,7 @@ import { resolveQqInboundConfig } from '../inbound/qq-gw.mjs'
 import { resolveDingtalkInboundConfig } from '../inbound/dingtalk-stream.mjs'
 import { resolveWxpusherInboundConfig } from '../inbound/wxpusher-callback.mjs'
 import { accountOf } from './outbound.mjs'
+import { setDurable } from '../inbound/store.mjs'
 
 /**
  * 解析六通道入站启用信号与 resolved 配置（不含微信 resolve——它在 apply 的
@@ -103,7 +104,11 @@ export function resolveInboundSignals({ inboundRaw, approvalRaw, resolved, store
   if (wxResolved !== null && !wxResolved.ok) warn(`inbound.wxpusher 跳过: ${wxResolved.reason}`)
   const wxOk = wxResolved?.ok === true
   if (wxOk && wxPathPersistNeeded) {
-    try { store.set('wxpusher:webhookPath', wxResolved.config.webhookPath) } catch (error) {
+    try {
+      if (setDurable(store, 'wxpusher:webhookPath', wxResolved.config.webhookPath) !== true) {
+        warn('wxpusher 密径持久化失败（下次重启将重新生成，需重填回调地址）')
+      }
+    } catch (error) {
       warn(`wxpusher 密径持久化失败（下次重启将重新生成，需重填回调地址）: ${error instanceof Error ? error.message : String(error)}`)
     }
   }
