@@ -16,13 +16,13 @@
 ![Zero mandatory runtime deps](https://img.shields.io/badge/mandatory%20runtime%20deps-0-000000?style=flat-square)
 ![Channels](https://img.shields.io/badge/channels-28-00B4D8?style=flat-square)
 ![npm version](https://img.shields.io/npm/v/dsh-notifier?style=flat-square&logo=npm&logoColor=white)
-![tests](https://img.shields.io/badge/tests-1984-brightgreen?style=flat-square)
+![tests](https://img.shields.io/badge/tests-1985-brightgreen?style=flat-square)
 ![license](https://img.shields.io/badge/license-MIT-brightgreen?style=flat-square)
 [![dshfind](https://dshfind.com/api/badge/THEWOLFWALKER/dsh-notifier?lang=zh)](https://dshfind.com/zh/plugins/THEWOLFWALKER/dsh-notifier?ref=badge)
 
 `dsh-notifier@0.13.0` 是 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的通知与远程操作控制面：**28 个出站渠道**、**6 个入站控制渠道**、手机审批/提问/会话、任务状态、渠道健康与活动流，以及 **DSH 原生 Sidebar/Main 控制面**。运行时依赖仍然是 0。
 
-包元数据：`dsh-notifier@0.13.0` · 1984 个自动化契约测试 · MIT 许可。
+包元数据：`dsh-notifier@0.13.0` · 1985 个自动化契约测试 · MIT 许可。
 
 [开始使用](docs/guide.md) · [升级指南](docs/upgrade-guide.md) · [兼容性](docs/compatibility-matrix.md) · [插件接入](PLUGINS.md) · [变更记录](CHANGELOG.md)
 
@@ -255,9 +255,9 @@ npm pack --dry-run --json
 git diff --check
 ```
 
-v0.13.0 收敛线：登记 **1984 个契约测试**；全量 hermetic 套件已通过，真实 provider/设备证据仍是外部门禁。
+v0.13.0 收敛线：登记 **1985 个契约测试**；全量 hermetic 套件已通过，真实 provider/设备证据仍是外部门禁。
 
-test/ 1984 个测试；历史 0.8.6 包为 909 个测试。
+test/ 1985 个测试；历史 0.8.6 包为 909 个测试。
 
 ## 许可
 

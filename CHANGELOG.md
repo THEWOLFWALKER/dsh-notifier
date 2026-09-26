@@ -14,7 +14,7 @@
 
 ### 验证边界
 
-- `npm test`：**1984 tests，1984 pass，0 fail，0 skip**。
+- `npm test`：**1985 tests，1985 pass，0 fail，0 skip**。
 - `npm run verify:release`：版本、文档、测试计数、Host 兼容性门禁通过。
 - 本次未新增真机 DSH、真实 provider 账号或真实投递回执验证；QQ/DingTalk/Feishu 等外部证据缺口继续登记在 [`docs/memory/risks.md`](docs/memory/risks.md)。
 
