@@ -2,7 +2,7 @@
 
 ## [0.13.0] - 2026-09-26（Architecture convergence release gate）
 
-架构收敛发布门。把 v0.12 之后的耐久性、控制面、网络边界与前端生命周期修复合并为一条可复核的发布线；本次 dev 收口不打 tag、不发布 npm。
+架构收敛发布门。把 v0.12 之后的耐久性、控制面、网络边界与前端生命周期修复合并为一条可复核的发布线；`v0.13.0` 已发布到 npm，本次 release closeout 继续完成 `main`、tag 与 GitHub Release。
 
 ### 收口
 

@@ -2,22 +2,20 @@
 
 ## Current release baseline
 
-Current release: **dsh-notifier v0.12.0**.
+Current release: **dsh-notifier v0.13.0**.
 
-Development candidate on `dev`: **v0.12.1** (not tagged or published; 1889 tests registered, Phase F real-device/provider evidence open).
+The reviewed release head is `dev` @ `733faf0`; `main`, `v0.13.0` tag and GitHub Release are completed by the release closeout. Real-device/provider evidence remains explicitly open.
 
-Release evidence (2026-09-25):
+Release evidence (2026-09-26):
 
-- `npm test`: **1831 / 1831 pass**
+- `npm test`: **1984 / 1984 pass**, 0 fail, 0 skip
 - `node scripts/verify-release.mjs`: release guard green
 - `node scripts/gen-channel-matrix.mjs --check`: **28 channels**
-- `npm pack --dry-run --json`: **262 files**, `client.js` included, no agent-config leak
-- npm registry: `latest = 0.12.0`
-- registry shasum: `e1499cc4a246921be4262aa49e5a8080377bf999`
-- real DSH host `0.1.7-rc.2`: Native UI + setup + save/test + Hot Apply walkthrough passed
-- compatibility floor `0.1.7-alpha.1`: activation/RPC/client-module smoke passed
+- `npm pack --dry-run --json`: **288 files**, `client.js` included, no agent-config leak
+- npm publish: `dsh-notifier@0.13.0` accepted by npm from reviewed `dev` head `733faf0`
+- v0.13.0 adds no fresh real DSH/provider run; the inherited host compatibility evidence and remaining gaps stay in `docs/memory/risks.md`
 
-`main` may contain docs-only follow-up commits after the annotated `v0.12.0` tag. The tag points to the release artifact commit; this is expected.
+`main` is pinned to the reviewed v0.13.0 release head. Later docs-only release-fact follow-ups may put `main` ahead of the tag; never retag or force-push.
 
 ## Local checks
 
