@@ -29,9 +29,10 @@ function makeRig() {
   const bus = createInboundBus({ identity, pairing, store, logger: quiet })
   const fellThrough = []
   bus.onMessage((envelope) => { fellThrough.push(envelope.text); return false })
-  const accept = (text) => bus.accept({
+  const accept = (text, accountId) => bus.accept({
     channel: 'telegram', userId: '42', chatId: '42', chatType: 'private',
     messageId: `m${Math.random()}`, text,
+    ...(accountId === undefined ? {} : { accountId }),
   })
   return { store, identity, pairing, bus, fellThrough, accept }
 }
@@ -109,6 +110,17 @@ test('G-65 bus 级：引导态 ／help 等价 /help（引导回执可达）', ()
   const result = rig.accept('／help')
   assert.equal(result.ok, true)
   assert.match(result.reply, /引导模式/)
+})
+
+test('R2 bus 级：/pair 真 seam 使用 envelope.accountId——非默认账号绑定不落到 default', () => {
+  const rig = makeRig()
+  const minted = rig.pairing.mint({ origin: 'admin', mintedBy: 'boss' })
+  const result = rig.accept(`/pair ${minted.code}`, 'acct-A')
+  assert.equal(result.ok, true)
+  assert.match(result.reply, /配对成功/)
+  assert.equal(rig.identity.allows('telegram', '42', 'acct-A'), true, '非默认账号必须真被授权')
+  assert.equal(rig.identity.allows('telegram', '42', 'acct-B'), false, '其它账号不得被连带授权')
+  assert.equal(rig.identity.allows('telegram', '42'), false, '不得落到 default 账号')
 })
 
 test('矩阵边界：/stopwatch 不是 /stop；非注册面斜杠消息落回对话路由', () => {

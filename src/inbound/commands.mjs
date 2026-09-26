@@ -187,7 +187,7 @@ export function createCommandHandler(options = {}, strings) {
         { channel: envelope.channel, accountId: envelope.accountId, userId: envelope.userId, label },
         (draft, binding) => identity.addBindingToDraft?.(draft, binding) ?? { ok: false, reason: 'storage-failed' },
       )
-      : pairing.redeem(code, { channel: envelope.channel, userId: envelope.userId, label })
+      : pairing.redeem(code, { channel: envelope.channel, accountId: envelope.accountId, userId: envelope.userId, label })
     if (!verdict.ok) {
       // 引导态自愈：bootstrap 过期且无在铸码 → 重铸一枚（新码写 0600 码文件），提示取新码
       if (verdict.reason === 'expired' && identity.isEmpty()) {

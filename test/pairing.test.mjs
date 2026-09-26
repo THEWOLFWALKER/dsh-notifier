@@ -24,6 +24,8 @@ function tempStore() {
 }
 
 const quiet = { warn: () => {}, info: () => {} }
+/** 与 pairing.mjs 的 LOCKOUT_MS 同量级（10 分钟），仅用于构造存量锁出记录。 */
+const LOCKOUT_MS = 10 * 60 * 1000
 
 test('C4：配对应用事务失败时码、绑定、锁出清理都不发布', () => {
   const { store } = tempStore()
@@ -172,4 +174,61 @@ test('G-59 revoked/locked 终态：管理台处置后不可核销（人工处置
   const b = pairing.mint({ origin: 'admin', mintedBy: 'boss', now })
   pairing.lock(b.id, { by: 'admin', now })
   assert.equal(pairing.redeem(b.code, { channel: 'telegram', userId: 'u', now }).reason, 'locked')
+})
+
+// ─────────────────── R2（C11.5）：配对 principal = (channel, accountId, userId) ───────────────────
+
+test('R2：配对绑定落 account 作用域——A 配对只授权 A，不落 default、不连带 B', () => {
+  const { store } = tempStore()
+  const identity = createIdentityForPairing(store)
+  const pairing = createPairing({ store, logger: quiet })
+  const minted = pairing.mint({ origin: 'admin', mintedBy: 'boss' })
+
+  const result = pairing.redeemAndBind(minted.code,
+    { channel: 'telegram', accountId: 'acct-A', userId: 'u1' },
+    (draft, binding) => identity.addBindingToDraft(draft, binding))
+
+  assert.equal(result.ok, true, '非默认账号配对必须成功（旧实现丢 accountId）')
+  assert.equal(identity.allows('telegram', 'u1', 'acct-A'), true, '真实账号被授权')
+  assert.equal(identity.allows('telegram', 'u1', 'acct-B'), false, '同渠道同用户的其它账号不受牵连')
+  assert.equal(identity.allows('telegram', 'u1'), false, '不得落到 default 账号')
+})
+
+test('R2：锁出按 (channel, accountId, userId) 隔离——A 被锁不牵连 B 与 default', () => {
+  const pairing = createPairing({ store: null, logger: quiet })
+  const now = Date.now()
+  for (let i = 0; i < 5; i += 1) {
+    pairing.redeem('AAAA1111', { channel: 'telegram', accountId: 'acct-A', userId: 'u1', now })
+  }
+  assert.equal(pairing.isLockedOut('telegram', 'u1', now, 'acct-A'), true, '前置：acct-A 已锁')
+  assert.equal(pairing.isLockedOut('telegram', 'u1', now, 'acct-B'), false, '另一账号不被牵连')
+  assert.equal(pairing.isLockedOut('telegram', 'u1', now), false, 'default 账号不被牵连')
+})
+
+test('R2：存量默认账号锁出记录只作用于 default，不扩散到非默认账号', () => {
+  const { store } = tempStore()
+  const now = Date.now()
+  // 旧生产数据形态：2 段键 <channel>:<userId>，无 accountId —— 语义即 default 账号
+  store.set('inbound:pairing:lockout', { 'telegram:u1': { fails: [], lockedUntil: now + LOCKOUT_MS } })
+  const pairing = createPairing({ store, logger: quiet })
+
+  assert.equal(pairing.isLockedOut('telegram', 'u1', now), true, '存量记录仍锁 default 账号')
+  assert.equal(pairing.isLockedOut('telegram', 'u1', now, 'acct-A'), false, '绝不把旧锁出扩散到其它账号')
+})
+
+test('R2：配对事务失败时 account 绑定与码都不发布', () => {
+  const { store } = tempStore()
+  const identity = createIdentityForPairing(store)
+  const pairing = createPairing({ store, logger: quiet })
+  const minted = pairing.mint({ origin: 'admin', mintedBy: 'boss' })
+  const beforeCodes = JSON.parse(JSON.stringify(store.get('inbound:pairing', {})))
+  store.transact = () => ({ committed: false, durable: false, code: 'STATE_BUSY' })
+
+  const result = pairing.redeemAndBind(minted.code,
+    { channel: 'telegram', accountId: 'acct-A', userId: 'u1' },
+    (draft, binding) => identity.addBindingToDraft(draft, binding))
+
+  assert.deepEqual(result, { ok: false, reason: 'storage-failed' })
+  assert.deepEqual(store.get('inbound:pairing', {}), beforeCodes, '码未被消费')
+  assert.deepEqual(store.get('inbound:bindings', {}), {}, 'account 绑定未创建')
 })
