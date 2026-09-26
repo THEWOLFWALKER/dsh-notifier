@@ -288,7 +288,7 @@ function channelKeyWhitelist(type) {
  */
 export function createAdminApi(options = {}) {
   const {
-    router, registry, store, notifier, channelsEnabled, outboundConfigs, channelTest, scanHandlers,
+    router, registry, store, notifier, channelsEnabled, outboundConfigs, outboundConfig = null, channelTest, scanHandlers,
     identity, pairing, guidedProbe = null, stateDir, logger, questions = null, control = null,
     yamlRawConfigs = null,
     // v0.10 提交7「管理台暴露 DSH 连接与任务状态」：宿主上下文 + 任务投影注入 + 宿主
@@ -352,8 +352,18 @@ export function createAdminApi(options = {}) {
     return yamlOutboundOf()
   }
 
-  /** v0.12 canonical outbound key; old admin:* remains compatibility fallback. */
-  const hasAdminOutbound = (type) => safeGet(`channel:${type}:outbound`) !== undefined || safeGet(`admin:channel:${type}:outbound`) !== undefined
+  /** v0.13 production path delegates outbound truth to the shared service. */
+  const serviceRawOf = (type) => {
+    try { return plainObjectOf(outboundConfig?.raw?.(type)) ?? {} } catch { return {} }
+  }
+  const serviceDescribeOf = (type) => {
+    try { return plainObjectOf(outboundConfig?.describe?.(type)) ?? {} } catch { return {} }
+  }
+  /** v0.12 direct API compatibility path when no shared service is injected. */
+  const hasAdminOutbound = (type) => outboundConfig !== null
+    ? serviceDescribeOf(type).configured === true
+      || Object.keys(serviceRawOf(type)).length > 0
+    : safeGet(`channel:${type}:outbound`) !== undefined || safeGet(`admin:channel:${type}:outbound`) !== undefined
 
   /** registry.isActive 防御包装：缺失/抛错一律 false。 */
   const isActiveOf = (id) => {
@@ -430,7 +440,7 @@ export function createAdminApi(options = {}) {
       rows.push({
         type,
         direction: 'outbound',
-        configured: isEnabled || hasAdminOutbound(type) || (!dual && hasAccount(type)),
+        configured: isEnabled || hasAdminOutbound(type) || (outboundConfig === null && !dual && hasAccount(type)),
         enabled: isEnabled,
         editable: true,
         // v0.12.1（P1-05）：这里的 restartRequired 描述 Admin legacy <type>:account
@@ -925,14 +935,16 @@ export function createAdminApi(options = {}) {
           }
         }
         // 零配置首访：出站行读取优先级 = admin:channel:<type>:outbound → 非双域 <type>:account → YAML
-        const adminOutbound = plainObjectOf(safeGet(`channel:${row.type}:outbound`)) ?? plainObjectOf(safeGet(`admin:channel:${row.type}:outbound`))
         const yamlConfig = plainObjectOf(yamlTable[row.type]) ?? {}
-        const account = DUAL_INBOUND_DOMAIN.has(row.type)
-          ? {}
-          : plainObjectOf(safeGet(`${row.type}:account`)) ?? {}
-        const merged = adminOutbound !== null
-          ? { ...yamlConfig, ...adminOutbound }
-          : { ...yamlConfig, ...account }
+        const merged = outboundConfig !== null
+          ? serviceRawOf(row.type)
+          : (() => {
+              const adminOutbound = plainObjectOf(safeGet(`channel:${row.type}:outbound`)) ?? plainObjectOf(safeGet(`admin:channel:${row.type}:outbound`))
+              const account = DUAL_INBOUND_DOMAIN.has(row.type)
+                ? {}
+                : plainObjectOf(safeGet(`${row.type}:account`)) ?? {}
+              return adminOutbound !== null ? { ...yamlConfig, ...adminOutbound } : { ...yamlConfig, ...account }
+            })()
         const rowOut = {
           ...row,
           // store 字段覆盖同名 YAML 字段（字段级浅合并；数组值整体替换，如 uids）；
@@ -1363,6 +1375,17 @@ export function createAdminApi(options = {}) {
       if (typeof type !== 'string' || !OUTBOUND_SET.has(type)) {
         throw new ApiError(422, `未知出站通道类型 "${String(type)}"（可用：${CHANNEL_TYPES.join('/')}）`)
       }
+      if (outboundConfig !== null && typeof outboundConfig?.save === 'function') {
+        try {
+          const result = outboundConfig.save(type, config)
+          auditGuard('putOutboundChannel', { type })
+          return { ...result, type, saved: result?.saved === true, direction: 'outbound' }
+        } catch (error) {
+          warn(`出站通道配置写入失败: ${errorMessage(error)}`)
+          const status = error?.code === 'bad-request' || error?.code === 'not-configured' ? 422 : 500
+          throw new ApiError(status, errorMessage(error))
+        }
+      }
       if (plainObjectOf(config) === null || Object.keys(config).length === 0) {
         throw new ApiError(422, 'config 必须是非空对象')
       }
@@ -1403,9 +1426,20 @@ export function createAdminApi(options = {}) {
      * @returns {{ type: string, deleted: boolean, direction: 'outbound' }}
      * @throws {ApiError} 422 类型非法；404 配置不存在；500 存储写入失败
      */
-    deleteOutboundChannel(type) {
+    deleteOutboundChannel(type, options = {}) {
       if (typeof type !== 'string' || !OUTBOUND_SET.has(type)) {
         throw new ApiError(422, `未知出站通道类型 "${String(type)}"`)
+      }
+      if (outboundConfig !== null && typeof outboundConfig?.remove === 'function') {
+        try {
+          const result = outboundConfig.remove(type, options)
+          auditGuard('deleteOutboundChannel', { type, mode: options?.mode ?? 'fallback' })
+          return { ...result, type, deleted: result?.deleted === true, direction: 'outbound' }
+        } catch (error) {
+          warn(`出站通道配置删除失败: ${errorMessage(error)}`)
+          const status = error?.code === 'not-found' ? 404 : error?.code === 'bad-request' ? 422 : 500
+          throw new ApiError(status, errorMessage(error))
+        }
       }
       const key = `admin:channel:${type}:outbound`
       const existing = plainObjectOf(safeGet(key))
@@ -1434,6 +1468,11 @@ export function createAdminApi(options = {}) {
       }
       if (typeof type !== 'string' || !OUTBOUND_SET.has(type)) {
         throw new ApiError(501, `未知出站通道类型 "${String(type)}"`)
+      }
+      if (outboundConfig !== null && typeof outboundConfig?.raw === 'function') {
+        const raw = serviceRawOf(type)
+        if (Object.keys(raw).length === 0) throw new ApiError(501, `渠道 "${type}" 未配置，无法测试`)
+        return await channelTest(type, raw)
       }
       // 读取最新合并配置（当前 YAML 原始行 ⊕ 当前 admin:channel:<type>:outbound）——
       // raw 行剔除 type/enabled 元键，runChannelTest 内部自行 resolveEnvRefs + adapter.resolve。

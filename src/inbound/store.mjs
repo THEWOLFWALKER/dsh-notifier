@@ -14,8 +14,8 @@
 //    再以内存全量快照重建写路径——中止会让 dirty 无限积压、CLI↔宿主共享永久断裂；
 //  - 只有启动 load() 保留 fail-open（无记忆好过误清空）。
 
-import { chmodSync, closeSync, copyFileSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs'
-import { dirname } from 'node:path'
+import { chmodSync, closeSync, copyFileSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs'
+import { basename, dirname, join } from 'node:path'
 
 /**
  * 取证副本路径：.corrupt.<ts>.<pid>.<rand>。
@@ -327,6 +327,27 @@ export function createStore(filePath) {
     /** v0.12.1（P2-07）：启动读取状态，区分读失败与文件不存在/空文件。 */
     bootStatus() {
       return { readFailed: bootReadFailed }
+    },
+    /**
+     * Create an idempotent forensic copy before an application-level migration.
+     * The copy is intentionally outside state.json so the migration transaction
+     * can still be the single durable commit point for state changes.
+     */
+    backup(label = 'backup') {
+      const safeLabel = String(label).replace(/[^a-zA-Z0-9._-]/g, '-') || 'backup'
+      if (!existsSync(filePath)) return { ok: true, path: null, absent: true }
+      try {
+        const dir = dirname(filePath)
+        const prefix = `${basename(filePath)}.${safeLabel}.`
+        const existing = readdirSync(dir).find((name) => name.startsWith(prefix))
+        if (existing !== undefined) return { ok: true, path: join(dir, existing), existing: true }
+        const target = join(dir, `${prefix}${Date.now()}`)
+        copyFileSync(filePath, target)
+        try { chmodSync(target, 0o600) } catch { /* Windows/受限环境无 chmod：尽力而为 */ }
+        return { ok: true, path: target, existing: false }
+      } catch (error) {
+        return { ok: false, path: null, error }
+      }
     },
     get(key, fallback = undefined) {
       try { refreshIfChanged() } catch { /* 收敛失败：退回内存态 */ }

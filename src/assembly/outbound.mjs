@@ -37,12 +37,14 @@ export function accountOf(store, key) {
  * @param {object} store
  * @param {string} type
  * @param {boolean} adminEnabled
+ * @param {boolean} allowLegacy - compatibility fallback for pre-v0.13 callers/tests
  * @returns {{ source: 'canonical-outbound'|'admin-outbound'|'legacy-account'|null, config: object|null }}
  */
-function resolveOutboundConfig(store, type, adminEnabled) {
+function resolveOutboundConfig(store, type, adminEnabled, allowLegacy) {
   // v0.12 canonical product/runtime key is independent of Standalone Admin.
   const canonical = accountOf(store, `channel:${type}:outbound`)
   if (canonical !== null) return { source: 'canonical-outbound', config: canonical }
+  if (allowLegacy !== true) return { source: null, config: null }
   // v0.11 Admin-owned overlays (`admin:channel:<type>:outbound` and legacy `<type>:account`)
   // stay compatibility-only: never reactivate them for a user who disabled Admin.
   if (adminEnabled !== true) return { source: null, config: null }
@@ -61,7 +63,7 @@ function resolveOutboundConfig(store, type, adminEnabled) {
  *           adminEnabled: boolean, warn: (msg: string) => void }} deps
  * @returns {{ channels: Array, testRawConfigOf: (type: string) => object|null }}
  */
-export function composeOutboundChannels({ channels, yamlRows, store, adminEnabled, warn }) {
+export function composeOutboundChannels({ channels, yamlRows, store, adminEnabled, warn, allowLegacy = true }) {
   /** 连通性测试的 rawConfig（合并行优先，回落 YAML 行；ENV 引用由 runChannelTest 自行解析）。 */
   const makeTestRaw = (mergedRowOf) => (type) => {
     const row = mergedRowOf.get(type) ?? yamlRows.get(type)
@@ -73,7 +75,7 @@ export function composeOutboundChannels({ channels, yamlRows, store, adminEnable
   // type → 合并后的原始行（channelTest 的 rawConfig 来源）
   const mergedRowOf = new Map()
   for (const type of CHANNEL_TYPES) {
-    const { source, config: overlayConfig } = resolveOutboundConfig(store, type, adminEnabled)
+    const { source, config: overlayConfig } = resolveOutboundConfig(store, type, adminEnabled, allowLegacy)
     if (source === null || overlayConfig === null) continue
     const merged = { ...(yamlRows.get(type) ?? {}), ...overlayConfig, type }
     try {

@@ -3,7 +3,7 @@
 // 空配置绝不弄崩启动：任何渠道解析问题只 warn + 跳过（学 dsh-email）。
 
 import { chmodSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs'
-import { resolveConfig } from './config.mjs'
+import { CHANNEL_TYPES, resolveConfig } from './config.mjs'
 import { composeOutboundChannels, accountOf } from './assembly/outbound.mjs'
 import { resolveAdminToken } from './assembly/admin-token.mjs'
 import { resolveInboundSignals } from './assembly/inbound-signals.mjs'
@@ -47,6 +47,7 @@ import { createSurfaceRevision } from './control-surface/revision.mjs'
 import { createSurfaceActivity } from './control-surface/activity.mjs'
 import { createSurfaceHealth } from './control-surface/health.mjs'
 import { createOutboundConfigService } from './control-surface/outbound-config.mjs'
+import { migrateCanonicalChannelConfig } from './control-surface/channel-config-migration.mjs'
 import { createChannelProjection } from './control-surface/channels.mjs'
 import { createTaskProjection } from './control-surface/tasks.mjs'
 import { createQuestionProjection } from './control-surface/questions.mjs'
@@ -193,6 +194,18 @@ export function apply(ctx, config = {}) {
   // 抽到 src/assembly/outbound.mjs composeOutboundChannels/accountOf（纯移动，行为零变；
   // 详注见模块头）。admin 关闭时零执行——存量用户行为逐字节不变（§6 兼容红线）。
   const adminEnabled = resolved.admin?.enabled === true
+  const configMigration = migrateCanonicalChannelConfig({
+    store,
+    channelTypes: CHANNEL_TYPES,
+    adminEnabled,
+    warn,
+  })
+  // Once v0.13 has taken the migration decision, runtime config is
+  // canonical-only.  A failed/deferred migration remains fail-closed rather
+  // than silently reviving an old overlay on the next restart.
+  if (configMigration.ok !== true) {
+    warn('出站通道配置迁移未完成，运行期不会回退读取 legacy state')
+  }
   const yamlRowOf = new Map()
   for (const row of (Array.isArray(config.channels) ? config.channels : [])) {
     if (row === null || typeof row !== 'object' || row.enabled === false) continue // 显式禁用是用户意图，不回退
@@ -205,10 +218,12 @@ export function apply(ctx, config = {}) {
     store,
     adminEnabled,
     warn,
+    allowLegacy: false,
   })
   const outboundSource = createOutboundSource(overlay.channels)
   resolved.channels = outboundSource.snapshot()
   const testRawConfigOf = overlay.testRawConfigOf
+  const resolvedOutboundRows = new Map(overlay.channels.map((entry) => [entry.type, entry.config]))
 
   const surfaceRevision = createSurfaceRevision()
   const surfaceActivity = createSurfaceActivity()
@@ -229,8 +244,10 @@ export function apply(ctx, config = {}) {
   const outboundConfigService = createOutboundConfigService({
     store,
     yamlRows: yamlRowOf,
+    resolvedRows: resolvedOutboundRows,
     source: outboundSource,
     adminEnabled,
+    allowLegacy: false,
     onChange: (topic) => surfaceRevision.touch(topic),
     onAudit: (topic, detail) => surfaceActivity.record('configuration', topic, {
       channel: detail?.type,
@@ -831,6 +848,7 @@ export function apply(ctx, config = {}) {
         notifier,
         channelsEnabled: () => outboundSource.types(),
         outboundConfigs: () => Object.fromEntries(outboundSource.snapshot().map((entry) => [entry.type, entry.config])),
+        outboundConfig: outboundConfigService,
         // 零配置首访：channelTest 支持第二参 rawConfig——testOutboundChannel 现场合并
         // 「当前 YAML + 当前 state 出站键」后传入，保存后无需重启即可真实测试；
         // 旧 testChannel(type) 单参路径不变，仍用启动快照 testRawConfigOf。
@@ -861,8 +879,6 @@ export function apply(ctx, config = {}) {
         imageInput: conversationRouterActive ? 'available' : 'unknown', // 图片入站随会话路由装配
       })
       surfaceAdminApi = adminApi
-      adminApi.putOutboundChannel = (type, cfg) => outboundConfigService.save(type, cfg)
-      adminApi.deleteOutboundChannel = (type, options) => outboundConfigService.remove(type, options)
       adminApi.testOutboundChannel = async (type) => {
         const raw = outboundConfigService.raw(type)
         if (raw === null || Object.keys(raw).length === 0) {

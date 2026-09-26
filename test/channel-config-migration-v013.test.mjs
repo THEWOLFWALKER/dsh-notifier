@@ -1,0 +1,115 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
+import { createAdminApi } from '../src/admin/api.mjs'
+import { migrateCanonicalChannelConfig } from '../src/control-surface/channel-config-migration.mjs'
+import { createOutboundConfigService } from '../src/control-surface/outbound-config.mjs'
+import { createOutboundSource } from '../src/runtime/outbound-source.mjs'
+import { createStore } from '../src/inbound/store.mjs'
+
+const tempState = (initial) => {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-v013-channel-config-'))
+  const file = join(dir, 'state.json')
+  if (initial !== undefined) writeFileSync(file, JSON.stringify(initial))
+  return { dir, file }
+}
+
+test('v0.13 migration: backup once, copy legacy outbound, retire old Admin key, keep inbound account key', () => {
+  const { dir, file } = tempState({
+    'admin:channel:bark:outbound': { key: 'admin-key' },
+    'bark:account': { key: 'inbound-compatible' },
+    'feishu:account': { appId: 'app', appSecret: 'secret' },
+  })
+  const store = createStore(file)
+  const first = migrateCanonicalChannelConfig({
+    store,
+    channelTypes: ['bark', 'feishu'],
+    adminEnabled: true,
+    now: () => '2026-09-26T00:00:00.000Z',
+  })
+
+  assert.equal(first.ok, true)
+  assert.deepEqual(store.get('channel:bark:outbound'), { key: 'admin-key' })
+  assert.equal(store.get('admin:channel:bark:outbound'), undefined)
+  assert.deepEqual(store.get('bark:account'), { key: 'inbound-compatible' })
+  assert.equal(store.get('channel:feishu:outbound'), undefined, 'dual-domain inbound account is never outbound-migrated')
+  assert.equal(store.get('state:schema-version'), 13)
+  assert.equal(store.get('state:migration:v0.13').status, 'complete')
+  const backups = readdirSync(dir).filter((name) => name.includes('.pre-v0.13.'))
+  assert.equal(backups.length, 1)
+  assert.deepEqual(JSON.parse(readFileSync(join(dir, backups[0]), 'utf8'))['admin:channel:bark:outbound'], { key: 'admin-key' })
+
+  const second = migrateCanonicalChannelConfig({ store, channelTypes: ['bark', 'feishu'], adminEnabled: true })
+  assert.equal(second.already, true)
+  assert.equal(readdirSync(dir).filter((name) => name.includes('.pre-v0.13.')).length, 1, 'restart does not create another migration backup')
+})
+test('v0.13 canonical service: revoke ignores malformed legacy and removes all durable outbound keys atomically', () => {
+  const { file } = tempState({
+    'channel:bark:outbound': { key: 'canonical' },
+    'admin:channel:bark:outbound': 'broken',
+    'bark:account': ['broken'],
+  })
+  const store = createStore(file)
+  const source = createOutboundSource([{ type: 'bark', config: { key: 'canonical' } }])
+  const service = createOutboundConfigService({
+    store,
+    yamlRows: new Map(),
+    source,
+    adminEnabled: true,
+    allowLegacy: false,
+  })
+
+  const result = service.remove('bark', { mode: 'revoke' })
+  assert.equal(result.deleted, true)
+  assert.equal(store.get('channel:bark:outbound'), undefined)
+  assert.equal(store.get('admin:channel:bark:outbound'), undefined)
+  assert.equal(store.get('bark:account'), undefined)
+  assert.equal(source.has('bark'), false)
+})
+
+test('v0.13 shared service: Admin write/read and Native runtime observe the same canonical desired state', () => {
+  const { file } = tempState()
+  const store = createStore(file)
+  const source = createOutboundSource([])
+  const service = createOutboundConfigService({
+    store,
+    yamlRows: new Map(),
+    source,
+    allowLegacy: false,
+  })
+  const api = createAdminApi({
+    store,
+    outboundConfig: service,
+    channelsEnabled: () => source.types(),
+    outboundConfigs: () => ({}),
+  })
+
+  const saved = api.putOutboundChannel('bark', { key: 'same-key' })
+  assert.equal(saved.saved, true)
+  assert.deepEqual(service.raw('bark'), { key: 'same-key' })
+  assert.equal(source.has('bark'), true)
+  assert.equal(api.getChannels().find((row) => row.type === 'bark' && row.direction === 'outbound').configured, true)
+  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8'))['channel:bark:outbound'], { key: 'same-key' })
+  assert.equal(existsSync(file), true)
+})
+
+test('v0.13 apply failure: durable desired config is saved while runtime is marked restart-pending', () => {
+  const { file } = tempState()
+  const store = createStore(file)
+  const source = {
+    version: 0,
+    has: () => false,
+    replace() { throw new Error('runtime unavailable') },
+    remove() {},
+  }
+  const service = createOutboundConfigService({ store, yamlRows: new Map(), source, allowLegacy: false })
+  const result = service.save('bark', { key: 'durable-key' })
+  assert.equal(result.saved, true)
+  assert.equal(result.applied, false)
+  assert.equal(result.applyMode, 'restart-pending')
+  assert.deepEqual(store.get('channel:bark:outbound'), { key: 'durable-key' })
+  assert.equal(service.describe('bark').runtime.state, 'failed')
+})

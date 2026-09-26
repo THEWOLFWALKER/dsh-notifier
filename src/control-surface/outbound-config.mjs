@@ -10,7 +10,7 @@ import {
   channelFixedOptions,
   resolveEnvRefs,
 } from '../config.mjs'
-import { deleteDurable, setDurable } from '../inbound/store.mjs'
+import { deleteDurable, setDurable, transactDurable } from '../inbound/store.mjs'
 
 const OUTBOUND = new Set(CHANNEL_TYPES)
 const DUAL_INBOUND_DOMAIN = new Set(['feishu', 'dingtalk'])
@@ -124,8 +124,10 @@ function resolveCandidate(type, raw) {
 export function createOutboundConfigService({
   store,
   yamlRows,
+  resolvedRows = null,
   source,
   adminEnabled = false,
+  allowLegacy = true,
   onChange = null,
   onAudit = null,
 } = {}) {
@@ -138,8 +140,49 @@ export function createOutboundConfigService({
     try { onChange?.(topic, detail) } catch {}
   }
 
-  const overlayOf = (type) => legacyOverlay(store, type, adminEnabled)
-  const rawOf = (type) => ({ ...rawYaml(yamlRows, type), ...overlayOf(type) })
+  const overlayOf = (type) => allowLegacy === true
+    ? legacyOverlay(store, type, adminEnabled)
+    : (plain(safeGet(store, canonicalKey(type))) ?? {})
+  const baseRawOf = (type) => ({
+    ...rawYaml(yamlRows, type),
+    ...(yamlRows instanceof Map && yamlRows.has(type)
+      ? {}
+      : (plain(resolvedRows instanceof Map ? resolvedRows.get(type) : undefined) ?? {})),
+  })
+  const rawOf = (type) => ({ ...baseRawOf(type), ...overlayOf(type) })
+  const applyState = new Map()
+
+  const applyRuntime = (type, resolved) => {
+    try {
+      source.replace(type, resolved)
+      applyState.set(type, { state: 'online', applyMode: 'hot' })
+      return null
+    } catch (error) {
+      // Desired state is already durable.  A failed live swap is a runtime
+      // failure/restart-pending, never a false storage failure.
+      applyState.set(type, { state: 'failed', applyMode: 'restart-pending', error: error?.message ?? String(error) })
+      return error
+    }
+  }
+
+  const removeDurable = (keys) => {
+    const unique = [...new Set(keys)]
+    if (typeof store?.transact === 'function') {
+      return transactDurable(store, (draft) => {
+        const existed = unique.some((key) => Object.prototype.hasOwnProperty.call(draft, key))
+        for (const key of unique) delete draft[key]
+        return existed
+      })
+    }
+    let durable = true
+    let existed = false
+    for (const key of unique) {
+      const result = deleteDurable(store, key)
+      existed = existed || result.existed === true
+      durable = durable && result.durable === true
+    }
+    return { ok: durable, committed: durable, durable, value: existed }
+  }
 
   return {
     raw(type) {
@@ -155,7 +198,7 @@ export function createOutboundConfigService({
       const currentCanonical = plain(safeGet(store, canonicalKey(key)))
       const seed = currentCanonical ?? overlayOf(key)
       const nextCanonical = { ...seed, ...clone(patch) }
-      const nextRaw = { ...rawYaml(yamlRows, key), ...nextCanonical }
+      const nextRaw = { ...baseRawOf(key), ...nextCanonical }
 
       // Phase 1 — resolve before mutation.
       const resolved = resolveCandidate(key, nextRaw)
@@ -171,9 +214,12 @@ export function createOutboundConfigService({
         throw error
       }
 
-      // Phase 3 — synchronous live swap.
-      source.replace(key, resolved)
-      const result = { type: key, saved: true, applied: true, applyMode: 'hot', configRevision: source.version }
+      // Phase 3 — synchronous live swap.  Durable desired state remains truth
+      // even if the runtime adapter rejects the hot apply.
+      const applyError = applyRuntime(key, resolved)
+      const result = applyError === null
+        ? { type: key, saved: true, applied: true, applyMode: 'hot', configRevision: source.version }
+        : { type: key, saved: true, applied: false, applyMode: 'restart-pending', runtimeState: 'failed', configRevision: source.version }
       emit('channel-saved', result)
       return result
     },
@@ -189,10 +235,11 @@ export function createOutboundConfigService({
       const existing = plain(safeGet(store, canonicalKey(key)))
       if (existing === null) throw Object.assign(new Error(`出站配置不存在：${key}`), { code: 'not-found' })
 
-      // Pre-resolve fallback before deleting canonical state. Admin-owned overlays are
-      // only reused when Admin is enabled (never revived for a user who disabled it).
-      const fallbackRaw = { ...rawYaml(yamlRows, key) }
-      if (adminEnabled === true) {
+      // Pre-resolve fallback only for pre-v0.13 compatibility callers.  The
+      // production service is canonical-only, so revoke can never be blocked by
+      // malformed legacy data.
+      const fallbackRaw = { ...baseRawOf(key) }
+      if (allowLegacy === true && adminEnabled === true) {
         const oldAdmin = plain(safeGet(store, oldAdminKey(key)))
         if (oldAdmin !== null) {
           Object.assign(fallbackRaw, oldAdmin)
@@ -207,7 +254,13 @@ export function createOutboundConfigService({
 
       // v0.12.1（P0-02）：delete() 返回 existed，不表达 durable 结果；删除未落盘时
       // 禁止切换 live source，否则重启后配置会复活。
-      const removal = deleteDurable(store, canonicalKey(key))
+      const removal = options?.mode === 'revoke'
+        ? removeDurable([
+          canonicalKey(key),
+          oldAdminKey(key),
+          ...(!DUAL_INBOUND_DOMAIN.has(key) ? [`${key}:account`] : []),
+        ])
+        : removeDurable([canonicalKey(key)])
       if (removal.durable !== true) {
         setDurable(store, canonicalKey(key), existing)
         const error = new Error('出站配置删除失败：未落盘，已放弃本次变更')
@@ -216,10 +269,14 @@ export function createOutboundConfigService({
       }
 
       if (options?.mode === 'revoke') {
-        // v0.12.1（P0-02）：显式撤销，清理 legacy 覆盖域；双域入站凭证不能误删。
-        deleteDurable(store, oldAdminKey(key))
-        if (!DUAL_INBOUND_DOMAIN.has(key)) deleteDurable(store, `${key}:account`)
-        source.remove(key)
+        // Legacy keys are removed in the same transaction above.  No read or
+        // resolve of those keys occurs, so malformed leftovers cannot block revoke.
+        try {
+          source.remove(key)
+          applyState.set(key, { state: 'stopped', applyMode: 'hot' })
+        } catch (error) {
+          applyState.set(key, { state: 'failed', applyMode: 'restart-pending', error: error?.message ?? String(error) })
+        }
       } else if (fallback === null) source.remove(key)
       else source.replace(key, fallback)
       const result = { type: key, deleted: true, applied: true, applyMode: 'hot', configRevision: source.version }
@@ -237,6 +294,7 @@ export function createOutboundConfigService({
         fields: channelFieldsOf(key),
         docUrl: channelDocUrlOf(key),
         applyMode: 'hot',
+        runtime: applyState.get(key) ?? { state: source.has(key) ? 'online' : 'stopped', applyMode: 'hot' },
         configRevision: source.version,
       }
     },
