@@ -37,7 +37,7 @@ function makeAgent(id = SID, status = 'idle') {
   }
 }
 
-function makeRig({ agents = [], downloadImageBytes, downloadFileBytes, attachments } = {}) {
+function makeRig({ agents = [], downloadImageBytes, downloadFileBytes, attachments, logger = null } = {}) {
   const store = createStore(tempPath())
   const bus = createInboundBus({ allowUsers: ['42'], store })
   const handlers = {}
@@ -67,7 +67,7 @@ function makeRig({ agents = [], downloadImageBytes, downloadFileBytes, attachmen
     ctx, bus, store,
     reply: (channel, chatId, text) => replies.push({ channel, chatId, text }),
     config: { mergeWindowMs: FLUSH_MS },
-    logger: null,
+    logger,
     router, registry,
     channelTypes: () => ['telegram'],
     downloadImageBytes: downloadImageBytes ?? (async () => PNG_BYTES),
@@ -231,6 +231,25 @@ test('#36 缺 attachment service：附件不可用降级为「正文照投 + 失
   assert.equal(agent.calls.followup.length, 1, '无 attachments 服务不影响文本投递')
   assert.deepEqual(agent.calls.followup[0].content.map((b) => b.type), ['text'])
   assert.ok(rig.replies.some((r) => r.text.includes('文件获取失败')))
+  rig.dispose()
+})
+
+test('#36 旧宿主缺 saveFile：文件 fail-closed，给出明确中英文能力诊断且告警去重', async () => {
+  const agent = makeAgent()
+  const warnings = []
+  const rig = makeRig({
+    agents: [agent],
+    attachments: { saveImage: async () => ({ attachmentId: 'img-1' }) },
+    logger: { warn: (_scope, message) => warnings.push(message) },
+  })
+  rig.fire('agent/created', agent)
+
+  await rig.flush({ text: '看看', file: { name: 'doc.pdf', url: FILE_URL } })
+  await rig.flush({ text: '再看一次', file: { name: 'doc-2.pdf', url: FILE_URL } })
+  assert.equal(agent.calls.followup.length, 2)
+  assert.deepEqual(agent.calls.followup[0].content.map((block) => block.type), ['text'])
+  assert.ok(rig.replies.filter((r) => r.text.includes('宿主不支持文件入站存储')).length >= 2)
+  assert.equal(warnings.filter((message) => message.includes('缺少 attachments.saveFile')).length, 1)
   rig.dispose()
 })
 
