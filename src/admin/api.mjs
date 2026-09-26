@@ -127,18 +127,33 @@ function controlSummary(control) {
  * 再也无法经管理台降级或删除——等于把一条越权身份永久钉死在白名单里（违反宪法 #7
  * 「fail-open 要有度」的反面：过度收紧反而锁死唯一清理入口）。confirm 路径不构成
  * 提权面：confirmPending 末端仍走 addBinding，冒号 userId 在那里被拒。
- * @returns {{ channel: string, userId: string, raw: string } | null} 非法形状返回 null
+ * @returns {{ channel: string, accountId?: string, userId: string, raw: string } | null} 非法形状返回 null
  */
-const MEMBER_KEY_HINT = '成员键形状：<channel>:<userId>（channel ∈ telegram/feishu/qq/wxpusher/wechat/dingtalk）'
+const MEMBER_KEY_HINT = '成员键形状：<channel>:<userId> 或 <channel>:<accountId>:<userId>（channel ∈ telegram/feishu/qq/wxpusher/wechat/dingtalk）'
 function parseMemberKey(key) {
   const raw = String(key ?? '').trim()
   const colon = raw.indexOf(':')
   if (colon <= 0) return null
   const channel = raw.slice(0, colon)
-  const userId = raw.slice(colon + 1)
+  const remainder = raw.slice(colon + 1)
+  const parts = remainder.split(':')
+  const accountId = parts.length >= 2 ? parts[0] : undefined
+  const userId = parts.length >= 2 ? parts.slice(1).join(':') : remainder
   if (!INBOUND_SET.has(channel)) return null
-  if (userId === '' || userId.length > 128) return null
-  return { channel, userId, raw }
+  if (userId === '' || userId.length > 128 || (accountId !== undefined && (accountId === '' || accountId.length > 128))) return null
+  return { channel, ...(accountId === undefined ? {} : { accountId }), userId, raw }
+}
+
+function memberKeyOf(record) {
+  if (record?.accountId !== undefined && String(record.accountId) !== '') {
+    return `${record.channel}:${record.accountId}:${record.userId}`
+  }
+  return `${record?.channel}:${record?.userId}`
+}
+
+function resolveMemberRecord(identity, parsed, pending = false) {
+  const records = pending ? identity.listPending() : identity.list(parsed.channel)
+  return records.find((record) => memberKeyOf(record) === parsed.raw)
 }
 
 /** 错误 → 可读消息（日志与审计用）。 */
@@ -1073,8 +1088,9 @@ export function createAdminApi(options = {}) {
         try { return fn() } catch (error) { warn(`成员数据读取失败: ${errorMessage(error)}`); return fallback }
       }
       const members = identity === null ? [] : readSafe(() => identity.list().map((record) => ({
-        key: `${record.channel}:${record.userId}`,
+        key: memberKeyOf(record),
         channel: record.channel,
+        ...(record.accountId !== undefined ? { accountId: record.accountId } : {}),
         userId: record.userId,
         label: record.label,
         role: record.role,
@@ -1083,8 +1099,9 @@ export function createAdminApi(options = {}) {
         lastSeenAt: record.lastSeenAt,
       })), [])
       const pending = identity === null ? [] : readSafe(() => identity.listPending().map((entry) => ({
-        key: `${entry.channel}:${entry.userId}`,
+        key: memberKeyOf(entry),
         channel: entry.channel,
+        ...(entry.accountId !== undefined ? { accountId: entry.accountId } : {}),
         userId: entry.userId,
         origin: entry.origin,
         at: entry.at,
@@ -1124,7 +1141,7 @@ export function createAdminApi(options = {}) {
         }
       }
       if (Object.keys(normalized).length === 0) throw new ApiError(422, '至少提供 label 或 role 之一')
-      const current = identity.list(parsed.channel).find((record) => record.userId === parsed.userId)
+      const current = resolveMemberRecord(identity, parsed)
       if (current === undefined) throw new ApiError(404, `成员不存在：${parsed.raw}`)
       if (normalized.role === 'member' && current.role === 'owner') {
         let owners = 0
@@ -1133,7 +1150,7 @@ export function createAdminApi(options = {}) {
           throw new ApiError(422, '末位 owner 不可降级（否则实例将无人可管理）；请先在成员页提升另一位 owner')
         }
       }
-      const result = identity.updateBinding(parsed.channel, parsed.userId, normalized)
+      const result = identity.updateBinding(current.channel, current.userId, normalized, current.accountId)
       if (result.ok !== true) throw new ApiError(404, `成员不存在：${parsed.raw}`)
       auditGuard('putMember', { key: parsed.raw, diff: normalized })
       return { key: parsed.raw, saved: true, record: result.record }
@@ -1150,7 +1167,7 @@ export function createAdminApi(options = {}) {
       }
       const parsed = parseMemberKey(key)
       if (parsed === null) throw new ApiError(422, MEMBER_KEY_HINT)
-      const current = identity.list(parsed.channel).find((record) => record.userId === parsed.userId)
+      const current = resolveMemberRecord(identity, parsed)
       if (current === undefined) throw new ApiError(404, `成员不存在：${parsed.raw}`)
       if (current.role === 'owner') {
         let owners = 0
@@ -1159,7 +1176,7 @@ export function createAdminApi(options = {}) {
           throw new ApiError(422, '末位 owner 不可删除（否则实例将无人可管理）；请先转移角色或添加成员')
         }
       }
-      const result = identity.removeBinding(parsed.channel, parsed.userId)
+      const result = identity.removeBinding(current.channel, current.userId, current.accountId)
       if (result.ok !== true) throw new ApiError(404, `成员不存在：${parsed.raw}`)
       auditGuard('deleteMember', { key: parsed.raw, role: current.role })
       return { key: parsed.raw, deleted: true }
@@ -1176,7 +1193,8 @@ export function createAdminApi(options = {}) {
       }
       const parsed = parseMemberKey(key)
       if (parsed === null) throw new ApiError(422, MEMBER_KEY_HINT)
-      const result = identity.confirmPending(parsed.channel, parsed.userId)
+      const pending = resolveMemberRecord(identity, parsed, true)
+      const result = identity.confirmPending(pending?.channel ?? parsed.channel, pending?.userId ?? parsed.userId, pending?.accountId ?? parsed.accountId)
       if (result.ok !== true) {
         if (result.reason === 'already-bound') throw new ApiError(409, `该身份已是成员：${parsed.raw}`)
         throw new ApiError(404, `待确认绑定不存在：${parsed.raw}`)
@@ -1196,7 +1214,8 @@ export function createAdminApi(options = {}) {
       }
       const parsed = parseMemberKey(key)
       if (parsed === null) throw new ApiError(422, MEMBER_KEY_HINT)
-      const result = identity.dismissPending(parsed.channel, parsed.userId)
+      const pending = resolveMemberRecord(identity, parsed, true)
+      const result = identity.dismissPending(pending?.channel ?? parsed.channel, pending?.userId ?? parsed.userId, pending?.accountId ?? parsed.accountId)
       if (result.ok !== true) throw new ApiError(404, `待确认绑定不存在：${parsed.raw}`)
       auditGuard('dismissPending', { key: parsed.raw })
       return { key: parsed.raw, dismissed: true }

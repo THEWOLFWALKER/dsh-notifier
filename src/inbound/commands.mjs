@@ -260,7 +260,7 @@ export function createCommandHandler(options = {}, strings) {
     try {
       switch (command.name) {
         case 'whoami': {
-          const bound = identity.allows(envelope.channel, envelope.userId)
+          const bound = identity.allows(envelope.channel, envelope.userId, envelope.accountId)
           return { reply: whoamiText(envelope, bound), consumed: true }
         }
         case 'pair':
