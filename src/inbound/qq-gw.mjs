@@ -180,6 +180,7 @@ function attachmentFields(attachments, withoutText) {
  * @param {typeof WebSocket} [options.webSocketImpl] - WebSocket 构造器注入（测试用；默认 globalThis.WebSocket）
  * @param {number} [options.reconnectBaseMs=1000] - 重连退避基数
  * @param {number} [options.reconnectCapMs=30000] - 重连退避上限
+ * @param {number} [options.handshakeTimeoutMs=10000] - WS open/HELLO/READY 各阶段截止时间
  * @param {object} [options.strings] - stringsOf(lang) 全文案表（读 `qq` 节，跨节复用
  *   approval.fallbackText；缺省回落 zh——须先在 strings.mjs 落 `qq` 节）
  */
@@ -193,6 +194,7 @@ export function createQqInbound(options = {}) {
   const WebSocketImpl = options.webSocketImpl ?? globalThis.WebSocket
   const reconnectBaseMs = Math.max(1, Number(options.reconnectBaseMs) || 1000)
   const reconnectCapMs = Math.max(reconnectBaseMs, Number(options.reconnectCapMs) || 30000)
+  const handshakeTimeoutMs = Math.max(10, Number(options.handshakeTimeoutMs) || 10000)
   // G-07：close 4008 的固定等待窗（默认 60s；测试注入缩短，不参与指数退避）
   const close4008WaitMs = Math.max(0, Number(options.close4008WaitMs) || CLOSE_4008_WAIT_MS)
   const ackThreshold = Number(options.maxMissedAcks)
@@ -260,6 +262,7 @@ export function createQqInbound(options = {}) {
   let missedAcks = 0
   let reconnectAttempts = 0
   let reconnectTimer = null
+  let handshakeTimer = null
   // 发送侧运行态：目标类型学习表（事件来时记下 chatId 是单聊还是群）+ 每目标 msg_seq
   const targetKinds = new Map() // chatId -> 'user' | 'group'
   const msgSeqs = new Map() // chatId -> 递增 seq
@@ -291,6 +294,7 @@ export function createQqInbound(options = {}) {
   }
 
   function cleanupSocket() {
+    if (handshakeTimer !== null) { clearTimeout(handshakeTimer); handshakeTimer = null }
     if (heartbeatTimer !== null) { clearTimeout(heartbeatTimer); heartbeatTimer = null }
     // 连接级心跳运行态复位：断开/重连/cleanup 后不得继承上一连接的脏 arming/ACK/miss 状态。
     // heartbeatIntervalMs 保留——重连后同一会话的节奏由新连接 HELLO 重新下发（仅作兜底用）。
@@ -302,6 +306,21 @@ export function createQqInbound(options = {}) {
       try { ws.close() } catch { /* 已关闭 */ }
       ws = null
     }
+  }
+
+  function armHandshakeDeadline(phase, conn) {
+    if (handshakeTimer !== null) clearTimeout(handshakeTimer)
+    handshakeTimer = setTimeout(() => {
+      handshakeTimer = null
+      if (stopRequested || ws !== conn) return
+      warn(`QQ 网关 ${phase} 超时（${handshakeTimeoutMs}ms），主动断开并重连`)
+      cleanupSocket()
+      scheduleReconnect({ resume: sessionId !== null })
+    }, handshakeTimeoutMs)
+  }
+
+  function clearHandshakeDeadline() {
+    if (handshakeTimer !== null) { clearTimeout(handshakeTimer); handshakeTimer = null }
   }
 
   /** G-07：关闭码分支表（对齐官方 SDK reconnect 语义，dsh-im qqbot-connector 同源）：
@@ -336,7 +355,7 @@ export function createQqInbound(options = {}) {
 
   async function fetchGatewayUrl() {
     const token = await tokens.get()
-    const response = await fetchImpl(`${apiBase}/gateway`, {
+    const response = await fetchWithTimeout(`${apiBase}/gateway`, {
       headers: { authorization: `QQBot ${token}` },
     })
     const payload = await response.json().catch(() => null)
@@ -394,6 +413,7 @@ export function createQqInbound(options = {}) {
 
   function handleDispatch(t, d) {
     if (t === 'READY') {
+      clearHandshakeDeadline()
       reconnectAttempts = 0
       sessionId = String(d?.session_id ?? '') || null
       warn(`QQ 网关已就绪（session ${sessionId ?? '?'}）`)
@@ -401,6 +421,7 @@ export function createQqInbound(options = {}) {
       return
     }
     if (t === 'RESUMED') {
+      clearHandshakeDeadline()
       reconnectAttempts = 0
       warn('QQ 网关断线恢复（RESUME 成功，事件不丢）')
       armHeartbeat() // Issue #23：RESUMED 后同样起搏（幂等，避免重复 READY/RESUMED 建多定时器）
@@ -544,6 +565,7 @@ export function createQqInbound(options = {}) {
       // 心跳须待 READY/RESUMED 鉴权完成后由 armHeartbeat() 幂等启动（真机 A/B 证据：
       // 网关只对鉴权完成后的心跳回 OP_HEARTBEAT_ACK，提前起搏永远收不到 ACK 而死循环）。
       recordHeartbeatInterval(intervalMs)
+      if (ws !== null) armHandshakeDeadline('READY/RESUMED', ws)
       sendAuth({ resume: sessionId !== null })
       return
     }
@@ -583,7 +605,11 @@ export function createQqInbound(options = {}) {
     if (WebSocketImpl === undefined) throw new Error('当前运行时无 WebSocket（需要 Node 22+）')
     ws = new WebSocketImpl(url)
     const conn = ws
-    ws.addEventListener('open', () => { /* 等 HELLO */ })
+    armHandshakeDeadline('open', conn)
+    ws.addEventListener('open', () => {
+      if (ws !== conn) return
+      armHandshakeDeadline('HELLO', conn)
+    })
     ws.addEventListener('message', (event) => {
       // Issue #23：连接级隔离——旧连接（已被 cleanupSocket 置 ws=null 或换成新连接）的
       // 迟到帧（含 op11 ACK）不得触碰新连接的心跳运行态或 reset 新连接的 awaitingAck。

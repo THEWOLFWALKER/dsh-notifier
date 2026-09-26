@@ -29,6 +29,13 @@
 - 旧实现三重偏差均已修正：读顶层 messageId（恒空→实际从不回执）、回执头字段名误作 `requestId`、data 误发裸字符串 `'ack'`（未 JSON 化）。
 - SDK 回执帧另带顶层 `message: "OK"` 字符串字段（v2.1.7-beta.1 `dist/client.mjs` 537-547 行等）；本实现按仲裁形态不含该字段，服务端是否强依赖未经真机验证（`declared`）。
 - 未 ack 的业务帧服务端约 60s 重推：以 msgId 去重（60s 窗口吸收 + 表上限淘汰），bus 侧 24h 持久去重再兜一层。
+- ACK 语义保持“先回执、后交业务层”：已收到且形状可解析的业务帧先按 `headers.messageId` 回 ACK，随后业务处理失败不会要求平台重投；业务层用 `msgId`/bus 去重保护重复帧。`data` 二次 JSON 解析失败会明确告警，因为 ACK 后该帧不会再由平台补投。
+
+## 连接截止与停止（v0.13）
+
+- gateway HTTP 受配置的有限请求超时约束；拿到 endpoint/ticket 后，WebSocket 必须在 10 秒内触发 `open`，否则主动关闭并进入既有有界指数退避重连。
+- `stop()` 会先置停止标志，再清除 open/handshake 与 reconnect 定时器并关闭当前 socket；旧连接的迟到 message/close 由连接身份检查忽略，不得复活重连。
+- 上述行为由 fake transport 合约测试覆盖，仍不等同于真实钉钉 Stream 长时 soak；帧级 ACK 接受性继续保留为 Phase F 项。
 
 ## SYSTEM 帧与双层心跳（G-02）
 

@@ -15,7 +15,7 @@ import { createActionDispatcher } from '../src/actions.mjs'
  * 伪造 @larksuiteoapi/node-sdk：记录 Client/WSClient 全部交互。
  * wsClient.start() 捕获 eventDispatcher，测试用 handlers['im.message.receive_v1'] 直接投喂事件。
  */
-function makeFakeSdk({ failStart = false, failCreate = 0, bareWs = false, failPatch = 0, failHttp = false } = {}) {
+function makeFakeSdk({ failStart = false, hangStart = false, failCreate = 0, bareWs = false, failPatch = 0, failHttp = false } = {}) {
   const state = {
     loadCount: 0,
     clientOptions: [],
@@ -93,6 +93,7 @@ function makeFakeSdk({ failStart = false, failCreate = 0, bareWs = false, failPa
     }
     async start({ eventDispatcher }) {
       if (failStart) throw new Error('ws handshake failed')
+      if (hangStart) return new Promise(() => {})
       state.wsStarted += 1
       state.dispatcher = eventDispatcher
     }
@@ -141,7 +142,7 @@ function makeLogger() {
   return { lines, warn: (prefix, message) => lines.push(`${prefix} ${message}`) }
 }
 
-function makeRig({ allowUsers = ['ou_1'], config = {}, sdkOptions = {}, fallbackTargets = [] } = {}) {
+function makeRig({ allowUsers = ['ou_1'], config = {}, sdkOptions = {}, fallbackTargets = [], handshakeTimeoutMs } = {}) {
   const logger = makeLogger()
   const bus = createInboundBus({ allowUsers, logger })
   const fake = makeFakeSdk(sdkOptions)
@@ -151,6 +152,7 @@ function makeRig({ allowUsers = ['ou_1'], config = {}, sdkOptions = {}, fallback
     fallbackTargets,
     logger,
     sdkLoader: fake.loader,
+    handshakeTimeoutMs,
   })
   return { bus, fake, inbound, logger }
 }
@@ -222,6 +224,23 @@ test('start 失败可重试：失败后 running 复位，再次 start 重新加�
   await tick()
   assert.equal(rig.fake.state.loadCount, 2, '失败后允许重试')
   await rig.inbound.stop()
+})
+
+test('WS start/handshake 有截止时间；stop 可取消挂起启动且生命周期保持 stopped', async () => {
+  const rig = makeRig({ sdkOptions: { hangStart: true }, handshakeTimeoutMs: 20 })
+  rig.inbound.start()
+  assert.equal(rig.inbound.clientState(), 'starting')
+  await tick(35)
+  assert.equal(rig.inbound.clientState(), 'error')
+  assert.ok(rig.logger.lines.some((line) => line.includes('start/handshake') && line.includes('超时')))
+  await rig.inbound.stop()
+  assert.equal(rig.inbound.clientState(), 'stopped')
+
+  const stopping = makeRig({ sdkOptions: { hangStart: true }, handshakeTimeoutMs: 20 })
+  stopping.inbound.start()
+  await tick()
+  await stopping.inbound.stop()
+  assert.equal(stopping.inbound.clientState(), 'stopped', '迟到的启动超时不得把 stopped 覆盖为 error')
 })
 
 test('stop：关闭 WS 连接并复位（之后卡片发送降级为 null）', async () => {

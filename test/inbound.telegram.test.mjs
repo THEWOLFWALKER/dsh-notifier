@@ -11,6 +11,7 @@ import { createTokenVault } from '../src/inbound/tokens.mjs'
 import { createStore } from '../src/inbound/store.mjs'
 import { createActionDispatcher } from '../src/actions.mjs'
 import { buildActionPayload } from '../src/inbound/_contract.mjs'
+import { createInboundBus } from '../src/inbound/bus.mjs'
 
 function tempPath() {
   return join(mkdtempSync(join(tmpdir(), 'dsh-notifier-tg-')), 'state.json')
@@ -1060,6 +1061,38 @@ test('Stage-6 process-before-commit：数据缺失 update 静默跳过但 offset
   await tg.stop()
   assert.equal(accepted.length, 1, '文本消息正常进入 bus')
   assert.equal(store.get('tg:offset'), 72, '两条 update 之后 offset=update_id(71)+1')
+})
+
+test('C11 durable cursor：offset 落盘失败时原 update 重投，并由 bus messageId 去重', async () => {
+  const values = {}
+  let setCalls = 0
+  const store = {
+    get: (key, fallback) => (key in values ? values[key] : fallback),
+    set: (key, value) => {
+      setCalls += 1
+      if (setCalls === 1) return false
+      values[key] = value
+      return true
+    },
+  }
+  const delivered = []
+  const bus = createInboundBus({ allowUsers: ['42'], logger: { warn() {} } })
+  bus.onMessage((envelope) => delivered.push(envelope))
+  const offsets = []
+  const update = { update_id: 91, message: { message_id: 7, text: 'once', from: { id: 42 }, chat: { id: 42, type: 'private' } } }
+  const { fetchImpl } = makeFetch({
+    getUpdates: (body) => {
+      offsets.push(body.offset)
+      return { ok: true, result: body.offset < 92 ? [update] : [] }
+    },
+  }, { delayMs: 2 })
+  const tg = createTelegramInbound({ config: CONFIG, bus, vault: createTokenVault(), store, fetchImpl, errorBackoffMs: 5, logger: { warn() {} } })
+  tg.start()
+  await new Promise((resolve) => setTimeout(resolve, 35))
+  await tg.stop()
+  assert.ok(offsets.filter((offset) => offset === 0).length >= 2, '首次 durable 失败后必须用旧 offset 重投')
+  assert.equal(values['tg:offset'], 92, '后续 durable 成功后才推进游标')
+  assert.equal(delivered.length, 1, '重投由规范 messageId 去重，不重复交付业务订阅者')
 })
 
 test('Stage-6 editResolved 文本兜底：两种 edit 均失败（消息已删）→ 恰发一条 sendMessage 文本且在 4096 内', async () => {

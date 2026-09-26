@@ -137,6 +137,20 @@ test('pushplus: 合法 channel 透传到请求体', async () => {
   assert.equal(body.channel, 'wechat')
 })
 
+test('pushplus: channel 对齐官方 V1.18 枚举，渠道配置编码 option 透传', async () => {
+  const official = ['wechat', 'app', 'extension', 'webhook', 'clawbot', 'cmcc', 'qq', 'cp', 'mail', 'sms', 'voice']
+  for (const channel of official) assert.equal(pushplus.resolve({ token: 'PT', channel }).channel, channel)
+  for (const legacy of ['webwx', 'wecom', 'dingtalk']) {
+    assert.throws(() => pushplus.resolve({ token: 'PT', channel: legacy }), NotifyError)
+  }
+  const cap = capture({ code: 200 })
+  await pushplus.send(pushplus.resolve({ token: 'PT', channel: 'webhook', option: 'robot-code' }), MSG)
+  const seen = await cap.done()
+  const body = JSON.parse(seen.body)
+  assert.equal(body.channel, 'webhook')
+  assert.equal(body.option, 'robot-code')
+})
+
 test('pushplus: 非法 channel warn 并拒绝发送', async () => {
   const cap = capture({ code: 200 })
   const original = console.error

@@ -279,6 +279,7 @@ function buildActionCard({ title, content, actions: buttons = [], chatId }) {
  * @param {string[]} [options.fallbackTargets] - 未配置 allowUsers 时的卡片推送目标（全局白名单回落）
  * @param {object} [options.logger]
  * @param {() => Promise<object>} [options.sdkLoader] - SDK 懒加载器（测试注入；默认动态 import）
+ * @param {number} [options.handshakeTimeoutMs=10000] - SDK 加载与 WS start/close 截止时间
  * @param {ReturnType<typeof import('../actions.mjs').createActionDispatcher>} [options.actions]
  *   - v0.5 动作分发器（可空：缺省时 ac: 回调分支不存在，行为与 v0.4.0 一致）
  * @param {object} [options.questions]
@@ -286,7 +287,7 @@ function buildActionCard({ title, content, actions: buttons = [], chatId }) {
  * @param {object} [options.strings] - stringsOf(lang) 全文案表（读 `feishu` 节，跨节复用
  *   verdict/actions/questions；缺省回落 zh——须先在 strings.mjs 落 `feishu` 节）
  */
-export function createFeishuInbound({ config, bus, fallbackTargets = [], logger = null, sdkLoader, actions = null, identity = null, questions = null, control = null, accountId = null, strings = null } = {}) {
+export function createFeishuInbound({ config, bus, fallbackTargets = [], logger = null, sdkLoader, handshakeTimeoutMs: requestedHandshakeTimeoutMs, actions = null, identity = null, questions = null, control = null, accountId = null, strings = null } = {}) {
   const STRINGS = strings ?? stringsOf()
   const t = STRINGS.feishu
   const domain = (config.domain || DEFAULT_DOMAIN).replace(/\/+$/, '')
@@ -303,6 +304,7 @@ export function createFeishuInbound({ config, bus, fallbackTargets = [], logger 
   }
 
   const loadSdk = sdkLoader ?? (async () => import(SDK_PACKAGE))
+  const handshakeTimeoutMs = Math.max(10, Number(requestedHandshakeTimeoutMs) || FEISHU_HTTP_TIMEOUT_MS)
   let client = null // Lark.Client（发送消息）
   let wsClient = null // Lark.WSClient（长连接）
   let running = false
@@ -310,6 +312,34 @@ export function createFeishuInbound({ config, bus, fallbackTargets = [], logger 
   // Truthful lifecycle for the provider facade's status(): idle → starting → connected,
   // or unavailable (SDK missing) / error (WS handshake failed) on startup failure, stopped on stop().
   let lifecycle = 'idle'
+
+  function withDeadline(promise, timeoutMs, label) {
+    let timer = null
+    return Promise.race([
+      Promise.resolve(promise),
+      new Promise((resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} 超时（${timeoutMs}ms）`)), timeoutMs)
+      }),
+    ]).finally(() => {
+      if (timer !== null) clearTimeout(timer)
+    })
+  }
+
+  async function disposeWsClient() {
+    const current = wsClient
+    if (current === null) return
+    try {
+      if (typeof current.close === 'function') {
+        await withDeadline(current.close(), handshakeTimeoutMs, '飞书 WS close')
+        return
+      }
+      if (typeof current.stop === 'function') {
+        await withDeadline(current.stop(), handshakeTimeoutMs, '飞书 WS stop')
+        return
+      }
+    } catch { /* 超时或关闭失败后继续 terminate */ }
+    try { current.wsConfig?.getWSInstance?.()?.terminate?.() } catch { /* 尽力而为 */ }
+  }
 
   async function ensureStarted() {
     const sdk = await loadSdk()
@@ -339,12 +369,12 @@ export function createFeishuInbound({ config, bus, fallbackTargets = [], logger 
       error: (...args) => warn(`飞书 SDK WSClient: ${args.map((a) => (a instanceof Error ? a.message : String(a))).join(' ')}`),
     }
     wsClient = new sdk.WSClient({ appId: config.appId, appSecret: config.appSecret, domain, logger: sdkWsLogger })
-    await wsClient.start({
+    await withDeadline(wsClient.start({
       eventDispatcher: new sdk.EventDispatcher({}).register({
         'im.message.receive_v1': (data) => handleMessage(data),
         'card.action.trigger': (data) => handleCardAction(data),
       }),
-    })
+    }), handshakeTimeoutMs, '飞书 WS start/handshake')
   }
 
   function handleMessage(data) {
@@ -674,11 +704,17 @@ export function createFeishuInbound({ config, bus, fallbackTargets = [], logger 
       startPromise = (async () => {
         try {
           await ensureStarted()
+          if (!running) {
+            await disposeWsClient()
+            return
+          }
           lifecycle = 'connected'
           warn('飞书 WebSocket 长连接已建立（事件订阅 + 卡片回调）')
         } catch (error) {
           running = false
+          await disposeWsClient()
           startPromise = null
+          if (lifecycle === 'stopped') return
           const reason = error instanceof Error ? error.message : String(error)
           lifecycle = /Cannot find package|Failed to resolve/.test(reason) ? 'unavailable' : 'error'
           warn(`飞书 inbound 启动失败（本通道不可用，不影响其他通道）: ${reason}${/Cannot find package|Failed to resolve/.test(reason) ? `；请安装 ${SDK_PACKAGE}（npm i ${SDK_PACKAGE}，或检查 --no-optional 安装）` : ''}`)
@@ -691,16 +727,9 @@ export function createFeishuInbound({ config, bus, fallbackTargets = [], logger 
       running = false
       lifecycle = 'stopped'
       try {
+        // 先取消底层连接，再等有截止时间的 startPromise 收敛；避免 start 卡住时 stop 永久等待。
+        await disposeWsClient()
         await startPromise
-        // v0.7.3（#4）：@larksuiteoapi/node-sdk（1.46/1.61/1.73）的 WSClient 没有
-        // close()/stop() 公开方法——宿主服务重激活时旧实例的 WS 永远不断开，
-        // 泄漏僵尸连接（事件被随机分发到旧连接、旧实例写 state 覆盖新实例）。
-        // 防御顺序：优雅方法优先，没有则 terminate SDK 内部持有的 ws 实例。
-        if (wsClient !== null && typeof wsClient.close === 'function') await wsClient.close()
-        else if (wsClient !== null && typeof wsClient.stop === 'function') await wsClient.stop()
-        else {
-          try { wsClient?.wsConfig?.getWSInstance?.()?.terminate?.() } catch { /* 尽力而为 */ }
-        }
       } catch { /* 关闭失败不致命 */ }
       wsClient = null
       client = null

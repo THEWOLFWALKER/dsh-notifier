@@ -905,6 +905,33 @@ test('stop：幂等、关闭连接、清定时器，close 不再触发重连；s
   assert.equal(FakeWebSocket.instances.length, count, 'stop 后 close 不得触发重连')
 })
 
+test('WS open/handshake 截止：服务端不 open 时关闭连接；stop 取消后不再重连', async () => {
+  const lines = []
+  const { fetchImpl } = makeFetch()
+  const inbound = createDingtalkInbound({
+    config: { appKey: 'APP_KEY', appSecret: APP_SECRET, apiBase: API, oapiBase: OAPI, timeoutMs: 5000, notifyUsers: ['staff_1'] },
+    bus: createInboundBus({ allowUsers: ['staff_1'] }),
+    store: createMemoryStore(),
+    logger: { warn: (prefix, message) => lines.push(`${prefix} ${message}`), debug() {} },
+    fetchImpl,
+    webSocketImpl: FakeWebSocket,
+    handshakeTimeoutMs: 20,
+    reconnectBaseMs: 1000,
+    reconnectCapMs: 1000,
+  })
+  liveInbounds.push(inbound)
+  inbound.start()
+  await tick()
+  const socket = FakeWebSocket.instances.at(-1)
+  await tick(35)
+  assert.equal(socket.readyState, 3)
+  assert.ok(lines.some((line) => line.includes('open/handshake 超时')))
+  await inbound.stop()
+  const count = FakeWebSocket.instances.length
+  await tick(30)
+  assert.equal(FakeWebSocket.instances.length, count, 'stop 必须取消超时产生的未决重连')
+})
+
 // ---------------------------------------------------------------- 凭证安全
 
 test('凭证安全：所有错误路径的 reason/warn/异常文案均不含 appSecret 明文', async () => {

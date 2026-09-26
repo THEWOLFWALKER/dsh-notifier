@@ -1227,6 +1227,37 @@ test('stop：关闭连接、清定时器，close 不再触发重连；start 幂�
   await rig.inbound.stop() // 幂等
 })
 
+test('握手截止：open/HELLO/READY 任一阶段卡住都会关闭旧连接并进入有界重连', async () => {
+  const phases = [
+    { name: 'open', drive: () => {} },
+    { name: 'HELLO', drive: (socket) => socket.serverOpen() },
+    { name: 'READY/RESUMED', drive: (socket) => { socket.serverOpen(); socket.serverSend({ op: 10, d: { heartbeat_interval: 60000 } }) } },
+  ]
+  for (const phase of phases) {
+    const lines = []
+    const { fetchImpl } = makeFetch()
+    const inbound = createQqInbound({
+      config: { appId: 'APP_ID', appSecret: 'SECRET', notifyUsers: ['u_open'] },
+      bus: createInboundBus({ allowUsers: ['u_open'] }),
+      logger: { warn: (prefix, message) => lines.push(`${prefix} ${message}`), debug() {} },
+      fetchImpl,
+      webSocketImpl: FakeWebSocket,
+      handshakeTimeoutMs: 20,
+      reconnectBaseMs: 1000,
+      reconnectCapMs: 1000,
+    })
+    liveInbounds.push(inbound)
+    inbound.start()
+    await tick()
+    const socket = FakeWebSocket.instances.at(-1)
+    phase.drive(socket)
+    await tick(35)
+    assert.equal(socket.readyState, 3, `${phase.name} 超时应关闭旧连接`)
+    assert.ok(lines.some((line) => line.includes(phase.name) && line.includes('超时')), `${phase.name} 超时必须可观测`)
+    await inbound.stop()
+  }
+})
+
 test('stop 清理未决重连定时器：断线已调度重连但未执行时 stop → 不再新建连接（定时器不泄漏）', async (t) => {
   t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] })
   try {

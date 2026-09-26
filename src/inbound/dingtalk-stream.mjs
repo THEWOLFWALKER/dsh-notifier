@@ -159,6 +159,7 @@ export function resolveDingtalkInboundConfig(raw, { credentials } = {}) {
  * @param {typeof WebSocket} [options.webSocketImpl] - WebSocket 构造器注入（测试用；默认 globalThis.WebSocket）
  * @param {number} [options.reconnectBaseMs=1000] - 重连退避基数
  * @param {number} [options.reconnectCapMs=60000] - 重连退避上限
+ * @param {number} [options.handshakeTimeoutMs=10000] - WS open/handshake 截止时间
  * @param {object} [options.strings] - stringsOf(lang) 全文案表（读 `dingtalk` 节，跨节复用
  *   approval.fallbackText；缺省回落 zh——须先在 strings.mjs 落 `dingtalk` 节）
  */
@@ -173,6 +174,7 @@ export function createDingtalkInbound(options = {}) {
   const WebSocketImpl = options.webSocketImpl ?? globalThis.WebSocket
   const reconnectBaseMs = Math.max(1, Number(options.reconnectBaseMs) || 1000)
   const reconnectCapMs = Math.max(reconnectBaseMs, Number(options.reconnectCapMs) || 60000)
+  const handshakeTimeoutMs = Math.max(10, Number(options.handshakeTimeoutMs) || 10000)
   // 抖动 [0,1000)：默认基数 1000 → 恰为协议语义；注入短退避时同步收缩（测试零长等）
   const jitterCapMs = Math.min(1000, reconnectBaseMs)
 
@@ -231,6 +233,7 @@ export function createDingtalkInbound(options = {}) {
   let ws = null
   let reconnectAttempts = 0
   let reconnectTimer = null
+  let handshakeTimer = null
   let robotCode = String(store?.get(ROBOT_CODE_KEY, '') ?? '') // 首条入站消息学习（跨重启恢复）
   // chatId → 最近 sessionWebhook（被动回复专用，过期即弃）/ 最近发言人（batchSend 要 staffId）
   // 两表均有界（CHAT_STATE_MAX，setBounded 淘汰最旧；见文件头常量注释）
@@ -256,11 +259,23 @@ export function createDingtalkInbound(options = {}) {
   }
 
   function cleanupSocket() {
+    if (handshakeTimer !== null) { clearTimeout(handshakeTimer); handshakeTimer = null }
     if (ws !== null) {
       try { ws.removeAllListeners?.() } catch { /* fake/运行时差异 */ }
       try { ws.close() } catch { /* 已关闭 */ }
       ws = null
     }
+  }
+
+  function armOpenDeadline(conn) {
+    if (handshakeTimer !== null) clearTimeout(handshakeTimer)
+    handshakeTimer = setTimeout(() => {
+      handshakeTimer = null
+      if (stopRequested || ws !== conn) return
+      warn(`钉钉 Stream WS open/handshake 超时（${handshakeTimeoutMs}ms），主动断开并重连`)
+      cleanupSocket()
+      scheduleReconnect()
+    }, handshakeTimeoutMs)
   }
 
   /** 打开 Stream 网关（clientId/clientSecret 换 endpoint+ticket；此接口不走 access_token）。 */
@@ -445,16 +460,22 @@ export function createDingtalkInbound(options = {}) {
     if (stopRequested) return
     if (WebSocketImpl === undefined) throw new Error('当前运行时无 WebSocket（需要 Node 22+）')
     ws = new WebSocketImpl(`${endpoint}?ticket=${encodeURIComponent(ticket)}`)
+    const conn = ws
+    armOpenDeadline(conn)
     ws.addEventListener('open', () => {
+      if (ws !== conn) return
+      if (handshakeTimer !== null) { clearTimeout(handshakeTimer); handshakeTimer = null }
       reconnectAttempts = 0
       warn('钉钉 Stream 长连接已建立（心跳走 WS 协议层 ping/pong 自动应答，onclose 即重连）')
     })
     ws.addEventListener('message', (event) => {
+      if (ws !== conn) return
       try { handleFrame(typeof event.data === 'string' ? event.data : String(event.data)) } catch (error) {
         warn(`帧处理异常: ${error instanceof Error ? error.message : String(error)}`)
       }
     })
     ws.addEventListener('close', () => {
+      if (ws !== conn) return
       cleanupSocket()
       scheduleReconnect()
     })
