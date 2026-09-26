@@ -146,7 +146,7 @@
       "id": "notify",
       "kind": "tool",
       "invocation": "invoke the model-facing notify tool with a message and an optional target channel through the DSH ToolRuntime",
-      "expected": "the message is delivered to the configured channel (e.g. Telegram) and a structured result is returned; an unreachable or unconfigured channel returns a structured skipped/failed result without blocking the turn"
+      "expected": "the notifier attempts delivery to the configured channel (e.g. Telegram) and returns a structured result; only provider-specific end-to-end receipt evidence establishes confirmed delivery; an unreachable or unconfigured channel returns a structured skipped/failed result without blocking the turn"
     },
     "evidence": {
       "install": null,
