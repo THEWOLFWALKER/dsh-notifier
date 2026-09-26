@@ -78,7 +78,9 @@ const requiredPackageFiles = [
   'docs/guide.md', 'docs/guide.en.md', 'docs/compatibility-matrix.md',
   'docs/upgrade-guide.md', 'docs/upgrade-guide.en.md',
   'docs/assets/readme-hero.png', 'docs/assets/qq-group.png',
-  'docs/screenshots/fresh-wizard-desktop.png', 'docs/screenshots/configured-channels-desktop.png',
+  'docs/screenshots/admin-gate-desktop.png', 'docs/screenshots/fresh-wizard-desktop.png',
+  'docs/screenshots/fresh-wizard-step2-desktop.png', 'docs/screenshots/configured-channels-desktop.png',
+  'docs/screenshots/fresh-wizard-mobile.png', 'docs/screenshots/configured-channels-mobile.png',
 ]
 // S-11（W13）：files 从「含整个 scripts 目录」改为显式列举发布脚本（hook-server.mjs
 // 开发用不随包分发）——校验每个发布脚本都在 files 清单里，缺一个即失败。

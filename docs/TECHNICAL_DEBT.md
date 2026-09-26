@@ -1,6 +1,6 @@
 # Technical debt and release gates
 
-状态更新：2026-09-26。当前开发线 **v0.13.0** 已完成架构收敛：canonical outbound config、Native/Admin 服务统一、provider handshake/deadline、durable cursor、epoch/revision 生命周期、结构化 RPC 错误、安全迁移诊断与前端 ErrorBoundary 均已通过回归。`npm test` 为 **1984/1984 pass**，0 fail、0 skip；`npm run verify:release` 通过。
+状态更新：2026-09-26。当前开发线 **v0.13.1** 已完成 v0.13 后续收口：canonical outbound config、Native/Admin 服务统一、provider handshake/deadline、durable cursor、epoch/revision 生命周期、结构化 RPC 错误、安全迁移诊断、前端 ErrorBoundary、管理台多语言资源与 npm README 资产白名单均已通过回归。`npm test` 为 **2011/2011 pass**，0 fail、0 skip；`npm run verify:release` 通过。
 
 本次收口没有新增真实 DSH 真机、provider 账号或真实投递回执证据。剩余技术债主要是 QQ HELLO/READY 与 DingTalk Stream soak、Feishu P2P 真实 payload、QQ mention/media/rendering、WxPusher forged UID、DNS rebinding、Native host 回归、dark/light/窄屏视觉回归，以及真实 provider hot-apply delivery；均登记在 `docs/memory/risks.md`，不得误写成 v0.13 合同未实现。
 
@@ -19,7 +19,7 @@
 
 - 真机/协议：Telegram 4096 边界、Feishu WS、QQ gateway/按钮 ACK、DingTalk stream、WeChat iLink QR/长轮询、WxPusher 回调、图片/文件 payload 与各 provider 限制。
 - 宿主/桌面：DSH 真实事件装配、真实浏览器管理台操作、重启读取持久化 overlay、Windows BurntToast/PowerShell toast。桌面 `ask_user` 没有安全宿主接口，不能宣称可用或双端共享。
-- 发布：npm `0.12.0` 已发布并通过 registry artifact 校验；下一版本继续要求 disposable profile 的 registry 安装、Native UI、一次出站 Hot Apply 与至少一条入站路径 smoke。
+- 发布：npm `0.13.0` 已发布并通过 registry artifact 校验；`0.13.1` 继续要求 disposable profile 的 registry 安装、Native UI、一次出站 Hot Apply 与至少一条入站路径 smoke。
 
 ## 维护规则
 

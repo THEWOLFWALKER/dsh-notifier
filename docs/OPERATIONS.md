@@ -2,20 +2,20 @@
 
 ## Current release baseline
 
-Current release: **dsh-notifier v0.13.0**.
+Current release: **dsh-notifier v0.13.1**.
 
-The reviewed release head is `dev` @ `733faf0`; `main`, `v0.13.0` tag and GitHub Release are completed by the release closeout. Real-device/provider evidence remains explicitly open.
+The reviewed release head is the v0.13.1 release commit after the dev → main promotion. The existing v0.13.0 tag and GitHub Release remain immutable. Real-device/provider evidence remains explicitly open.
 
 Release evidence (2026-09-26):
 
-- `npm test`: **1984 / 1984 pass**, 0 fail, 0 skip
+- `npm test`: **2011 / 2011 pass**, 0 fail, 0 skip
 - `node scripts/verify-release.mjs`: release guard green
 - `node scripts/gen-channel-matrix.mjs --check`: **28 channels**
-- `npm pack --dry-run --json`: **288 files**, `client.js` included, no agent-config leak
-- npm publish: `dsh-notifier@0.13.0` accepted by npm from reviewed `dev` head `733faf0`
-- v0.13.0 adds no fresh real DSH/provider run; the inherited host compatibility evidence and remaining gaps stay in `docs/memory/risks.md`
+- `npm pack --dry-run --json`: **314 files**, `client.js` included, six viewport-sized README screenshots included, no agent-config leak
+- npm publish: `dsh-notifier@0.13.1` accepted by npm from the reviewed release head
+- v0.13.1 adds no fresh real DSH/provider run; the inherited host compatibility evidence and remaining gaps stay in `docs/memory/risks.md`
 
-`main` is pinned to the reviewed v0.13.0 release head. Later docs-only release-fact follow-ups may put `main` ahead of the tag; never retag or force-push.
+`main` is pinned to the reviewed v0.13.1 release head. Never retag or force-push an existing release.
 
 ## Local checks
 
@@ -106,10 +106,10 @@ Recovery address: use the actual `Web 管理台已就绪` startup line; never gu
 
 | Symptom | First checks |
 |---|---|
-| No Native Sidebar entry | package is `0.12.0+`, DSH restarted, Host version in declared range, client module served |
+| No Native Sidebar entry | package is `0.13.1+`, DSH restarted, Host version in declared range, client module served |
 | Native panel fails to load | DSH slot/client errors, `client.js` package payload, Connection/webServer control route |
 | No outbound delivery | Channels health, real test result, `channel-selfcheck.mjs`, adapter validation |
-| Saved outbound still uses old credentials | Confirm actual registry version; v0.12 must read the live `OutboundSource` |
+| Saved outbound still uses old credentials | Confirm actual registry version; v0.13.1 must read the live `OutboundSource` |
 | Inbound silent | optional SDK/transport, account/source identity, pairing, provider WS/long-poll logs, restart-pending state |
 | Approval did not apply | original source/chat, token age, first-arrival state; timeout is never approval |
 | `ask_user` missing | installed version, questions assembly, task/session binding |
