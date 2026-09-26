@@ -20,6 +20,11 @@ Bring DeepSeek Harness to your phone: notifications, approvals, questions, remot
 
 </div>
 
+<p align="center">
+  <img src="https://img.shields.io/badge/tests-1985-brightgreen" alt="1985 tests">
+  `dsh-notifier@0.13.0` · test/ 1985 tests · 1985 automated contract tests
+</p>
+
 ## What it does
 
 dsh-notifier is the notification and remote-operations layer for DeepSeek Harness. It is built for the common workflow of **leaving the DSH window while still wanting to know what your agent is doing — and respond when it needs you**.

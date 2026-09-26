@@ -20,6 +20,11 @@
 
 </div>
 
+<p align="center">
+  <img src="https://img.shields.io/badge/tests-1985-brightgreen" alt="1985 个测试">
+  `dsh-notifier@0.13.0` · test/ 1985 个测试 · 1985 个自动化契约测试
+</p>
+
 ## 它解决什么
 
 dsh-notifier 是 DeepSeek Harness 的通知与远程操作层。最核心的使用场景很简单：**你离开 DSH 窗口以后，仍然知道 Agent 在干什么；需要你时，直接从手机处理。**
