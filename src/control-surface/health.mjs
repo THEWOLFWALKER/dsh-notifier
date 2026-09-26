@@ -1,5 +1,7 @@
 // dsh-notifier v0.12 — bounded operational evidence for channel health.
 
+import { normalizeDeliveryEvidence, isConfirmedReceipt } from '../delivery-evidence.mjs'
+
 function blank(type) {
   return {
     type,
@@ -34,7 +36,10 @@ export function createSurfaceHealth({ window = 20, now = Date.now } = {}) {
         out.delivered += 1
         if (out.lastSuccessAt === null) out.lastSuccessAt = event.at
       } else if (event.kind === 'accepted') {
+        // v0.13（C11.5 / R4）：provider accepted 也是成功信号（请求已被提供方接收），
+        // 只是证据强度弱于 confirmed；计入 lastSuccessAt，避免被更早的失败永久压成 degraded。
         out.accepted += 1
+        if (out.lastSuccessAt === null) out.lastSuccessAt = event.at
       } else if (event.kind === 'failed') {
         out.failed += 1
         if (out.lastFailureAt === null) {
@@ -50,7 +55,12 @@ export function createSurfaceHealth({ window = 20, now = Date.now } = {}) {
     recordSend(record = {}) {
       const parsed = Date.parse(record.time)
       const at = Number.isFinite(parsed) ? parsed : now()
-      for (const type of Array.isArray(record.delivered) ? record.delivered : []) push(String(type), 'delivered', null, at)
+      // v0.13（C11.5 / R4）：provider accepted / confirmed delivered 必须分开计数。
+      // legacy record 只有 delivered（旧语义 = 发送 resolve），按 accepted 归类，绝不
+      // 再当作「已确认送达」；只有显式 confirmed/receipt 才计 delivered。
+      const { accepted, confirmed } = normalizeDeliveryEvidence(record)
+      for (const type of accepted) push(String(type), 'accepted', null, at)
+      for (const type of confirmed) push(String(type), 'delivered', null, at)
       for (const type of Array.isArray(record.skipped) ? record.skipped : []) {
         if (typeof type === 'string' && !type.startsWith('(')) push(type, 'skipped', null, at)
       }
@@ -60,8 +70,7 @@ export function createSurfaceHealth({ window = 20, now = Date.now } = {}) {
     },
     recordTest(type, result) {
       if (result?.ok === true) {
-        const confirmed = result?.confirmed === true || result?.receipt === true
-        push(type, confirmed ? 'delivered' : 'accepted')
+        push(type, isConfirmedReceipt(result) ? 'delivered' : 'accepted')
       }
       else push(type, 'failed', result?.detail ?? '测试失败')
     },
@@ -73,7 +82,9 @@ export function healthState({ configured, active, health }) {
   if (configured !== true) return 'unconfigured'
   if (active !== true) return 'degraded'
   if ((health?.failed ?? 0) > 0 && (health?.lastFailureAt ?? 0) >= (health?.lastSuccessAt ?? 0)) return 'degraded'
-  if ((health?.delivered ?? 0) > 0) return 'healthy'
+  // v0.13（C11.5 / R4）：provider accepted 即视为操作健康（标签与证据强度在 UI 层区分，
+  // 「已发送到提供方」≠「已确认送达」）；healthy 不再依赖端到端 confirmed 证据。
+  if ((health?.delivered ?? 0) > 0 || (health?.accepted ?? 0) > 0) return 'healthy'
   return 'ready'
 }
 

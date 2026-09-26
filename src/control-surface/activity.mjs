@@ -1,6 +1,8 @@
+import { normalizeDeliveryEvidence } from '../delivery-evidence.mjs'
+
 const SECRETISH = /(?:token|secret|password|credential|authorization|cookie|webhook|chatid|userid|accountid|body|content|message)$/i
 const ALLOWED_DETAIL_KEYS = new Set([
-  'channel', 'direction', 'status', 'reason', 'delivered', 'skipped', 'failed',
+  'channel', 'direction', 'status', 'reason', 'delivered', 'accepted', 'confirmed', 'skipped', 'failed',
   'saved', 'deleted', 'hotApplied', 'taskRef', 'workspace',
   'action', 'source', 'count',
 ])
@@ -39,7 +41,10 @@ function timeText(at, now) {
 function titleFor(row) {
   const channel = row.detail?.channel ? ` · ${row.detail.channel}` : ''
   const map = {
-    'delivery-finished': { en: `Notification delivered${channel}`, zh: `通知已送达${channel}` },
+    // v0.13（C11.5 / R4）：delivery-finished 只代表 provider 接受了请求（无端到端送达证据），
+    // 不能再宣称「已送达」；只有显式回执才算 confirmed delivered。
+    'delivery-finished': { en: `Notification accepted by provider${channel}`, zh: `通知已发送到提供方${channel}` },
+    'delivery-confirmed': { en: `Notification confirmed delivered${channel}`, zh: `通知已确认送达${channel}` },
     'delivery-failed': { en: `Notification delivery failed${channel}`, zh: `通知发送失败${channel}` },
     'delivery-skipped': { en: `Notification not delivered — no channel handled it${channel}`, zh: `通知未投递 · 没有渠道接收${channel}` },
     'channel-test-ok': { en: `Channel test succeeded${channel}`, zh: `渠道测试成功${channel}` },
@@ -73,16 +78,19 @@ export function createSurfaceActivity({ capacity = 100, now = Date.now } = {}) {
   return {
     record,
     recordDelivery(sendRecord = {}) {
-      const delivered = Array.isArray(sendRecord.delivered) ? sendRecord.delivered : []
+      // v0.13（C11.5 / R4）：accepted（provider 已接受）与 confirmed（显式回执）分开记录。
+      // legacy record 只有 delivered（旧语义 = 发送 resolve）→ 按 accepted 归类。
+      const { accepted, confirmed } = normalizeDeliveryEvidence(sendRecord)
       const failed = Array.isArray(sendRecord.failed)
         ? sendRecord.failed.map((item) => typeof item?.channel === 'string' ? item.channel : '').filter(Boolean)
         : []
       const skipped = Array.isArray(sendRecord.skipped) ? sendRecord.skipped : []
       const action = failed.length > 0 ? 'delivery-failed'
-        : delivered.length === 0 ? 'delivery-skipped'
-          : 'delivery-finished'
+        : confirmed.length > 0 ? 'delivery-confirmed'
+          : accepted.length === 0 ? 'delivery-skipped'
+            : 'delivery-finished'
       return record('notification', action, {
-        delivered, failed, skipped, status: sendRecord.ok === false ? 'failed' : 'ok',
+        delivered: accepted, accepted, confirmed, failed, skipped, status: sendRecord.ok === false ? 'failed' : 'ok',
       })
     },
     list({ limit = 30, category = null } = {}) {

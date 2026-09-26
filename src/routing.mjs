@@ -105,8 +105,9 @@ export async function sendWithRetry(sendFn, { attempts = 1, backoffMs = 0, onRet
   let lastError
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try {
-      await sendFn()
-      return
+      // v0.13（C11.5 / R4）：透传 sendFn 的返回值——适配器返回显式回执（confirmed/receipt）
+      // 时上层才能把 provider accepted 与 confirmed delivered 区分开，不再一律当送达。
+      return await sendFn()
     } catch (error) {
       lastError = error
       if (error?.noRetry === true) throw error

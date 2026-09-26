@@ -388,7 +388,8 @@ test('source 穿透：notifyAll 返回值形状不变（无 source 键——noti
   await withFetch(true, async () => {
     const outcome = await notifier.notifyAll({ title: 't', content: 'c' }, { source: { kind: 'plugin', name: 'x' } })
     assert.equal('source' in outcome, false)
-    assert.deepEqual(Object.keys(outcome).sort(), ['delivered', 'failed', 'ok', 'skipped'])
+    // v0.13（R4）：notifyAll 增加 accepted/confirmed（delivered 保留为 legacy 别名）。
+    assert.deepEqual(Object.keys(outcome).sort(), ['accepted', 'confirmed', 'delivered', 'failed', 'ok', 'skipped'])
   })
 })
 

@@ -68,7 +68,9 @@ test('audit sink failure is isolated from delivery and later sinks', async () =>
       },
     })
     const result = await notifier.notifyAll({ title: 't', content: 'c' })
-    assert.deepEqual(result, { ok: true, delivered: ['webhook'], skipped: [], failed: [] })
+    // v0.13（R4）：accepted = provider 已接受；confirmed = 显式回执（webhook 无回执）；
+    // delivered 保留为 legacy 别名（== accepted）。
+    assert.deepEqual(result, { ok: true, accepted: ['webhook'], confirmed: [], delivered: ['webhook'], skipped: [], failed: [] })
     assert.equal(seen.length, 1)
   } finally {
     globalThis.fetch = originalFetch
@@ -157,7 +159,7 @@ test('notifyAll: 无已启用渠道时返回空结果并 warn', async () => {
   const warns = []
   const notifier = createNotifier({ logger: { warn: (...a) => warns.push(a.join(' ')) } }, [])
   const result = await notifier.notifyAll({ title: 't', content: 'c' })
-  assert.deepEqual(result, { ok: false, delivered: [], skipped: [], failed: [] })
+  assert.deepEqual(result, { ok: false, accepted: [], confirmed: [], delivered: [], skipped: [], failed: [] })
   assert.match(warns.join(' '), /未配置任何已启用渠道/)
 })
 

@@ -1555,7 +1555,7 @@ function onNotifyEvent(evt) {
   var msg = plain(payload.message)
   notifyCount += 1
   $('#nCount').textContent = String(notifyCount)
-  notifyLog.unshift({ time: e.time || '', level: msg.level || '', title: msg.title || '(无标题)', body: msg.content || '', delivered: Array.isArray(payload.delivered) ? payload.delivered : [], failed: Array.isArray(payload.failed) ? payload.failed.length : 0, replay: e.replay === true })
+  notifyLog.unshift({ time: e.time || '', level: msg.level || '', title: msg.title || '(无标题)', body: msg.content || '', delivered: Array.isArray(payload.delivered) ? payload.delivered : [], accepted: Array.isArray(payload.accepted) ? payload.accepted : (Array.isArray(payload.delivered) ? payload.delivered : []), confirmed: Array.isArray(payload.confirmed) ? payload.confirmed : [], failed: Array.isArray(payload.failed) ? payload.failed.length : 0, replay: e.replay === true })
   if (notifyLog.length > 50) notifyLog.length = 50
   renderNotifyLog()
   if (e.replay === true) return // 断线期间的事件只补日志不补弹（不轰炸通知中心）
@@ -1572,7 +1572,12 @@ function renderNotifyLog() {
   if (!body) return
   if (notifyLog.length === 0) { body.innerHTML = '<tr><td colspan="5" class="empty">暂无事件</td></tr>'; return }
   body.innerHTML = notifyLog.map(function (row) {
-    var delivery = row.delivered.length > 0 ? '送达 ' + row.delivered.join('、') : '未送达'
+    // v0.13（R4）：accepted ≠ confirmed。无显式回执只能说「已发送到提供方」，不得宣称「已送达」。
+    var confirmed = Array.isArray(row.confirmed) ? row.confirmed : []
+    var accepted = Array.isArray(row.accepted) ? row.accepted : (Array.isArray(row.delivered) ? row.delivered : [])
+    var delivery = confirmed.length > 0 ? '已确认送达 ' + confirmed.join('、')
+      : accepted.length > 0 ? '已发送到提供方 ' + accepted.join('、')
+        : '未投递'
     if (row.failed > 0) delivery += '（' + row.failed + ' 渠道失败）'
     return '<tr><td class="small">' + esc(fmtTime(row.time)) + '</td>'
       + '<td><span class="chip ' + levelClass(row.level) + '">' + esc(row.level || '?') + '</span></td>'
