@@ -11,7 +11,8 @@
 // 运行约束：单 token 同时只允许一个网关实例在线（协议本身如此）。
 
 import { resolve } from 'node:path'
-import { createStore, defaultStateDir } from '../src/inbound/store.mjs'
+import { pathToFileURL } from 'node:url'
+import { createStore, defaultStateDir, setDurable } from '../src/inbound/store.mjs'
 import { createIlinkClient, ILINK_BASE_URL } from '../src/inbound/_ilink-api.mjs'
 import { createIdentity } from '../src/inbound/identity.mjs'
 
@@ -60,6 +61,45 @@ async function fetchAndShowQr(client, botType) {
   await renderQr(url !== '' ? url : qrcode)
   console.log('请使用微信扫描二维码…')
   return { qrcode, url }
+}
+
+/**
+ * 处理微信扫码确认：凭证必须先 durable 落盘成功，才做身份绑定与成功文案。
+ * 可测入口（tests 注入 store / log / error sink），返回退出码。
+ */
+export function applyWechatConfirmation({ store, statusResp, stateFile, log = console.log, error = console.error }) {
+  const accountId = String(statusResp?.ilink_bot_id ?? '')
+  const token = String(statusResp?.bot_token ?? '')
+  const baseUrl = String(statusResp?.baseurl ?? '') || ILINK_BASE_URL
+  const userId = String(statusResp?.ilink_user_id ?? '')
+  if (accountId === '' || token === '') {
+    error('登录确认但凭证不完整（ilink_bot_id / bot_token 缺失），请重新执行。')
+    return 1
+  }
+  // 凭证必须以 durable 结果为准：落盘失败绝不宣称成功，也不做身份绑定。
+  if (setDurable(store, 'wechat:account', { accountId, token, baseUrl, userId, at: Date.now() }) !== true) {
+    error('\n微信授权成功，但凭证写入失败（磁盘/权限/锁）。登录未完成，请检查 state 目录后重试。')
+    return 1
+  }
+  log(`\n微信连接成功：accountId=${accountId}${userId !== '' ? ` userId=${userId}` : ''}`)
+  // 扫码即配对：iLink 机器人是扫码微信的专属好友（1:1，只有扫码者能和它聊），
+  // 扫码确认那一刻身份已唯一确定——直接写绑定（首条即 owner），不需要配对码。
+  if (userId !== '') {
+    const bound = createIdentity({ store }).addBinding({ channel: 'wechat', userId, origin: 'paired' })
+    if (bound.ok) {
+      log(`扫码即配对完成：该微信已绑定为${bound.record.role === 'owner' ? ' owner（首位成员）' : '成员'}，无需再发 /pair。`)
+    } else if (bound.reason === 'storage-failed') {
+      // 凭证已可靠落盘；仅身份绑定失败：如实报告部分成功，别谎称整体失败。
+      log('凭证已保存，但自动配对未完成（本地存储写入失败）；重启后可发 /pair 配对码补齐。')
+    } else {
+      log('该微信已绑定过，无需重复配对。')
+    }
+  } else {
+    log('提示：本次登录未返回 userId（旧协议产物），未自动配对；重启后可用 /pair 配对码补齐。')
+  }
+  log(`凭证已写入 ${stateFile}（wechat:account）。插件配置 inbound.wechat: {} 即可启用。`)
+  log('说明：机器人只和扫码微信一对一聊天；同一 token 同时只能有一个网关实例在线。')
+  return 0
 }
 
 async function main() {
@@ -118,29 +158,7 @@ async function main() {
       }
       currentQr = refreshed
     } else if (status === 'confirmed') {
-      const accountId = String(statusResp?.ilink_bot_id ?? '')
-      const token = String(statusResp?.bot_token ?? '')
-      const baseUrl = String(statusResp?.baseurl ?? '') || ILINK_BASE_URL
-      const userId = String(statusResp?.ilink_user_id ?? '')
-      if (accountId === '' || token === '') {
-        console.error('登录确认但凭证不完整（ilink_bot_id / bot_token 缺失），请重新执行。')
-        return 1
-      }
-      store.set('wechat:account', { accountId, token, baseUrl, userId, at: Date.now() })
-      console.log(`\n微信连接成功：accountId=${accountId}${userId !== '' ? ` userId=${userId}` : ''}`)
-      // 扫码即配对：iLink 机器人是扫码微信的专属好友（1:1，只有扫码者能和它聊），
-      // 扫码确认那一刻身份已唯一确定——直接写绑定（首条即 owner），不需要配对码。
-      if (userId !== '') {
-        const bound = createIdentity({ store }).addBinding({ channel: 'wechat', userId, origin: 'paired' })
-        console.log(bound.ok
-          ? `扫码即配对完成：该微信已绑定为${bound.record.role === 'owner' ? ' owner（首位成员）' : '成员'}，无需再发 /pair。`
-          : '该微信已绑定过，无需重复配对。')
-      } else {
-        console.log('提示：本次登录未返回 userId（旧协议产物），未自动配对；重启后可用 /pair 配对码补齐。')
-      }
-      console.log(`凭证已写入 ${stateFile}（wechat:account）。插件配置 inbound.wechat: {} 即可启用。`)
-      console.log('说明：机器人只和扫码微信一对一聊天；同一 token 同时只能有一个网关实例在线。')
-      return 0
+      return applyWechatConfirmation({ store, statusResp, stateFile })
     }
     await sleep(1000)
   }
@@ -148,7 +166,14 @@ async function main() {
   return 1
 }
 
-main().then((code) => process.exit(code), (error) => {
-  console.error(`登录异常退出：${error instanceof Error ? error.stack ?? error.message : String(error)}`)
-  process.exit(1)
-})
+// 直接运行守卫：被测试文件 import 时不执行 main（对齐 scripts/route.mjs 约定）。
+// channel-login.mjs 以子进程方式调用本脚本，argv[1] 命中脚本路径，照常执行。
+const invokedDirectly = process.argv[1] !== undefined
+  && import.meta.url === pathToFileURL(resolve(process.argv[1])).href
+
+if (invokedDirectly) {
+  main().then((code) => process.exit(code), (error) => {
+    console.error(`登录异常退出：${error instanceof Error ? error.stack ?? error.message : String(error)}`)
+    process.exit(1)
+  })
+}
