@@ -166,8 +166,8 @@ export function createInboundBus(options = {}) {
 
   return {
     /** 准入判定（默认全拒）。v0.7 复合键；旧调用 allows(userId) 仍兼容（扁平集合期语义）。 */
-    allows(channel, userId) {
-      if (identity !== null) return identity.allows(String(channel ?? ''), String(userId ?? ''))
+    allows(channel, userId, accountId = undefined) {
+      if (identity !== null) return identity.allows(String(channel ?? ''), String(userId ?? ''), accountId)
       const id = userId === undefined ? String(channel) : String(userId)
       return allow.has(id)
     },
@@ -191,7 +191,7 @@ export function createInboundBus(options = {}) {
         warn(`跳过重复入站消息：${envelope.channel}:${envelope.messageId}`)
         return { ok: false, reason: 'duplicate' }
       }
-      const bound = this.allows(envelope.channel, envelope.userId)
+      const bound = this.allows(envelope.channel, envelope.userId, envelope.accountId)
       const guided = isGuided()
 
       // 注册面命令：绑定成员与未绑定者均可触达（/whoami /pair 是准入前的自助面）

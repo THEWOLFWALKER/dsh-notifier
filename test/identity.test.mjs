@@ -13,7 +13,7 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createStore } from '../src/inbound/store.mjs'
-import { createIdentity, bindingKey } from '../src/inbound/identity.mjs'
+import { createIdentity, bindingKey, principalKey } from '../src/inbound/identity.mjs'
 import { createPairing } from '../src/inbound/pairing.mjs'
 import { createInboundBus } from '../src/inbound/bus.mjs'
 
@@ -304,6 +304,21 @@ test('G-49：bus 全链路——带空白 userId 的信封经 identity 复合准
   // 非成员照旧拒绝（归一只封空白/大小写边界，不放宽成员资格）
   assert.equal(bus.accept(env({ text: 'hi', userId: ' nope ' })).ok, false)
   assert.equal(fannedOut, 1)
+})
+
+test('C8：principal 按 channel/accountId/userId 隔离；旧两段身份不向新账号扩大权限', () => {
+  const { store } = tempStore()
+  const identity = createIdentity({ store, logger: quiet })
+  assert.equal(identity.addBinding({ channel: 'telegram', accountId: 'bot-a', userId: 'same-user' }).ok, true)
+  assert.equal(principalKey('telegram', 'bot-a', 'same-user'), 'telegram:bot-a:same-user')
+  assert.equal(identity.allows('telegram', 'same-user', 'bot-a'), true)
+  assert.equal(identity.allows('telegram', 'same-user', 'bot-b'), false, '账号 A 绑定不得授权账号 B')
+  assert.equal(identity.allows('telegram', 'same-user'), false, '非默认账号绑定不得回退到旧两段键')
+
+  identity.addBinding({ channel: 'telegram', userId: 'legacy-user' })
+  assert.equal(identity.allows('telegram', 'legacy-user'), true)
+  assert.equal(identity.allows('telegram', 'legacy-user', 'bot-a'), false, '历史默认绑定不得扩大到 bot-a')
+  assert.deepEqual(Object.keys(store.get('inbound:bindings', {})).sort(), ['telegram:bot-a:same-user', 'telegram:legacy-user'])
 })
 
 // ---------------------------------------------------------------- bus 复合准入与引导态

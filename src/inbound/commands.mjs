@@ -156,7 +156,9 @@ export function createCommandHandler(options = {}, strings) {
   const whoamiText = (envelope, bound) => {
     const head = t.commands.whoamiHead(getChannelName(envelope.channel, strings), envelope.userId)
     if (!bound) return t.commands.whoamiUnbound(head)
-    const record = identity.list(envelope.channel).find((item) => String(item.userId) === String(envelope.userId))
+    const accountId = String(envelope.accountId ?? 'default').trim() || 'default'
+    const record = identity.list(envelope.channel).find((item) => String(item.userId) === String(envelope.userId)
+      && String(item.accountId ?? 'default') === accountId)
     const label = record !== undefined && record.label !== '' ? t.commands.labelSuffix(record.label) : ''
     return t.commands.whoamiBound(head, label, record?.role ?? 'member')
   }
@@ -176,13 +178,13 @@ export function createCommandHandler(options = {}, strings) {
     const label = args.slice(1).join(' ').slice(0, 64)
     // 已绑定短路（R5 审查 R5-1-P2-3：先核销后判绑定会把单次码白白烧掉——也可被任意
     // 已绑定成员恶意提交有效码拒绝新成员入伙）。先查身份，不触碰配对码。
-    if (typeof identity.allows === 'function' && identity.allows(envelope.channel, envelope.userId)) {
+    if (typeof identity.allows === 'function' && identity.allows(envelope.channel, envelope.userId, envelope.accountId)) {
       return t.commands.alreadyBound
     }
     const verdict = typeof pairing.redeemAndBind === 'function'
       ? pairing.redeemAndBind(
         code,
-        { channel: envelope.channel, userId: envelope.userId, label },
+        { channel: envelope.channel, accountId: envelope.accountId, userId: envelope.userId, label },
         (draft, binding) => identity.addBindingToDraft?.(draft, binding) ?? { ok: false, reason: 'storage-failed' },
       )
       : pairing.redeem(code, { channel: envelope.channel, userId: envelope.userId, label })
@@ -214,6 +216,7 @@ export function createCommandHandler(options = {}, strings) {
       ? verdict
       : identity.addBinding({
         channel: envelope.channel,
+        accountId: envelope.accountId,
         userId: envelope.userId,
         label,
         origin: 'paired',
@@ -233,16 +236,18 @@ export function createCommandHandler(options = {}, strings) {
 
   /** /unpair 受理：末位 owner 指引走管理台（防止把实例锁死成无人可管）。 */
   function handleUnpair(envelope) {
-    if (!identity.allows(envelope.channel, envelope.userId)) {
+    if (!identity.allows(envelope.channel, envelope.userId, envelope.accountId)) {
       return t.commands.unpairNotBound
     }
     if (identity.ownerCount() <= 1) {
-      const record = identity.list(envelope.channel).find((item) => String(item.userId) === String(envelope.userId))
+      const accountId = String(envelope.accountId ?? 'default').trim() || 'default'
+      const record = identity.list(envelope.channel).find((item) => String(item.userId) === String(envelope.userId)
+        && String(item.accountId ?? 'default') === accountId)
       if (record?.role === 'owner') {
         return t.commands.unpairLastOwner
       }
     }
-    const removed = identity.removeBinding(envelope.channel, envelope.userId)
+    const removed = identity.removeBinding(envelope.channel, envelope.userId, envelope.accountId)
     if (!removed.ok) return t.commands.unpairFailed(removed.reason)
     return t.commands.unpaired
   }

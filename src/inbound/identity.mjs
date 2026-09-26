@@ -21,6 +21,7 @@ const LAST_SEEN_THROTTLE_MS = 60 * 60 * 1000
 const VALID_CHANNELS = INBOUND_CHANNEL_SET // G-13：单一事实来源（原内联六通道字面量）
 const VALID_ROLES = new Set(['owner', 'member'])
 const VALID_ORIGINS = new Set(['migrated', 'paired', 'learned', 'confirmed'])
+const DEFAULT_ACCOUNT_ID = 'default'
 
 /**
  * G-49 身份/路由复合键的**唯一构造点**：`${channel}:${userId}`（会话绑定域由调用方再前缀
@@ -51,22 +52,46 @@ export function bindingKey(channel, userId) {
   return `${normalizedChannel}:${normalizedUserId}`
 }
 
+/** v0.13 principal 主键：非默认账号使用独立键，避免同一用户跨 bot 账号串权。 */
+export function principalKey(channel, accountId, userId) {
+  const normalizedChannel = String(channel ?? '').trim().toLowerCase()
+  const normalizedAccountId = String(accountId ?? DEFAULT_ACCOUNT_ID).trim() || DEFAULT_ACCOUNT_ID
+  const normalizedUserId = String(userId ?? '').trim()
+  return `${normalizedChannel}:${normalizedAccountId}:${normalizedUserId}`
+}
+
+function normalizeAccountId(accountId) {
+  const value = String(accountId ?? '').trim() || DEFAULT_ACCOUNT_ID
+  if (value.length > 128 || value.includes(':')) return null
+  return value
+}
+
+function keyFor(channel, userId, accountId = undefined) {
+  const account = normalizeAccountId(accountId)
+  if (account === null) return null
+  return account === DEFAULT_ACCOUNT_ID ? bindingKey(channel, userId) : principalKey(channel, account, userId)
+}
+
 /** 归一化单条绑定记录（读盘防御：坏字段回退默认，坏形状整条丢弃）。 */
 function normalizeBinding(raw, fallbackKey) {
   if (raw === null || typeof raw !== 'object') return null
   const keyRaw = String(fallbackKey ?? '')
   const colon = keyRaw.indexOf(':')
   const channel = colon > 0 ? keyRaw.slice(0, colon) : ''
-  const userId = colon > 0 ? keyRaw.slice(colon + 1) : ''
+  const fallbackUserId = colon > 0 ? keyRaw.slice(colon + 1) : ''
+  const rawAccountId = typeof raw.accountId === 'string' ? raw.accountId.trim() : ''
+  const accountId = normalizeAccountId(rawAccountId)
+  if (accountId === null) return null
   const record = {
     channel: typeof raw.channel === 'string' && raw.channel !== '' ? raw.channel : (VALID_CHANNELS.has(channel) ? channel : ''),
-    userId: typeof raw.userId === 'string' && raw.userId !== '' ? raw.userId : (userId ?? ''),
+    userId: typeof raw.userId === 'string' && raw.userId !== '' ? raw.userId : fallbackUserId,
     label: typeof raw.label === 'string' ? raw.label.slice(0, 64) : '',
     role: VALID_ROLES.has(raw.role) ? raw.role : 'member',
     pairedAt: typeof raw.pairedAt === 'number' ? raw.pairedAt : 0,
     lastSeenAt: typeof raw.lastSeenAt === 'number' ? raw.lastSeenAt : 0,
     origin: VALID_ORIGINS.has(raw.origin) ? raw.origin : 'paired',
   }
+  if (accountId !== DEFAULT_ACCOUNT_ID) record.accountId = accountId
   if (!VALID_CHANNELS.has(record.channel) || record.userId === '') return null
   return record
 }
@@ -102,7 +127,10 @@ export function createIdentity(options = {}) {
     const out = {}
     for (const [key, value] of Object.entries(raw)) {
       const record = normalizeBinding(value, key)
-      if (record !== null) out[`${record.channel}:${record.userId}`] = record
+      if (record !== null) {
+        const canonical = keyFor(record.channel, record.userId, record.accountId)
+        if (canonical !== null) out[canonical] = record
+      }
     }
     return out
   }
@@ -136,7 +164,7 @@ export function createIdentity(options = {}) {
     for (const [key, value] of Object.entries(raw)) {
       const record = normalizeBinding(value, key)
       if (record === null) { badKeys.push(key); continue }
-      const canonical = bindingKey(record.channel, record.userId)
+      const canonical = keyFor(record.channel, record.userId, record.accountId)
       if (canonical !== key) { badKeys.push(key); continue }
       cleaned[key] = record
     }
@@ -187,28 +215,35 @@ export function createIdentity(options = {}) {
       // C3：复合键按第一个冒号切分，含冒号的 userId 不得被截断（与 normalizeBinding/parseMemberKey 对齐）
       const colon = key.indexOf(':')
       const channel = colon > 0 ? key.slice(0, colon) : ''
-      const userId = colon > 0 ? key.slice(colon + 1) : ''
-      if (!VALID_CHANNELS.has(channel) || userId === '' || userId.includes(':')) continue
-      out[key] = {
+      const fallbackUserId = colon > 0 ? key.slice(colon + 1) : ''
+      const userId = typeof value.userId === 'string' && value.userId !== '' ? value.userId : fallbackUserId
+      const accountId = normalizeAccountId(value.accountId)
+      if (!VALID_CHANNELS.has(channel) || accountId === null || userId === '' || userId.includes(':')) continue
+      const canonical = keyFor(channel, userId, accountId)
+      if (canonical === null) continue
+      out[canonical] = {
         channel,
         userId,
         origin: VALID_ORIGINS.has(value.origin) ? value.origin : 'learned',
         at: typeof value.at === 'number' ? value.at : 0,
         extra: value.extra !== null && typeof value.extra === 'object' ? value.extra : {},
       }
+      if (accountId !== DEFAULT_ACCOUNT_ID) out[canonical].accountId = accountId
     }
     return { out, expired, rawCount: Object.keys(raw).length }
   }
 
-  function addBindingToTable(table, { channel, userId, label = '', origin = 'paired' } = {}) {
+  function addBindingToTable(table, { channel, accountId = DEFAULT_ACCOUNT_ID, userId, label = '', origin = 'paired' } = {}) {
     if (!VALID_CHANNELS.has(channel)) return { ok: false, reason: 'invalid-channel' }
+    const normalizedAccountId = normalizeAccountId(accountId)
+    if (normalizedAccountId === null) return { ok: false, reason: 'invalid-account' }
     const uid = String(userId ?? '').trim()
     if (uid === '' || uid.length > 128) return { ok: false, reason: 'invalid-user' }
     if (uid.includes(':')) {
       warn(`拒绝含冒号的 userId 绑定（复合键截断风险）：${channel}:${uid.slice(0, 32)}`)
       return { ok: false, reason: 'invalid-user' }
     }
-    const key = `${channel}:${uid}`
+    const key = keyFor(channel, uid, normalizedAccountId)
     if (table[key] !== undefined) return { ok: false, reason: 'already-bound' }
     const record = {
       channel,
@@ -219,19 +254,21 @@ export function createIdentity(options = {}) {
       lastSeenAt: 0,
       origin: VALID_ORIGINS.has(origin) ? origin : 'paired',
     }
+    if (normalizedAccountId !== DEFAULT_ACCOUNT_ID) record.accountId = normalizedAccountId
     table[key] = record
     return { ok: true, record }
   }
 
   return {
     /** 复合键准入（v0.7 计划书 §3.1：准入带渠道维度，修跨渠道串扰）。 */
-    allows(channel, userId) {
+    allows(channel, userId, accountId = undefined) {
       if (typeof channel !== 'string' || typeof userId !== 'string') return false
       // G-49：读键与写回键同走 bindingKey 归一（' user ' 与 'user' 同键），单一构造点
       // 防读写两侧漂移——若写回用裸 channel 拼键，未来分量归一放宽时会落出
       // ' telegram :user' 这类永不被读键命中的幽灵重复键。现网适配器输出恰好归一，
       // 此修是休眠边界封口，不改变现网行为。
-      const key = bindingKey(channel, userId)
+      const key = keyFor(channel, userId, accountId)
+      if (key === null) return false
       const table = readBindings()
       const record = table[key]
       if (record === undefined) return false
@@ -296,7 +333,7 @@ export function createIdentity(options = {}) {
         for (const channel of channels) {
           // 渠道形态过滤：该渠道显然不接受的 id 不播（如 feishu 不吃裸数字、TG 不吃 UID_）
           if (!isValidTargetId(channel, userId)) continue
-          const key = `${channel}:${userId}`
+          const key = keyFor(channel, userId, DEFAULT_ACCOUNT_ID)
           if (table[key] !== undefined) continue
           // 空表首条（跨通道也只此一条）置 owner——「首位成员即 owner」契约
           const role = wasEmpty && !ownerAssigned ? 'owner' : 'member'
@@ -319,9 +356,9 @@ export function createIdentity(options = {}) {
      * 新增绑定（配对核销/待确认转正）。首条绑定为 owner（配对语义：bootstrap 单胜也走这里）。
      * @returns {{ ok: boolean, record?: object, reason?: string }}
      */
-    addBinding({ channel, userId, label = '', origin = 'paired' }) {
+    addBinding({ channel, accountId = DEFAULT_ACCOUNT_ID, userId, label = '', origin = 'paired' }) {
       const table = readBindings()
-      const result = addBindingToTable(table, { channel, userId, label, origin })
+      const result = addBindingToTable(table, { channel, accountId, userId, label, origin })
       if (result.ok !== true) return result
       if (writeBindings(table) !== true) return { ok: false, reason: 'storage-failed' }
       return result
@@ -331,21 +368,22 @@ export function createIdentity(options = {}) {
      * C4 application transaction hook：只在 detached state draft 上准备绑定，
      * 供 pairing 将「码核销 + 绑定 + 锁出清理」一次提交。不会自行写盘。
      */
-    addBindingToDraft(draft, { channel, userId, label = '', origin = 'paired' } = {}) {
+    addBindingToDraft(draft, { channel, accountId = DEFAULT_ACCOUNT_ID, userId, label = '', origin = 'paired' } = {}) {
       if (draft === null || typeof draft !== 'object' || Array.isArray(draft)) {
         return { ok: false, reason: 'storage-failed' }
       }
       const table = normalizeBindings(draft[KEY_BINDINGS] ?? {})
-      const result = addBindingToTable(table, { channel, userId, label, origin })
+      const result = addBindingToTable(table, { channel, accountId, userId, label, origin })
       if (result.ok !== true) return result
       draft[KEY_BINDINGS] = table
       return result
     },
 
     /** 移除绑定；末位 owner 不可删（守卫在调用方 admin/命令层，这里只做数据操作）。 */
-    removeBinding(channel, userId) {
+    removeBinding(channel, userId, accountId = undefined) {
       const table = readBindings()
-      const key = `${channel}:${String(userId ?? '')}`
+      const key = keyFor(channel, String(userId ?? ''), accountId)
+      if (key === null) return { ok: false, reason: 'invalid-account' }
       if (table[key] === undefined) return { ok: false, reason: 'not-found' }
       delete table[key]
       if (writeBindings(table) !== true) return { ok: false, reason: 'storage-failed' }
@@ -353,9 +391,10 @@ export function createIdentity(options = {}) {
     },
 
     /** 改 label/role（末位 owner 降级守卫由调用方做）。 */
-    updateBinding(channel, userId, diff = {}) {
+    updateBinding(channel, userId, diff = {}, accountId = undefined) {
       const table = readBindings()
-      const key = `${channel}:${String(userId ?? '')}`
+      const key = keyFor(channel, String(userId ?? ''), accountId)
+      if (key === null) return { ok: false, reason: 'invalid-account' }
       const record = table[key]
       if (record === undefined) return { ok: false, reason: 'not-found' }
       if (typeof diff.label === 'string') record.label = diff.label.slice(0, 64)
@@ -368,8 +407,10 @@ export function createIdentity(options = {}) {
     // ———————— 待确认绑定（学习键汇流，v0.7 计划书 §3.6） ————————
 
     /** 记录待确认身份（飞书扫码 openId / wxpusher 订阅 uid）。幂等：已存在刷新 at。 */
-    addPending({ channel, userId, origin = 'learned', extra = {} }) {
+    addPending({ channel, accountId = DEFAULT_ACCOUNT_ID, userId, origin = 'learned', extra = {} }) {
       if (!VALID_CHANNELS.has(channel)) return { ok: false, reason: 'invalid-channel' }
+      const normalizedAccountId = normalizeAccountId(accountId)
+      if (normalizedAccountId === null) return { ok: false, reason: 'invalid-account' }
       const uid = String(userId ?? '').trim()
       if (uid === '' || uid.length > 128) return { ok: false, reason: 'invalid-user' }
       if (uid.includes(':')) {
@@ -377,10 +418,14 @@ export function createIdentity(options = {}) {
         return { ok: false, reason: 'invalid-user' }
       }
       const table = readBindings()
-      if (table[`${channel}:${uid}`] !== undefined) return { ok: false, reason: 'already-bound' }
+      const binding = keyFor(channel, uid, normalizedAccountId)
+      if (binding === null) return { ok: false, reason: 'invalid-account' }
+      if (table[binding] !== undefined) return { ok: false, reason: 'already-bound' }
       const pending = readPending()
       const at = Date.now()
-      pending[`${channel}:${uid}`] = { channel, userId: uid, origin, at, extra }
+      const key = keyFor(channel, uid, normalizedAccountId)
+      pending[key] = { channel, userId: uid, origin, at, extra }
+      if (normalizedAccountId !== DEFAULT_ACCOUNT_ID) pending[key].accountId = normalizedAccountId
       const keys = Object.keys(pending)
       if (keys.length > PENDING_MAX) {
         keys.sort((a, b) => (pending[a]?.at ?? 0) - (pending[b]?.at ?? 0))
@@ -397,18 +442,19 @@ export function createIdentity(options = {}) {
     },
 
     /** 确认待确认绑定 → 转正为正式成员。 */
-    confirmPending(channel, userId) {
+    confirmPending(channel, userId, accountId = undefined) {
       if (store === null) return { ok: false, reason: 'not-found' }
       // 遗留第三方/mock store 没有跨键 transact：保留兼容路径；正式 createStore
       // 始终走下面的单事务路径，避免真实状态出现 pending/binding 半提交。
       if (typeof store.transact !== 'function') {
         const pending = readPending()
-        const key = `${channel}:${String(userId ?? '')}`
+        const key = keyFor(channel, String(userId ?? ''), accountId)
+        if (key === null) return { ok: false, reason: 'invalid-account' }
         const entry = pending[key]
         if (entry === undefined) return { ok: false, reason: 'not-found' }
         const bindings = readBindings()
         if (bindings[key] !== undefined) return { ok: false, reason: 'already-bound' }
-        const added = addBindingToTable(bindings, { channel, userId: entry.userId, origin: 'confirmed' })
+        const added = addBindingToTable(bindings, { channel, accountId: entry.accountId, userId: entry.userId, origin: 'confirmed' })
         if (added.ok !== true) return added
         delete pending[key]
         if (setDurable(store, KEY_PENDING, pending) !== true) return { ok: false, reason: 'storage-failed' }
@@ -419,7 +465,8 @@ export function createIdentity(options = {}) {
       const tx = transactDurable(store, (draft) => {
         const pending = normalizePending(draft[KEY_PENDING] ?? {}).out
         const bindings = normalizeBindings(draft[KEY_BINDINGS] ?? {})
-        const key = `${channel}:${String(userId ?? '')}`
+        const key = keyFor(channel, String(userId ?? ''), accountId)
+        if (key === null) return false
         const entry = pending[key]
         if (entry === undefined) return false
         if (bindings[key] !== undefined) {
@@ -429,6 +476,7 @@ export function createIdentity(options = {}) {
         delete pending[key]
         const added = addBindingToTable(bindings, {
           channel,
+          accountId: entry.accountId,
           userId: entry.userId,
           origin: 'confirmed',
         })
@@ -446,9 +494,10 @@ export function createIdentity(options = {}) {
       return outcome
     },
 
-    dismissPending(channel, userId) {
+    dismissPending(channel, userId, accountId = undefined) {
       const pending = readPending()
-      const key = `${channel}:${String(userId ?? '')}`
+      const key = keyFor(channel, String(userId ?? ''), accountId)
+      if (key === null) return { ok: false, reason: 'invalid-account' }
       if (pending[key] === undefined) return { ok: false, reason: 'not-found' }
       delete pending[key]
       if (store !== null && setDurable(store, KEY_PENDING, pending) !== true) {
