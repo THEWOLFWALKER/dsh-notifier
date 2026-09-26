@@ -48,6 +48,8 @@ const ZH = {
     terminatedCard: '⏹ 已终止：agent 会话已结束，审批取消',
     parallelTimeout: '⏱ 手机端等待结束：请到桌面处理（按钮已失效）',
     timeoutResolved: '⏱ 超时未响应：已交还桌面处理（按钮失效）',
+    // v0.13（C11.5 / R5）：终态 durable 落盘失败的诚实话术（不伪装已落盘的超时/终止）。
+    terminalUncertain: '⚠️ 状态未确认：终态未能落盘，请回桌面并到管理台确认（按钮失效）',
     remoteApproved: '✅ 已远程批准（本次）',
     remoteRejected: '❌ 已远程拒绝',
     desktopHandled: '🖥️ 已在桌面处理（手机按钮已失效）',
@@ -169,6 +171,8 @@ const ZH = {
     terminatedText: '⏹ 已终止：agent 会话已结束，提问取消',
     skippedResolvedText: '⏭ 已跳过：交还桌面处理',
     timeoutResolvedText: '⏱ 超时未作答：已交还桌面（按钮失效）',
+    // v0.13（C11.5 / R5）：live 终态已发生但 durable 落盘失败——明确 uncertain，绝不伪装成已落盘的超时/终止。
+    terminalUncertainText: '⚠️ 状态未确认：终态未能落盘，已交还桌面，请到管理台确认（按钮失效）',
     answeredWithLabelsVia: (labels, via) => `✅ 已作答：${labels.join('、')}（来源 ${via}）`,
   },
   // 裁决失败话术（inbound/verdict-text.mjs）——按钮/回执失败按原因分层
@@ -422,6 +426,8 @@ const EN = {
     terminatedCard: '⏹ Terminated: agent session ended, approval cancelled',
     parallelTimeout: '⏱ Phone wait ended: please handle on desktop (buttons invalidated)',
     timeoutResolved: '⏱ Timed out with no response: handed back to desktop (buttons invalidated)',
+    // v0.13（C11.5 / R5）：honest text when the terminal state could not be persisted.
+    terminalUncertain: '⚠️ State unconfirmed: the terminal state could not be persisted; handle it on desktop and verify in the console (buttons invalidated)',
     remoteApproved: '✅ Approved remotely (this call)',
     remoteRejected: '❌ Rejected remotely',
     desktopHandled: '🖥️ Handled on desktop (phone buttons invalidated)',
@@ -544,6 +550,8 @@ Session commands: see /help (answered by the session router).`,
     terminatedText: '⏹ Terminated: the agent session has ended, question cancelled',
     skippedResolvedText: '⏭ Skipped: returned to desktop',
     timeoutResolvedText: '⏱ Timed out without an answer: returned to desktop (buttons disabled)',
+    // v0.13（C11.5 / R5）：live terminal happened but the durable write failed — say uncertain, never fake a persisted timeout.
+    terminalUncertainText: '⚠️ State unconfirmed: the terminal state could not be persisted; returned to desktop — verify in the console (buttons disabled)',
     answeredWithLabelsVia: (labels, via) => `✅ Answered: ${labels.join(', ')} (via ${via})`,
   },
   // 裁决失败话术（inbound/verdict-text.mjs）

@@ -172,6 +172,38 @@ export function registerApprovalHandler(deps, strings) {
   const ledger = { ...core, latestPendingFor }
 
   /**
+   * v0.13（C11.5 / R5）：审批终态的唯一 transition owner（durable-first，绝不伪装成功）。
+   * - 行非 pending（已有权威落定者）→ 不二次写，返回 already-resolved（消除冗余的第二次 resolve）；
+   * - durable 落盘失败 → 尽力写 uncertain 恢复标记，使重启后不再当作正常 live pending；
+   * - 行缺失 → missing（无事可清，与 resolve 旧语义一致，不阻塞交还桌面）。
+   * @returns {{ ok: boolean, wrote: boolean, uncertain: boolean, reason: string }}
+   */
+  const finalizeApproval = (key, decision, extra = {}) => {
+    const row = ledger.get(key)
+    if (row === undefined) return { ok: false, wrote: false, uncertain: false, reason: 'missing' }
+    if (!ledger.isPending(row)) return { ok: true, wrote: false, uncertain: false, reason: 'already-resolved' }
+    const settled = ledger.settle(key, decision, extra)
+    if (settled.ok !== true) {
+      warn(`审批 ${key} 终态未落盘（${settled.reason}）${settled.uncertain ? '，已标记 uncertain' : '，恢复标记亦失败'}`)
+    }
+    return { ok: settled.ok === true, wrote: settled.ok === true, uncertain: settled.uncertain === true, reason: settled.reason }
+  }
+
+  /**
+   * v0.13（C11.5 / R5）：terminate 的 durable-first 包装——落盘失败时标记 uncertain，
+   * 绝不把未落盘的终止伪装成已终止（重启后不再当 live pending）。
+   */
+  const terminateDurable = (key) => {
+    let result
+    try { result = ledger.terminate(key) } catch { return false }
+    if (result === 'storage-failed') {
+      const recovered = ledger.markUncertain(key, 'terminal-persist-failed')
+      warn(`审批 ${key} 终止未落盘${recovered ? '，已标记 uncertain' : '，恢复标记亦失败'}`)
+    }
+    return result
+  }
+
+  /**
    * Control Core settlement order: validate the token first, claim the
    * durable interaction row, then release the in-memory waiter.  A failed
    * durable write therefore cannot deliver a host decision.
@@ -185,8 +217,10 @@ export function registerApprovalHandler(deps, strings) {
       try { verdict = vault.verify(input.token) } catch { return false }
       if (verdict?.ok !== true || verdict.key !== key) return false
     }
-    const committed = ledger.resolve(key, decision, { via: String(input.via ?? ''), userId: String(input.userId ?? '') })
-    if (committed !== true) return { ok: false, reason: committed === 'storage-failed' ? 'storage-failed' : 'already-resolved' }
+    const finalized = finalizeApproval(key, decision, { via: String(input.via ?? ''), userId: String(input.userId ?? '') })
+    if (finalized.ok !== true || finalized.wrote !== true) {
+      return { ok: false, reason: finalized.reason === 'storage-failed' ? 'storage-failed' : 'already-resolved' }
+    }
     // A durable winner is authoritative even if the live waiter disappeared
     // between lookup and delivery; no second durable write is attempted.
     bus.settle(key, decision, input.via, input.userId)
@@ -540,7 +574,7 @@ export function registerApprovalHandler(deps, strings) {
       }
       const waitOptions = {
         agentId: request?.agent?.id ?? request?.agent?.session?.id ?? null,
-        onAbandon: () => { try { ledger.terminate(key) } catch { } },
+        onAbandon: () => { terminateDurable(key) },
         allowChats,
       }
       const decisionPromise = mode === 'answer'
@@ -584,19 +618,20 @@ export function registerApprovalHandler(deps, strings) {
           decisionPromise.then((decision) => {
             if (decision !== null) finish({ kind: 'remote', decision })
             else {
-              ledger.resolve(key, ledger.get(key)?.decision === 'terminated' ? 'terminated' : 'timeout')
-              void markRemoteResolved(pushedTo, t.approval.parallelTimeout).catch(() => {})
+              const finalized = finalizeApproval(key, 'timeout')
+              void markRemoteResolved(pushedTo, finalized.ok === true ? t.approval.parallelTimeout : t.approval.terminalUncertain).catch(() => {})
             }
           }).catch(() => {})
           desktopAsk.then((result) => finish({ kind: 'desktop', result }), () => finish({ kind: 'desktop', result: undefined }))
         })
         if (race.kind === 'remote') {
-          ledger.resolve(key, race.decision.decision)
+          // 控制面路径已由 settleThroughLedger 权威落定；legacy bus 路径在此补齐（单一 owner，非 pending 不二次写）。
+          finalizeApproval(key, race.decision.decision, { via: String(race.decision.via ?? ''), userId: String(race.decision.userId ?? '') })
           await markRemoteResolved(pushedTo, race.decision.decision === OUTCOME_ALLOWED ? t.approval.remoteApproved : t.approval.remoteRejected)
           return race.decision.decision
         }
         try { bus.abandon?.(key, 'desktop-first') } catch { }
-        try { ledger.terminate(key) } catch { }
+        terminateDurable(key)
         await markRemoteResolved(pushedTo, t.approval.desktopHandled)
         return race.result
       }
@@ -621,11 +656,12 @@ export function registerApprovalHandler(deps, strings) {
         return next()
       }
       if (decision === null) {
-        ledger.resolve(key, 'timeout')
-        await markRemoteResolved(pushedTo, t.approval.timeoutResolved)
+        const finalized = finalizeApproval(key, 'timeout')
+        await markRemoteResolved(pushedTo, finalized.ok === true ? t.approval.timeoutResolved : t.approval.terminalUncertain)
         return next() // 静默永不批准
       }
-      ledger.resolve(key, decision.decision)
+      // 控制面路径已由 settleThroughLedger 权威落定；legacy bus 路径在此补齐（单一 owner，非 pending 不二次写）。
+      finalizeApproval(key, decision.decision, { via: String(decision.via ?? ''), userId: String(decision.userId ?? '') })
       await markRemoteResolved(pushedTo, decision.decision === OUTCOME_ALLOWED ? t.approval.remoteApproved : t.approval.remoteRejected)
       warn(`${key} 裁决：${decision.decision}（via ${decision.via}）`)
       return decision.decision
@@ -633,7 +669,7 @@ export function registerApprovalHandler(deps, strings) {
       // A listener never throws：任何异常交还桌面
       warn(`处理器异常，交还桌面: ${error instanceof Error ? error.message : String(error)}`)
       try { escalation.stop(key) } catch { /* 升级链清理不致命 */ }
-      try { ledger.resolve(key, 'error') } catch { /* 账本失败不致命 */ }
+      finalizeApproval(key, 'error')
       return next()
     }
   }
@@ -648,13 +684,15 @@ export function registerApprovalHandler(deps, strings) {
       const row = core.get(key)
       if (!core.isPending(row)) continue
       const targets = deliveryTargets(row)
-      try {
-        core.resolve(key, 'expired') // 翻终态：decision='expired'，resolvedAt=now
-        marked += 1
-      } catch (error) {
-        warn(`重启失效标记失败(${key}): ${error instanceof Error ? error.message : String(error)}`)
+      // v0.13（C11.5 / R5）：durable-first——resolve 返回值必须核对（旧实现只 catch 异常，
+      // 'storage-failed' 会被误当成功计数）。落盘失败时标记 uncertain，重启不再当 live pending。
+      const result = core.resolve(key, 'expired') // 翻终态：decision='expired'，resolvedAt=now
+      if (result !== true) {
+        const recovered = core.markUncertain(key, 'terminal-persist-failed')
+        warn(`重启失效标记未落盘(${key}): ${result}${recovered ? '，已标记 uncertain' : '，恢复标记亦失败'}`)
         continue
       }
+      marked += 1
       for (const target of targets) {
         const inbound = interactiveByChannel.get(target.channel)
         if (inbound === undefined) continue

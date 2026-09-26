@@ -215,6 +215,18 @@ export function createQuestionBridge(deps, strings) {
   // 核心账本 + 提问专用归属启发式合成同一 ledger 面（其余调用点零改动）。
   const ledger = { ...core, latestPendingFor }
 
+  /** v0.13（C11.5 / R5）：terminate 的 durable-first 包装——落盘失败时标记 uncertain，
+   *  绝不把未落盘的终止伪装成已终止（重启后不再当 live pending）。 */
+  function terminateDurable(qKey) {
+    let result
+    try { result = ledger.terminate(qKey) } catch { return false }
+    if (result === 'storage-failed') {
+      const recovered = ledger.markUncertain(qKey, 'terminal-persist-failed')
+      warn(`提问 ${qKey} 终止未落盘${recovered ? '，已标记 uncertain' : '，恢复标记亦失败'}`)
+    }
+    return result
+  }
+
   /** Control Core Step 1：per-chat hint 证据匹配（=aq 行 hintTargets）。无该字段的旧行不匹配（fail-closed）。 */
   function isHintedTarget(row, channel, userId, chatId, accountId = undefined, chatType = undefined) {
     if (Array.isArray(row.hintTargets)) {
@@ -1007,7 +1019,7 @@ export function createQuestionBridge(deps, strings) {
         const allowChats = new Map()
         const waitPromise = bus.wait(qKey, timeoutMs, {
           agentId: agentId !== null ? String(agentId) : '',
-          onAbandon: () => { try { ledger.terminate(qKey) } catch { } },
+          onAbandon: () => { terminateDurable(qKey) },
           allowChats,
         })
         // 拦截器范围取消信号——注册必须先于任何投递启动
@@ -1021,7 +1033,7 @@ export function createQuestionBridge(deps, strings) {
         if (signal !== undefined && signal !== null && typeof signal.addEventListener === 'function') {
           onAbort = () => {
             cancelDelivery()
-            try { ledger.terminate(qKey) } catch { /* 已终结则忽略 */ }
+            terminateDurable(qKey)
             try { bus.abandon(qKey) } catch { /* 已终结则忽略 */ }
           }
           if (signal.aborted) onAbort()
@@ -1107,19 +1119,27 @@ export function createQuestionBridge(deps, strings) {
         warn(`提问推送/等待异常（交还桌面语义）: ${error instanceof Error ? error.message : String(error)}`)
         cancelDelivery()
         try { bus.abandon(qKey) } catch { /* 清理不致命 */ }
-        try { ledger.resolve(qKey, 'error') } catch { /* 账本失败不致命 */ }
-        outcome = { __error: true }
+        // v0.13（C11.5 / R5）：durable-first 终态——落盘失败时标记 uncertain，绝不伪装已落盘。
+        const settledError = ledger.settle(qKey, 'error')
+        if (settledError.ok !== true) {
+          warn(`提问 ${qKey} error 终态未落盘（${settledError.reason}）${settledError.uncertain ? '，已标记 uncertain' : '，恢复标记亦失败'}`)
+        }
+        outcome = { __error: true, uncertain: settledError.ok !== true }
       }
       if (outcome === null) {
         // P2 超时永不代答：唯一产物是 answered=false
-        ledger.resolve(qKey, 'timeout')
-        await markResolved(ledger.get(qKey)?.pushedTo ?? [], finalTextOf(ledger.get(qKey)))
-        results.push({ question: String(question.question ?? ''), answered: false })
+        const settledTimeout = ledger.settle(qKey, 'timeout')
+        if (settledTimeout.ok !== true) {
+          warn(`提问 ${qKey} 超时终态未落盘（${settledTimeout.reason}）${settledTimeout.uncertain ? '，已标记 uncertain' : '，恢复标记亦失败'}`)
+        }
+        const rowAfterTimeout = ledger.get(qKey)
+        await markResolved(rowAfterTimeout?.pushedTo ?? [], settledTimeout.ok === true ? finalTextOf(rowAfterTimeout) : t.terminalUncertainText)
+        results.push({ question: String(question.question ?? ''), answered: false, ...(settledTimeout.ok === true ? {} : { uncertain: true }) })
         allAnswered = false
         continue
       }
       if (outcome.__error === true) {
-        results.push({ question: String(question.question ?? ''), answered: false, reason: 'error' })
+        results.push({ question: String(question.question ?? ''), answered: false, reason: 'error', ...(outcome.uncertain === true ? { uncertain: true } : {}) })
         allAnswered = false
         continue
       }

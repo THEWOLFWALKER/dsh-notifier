@@ -50,6 +50,21 @@ export function createActionDispatcher({ vault = null, store = null, logger = nu
   // 原地微调，不走账本生命周期操作。
   const ledger = createInteractionLedger({ keyPrefix: 'act:', store, decisionField: 'outcome' })
 
+  /**
+   * v0.13（C11.5 / R5）：动作终态落地的 durable-first 收口。
+   * claim 已保证「不自动重执行」；终局落盘失败时，claimed 行本身就是重启后的
+   * uncertain 证据（见 dispatch 的 row.status==='claimed' 分支），故此处只审计
+   * `terminal-persist-failed`，绝不伪装已落盘、也不额外写恢复标记（避免多余写盘）。
+   */
+  const finalizeAction = (actionKey, outcome, extra = {}) => {
+    const result = ledger.resolve(actionKey, outcome, extra, { claimedSettle: true })
+    if (result === 'storage-failed') {
+      warn(`动作 ${actionKey} 终态未落盘（terminal-persist-failed），重启后按 uncertain 诊断，不重执行`)
+      return { ok: false, uncertain: true }
+    }
+    return { ok: true, reason: result }
+  }
+
   const api = {
     /** 注册动作 handler（内置白名单由装配层注册；重复注册后到者赢）。 */
     register(kind, handler) {
@@ -250,8 +265,8 @@ export function createActionDispatcher({ vault = null, store = null, logger = nu
         }
         const handler = handlers.get(row.kind)
         if (handler === undefined) {
-          // 先落终态再反馈：防未知 kind 的重试风暴
-          try { ledger.resolve(actionKey, 'unknown-kind', { via }) } catch { /* 账本失败不致命 */ }
+          // 先落终态再反馈：防未知 kind 的重试风暴（durable-first，失败不伪装）
+          finalizeAction(actionKey, 'unknown-kind', { via })
           return { ok: false, reason: 'unknown-kind', message: t.actions.unknownKind }
         }
         // I5：先把 pending 原子地 claim，再执行不可逆 handler。claim 失败
@@ -266,14 +281,14 @@ export function createActionDispatcher({ vault = null, store = null, logger = nu
           const message = typeof result.message === 'string' && result.message !== ''
             ? result.message
             : (ok ? t.actions.executed : t.actions.notEffective)
-          // claim 后的终局落地只允许同一执行显式完成；失败会留下 claimed，
-          // 供重启后的 uncertain 诊断使用，不再自动执行。
-          try { ledger.resolve(actionKey, ok ? 'done' : 'handler-declined', { via }, { claimedSettle: true }) } catch { /* 账本失败不致命 */ }
+          // claim 后的终局落地只允许同一执行显式完成；落盘失败会标记 uncertain，
+          // 供重启后的不确定诊断使用，不再自动执行。
+          finalizeAction(actionKey, ok ? 'done' : 'handler-declined', { via })
           warn(`动作 ${actionKey} 裁决 via ${via}（user ${userId}）: ${ok ? 'done' : 'handler-declined'}`)
           return { ok: true, message }
         } catch (error) {
           const reason = error instanceof Error ? error.message : String(error)
-          try { ledger.resolve(actionKey, 'handler-error', { via }, { claimedSettle: true }) } catch { /* 账本失败不致命 */ }
+          finalizeAction(actionKey, 'handler-error', { via })
           warn(`动作 handler 异常（已核销）: ${reason}`)
           return { ok: true, message: t.actions.handlerErrorReceipt }
         }

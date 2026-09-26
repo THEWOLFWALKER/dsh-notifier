@@ -141,6 +141,42 @@ export function createInteractionLedger(options = {}) {
       if (setDurable(store, key, resolvedRowOf(row, 'terminated', extra)) !== true) return 'storage-failed'
       return true
     },
+    /**
+     * v0.13（C11.5 / R5）：终态落地失败后的恢复标记（durable-first 的诚实退路）。
+     * live 超时/错误已发生，但 durable 终态写入失败——绝不能伪装成已落盘的终态：
+     * 尽力把行标成 `status:'uncertain'`（isPending 为假 → 重启/编号回复/自动重跑都不会
+     * 再把它当作正常 live pending 消费），并附 reason/时间戳供诊断。
+     * @returns {boolean} 标记是否真正落盘（false = 连恢复标记也失败，需上层告警）
+     */
+    markUncertain(key, reason = 'terminal-persist-failed', extra = {}) {
+      const row = store?.get(key)
+      if (row === undefined) return false
+      return setDurable(store, key, {
+        ...row,
+        ...extra,
+        status: 'uncertain',
+        [decisionField]: 'uncertain',
+        uncertainReason: String(reason),
+        uncertainAt: now(),
+      }) === true
+    },
+    /**
+     * v0.13（C11.5 / R5）：终态清理的唯一收口（durable-first，绝不伪装成功）。
+     * 先尝试 durable 终态写入；失败则尽力写恢复标记（markUncertain），使重启后不再
+     * 把该行当作正常 live pending 消费。调用方据返回的 ok/uncertain 决定对外话术。
+     * @returns {{ ok: boolean, uncertain: boolean, reason: string }}
+     *   ok=true                       → durable 终态已落盘（含 already-resolved/already-claimed/missing 的无害情况）
+     *   ok=false, uncertain=true      → 终态未落盘，行已标记 uncertain
+     *   ok=false, uncertain=false     → 终态与恢复标记皆未落盘（上层必须告警）
+     */
+    settle(key, decision, extra = {}, opts = {}) {
+      const result = this.resolve(key, decision, extra, opts)
+      if (result === true) return { ok: true, uncertain: false, reason: 'resolved' }
+      if (result === 'already-resolved' || result === 'already-claimed') return { ok: true, uncertain: false, reason: result }
+      if (result === false) return { ok: true, uncertain: false, reason: 'missing' }
+      const marked = this.markUncertain(key, 'terminal-persist-failed', extra)
+      return { ok: false, uncertain: marked, reason: 'storage-failed' }
+    },
     /** 按前缀扫描行键（latestPendingFor 遍历用；store 缺失返回空数组）。 */
     scanKeys() {
       return store?.keys(keyPrefix) ?? []
