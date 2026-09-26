@@ -6,7 +6,6 @@
 // 发送前强制走 SSRF 校验；重定向面由 _shared.mjs 的 redirect:'manual' 关闭。
 
 import { postJson, str, num, NotifyError, ERROR_CODES } from './_shared.mjs'
-import { assertPublicHttpUrl } from './_urlguard.mjs'
 
 export const type = 'webhook'
 
@@ -49,7 +48,6 @@ export function resolve(cfg = {}) {
 
 /** 发送 JSON；发送前过 SSRF 闸；非 2xx 抛带中文指引的错误。 */
 export async function send(resolved, msg) {
-  await assertPublicHttpUrl(resolved.url, { allowPrivate: resolved.allowPrivateNetwork === true, channel: 'webhook' })
   const body = {
     title: msg.title,
     content: msg.content,
@@ -57,5 +55,10 @@ export async function send(resolved, msg) {
   }
   if (msg.level !== undefined) body.level = msg.level
   if (msg.group !== undefined) body.group = msg.group
-  await postJson(resolved.url, body, { headers: resolved.headers, timeoutMs: resolved.timeoutMs, channel: 'webhook' })
+  await postJson(resolved.url, body, {
+    headers: resolved.headers,
+    timeoutMs: resolved.timeoutMs,
+    channel: 'webhook',
+    networkPolicy: { allowPrivate: resolved.allowPrivateNetwork === true },
+  })
 }

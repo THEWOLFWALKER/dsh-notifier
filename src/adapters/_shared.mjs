@@ -1,6 +1,8 @@
 // dsh-notifier adapters/_shared.mjs
 // 所有渠道 adapter 共用的纯函数工具：稳定错误码、统一 fetch 封装、消息归一化。
-// 零运行时依赖：只用全局 fetch + node:crypto。
+// 零运行时依赖：固定端点走 fetch；用户可控端点走公共网络策略并把已验证 IP 钉到 socket。
+
+import { guardedNetworkFetch, NetworkPolicyError } from '../security/network-policy.mjs'
 
 /** 稳定错误码：跨渠道复用，供日志与工具渲染消费。 */
 export const ERROR_CODES = Object.freeze({
@@ -149,6 +151,7 @@ function networkError(channel, cause) {
  */
 function redirectError(channel, response) {
   const location = (() => { try { return response.headers?.get?.('location') ?? '' } catch { return '' } })()
+  try { response.body?.cancel?.().catch?.(() => {}) } catch { /* response 已关闭 */ }
   const name = channelNameOf(channel)
   return new NotifyError(`${name}推送失败（HTTP ${response.status} 重定向，已拒绝跟随）`, ERROR_CODES.HTTP_ERROR, {
     detail: `${channel}返回 HTTP ${response.status} → ${location === '' ? '(无 Location 头)' : location.slice(0, 512)}`,
@@ -156,14 +159,24 @@ function redirectError(channel, response) {
 }
 
 /** S-02：统一注入 redirect:'manual' 并对 3xx 显式报错（见 redirectError 注释）。 */
-async function guardedFetch(url, init, channel) {
-  const response = await fetch(url, { ...init, redirect: 'manual' })
+async function guardedFetch(url, init, channel, networkPolicy) {
+  let response
+  try {
+    response = networkPolicy === undefined
+      ? await fetch(url, { ...init, redirect: 'manual' })
+      : await guardedNetworkFetch(url, init, { ...networkPolicy, channel })
+  } catch (error) {
+    if (error instanceof NetworkPolicyError) {
+      throw new NotifyError(error.message, error.code, { detail: error.detail })
+    }
+    throw error
+  }
   if (response.status >= 300 && response.status < 400) throw redirectError(channel, response)
   return response
 }
 
 /** 统一 JSON POST：AbortController 超时、非 2xx 抛 HTTP_ERROR（附响应现场）。 */
-export async function postJson(url, payload, { headers = {}, timeoutMs = 10000, channel = '渠道' } = {}) {
+export async function postJson(url, payload, { headers = {}, timeoutMs = 10000, channel = '渠道', networkPolicy } = {}) {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
   try {
@@ -172,7 +185,7 @@ export async function postJson(url, payload, { headers = {}, timeoutMs = 10000, 
       headers: { 'content-type': 'application/json; charset=utf-8', ...headers },
       body: JSON.stringify(payload),
       signal: controller.signal,
-    }, channel)
+    }, channel, networkPolicy)
     if (!response.ok) {
       throw httpError(channel, response, await readTextCapped(response, 2048))
     }
@@ -188,7 +201,7 @@ export async function postJson(url, payload, { headers = {}, timeoutMs = 10000, 
 }
 
 /** 统一 form-encoded POST（Server酱用），同样带超时与错误分类；超时同 G-50 语义（noRetry）。 */
-export async function postForm(url, payload, { timeoutMs = 10000, channel = '渠道' } = {}) {
+export async function postForm(url, payload, { timeoutMs = 10000, channel = '渠道', networkPolicy } = {}) {
   const body = new URLSearchParams()
   for (const [key, value] of Object.entries(payload)) {
     if (value !== undefined && value !== null && value !== '') body.set(key, String(value))
@@ -201,7 +214,7 @@ export async function postForm(url, payload, { timeoutMs = 10000, channel = '渠
       headers: { 'content-type': 'application/x-www-form-urlencoded; charset=utf-8' },
       body,
       signal: controller.signal,
-    }, channel)
+    }, channel, networkPolicy)
     if (!response.ok) {
       throw httpError(channel, response, await readTextCapped(response, 2048))
     }
@@ -219,11 +232,11 @@ export async function postForm(url, payload, { timeoutMs = 10000, channel = '渠
 // 超时后盲目重试同样会造成重复通知，不能只修 postJson 留下这条漏网。
 
 /** 统一 GET（token 换取用），带超时与错误分类；返回原始 Response（2xx 才 resolve）。 */
-export async function getJson(url, { headers = {}, timeoutMs = 10000, channel = '渠道' } = {}) {
+export async function getJson(url, { headers = {}, timeoutMs = 10000, channel = '渠道', networkPolicy } = {}) {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
   try {
-    const response = await guardedFetch(url, { method: 'GET', headers, signal: controller.signal }, channel)
+    const response = await guardedFetch(url, { method: 'GET', headers, signal: controller.signal }, channel, networkPolicy)
     if (!response.ok) {
       throw httpError(channel, response, await readTextCapped(response, 2048))
     }
@@ -239,7 +252,7 @@ export async function getJson(url, { headers = {}, timeoutMs = 10000, channel = 
 }
 
 /** 统一纯文本 body POST（ntfy 旧协议用；v0.6.5 起 ntfy 走 JSON 发布，保留给未来渠道）。 */
-export async function postText(url, text, { headers = {}, timeoutMs = 10000, channel = '渠道' } = {}) {
+export async function postText(url, text, { headers = {}, timeoutMs = 10000, channel = '渠道', networkPolicy } = {}) {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
   try {
@@ -251,7 +264,7 @@ export async function postText(url, text, { headers = {}, timeoutMs = 10000, cha
       headers: { 'content-type': 'text/plain; charset=utf-8', ...headers },
       body: String(text ?? ''),
       signal: controller.signal,
-    }, channel)
+    }, channel, networkPolicy)
     if (!response.ok) {
       throw httpError(channel, response, await readTextCapped(response, 2048))
     }

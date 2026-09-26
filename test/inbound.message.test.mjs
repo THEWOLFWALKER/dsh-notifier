@@ -254,3 +254,13 @@ test('#36 downloadInboundFileBytes：实读字节收内存；不限媒体类型�
   })
   assert.equal(timedOut, null, '有限超时')
 })
+
+test('C9：入站附件域名解析到私网时拒绝且不调用下载 transport', async () => {
+  let fetched = false
+  const result = await downloadInboundFileBytes('https://public-name.example.test/file', {
+    lookupImpl: async () => [{ address: '10.0.0.9', family: 4 }],
+    fetchImpl: async () => { fetched = true; return new Response('x') },
+  })
+  assert.equal(result, null)
+  assert.equal(fetched, false)
+})

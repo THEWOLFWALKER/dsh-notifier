@@ -15,6 +15,8 @@
 //   { kind: 'text'|'image'|'file', text?, image?: { url, width?, height? },
 //     file?: { name?, url?, size? }, payload? }
 
+import { guardedNetworkFetch } from '../security/network-policy.mjs'
+
 export const INBOUND_KINDS = Object.freeze({
   text: 'text',
   image: 'image',
@@ -48,6 +50,10 @@ async function withDownloadSlot(fn) {
     const next = downloadSlots.queue.shift()
     if (typeof next === 'function') next()
   }
+}
+
+async function cancelResponse(response) {
+  try { await response?.body?.cancel?.() } catch { /* 已关闭/非流式响应 */ }
 }
 
 function warnAttachmentBudget(message) {
@@ -233,21 +239,22 @@ export function normalizeAttachmentItem(raw) {
 export async function downloadInboundImage(url, options = {}) {
   return withDownloadSlot(async () => {
     const safeUrl = normalizeImageUrl(url)
-    const fetchImpl = options.fetchImpl ?? globalThis.fetch?.bind(globalThis)
     const maxBytes = Math.min(MAX_INBOUND_IMAGE_BYTES, Math.max(1, Number(options.maxBytes) || MAX_INBOUND_IMAGE_BYTES))
     const timeoutMs = Math.min(60000, Math.max(1, Number(options.timeoutMs) || DEFAULT_INBOUND_MEDIA_TIMEOUT_MS))
-    if (safeUrl === '' || typeof fetchImpl !== 'function') return null
+    if (safeUrl === '') return null
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), timeoutMs)
     try {
-      const response = await fetchImpl(safeUrl, { signal: controller.signal, redirect: 'error' })
-      if (!response?.ok) return null
+      const response = await guardedNetworkFetch(safeUrl, { signal: controller.signal }, {
+        channel: '入站图片', fetchImpl: options.fetchImpl, lookupImpl: options.lookupImpl,
+      })
+      if (!response?.ok) { await cancelResponse(response); return null }
       const declared = Number(response.headers?.get?.('content-length') ?? '')
-      if (Number.isFinite(declared) && declared > maxBytes) return null
+      if (Number.isFinite(declared) && declared > maxBytes) { await cancelResponse(response); return null }
       const contentType = String(response.headers?.get?.('content-type') ?? '').split(';', 1)[0].trim().toLowerCase()
-      if (!contentType.startsWith('image/')) return null
+      if (!contentType.startsWith('image/')) { await cancelResponse(response); return null }
       const reader = response.body?.getReader?.()
-      if (reader === undefined) return null
+      if (reader === undefined) { await cancelResponse(response); return null }
       let size = 0
       for (;;) {
         const { done, value } = await reader.read()
@@ -279,22 +286,23 @@ export async function downloadInboundImage(url, options = {}) {
 async function downloadBoundedBytes(url, options, mediaTypePrefix) {
   return withDownloadSlot(async () => {
     const safeUrl = normalizeImageUrl(url)
-    const fetchImpl = options.fetchImpl ?? globalThis.fetch?.bind(globalThis)
     const limitBytes = options.limitBytes
     const maxBytes = Math.min(limitBytes, Math.max(1, Number(options.maxBytes) || limitBytes))
     const timeoutMs = Math.min(60000, Math.max(1, Number(options.timeoutMs) || DEFAULT_INBOUND_MEDIA_TIMEOUT_MS))
-    if (safeUrl === '' || typeof fetchImpl !== 'function') return null
+    if (safeUrl === '') return null
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), timeoutMs)
     try {
-      const response = await fetchImpl(safeUrl, { signal: controller.signal, redirect: 'error' })
-      if (!response?.ok) return null
+      const response = await guardedNetworkFetch(safeUrl, { signal: controller.signal }, {
+        channel: '入站附件', fetchImpl: options.fetchImpl, lookupImpl: options.lookupImpl,
+      })
+      if (!response?.ok) { await cancelResponse(response); return null }
       const declared = Number(response.headers?.get?.('content-length') ?? '')
-      if (Number.isFinite(declared) && declared > maxBytes) return null
+      if (Number.isFinite(declared) && declared > maxBytes) { await cancelResponse(response); return null }
       const mediaType = String(response.headers?.get?.('content-type') ?? '').split(';', 1)[0].trim().toLowerCase()
-      if (mediaTypePrefix !== '' && !mediaType.startsWith(mediaTypePrefix)) return null
+      if (mediaTypePrefix !== '' && !mediaType.startsWith(mediaTypePrefix)) { await cancelResponse(response); return null }
       const reader = response.body?.getReader?.()
-      if (reader === undefined) return null
+      if (reader === undefined) { await cancelResponse(response); return null }
       const chunks = []
       let size = 0
       for (;;) {

@@ -6,7 +6,6 @@
 // 移植方式为「协议知识移植」：axios.post 机械改写为零依赖 fetch。见 THIRD_PARTY_NOTICES.md。
 
 import { postJson, postForm, postText, readTextCapped, str, num, NotifyError, ERROR_CODES } from './_shared.mjs'
-import { assertPublicHttpUrl } from './_urlguard.mjs'
 
 /** 从任意响应负载里提取人类可读的失败原因（跨渠道常见字段名兜底）。 */
 export function describeFailure(json, text) {
@@ -86,14 +85,11 @@ export function makeSpecAdapter(type, spec) {
     //  - true：私网/保留段默认拒绝，allowPrivateNetwork: true 显式放行；
     //  - 'private-ok'：渠道本质是本机/内网服务（onebot 文档默认 127.0.0.1），默认放行私网；
     //  - 未声明：官方固定域名渠道（URL 非用户可配），不走校验。
-    if (spec.ssrfGuard !== undefined) {
-      await assertPublicHttpUrl(url, {
-        allowPrivate: spec.ssrfGuard === 'private-ok' || resolved.allowPrivateNetwork === true,
-        channel: label,
-      })
-    }
     const encode = spec.encode ?? 'json'
-    const options = { timeoutMs: resolved.timeoutMs, channel: label }
+    const networkPolicy = spec.ssrfGuard === undefined ? undefined : {
+      allowPrivate: spec.ssrfGuard === 'private-ok' || resolved.allowPrivateNetwork === true,
+    }
+    const options = { timeoutMs: resolved.timeoutMs, channel: label, networkPolicy }
     let response
     try {
       if (encode === 'form') {

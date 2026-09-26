@@ -3,7 +3,12 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { assertPublicHttpUrl, __setLookupForTests } from '../src/adapters/_urlguard.mjs'
+import {
+  assertPublicHttpUrl,
+  __setLookupForTests,
+  pinnedLookupFor,
+  resolveNetworkTarget,
+} from '../src/adapters/_urlguard.mjs'
 import { postJson, NotifyError, ERROR_CODES } from '../src/adapters/_shared.mjs'
 import * as webhook from '../src/adapters/webhook.mjs'
 import { makeSpecAdapter } from '../src/adapters/_engine.mjs'
@@ -46,6 +51,30 @@ test('SSRF 矩阵：IPv6 环回/映射/ULA/链路本地拒绝，公网 v6 放行
   // 公网 v6（2001:4860::8888 = Google DNS）与 NAT64 公网映射放行
   await assertPublicHttpUrl('http://[2001:4860:4860::8888]/hook')
   await assertPublicHttpUrl('http://[64:ff9b::8.8.8.8]/hook')
+})
+
+test('C9：IPv6 CIDR 精确边界，不再用前 32bit 近似', async () => {
+  await assertPublicHttpUrl('http://[fbff:ffff:ffff:ffff:ffff:ffff:ffff:ffff]/hook')
+  await assertBlocked(assertPublicHttpUrl('http://[fc00::]/hook'), /ULA/)
+  await assertBlocked(assertPublicHttpUrl('http://[fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff]/hook'), /ULA/)
+  await assertPublicHttpUrl('http://[fe00::]/hook')
+  await assertBlocked(assertPublicHttpUrl('http://[fe80::]/hook'), /链路本地/)
+  await assertBlocked(assertPublicHttpUrl('http://[febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff]/hook'), /链路本地/)
+  await assertPublicHttpUrl('http://[fec0::]/hook')
+})
+
+test('C9：连接 lookup 只返回已验证 IP，后续 DNS 变化不能重绑定 socket', async () => {
+  const target = await resolveNetworkTarget('https://rebind.example.test/hook', {
+    lookupImpl: async () => [{ address: '93.184.216.34', family: 4 }],
+  })
+  const lookup = pinnedLookupFor(target)
+  const selected = await new Promise((resolve, reject) => {
+    lookup('rebind.example.test', { family: 0 }, (error, address, family) => {
+      if (error) reject(error)
+      else resolve({ address, family })
+    })
+  })
+  assert.deepEqual(selected, { address: '93.184.216.34', family: 4 })
 })
 
 test('SSRF 矩阵：公网 IPv4 字面量放行（不走 DNS）', async () => {
@@ -125,12 +154,14 @@ test('SSRF 矩阵：解析结果短 TTL 缓存（同域名第二次不再 lookup
 test('S-02：postJson 拒绝跟随 3xx（redirect:manual），Location 只进 detail 不进公开文案', async () => {
   const originalFetch = globalThis.fetch
   const inits = []
+  let cancelled = false
   globalThis.fetch = async (url, init) => {
     inits.push(init)
     return {
       ok: false,
       status: 302,
       headers: { get: (name) => (name === 'location' ? 'http://169.254.169.254/steal' : null) },
+      body: { cancel: async () => { cancelled = true } },
     }
   }
   try {
@@ -143,6 +174,7 @@ test('S-02：postJson 拒绝跟随 3xx（redirect:manual），Location 只进 de
       return true
     })
     assert.equal(inits[0].redirect, 'manual', 'fetch 必须显式 redirect:manual')
+    assert.equal(cancelled, true, '拒绝重定向时必须立刻释放响应体')
   } finally {
     globalThis.fetch = originalFetch
   }
