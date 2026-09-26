@@ -1,6 +1,6 @@
 // dsh-notifier adapters/_shared.mjs
 // 所有渠道 adapter 共用的纯函数工具：稳定错误码、统一 fetch 封装、消息归一化。
-// 零运行时依赖：固定端点走 fetch；用户可控端点走公共网络策略并把已验证 IP 钉到 socket。
+// 零强制运行时依赖：固定端点走 fetch；用户可控端点走公共网络策略并把已验证 IP 钉到 socket。
 
 import { guardedNetworkFetch, NetworkPolicyError } from '../security/network-policy.mjs'
 

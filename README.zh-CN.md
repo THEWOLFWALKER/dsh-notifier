@@ -13,7 +13,7 @@
 ![DSH](https://img.shields.io/badge/DSH-DeepSeek%20Harness-1F6FEB?style=flat-square)
 ![Node.js](https://img.shields.io/badge/Node.js-22%2B-339933?style=flat-square&logo=node.js&logoColor=white)
 ![JavaScript](https://img.shields.io/badge/JavaScript-ESM-F7DF1E?style=flat-square&logo=javascript&logoColor=black)
-![Zero deps](https://img.shields.io/badge/runtime%20deps-0-000000?style=flat-square)
+![Zero mandatory runtime deps](https://img.shields.io/badge/mandatory%20runtime%20deps-0-000000?style=flat-square)
 ![Channels](https://img.shields.io/badge/channels-28-00B4D8?style=flat-square)
 ![npm version](https://img.shields.io/npm/v/dsh-notifier?style=flat-square&logo=npm&logoColor=white)
 ![tests](https://img.shields.io/badge/tests-1984-brightgreen?style=flat-square)
@@ -94,7 +94,7 @@ Advanced Console（127.0.0.1）──▶ 同一份运行时状态
 
 | 功能 | 说明 |
 |---|---|
-| **28 个出站渠道** | IM webhook、推送 App、国内常用服务、桌面/本地目标；零运行时依赖。 |
+| **28 个出站渠道** | IM webhook、推送 App、国内常用服务、桌面/本地目标；零强制运行时依赖。 |
 | **DSH 原生 UI**（v0.12） | Sidebar/Main + Plugins 激活/配置入口；复用 Host React 与 DSH 视觉 token，无 iframe/Vite/esbuild/自带 React。 |
 | **出站 Hot Apply**（v0.12） | 保存前先校验/resolve，持久化后原子替换 live channel；下一次发送直接用新配置，不重启。 |
 | **双触发线** | 自动状态推送（`turn/end` · `approval/asked` · `agent/error`）+ 模型侧 `notify` 工具。 |

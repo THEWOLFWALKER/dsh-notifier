@@ -1,7 +1,7 @@
 {
   "name": "dsh-notifier",
   "version": "0.13.0",
-  "description": "DSH 通知与远程操作控制面：28 个出站渠道、6 条入站控制通道、原生「通知与控制」UI、出站热生效；零运行时依赖。",
+  "description": "DSH 通知与远程操作控制面：28 个出站渠道、6 条入站控制通道、原生「通知与控制」UI、出站热生效；零强制运行时依赖。",
   "type": "module",
   "main": "src/plugin-entry.mjs",
   "exports": {

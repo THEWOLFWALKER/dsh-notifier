@@ -13,14 +13,14 @@
 ![DSH](https://img.shields.io/badge/DSH-DeepSeek%20Harness-1F6FEB?style=flat-square)
 ![Node.js](https://img.shields.io/badge/Node.js-22%2B-339933?style=flat-square&logo=node.js&logoColor=white)
 ![JavaScript](https://img.shields.io/badge/JavaScript-ESM-F7DF1E?style=flat-square&logo=javascript&logoColor=black)
-![Zero deps](https://img.shields.io/badge/runtime%20deps-0-000000?style=flat-square)
+![Zero mandatory runtime deps](https://img.shields.io/badge/mandatory%20runtime%20deps-0-000000?style=flat-square)
 ![Channels](https://img.shields.io/badge/channels-28-00B4D8?style=flat-square)
 ![npm version](https://img.shields.io/npm/v/dsh-notifier?style=flat-square&logo=npm&logoColor=white)
 ![tests](https://img.shields.io/badge/tests-1984-brightgreen?style=flat-square)
 ![license](https://img.shields.io/badge/license-MIT-brightgreen?style=flat-square)
 [![dshfind](https://dshfind.com/api/badge/THEWOLFWALKER/dsh-notifier?lang=en)](https://dshfind.com/en/plugins/THEWOLFWALKER/dsh-notifier?ref=badge)
 
-`dsh-notifier@0.13.0` is the notification and remote-operations control plane for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness): **28 outbound channels**, **6 inbound control channels**, remote approvals/questions/conversation, task visibility, health/activity projections, and a **native DSH Sidebar/Main experience** — with zero runtime dependencies.
+`dsh-notifier@0.13.0` is the notification and remote-operations control plane for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness): **28 outbound channels**, **6 inbound control channels**, remote approvals/questions/conversation, task visibility, health/activity projections, and a **native DSH Sidebar/Main experience** — with zero mandatory runtime dependencies.
 
 Package metadata: `dsh-notifier@0.13.0` · 1984 automated contract tests · MIT licensed.
 
@@ -94,7 +94,7 @@ Session events such as `turn/end`, `approval/asked`, and `agent/error` can auto-
 
 | Feature | What it does |
 |---|---|
-| **28 outbound channels** | IM webhooks, push apps, China-centric services, desktop/local targets — zero runtime deps. |
+| **28 outbound channels** | IM webhooks, push apps, China-centric services, desktop/local targets — zero mandatory runtime deps. |
 | **Native DSH UX** (v0.12) | Sidebar/Main panel + plugin activation/config card using Host React and DSH visual tokens; no iframe, Vite, esbuild or bundled React. |
 | **Live outbound Hot Apply** (v0.12) | Save → validate/resolve → persist canonical state → atomically swap the live channel; the next send uses the new config without restart. |
 | **Dual trigger lines** | Auto status push (`turn/end` · `approval/asked` · `agent/error`) plus a model-facing `notify` tool. |

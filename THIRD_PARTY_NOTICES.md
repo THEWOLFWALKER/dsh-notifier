@@ -1,6 +1,6 @@
 # Third-Party Notices
 
-dsh-notifier 零运行时依赖（仅用全局 `fetch` + `node:crypto`）。以下项目的**渠道协议知识**
+dsh-notifier 零强制运行时依赖（仅用全局 `fetch` + `node:crypto`）。以下项目的**渠道协议知识**
 （端点、body 字段、成功判定语义）在本仓库实现中被参考或移植；移植原则是「移植协议知识、
 不引依赖」——把参考实现中的 `axios.post` 机械改写为零依赖 `fetch`。
 
