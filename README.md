@@ -22,7 +22,7 @@ Bring DeepSeek Harness to your phone: notifications, approvals, questions, remot
 
 <p align="center">
   <img src="https://img.shields.io/badge/tests-2011-brightgreen" alt="2011 tests">
-  `dsh-notifier@0.13.0` · test/ 2011 tests · 2011 automated contract tests
+  `dsh-notifier@0.13.1` · test/ 2011 tests · 2011 automated contract tests
 </p>
 
 ## What it does
@@ -34,10 +34,24 @@ dsh-notifier is the notification and remote-operations layer for DeepSeek Harnes
 - **Manage it inside DSH** — the Native **Notify & Control** panel is the daily control surface; the loopback Advanced Console remains available for recovery and deeper management.
 - **Keep failures contained** — unsafe or unknown inbound actions fail closed; outbound channel failures do not take down the rest of the notifier.
 
-<p align="center">
-  <img src="docs/screenshots/fresh-wizard-desktop.png" alt="dsh-notifier setup wizard" width="49%">
-  <img src="docs/screenshots/configured-channels-desktop.png" alt="dsh-notifier configured channels" width="49%">
-</p>
+## UI screenshots
+
+These are viewport-sized captures of the local Admin Console. The gallery covers the unlock gate, first-run setup, channel configuration, and the narrow/mobile layout; long full-page exports are intentionally kept out of the README.
+
+<table>
+  <tr>
+    <td><img src="docs/screenshots/admin-gate-desktop.png" alt="dsh-notifier unlock gate" width="600"></td>
+    <td><img src="docs/screenshots/fresh-wizard-desktop.png" alt="dsh-notifier setup wizard on desktop" width="600"></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/fresh-wizard-step2-desktop.png" alt="dsh-notifier setup wizard channel selection" width="600"></td>
+    <td><img src="docs/screenshots/configured-channels-desktop.png" alt="dsh-notifier configured channels on desktop" width="600"></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/fresh-wizard-mobile.png" alt="dsh-notifier setup wizard on a narrow viewport" width="390"></td>
+    <td><img src="docs/screenshots/configured-channels-mobile.png" alt="dsh-notifier channels on a narrow viewport" width="390"></td>
+  </tr>
+</table>
 
 ## Install
 

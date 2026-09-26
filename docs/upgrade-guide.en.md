@@ -90,14 +90,14 @@ v0.12 intentionally does not implement a generic hot-reloader for every inbound 
 | Evidence | How | v0.12 expected |
 |---|---|---|
 | Native UI | DSH Sidebar / Plugins | `Notify & Control` entry exists |
-| CLI | `npm ls dsh-notifier` / `pnpm ls dsh-notifier` | `0.13.0` or newer |
+| CLI | `npm ls dsh-notifier` / `pnpm ls dsh-notifier` | `0.13.1` or newer |
 | Registry | `npm view dsh-notifier version` | matches the release you intended to install |
 
 Developers can also inspect the installed package:
 
 ```text
 exports["./client"] = "./client.js"
-dshQuality.testCount = 2011    # current dev follow-up; last published v0.13.0 snapshot was 1985
+dshQuality.testCount = 2011    # v0.13.1 release line; last published v0.13.0 snapshot was 1985
 ```
 
 ## 4. Version says 0.12, behavior looks old
@@ -129,7 +129,7 @@ Restart DSH afterwards.
 
 Check:
 
-1. installed package is `0.13.0+`;
+1. installed package is `0.13.1+`;
 2. DSH restarted;
 3. Host version is in the declared range;
 4. installed package contains `client.js`;

@@ -28,7 +28,9 @@ test('npm allowlist covers public README documents and assets', () => {
     'docs/compatibility-matrix.md', 'docs/upgrade-guide.md', 'docs/upgrade-guide.en.md',
     'docs/architecture.md', 'docs/OPERATIONS.md', 'CHANGELOG.md',
     'docs/assets/readme-hero.png', 'docs/assets/qq-group.png',
-    'docs/screenshots/fresh-wizard-desktop.png', 'docs/screenshots/configured-channels-desktop.png',
+    'docs/screenshots/admin-gate-desktop.png', 'docs/screenshots/fresh-wizard-desktop.png',
+    'docs/screenshots/fresh-wizard-step2-desktop.png', 'docs/screenshots/configured-channels-desktop.png',
+    'docs/screenshots/fresh-wizard-mobile.png', 'docs/screenshots/configured-channels-mobile.png',
   ]
   for (const file of required) {
     assert.equal(existsSync(resolve(root, file)), true, `missing from tree: ${file}`)
