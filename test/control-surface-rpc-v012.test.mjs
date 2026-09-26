@@ -118,3 +118,30 @@ test('route enforces admission, path and envelope guards', async () => {
   assert.equal(mismatch.status, 200)
   assert.equal(JSON.parse(mismatch.body).result.error.code, 'gateway/bad-request')
 })
+
+test('route converts handler failures to a stable structured error without leaking internals', async () => {
+  const ctx = {
+    connection: { rpc: {}, admit: () => ({ peer: {} }) },
+    effect(fn) { return fn() },
+  }
+  const { routes } = mountRoutes(ctx, {
+    call: async () => { throw new Error('secret provider token must not cross the RPC boundary') },
+  })
+  const res = fakeRes()
+  await routes[0].handler(fakeReq({
+    url: `${CONTROL_SURFACE_CHANNEL}/surface.home`,
+    body: JSON.stringify({ type: 'client-request', rpcId: 'r3', method: 'surface.home', payload: {} }),
+  }), res)
+
+  assert.equal(res.status, 200)
+  const response = JSON.parse(res.body)
+  assert.deepEqual(response, {
+    type: 'server-response',
+    rpcId: 'r3',
+    result: {
+      ok: false,
+      error: { code: 'gateway/internal', message: 'control surface unavailable', details: {} },
+    },
+  })
+  assert.doesNotMatch(res.body, /secret provider token/)
+})

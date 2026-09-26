@@ -171,3 +171,29 @@ test('v0.13：Native projection 默认不返回未声明字段或入站 secret',
   assert.deepEqual(row.control.editableValues, {})
   assert.doesNotMatch(JSON.stringify(row), /outbound-secret|inbound-secret/)
 })
+
+test('v0.13：surface home exposes safe epoch/revision and migration diagnostics', async () => {
+  const revision = createSurfaceRevision({ epoch: 'epoch-a' })
+  const service = createControlSurfaceService({
+    revision,
+    channels: { list: () => [], get: () => null },
+    outboundConfig: {},
+    tasks: { list: () => [] },
+    questions: { list: () => [], settle: () => ({ settled: false }) },
+    activity: createSurfaceActivity(),
+    health: createSurfaceHealth(),
+    storageStatus: () => ({
+      readFailed: false,
+      migration: { status: 'complete', migratedCount: 2, backupCreated: true },
+    }),
+    launchTickets: { mint: () => ({ ticket: 'x', expiresAt: 1 }) },
+    adminLocation: () => null,
+  })
+  const result = await service.call('surface.home')
+  assert.equal(result.ok, true)
+  assert.equal(result.value.epoch, 'epoch-a')
+  assert.equal(result.value.revision, 1)
+  assert.deepEqual(result.value.storage.migration, { status: 'complete', migratedCount: 2, backupCreated: true })
+  assert.equal(JSON.stringify(result.value).includes('backupPath'), false)
+  revision.dispose()
+})

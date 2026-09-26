@@ -4,7 +4,7 @@ window.__ModuleLoader__.load({
     const React = require('react')
     const h = React.createElement
     const {
-      useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore,
+      Component, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore,
     } = React
 
     const PANEL_ID = 'dsh-notifier'
@@ -82,6 +82,8 @@ window.__ModuleLoader__.load({
       openControl: '打开通知与控制',
       pluginAdvanced: '独立管理台用于成员、路由、会话策略以及故障恢复。',
       unknownError: '发生未知错误',
+      staleData: '连接中断，当前显示的是上次成功读取的数据。',
+      renderFailed: '通知与控制界面发生错误',
     })
 
     const en = Object.freeze({
@@ -155,6 +157,8 @@ window.__ModuleLoader__.load({
       openControl: 'Open Notify & Control',
       pluginAdvanced: 'The advanced console is for members, routing, session policy, and recovery.',
       unknownError: 'An unknown error occurred',
+      staleData: 'Connection interrupted; showing the last successfully loaded data.',
+      renderFailed: 'Notify & Control could not render',
     })
 
     function resolveText(ctx, value) {
@@ -178,6 +182,21 @@ window.__ModuleLoader__.load({
       return Object.freeze({ call })
     }
 
+    class ErrorBoundary extends Component {
+      constructor(props) {
+        super(props)
+        this.state = { failed: false }
+      }
+      static getDerivedStateFromError() { return { failed: true } }
+      componentDidCatch() { /* 宿主 slot 保持存活；结构化 RPC 错误由视图自身展示。 */ }
+      render() {
+        if (!this.state.failed) return this.props.children
+        return h('div', { className: 'dn-page dn-errorBoundary', role: 'alert' },
+          h('strong', null, this.props.message || 'Notify & Control could not render'),
+          h(Button, { onClick: () => this.setState({ failed: false }) }, this.props.retry || 'Retry'))
+      }
+    }
+
     function createController(ctx) {
       const rpc = createRpcClient(ctx)
       let snapshot = Object.freeze({
@@ -189,8 +208,10 @@ window.__ModuleLoader__.load({
         channel: null,
         busy: Object.freeze({}),
         error: null,
+        epoch: null,
         revision: 0,
         staleAt: null,
+        connectionState: 'connecting',
       })
       const listeners = new Set()
       let waitAbort = null
@@ -208,8 +229,25 @@ window.__ModuleLoader__.load({
       }
       const setBusy = (key, value) => emit({ busy: Object.freeze({ ...snapshot.busy, [key]: value }) })
       const setError = (error) => emit({ error: error ?? null })
-      const updateRevision = (value) => {
-        if (Number.isFinite(Number(value))) emit({ revision: Math.max(snapshot.revision, Number(value)) })
+      const clockPatch = (value) => {
+        const incomingEpoch = typeof value?.epoch === 'string' && value.epoch !== '' ? value.epoch : snapshot.epoch
+        const incomingRevision = Number.isFinite(Number(value?.revision)) ? Number(value.revision) : snapshot.revision
+        const epochChanged = snapshot.epoch !== null && incomingEpoch !== null && incomingEpoch !== snapshot.epoch
+        return {
+          epochChanged,
+          patch: {
+            ...(epochChanged ? { home: null, channels: null, tasks: null, activity: null, channel: null } : {}),
+            epoch: incomingEpoch,
+            revision: epochChanged ? incomingRevision : Math.max(snapshot.revision, incomingRevision),
+            connectionState: 'connected',
+            staleAt: null,
+          },
+        }
+      }
+      const commit = (resource, value) => {
+        const clock = clockPatch(value)
+        emit({ ...clock.patch, [resource]: value, error: null })
+        return clock.epochChanged
       }
 
       async function loadHome() {
@@ -217,7 +255,7 @@ window.__ModuleLoader__.load({
         try {
           const value = await rpc.call('surface.home')
           if (generation !== generations.home) return value
-          emit({ home: value, error: null, revision: Math.max(snapshot.revision, Number(value?.revision ?? 0)) })
+          commit('home', value)
           return value
         } catch (error) {
           if (generation !== generations.home) return null
@@ -230,8 +268,7 @@ window.__ModuleLoader__.load({
         try {
           const value = await rpc.call('channels.list')
           if (generation !== generations.channels) return value
-          emit({ channels: value, error: null })
-          updateRevision(value?.revision)
+          commit('channels', value)
           return value
         } catch (error) {
           if (generation !== generations.channels) return null
@@ -244,8 +281,7 @@ window.__ModuleLoader__.load({
           const value = await rpc.call('channels.get', { type })
           if (generation !== generations.channel) return value
           if (snapshot.view.kind !== 'channel' || snapshot.view.type !== type) return value
-          emit({ channel: value, error: null })
-          updateRevision(value?.revision)
+          commit('channel', value)
           return value
         } catch (error) {
           if (generation !== generations.channel) return null
@@ -257,8 +293,7 @@ window.__ModuleLoader__.load({
         try {
           const value = await rpc.call('tasks.list')
           if (generation !== generations.tasks) return value
-          emit({ tasks: value, error: null })
-          updateRevision(value?.revision)
+          commit('tasks', value)
           return value
         } catch (error) {
           if (generation !== generations.tasks) return null
@@ -270,8 +305,7 @@ window.__ModuleLoader__.load({
         try {
           const value = await rpc.call('activity.list', { limit: 100 })
           if (generation !== generations.activity) return value
-          emit({ activity: value, error: null })
-          updateRevision(value?.revision)
+          commit('activity', value)
           return value
         } catch (error) {
           if (generation !== generations.activity) return null
@@ -287,10 +321,11 @@ window.__ModuleLoader__.load({
           else if (kind === 'tasks') await loadTasks()
           else if (kind === 'activity') await loadActivity()
           else await loadHome()
-          emit({ staleAt: null })
+          emit({ staleAt: null, connectionState: 'connected' })
           return true
         } catch {
-          emit({ staleAt: Date.now() })
+          const hasData = snapshot.home !== null || snapshot.channels !== null || snapshot.channel !== null || snapshot.tasks !== null || snapshot.activity !== null
+          emit({ staleAt: Date.now(), connectionState: hasData ? 'stale' : 'disconnected' })
           return false
         }
       }
@@ -340,7 +375,10 @@ window.__ModuleLoader__.load({
       }
       function navigate(view) {
         // v0.12.1（P2-10）：导航只负责切视图；目标视图的 mount effect 是唯一加载 owner。
-        emit({ view, error: null })
+        const changingChannel = view?.kind === 'channel'
+          && (snapshot.view.kind !== 'channel' || snapshot.view.type !== view.type)
+        if (changingChannel) generations.channel += 1
+        emit({ view, error: null, ...(changingChannel ? { channel: null } : {}) })
       }
       function startWait() {
         if (disposed || paused || waitAbort !== null) return
@@ -356,9 +394,10 @@ window.__ModuleLoader__.load({
             await new Promise(resolve => setTimeout(resolve, retryAfterMs))
             continue
           }
-          if (Number(value?.revision ?? 0) > snapshot.revision) {
+          const epochChanged = typeof value?.epoch === 'string' && value.epoch !== '' && snapshot.epoch !== null && value.epoch !== snapshot.epoch
+          if (epochChanged || Number(value?.revision ?? 0) > snapshot.revision) {
                 const refreshed = await refreshCurrent()
-                if (refreshed === true) updateRevision(value.revision)
+                if (refreshed === true && !epochChanged) emit({ revision: Math.max(snapshot.revision, Number(value.revision) || 0) })
               }
             } catch (error) {
               if (signal.aborted || disposed) break
@@ -440,6 +479,14 @@ window.__ModuleLoader__.load({
         type,
         className: `dn-button dn-button--${kind}${className ? ` ${className}` : ''}`,
       }, children)
+    }
+
+    function ErrorNotice({ error, t, onRetry }) {
+      if (!error) return null
+      const code = String(error?.code ?? 'dsh-notifier/internal')
+      return h('div', { className: 'dn-error', role: 'alert', 'data-error-code': code },
+        h('span', null, error?.message || t('unknownError')),
+        onRetry ? h(Button, { onClick: onRetry }, t('retry')) : null)
     }
 
     function PageHead({ title, intro, actions }) {
@@ -619,8 +666,10 @@ window.__ModuleLoader__.load({
       return h('div', { className: 'dn-page' },
         h(PageHead, { title: t('title'), intro: t('intro'), actions }),
         h(StatusRow, { ctx, summary: home?.summary, t, onRetry: () => void controller.refreshCurrent() }),
-        state.staleAt !== null
-          ? h('p', { className: 'dn-error', role: 'alert' }, t('connectionLost'))
+        state.connectionState === 'stale'
+          ? h('p', { className: 'dn-error', role: 'status' }, t('staleData'))
+          : state.connectionState === 'disconnected'
+            ? h('p', { className: 'dn-error', role: 'alert' }, t('connectionLost'))
           : null,
         (home?.questions?.length ?? 0) > 0
           ? h(Section, { title: `${t('needsAttention')}  ${home.questions.length}` },
@@ -664,6 +713,9 @@ window.__ModuleLoader__.load({
         setTestResult(null)
         try {
           await controller.saveChannel(type, 'outbound', draft)
+          setDraft(current => Object.fromEntries(
+            Object.entries(current).filter(([key]) => fields[key]?.secret !== true),
+          ))
           setPhase('testing')
           const result = await controller.testChannel(type)
           setTestResult(result)
@@ -718,7 +770,7 @@ window.__ModuleLoader__.load({
                 ? h('p', { className: 'dn-note' }, resolveText(ctx, testResult?.providerDetail) || t('testAcceptedHint'))
                 : null,
               h(Button, { kind: 'primary', onClick: onDone }, t('complete')))
-          : h(Button, { kind: 'primary', disabled: phase === 'testing', onClick: () => void saveAndTest() }, t('saveAndTest')))
+          : h(Button, { kind: 'primary', disabled: phase === 'testing' || Object.keys(draft).length === 0, onClick: () => void saveAndTest() }, t('saveAndTest')))
     }
 
     function ChannelsView({ ctx, controller, state, t }) {
@@ -790,6 +842,16 @@ window.__ModuleLoader__.load({
           if (Object.keys(payload).length === 0) return
           try {
             await controller.saveChannel(type, direction, payload)
+            // Secret values are write-only. A successful save must evict the submitted
+            // plaintext from React state; the refreshed projection only carries
+            // configured=true and must never rehydrate an old secret.
+            setDrafts(current => {
+              const nextDirection = { ...current[direction] }
+              for (const key of Object.keys(payload)) {
+                if (fields[key]?.secret === true) delete nextDirection[key]
+              }
+              return { ...current, [direction]: nextDirection }
+            })
             setDirty(current => {
               const next = { ...current, [direction]: new Set() }
               dirtyRef.current = next
@@ -837,7 +899,7 @@ window.__ModuleLoader__.load({
         h('div', { className: 'dn-detailBack' },
           h('button', { className: 'dn-link', onClick: () => controller.navigate({ kind: 'channels' }) }, `← ${t('back')}`)),
         h(PageHead, { title: resolveText(ctx, channel.label) || type }),
-        state.error ? h('p', { className: 'dn-error', role: 'alert' }, state.error?.message || t('unknownError')) : null,
+        h(ErrorNotice, { error: state.error, t, onRetry: () => void controller.loadChannel(type).catch(error => controller.reportError(error)) }),
         h(Direction, { direction: 'outbound', section: channel.notify }),
         h(Direction, { direction: 'inbound', section: channel.control }),
         h(Section, { title: t('recent20') },
@@ -991,9 +1053,13 @@ window.__ModuleLoader__.load({
         }, 'dsh-notifier: native visibility')
         ctx.effect(() => () => controller.dispose(), 'dsh-notifier: native controller')
 
-        const Main = () => h(MainPanel, { controller, ctx })
-        const Config = props => h(PluginConfig, { ...props, controller, ctx })
-        const ActivationView = props => h(Activation, { ...props, ctx })
+        const boundary = child => h(ErrorBoundary, {
+          message: resolveText(ctx, { zh: zh.renderFailed, en: en.renderFailed }),
+          retry: resolveText(ctx, { zh: zh.retry, en: en.retry }),
+        }, child)
+        const Main = () => boundary(h(MainPanel, { controller, ctx }))
+        const Config = props => boundary(h(PluginConfig, { ...props, controller, ctx }))
+        const ActivationView = props => boundary(h(Activation, { ...props, ctx }))
 
         ctx.slots.inject('main', () => ctx.slots.register({
           name: 'main',

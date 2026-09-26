@@ -5,7 +5,12 @@ import { readFileSync } from 'node:fs'
 
 function fakeReact() {
   const noop = () => {}
+  class Component {
+    constructor(props) { this.props = props; this.state = {} }
+    setState(patch) { this.state = { ...this.state, ...patch } }
+  }
   return {
+    Component,
     createElement(type, props, ...children) { return { type, props: props ?? {}, children } },
     useCallback(fn) { return fn },
     useEffect() {},
@@ -130,6 +135,47 @@ test('question conflict race normalizes to alreadyHandled and refreshes home', a
   controller.dispose()
 })
 
+test('controller treats epoch change as restart and clears old revision/cache truth', async () => {
+  let epoch = 'epoch-a'
+  let revision = 9
+  const { mod, ctx } = loadModule({
+    async rpcCall(_channel, endpoint, payload) {
+      if (endpoint === 'surface.home') return { ok: true, value: { epoch, revision, summary: {}, questions: [], tasks: [], channels: [], activity: [] } }
+      if (endpoint === 'channels.list') return { ok: true, value: { epoch, revision, channels: [{ type: 'telegram' }] } }
+      if (endpoint === 'channels.get') return { ok: true, value: { epoch, revision, channel: { type: payload.type } } }
+      return { ok: true, value: { epoch, revision } }
+    },
+  })
+  const controller = mod.__test.createController(ctx)
+  await controller.loadHome()
+  await controller.loadChannels()
+  assert.equal(controller.getSnapshot().revision, 9)
+  epoch = 'epoch-b'
+  revision = 1
+  await controller.loadHome()
+  const restarted = controller.getSnapshot()
+  assert.equal(restarted.epoch, 'epoch-b')
+  assert.equal(restarted.revision, 1, '新 epoch 的低 revision 不得被旧进程高 revision 压住')
+  assert.equal(restarted.channels, null, 'epoch 变化必须清除旧进程缓存')
+  controller.dispose()
+})
+
+test('channel navigation clears previous channel before the next request resolves', async () => {
+  const { mod, ctx } = loadModule({
+    async rpcCall(_channel, endpoint, payload) {
+      if (endpoint === 'channels.get') return { ok: true, value: { epoch: 'e', revision: 1, channel: { type: payload.type } } }
+      return { ok: true, value: { epoch: 'e', revision: 1 } }
+    },
+  })
+  const controller = mod.__test.createController(ctx)
+  controller.navigate({ kind: 'channel', type: 'telegram' })
+  await controller.loadChannel('telegram')
+  assert.equal(controller.getSnapshot().channel.channel.type, 'telegram')
+  controller.navigate({ kind: 'channel', type: 'feishu' })
+  assert.equal(controller.getSnapshot().channel, null, 'B 详情加载前不得短暂显示 A 的数据')
+  controller.dispose()
+})
+
 test('frozen Question/Task/Channel/Activity view fields render exactly', () => {
   const { mod, ctx } = loadModule()
   const t = key => key
@@ -176,4 +222,7 @@ test('static safety invariants remain true', () => {
   assert.match(source, /question\?\.multiple === true/)
   assert.match(source, /option\.value/)
   assert.match(source, /channel\?\.health\?\.state/)
+  assert.match(source, /class ErrorBoundary extends Component/)
+  assert.match(source, /data-error-code/)
+  assert.match(source, /if \(fields\[key\]\?\.secret === true\) delete nextDirection\[key\]/)
 })

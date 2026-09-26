@@ -808,7 +808,26 @@ export function apply(ctx, config = {}) {
     questions: surfaceQuestions,
     activity: surfaceActivity,
     health: surfaceHealth,
-    storageStatus: () => (typeof store.bootStatus === 'function' ? store.bootStatus() : { readFailed: false }),
+    storageStatus: () => {
+      const boot = typeof store.bootStatus === 'function' ? store.bootStatus() : { readFailed: false }
+      const migrated = Array.isArray(configMigration.migrated) ? configMigration.migrated.length : 0
+      const status = configMigration.ok !== true
+        ? 'failed'
+        : configMigration.deferred === true
+          ? 'deferred'
+          : configMigration.already === true
+            ? 'already-complete'
+            : 'complete'
+      return {
+        ...boot,
+        migration: {
+          status,
+          migratedCount: migrated,
+          backupCreated: typeof configMigration.backupPath === 'string' && configMigration.backupPath !== '',
+          ...(configMigration.reason ? { reason: String(configMigration.reason).slice(0, 80) } : {}),
+        },
+      }
+    },
     launchTickets,
     adminLocation: () => adminListenInfo,
   })

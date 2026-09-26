@@ -77,6 +77,21 @@ function badRequest(rpcId, message) {
   return { type: 'server-response', rpcId, result: { ok: false, error: { code: 'gateway/bad-request', message, details: {} } } }
 }
 
+function internalFailure(rpcId) {
+  return {
+    type: 'server-response',
+    rpcId,
+    result: {
+      ok: false,
+      error: {
+        code: 'gateway/internal',
+        message: 'control surface unavailable',
+        details: {},
+      },
+    },
+  }
+}
+
 /** 把通道挂到宿主 webServer 上（与 connection 插件挂 `/api` 同款）。 */
 function mountOnWebServer(ctx, service) {
   const connection = ctx?.connection
@@ -86,6 +101,7 @@ function mountOnWebServer(ctx, service) {
     kind: 'prefix',
     path: CONTROL_SURFACE_CHANNEL,
     handler: async (req, res) => {
+      let rpcId = 'invalid-request'
       try {
         const admission = connection.admit(req)
         if (admission !== null && typeof admission === 'object' && 'rejection' in admission) {
@@ -105,6 +121,7 @@ function mountOnWebServer(ctx, service) {
           writeText(res, 400, 'body is not JSON'); return
         }
         if (!isRequestEnvelope(message)) { writeJson(res, badRequest('invalid-request', 'invalid client-request message')); return }
+        rpcId = message.rpcId
         if (message.method !== endpoint) {
           writeJson(res, badRequest(message.rpcId, `method ${JSON.stringify(message.method)} does not match endpoint ${JSON.stringify(endpoint)}`))
           return
@@ -114,8 +131,11 @@ function mountOnWebServer(ctx, service) {
         res.on('close', () => { if (!res.writableEnded) abort.abort() })
         const result = await service.call(endpoint, message.payload, abort.signal)
         writeJson(res, { type: 'server-response', rpcId: message.rpcId, result })
-      } catch (error) {
-        try { writeText(res, 500, `handler failure: ${String(error)}`) } catch { /* 连接已断则无可写 */ }
+      } catch {
+        // Never serialize provider/store errors into the Native response. The
+        // client needs a stable structured failure, while details stay in the
+        // server-side diagnostics path.
+        try { writeJson(res, internalFailure(rpcId)) } catch { /* 连接已断则无可写 */ }
       }
     },
   }
