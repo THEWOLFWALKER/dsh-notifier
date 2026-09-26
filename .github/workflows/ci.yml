@@ -2,8 +2,12 @@ name: CI
 
 on:
   push:
-    branches: [main, master]
+    branches: [main, master, dev]
   pull_request:
+
+concurrency:
+  group: dsh-notifier-ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
@@ -25,7 +29,7 @@ jobs:
       # 显式钉到 test/ 下两种命名：默认发现 glob（test-*）会误吞 scripts/test-channel.mjs
       # （node --test 自 v21 起原生支持 glob 模式，Windows 上不经 shell 展开也能匹配）
       - name: Run tests
-        run: node --test "test/*.test.mjs" "test/*.spec.mjs"
+        run: npm test
       - name: Verify zero runtime dependencies
         shell: bash # if [ -f ... ] 是 bash 语法，Windows runner 默认 pwsh 需显式指定
         run: |

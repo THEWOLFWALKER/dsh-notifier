@@ -38,7 +38,7 @@
     "client.js"
   ],
   "scripts": {
-    "test": "node --test \"test/*.test.mjs\" \"test/*.spec.mjs\"",
+    "test": "node --import ./test/_hermetic-network-guard.mjs --test \"test/*.test.mjs\" \"test/*.spec.mjs\"",
     "verify:release": "node scripts/verify-release.mjs"
   },
   "dshQuality": {
