@@ -34,9 +34,7 @@ dsh-notifier is the notification and remote-operations layer for DeepSeek Harnes
 - **Manage it inside DSH** — the Native **Notify & Control** panel is the daily control surface; the loopback Advanced Console remains available for recovery and deeper management.
 - **Keep failures contained** — unsafe or unknown inbound actions fail closed; outbound channel failures do not take down the rest of the notifier.
 
-## UI screenshots
-
-These are viewport-sized captures of the local Admin Console. The gallery covers the unlock gate, first-run setup, channel configuration, and the narrow/mobile layout; long full-page exports are intentionally kept out of the README.
+## Screenshots
 
 <table>
   <tr>
