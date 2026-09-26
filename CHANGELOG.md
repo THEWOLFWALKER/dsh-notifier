@@ -2,7 +2,16 @@
 
 ## [Unreleased]
 
-- v0.13 dev follow-up：管理台补齐中英文资源表与安全内联序列化，公开投递能力改为证据边界表述，npm 白名单覆盖 README 文档/图片并加入包内容回归；高风险专项复核与全量 `npm test` 均为 **2011/2011**（0 fail，0 skip）。本节未触发版本递增、npm 发布或 `main`/tag/GitHub Release 变更。
+## [0.13.1] - 2026-09-26（v0.13 follow-up release）
+
+本次补丁发行收口 v0.13 后续验证与公开交付边界：管理台补齐中英文资源表与安全内联序列化，公开投递能力改为证据边界表述，npm 白名单覆盖 README 文档/图片并加入包内容回归；高风险专项复核同步完成。
+
+### 验证边界
+
+- `npm test`：**2011 tests，2011 pass，0 fail，0 skip**。
+- `npm run verify:release`：版本、文档、测试计数、Host 兼容性与 npm payload 门禁通过。
+- `node scripts/gen-channel-matrix.mjs --check`：28 个渠道矩阵通过。
+- 本次未新增真实 DSH 真机、provider 账号或真实投递回执证据；QQ、DingTalk、Feishu、WxPusher、WeChat iLink 等 provider 级缺口继续登记在 [`docs/memory/risks.md`](docs/memory/risks.md)。
 
 ## [0.13.0] - 2026-09-26（Architecture convergence release gate）
 

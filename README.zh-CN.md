@@ -22,7 +22,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/tests-2011-brightgreen" alt="2011 个测试">
-  `dsh-notifier@0.13.0` · test/ 2011 个测试 · 2011 个自动化契约测试
+  `dsh-notifier@0.13.1` · test/ 2011 个测试 · 2011 个自动化契约测试
 </p>
 
 ## 它解决什么
@@ -34,10 +34,24 @@ dsh-notifier 是 DeepSeek Harness 的通知与远程操作层。最核心的使�
 - **日常管理留在 DSH**：Native **「通知与控制」** 是主入口；高级管理台只负责成员、绑定、Session、诊断和 Recovery。
 - **失败尽量局部化**：未知/未绑定的入站操作 fail-closed；单个通知渠道失败不拖垮其他渠道。
 
-<p align="center">
-  <img src="docs/screenshots/fresh-wizard-desktop.png" alt="dsh-notifier 初始化向导" width="49%">
-  <img src="docs/screenshots/configured-channels-desktop.png" alt="dsh-notifier 通知渠道页面" width="49%">
-</p>
+## 管理台界面截图
+
+以下均为本地管理台的视口截图，覆盖解锁门、首次配置向导、渠道配置和窄屏/手机布局；长整页导出图不会直接塞进 README。
+
+<table>
+  <tr>
+    <td><img src="docs/screenshots/admin-gate-desktop.png" alt="dsh-notifier 管理台解锁门" width="600"></td>
+    <td><img src="docs/screenshots/fresh-wizard-desktop.png" alt="dsh-notifier 桌面端初始化向导" width="600"></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/fresh-wizard-step2-desktop.png" alt="dsh-notifier 初始化向导渠道选择" width="600"></td>
+    <td><img src="docs/screenshots/configured-channels-desktop.png" alt="dsh-notifier 桌面端通知渠道页面" width="600"></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/fresh-wizard-mobile.png" alt="dsh-notifier 窄屏初始化向导" width="390"></td>
+    <td><img src="docs/screenshots/configured-channels-mobile.png" alt="dsh-notifier 窄屏通知渠道页面" width="390"></td>
+  </tr>
+</table>
 
 ## 安装
 

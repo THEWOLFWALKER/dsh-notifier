@@ -41,7 +41,7 @@ export function createAdminMarkup(t) {
 <header>
   <div class="brand">
     <span class="beacon"><svg viewBox="0 0 32 32" width="22" height="22" aria-hidden="true"><circle cx="16" cy="21" r="3.4" fill="currentColor"/><path d="M8.8 15.6a10.2 10.2 0 0 1 14.4 0" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/><path d="M5.2 11.8a15.3 15.3 0 0 1 21.6 0" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" opacity=".55"/></svg></span>
-    <h1>${m.brandTitle}<small>v0.13.0</small></h1>
+    <h1>${m.brandTitle}<small>v0.13.1</small></h1>
   </div>
   <span id="loadState" role="status" aria-live="polite"></span>
   <span id="entryHint">${m.entryHint}<code id="entryUrl"></code></span>
