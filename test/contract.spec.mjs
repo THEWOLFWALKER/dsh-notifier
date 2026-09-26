@@ -69,7 +69,11 @@ function bodyOf(raw) {
 
 function assertRequestMatches(actual, expected, type) {
   assert.equal(actual.method, expected.method, `${type}: method 不匹配`)
-  assert.equal(actual.url, expected.url, `${type}: url 不匹配`)
+  // v0.13（C11.5）：URL 按 RFC 3986 归一后比较，而不是比较原始字符串。
+  // Safe Network 走 `new URL(...).href` 构造请求地址，会把裸主机补成带尾斜杠的形态
+  // （`https://ntfy.example.com` → `https://ntfy.example.com/`），对 HTTP 语义等价。
+  // 死锁原始字符串会让「安全传输路径」被当成缺陷去修——方向错误。
+  assert.equal(sameRequestUrl(actual.url, expected.url), true, `${type}: url 不匹配（实际 ${actual.url} / 期望 ${expected.url}）`)
   if (expected.headers !== undefined) {
     const normalized = {}
     for (const [key, value] of Object.entries(actual.headers)) normalized[String(key).toLowerCase()] = value
@@ -94,6 +98,21 @@ function assertRequestMatches(actual, expected, type) {
 
 function lowerHeader(headers, key) {
   return headers[String(key).toLowerCase()]
+}
+
+/**
+ * v0.13（C11.5）：URL 等价比较。归一化失败（非法 URL）时回落原始字符串比较，
+ * 保证「构造出非法地址」这种真实缺陷仍然会被测出来。
+ */
+function sameRequestUrl(actual, expected) {
+  const a = String(actual)
+  const b = String(expected)
+  if (a === b) return true
+  try {
+    return new URL(a).href === new URL(b).href
+  } catch {
+    return false
+  }
 }
 
 test('渠道 fixture 覆盖全部新渠道（spec + token 型）', () => {

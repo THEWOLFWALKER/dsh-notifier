@@ -3,3 +3,7 @@ package-lock.json
 *.log
 .DS_Store
 .agents/
+# 本地运行时状态目录（admin/api.mjs 的 DEFAULT_STATE_DIR 缺省值）。测试里未注入
+# stateDir 的装配会回落写入 ./state，属运行产物；按仓库纪律（永不提交 state 文件）
+# 一律忽略，避免污染 worktree。
+/state/

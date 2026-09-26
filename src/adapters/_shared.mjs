@@ -164,7 +164,10 @@ async function guardedFetch(url, init, channel, networkPolicy) {
   try {
     response = networkPolicy === undefined
       ? await fetch(url, { ...init, redirect: 'manual' })
-      : await guardedNetworkFetch(url, init, { ...networkPolicy, channel })
+      // v0.13（C11.5）：SSRF 拒绝文案进入 publicMessage，必须用面向用户的展示名
+      // （channelNameOf -> 'Webhook'），而不是内部渠道键（'webhook'）。
+      // 这里传入的 channel 只用于组装公开文案，不影响任何防护判定。
+      : await guardedNetworkFetch(url, init, { ...networkPolicy, channel: channelNameOf(channel) })
   } catch (error) {
     if (error instanceof NetworkPolicyError) {
       throw new NotifyError(error.message, error.code, { detail: error.detail })
