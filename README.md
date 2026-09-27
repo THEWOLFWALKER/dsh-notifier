@@ -20,10 +20,7 @@ Bring DeepSeek Harness to your phone: notifications, approvals, questions, remot
 
 </div>
 
-<p align="center">
-  <img src="https://img.shields.io/badge/tests-2011-brightgreen" alt="2011 tests">
-  `dsh-notifier@0.13.1` · test/ 2011 tests · 2011 automated contract tests
-</p>
+`dsh-notifier@0.13.1` · test/ 2011 tests · 2011 automated contract tests
 
 ## What it does
 

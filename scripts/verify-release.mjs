@@ -47,8 +47,6 @@ try {
 check(uiHtml.includes(`v${version}`), `admin UI composed HTML does not contain v${version}`)
 
 const documentedCounts = [
-  one(readme, /tests-(\d+)-brightgreen/, 'README.md badge'),
-  one(readmeZh, /tests-(\d+)-brightgreen/, 'README.zh-CN.md badge'),
   one(readme, /test\/\s+(\d+) tests/, 'README.md test text'),
   one(readmeZh, /test\/\s+(\d+) 个测试/, 'README.zh-CN.md test text'),
   one(readme, /· (\d+) automated contract tests/, 'README.md metadata tests'),
