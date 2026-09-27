@@ -16,6 +16,8 @@ import { join } from 'node:path'
 import { createAdminApi, ApiError, INBOUND_CHANNELS } from '../src/admin/api.mjs'
 import { createAgentRouter } from '../src/routing/agent-router.mjs'
 import { createStore } from '../src/inbound/store.mjs'
+import { createOutboundConfigService } from '../src/control-surface/outbound-config.mjs'
+import { createOutboundSource } from '../src/runtime/outbound-source.mjs'
 import { CHANNEL_TYPES } from '../src/config.mjs'
 
 /** 审计文件名（契约：<stateDir>/admin-audit.jsonl）。 */
@@ -61,16 +63,24 @@ function makeApi({
   pairing = undefined,
   guidedProbe = undefined,
   storeOverrides = {},
+  canonicalOutbound = false,
 } = {}) {
   const store = makeStore(state, storeOverrides)
   const router = createAgentRouter({ store, agentsList: () => [] })
   const stateDir = mkdtempSync(join(tmpdir(), 'dsh-notifier-admin-api-'))
+  // v0.14（S12）：出站方向路由只走 canonical 服务。需要写/测出站通道的用例注入真实
+  // OutboundConfigService（生产装配同款）；缺省不注入 → 出站写方法 fail-closed 501。
+  const outboundSource = canonicalOutbound ? createOutboundSource([]) : null
+  const outboundConfig = canonicalOutbound
+    ? createOutboundConfigService({ store, yamlRows: new Map(), source: outboundSource, allowLegacy: false })
+    : undefined
   const api = createAdminApi({
     router,
     registry,
     store,
     channelsEnabled: () => [...enabled],
     outboundConfigs,
+    outboundConfig,
     channelTest,
     scanHandlers,
     identity,
@@ -78,7 +88,7 @@ function makeApi({
     guidedProbe,
     stateDir,
   })
-  return { api, store, router, stateDir }
+  return { api, store, router, stateDir, outboundSource }
 }
 
 // ———————— 契约常量与错误类型 ————————
@@ -631,15 +641,25 @@ test('getChannels wps-bot：msgtype 明文回显（plain 声明），webhook 照
 })
 
 test('putOutboundChannel wps-bot：timeoutMs 不再可写（fixedOptions 白名单收窄），webhook/msgtype 合法', () => {
-  const { api, store } = makeApi()
+  const { api, store, outboundSource } = makeApi({ canonicalOutbound: true })
   assert.throws(() => api.putOutboundChannel('wps-bot', { webhook: 'https://woa.wps.cn/api/v1/webhook/send?key=k', timeoutMs: 5000 }), apiErrorOf(422), 'timeoutMs 已从键白名单移除')
   assert.deepEqual(
     api.putOutboundChannel('wps-bot', { webhook: 'https://woa.wps.cn/api/v1/webhook/send?key=k', msgtype: 'text' }),
-    { type: 'wps-bot', saved: true, direction: 'outbound' },
+    { type: 'wps-bot', saved: true, applied: true, applyMode: 'hot', configRevision: 1, direction: 'outbound' },
   )
-  const stored = store.get('admin:channel:wps-bot:outbound')
+  // v0.14（S12）：写 canonical 键；legacy `admin:channel:<type>:outbound` 不再产生第二写入域。
+  const stored = store.get('channel:wps-bot:outbound')
   assert.equal(stored.webhook, 'https://woa.wps.cn/api/v1/webhook/send?key=k')
   assert.equal(stored.msgtype, 'text')
+  assert.equal(store.get('admin:channel:wps-bot:outbound'), undefined)
+  assert.equal(outboundSource.has('wps-bot'), true, 'canonical 写必须落到运行时 source')
+})
+
+test('putOutboundChannel：未装配 canonical 出站服务 → fail-closed 501，绝不回落直写 legacy 键', () => {
+  const { api, store } = makeApi()
+  assert.throws(() => api.putOutboundChannel('bark', { key: 'k' }), apiErrorOf(501))
+  assert.equal(store.get('admin:channel:bark:outbound'), undefined, '不得制造第二写入域')
+  assert.equal(store.get('channel:bark:outbound'), undefined)
 })
 
 test('putChannel 422：双域通道携带 webhook 键 → 拒绝（键域归入站机器人凭证，防抹掉扫码凭证）', () => {

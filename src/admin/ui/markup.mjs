@@ -50,6 +50,7 @@ export function createAdminMarkup(t) {
   <button id="btnLogout" title="${m.btnLogoutTitle}">${m.btnLogout}</button>
   <button id="btnRefresh">${m.btnRefresh}</button>
 </header>
+<p id="recoveryNote" class="muted small">${m.recoveryNote}</p>
 <nav aria-label="${m.navAria}">
   <button class="tabbtn active" data-tab="dashboard">${m.tabDashboard}</button>
   <button class="tabbtn" data-tab="channels">${m.tabChannels}</button>

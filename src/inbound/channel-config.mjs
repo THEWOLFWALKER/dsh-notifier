@@ -3,7 +3,7 @@
 
 import { INBOUND_CHANNELS, INBOUND_CHANNEL_SET } from './channels-registry.mjs'
 import { toInboundChannelName } from './capability-matrix.mjs'
-import { deleteDurable, setDurable } from './store.mjs'
+import { deleteDurable, setDurable, transactDurable } from './store.mjs'
 import { isPublicExposure } from '../security/exposure.mjs'
 import { splitSecretPatch } from '../security/secret-patch.mjs'
 import { inboundApplyMode, isHotApplied } from '../control-surface/apply-mode.mjs'
@@ -205,7 +205,41 @@ export function createInboundChannelConfigPort({ store, warn = () => {}, audit =
     return { type: normalized, deleted: true, direction: 'inbound', configRevision: version }
   }
 
-  return { rows, put, remove, get version() { return version } }
+  /**
+   * v0.14（S12）：凭证域（`<type>:account`）的事务化字段级合并写。
+   * 供共享 ChannelControlService 的 legacy 兼容路由（Admin `PUT /api/channels/:type`）调用——
+   * Admin 适配器不再直接写 store（I9）。合并与落盘在同一事务内完成，并发写兄弟字段不会被
+   * 读-改-写窗口静默覆盖（I10）；落盘失败时内存与磁盘都不变（I2/I16）。字段校验由调用方在
+   * 调用前完成（本方法是持久化原语，不做形态校验，也不归一化 type——legacy 路由按原 key 落盘）。
+   * @param {string} type - 通道类型（原样用作 `<type>:account` 键）
+   * @param {object} patch - 已校验的字段补丁（非空普通对象）
+   * @returns {{ saved: boolean, unchanged?: boolean }}
+   */
+  function mergeAccount(type, patch) {
+    const key = `${String(type)}:account`
+    const obj = plain(patch)
+    if (obj === null || Object.keys(obj).length === 0) return { saved: true, unchanged: true }
+    let committed
+    if (typeof store?.transact === 'function') {
+      const result = transactDurable(store, (draft) => {
+        const existing = plain(draft[key]) ?? {}
+        draft[key] = { ...existing, ...clone(obj) }
+        return true
+      })
+      committed = result.committed === true
+    } else {
+      const existing = plain(read(key)) ?? {}
+      committed = setDurable(store, key, clone({ ...existing, ...obj })) === true
+    }
+    if (committed !== true) {
+      warn(`通道凭证写入失败（未落盘，已保留当前状态）: ${String(type)}`)
+      return { saved: false }
+    }
+    version += 1
+    return { saved: true }
+  }
+
+  return { rows, put, remove, mergeAccount, get version() { return version } }
 }
 
 function maskSecrets(config, allowed, type) {

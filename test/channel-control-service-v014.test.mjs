@@ -144,3 +144,69 @@ test('S01: test 编排只读 canonical raw；未配置时报 not-configured', as
 
   await assert.rejects(() => channelControl.testOutbound('slack'), (error) => error?.code === 'not-configured')
 })
+
+// ———————— S12：Advanced Console 收敛到共享服务（无第二写入域 / 无 stale 覆盖）—————————
+
+test('S12: 凭证域合并写在同一事务内读-改-写——stale 快照下的并发兄弟字段不被覆盖（TOCTOU 回归）', () => {
+  // 模拟读路径持有过期快照（port 构造时的 get），只有事务内重读才看到最新磁盘态。
+  // 旧实现用 get() 读-改-写：并发写入的 accountId 会被静默抹掉；修复后必须保留。
+  const live = { 'wxpusher:account': { accountId: 'me' } }
+  const store = {
+    get: () => ({}), // 过期快照：永远看不到并发写入的 accountId
+    transact: (mutator) => {
+      const draft = JSON.parse(JSON.stringify(live))
+      const value = mutator(draft)
+      for (const key of Object.keys(live)) delete live[key]
+      Object.assign(live, draft)
+      return { ok: true, committed: true, durable: true, value }
+    },
+  }
+  const inboundConfig = createInboundChannelConfigPort({ store })
+  const channelControl = createChannelControlService({ inboundConfig })
+
+  const result = channelControl.saveChannelAccount('wxpusher', { appToken: 'A' })
+  assert.equal(result.saved, true)
+  assert.deepEqual(
+    live['wxpusher:account'],
+    { accountId: 'me', appToken: 'A' },
+    '事务内读-改-写必须保留并发写入的兄弟字段，绝不整键覆盖',
+  )
+})
+
+test('S12: Admin putChannel 与共享入站端口写同一 <type>:account 事实；admin 缺位不影响 canonical state', () => {
+  const { file } = tempState()
+  const store = createStore(file)
+  const inboundConfig = createInboundChannelConfigPort({ store })
+  const channelControl = createChannelControlService({ inboundConfig })
+
+  // Admin 未装配：共享服务先写，canonical state 立即可读（recovery 不依赖 Native/Admin 生命周期）。
+  const native = channelControl.saveChannelAccount('telegram', { botToken: 'native-tok' })
+  assert.equal(native.saved, true)
+  assert.deepEqual(store.get('telegram:account'), { botToken: 'native-tok' })
+  assert.equal(inboundConfig.rows().find((row) => row.type === 'telegram').configured, true)
+
+  // 后建 Admin 复用同一 store/channelControl：读到并写回同一事实，不产生第二套状态语义。
+  const admin = createAdminApi({ store, channelControl, channelsEnabled: () => [] })
+  const result = admin.putChannel('telegram', { botToken: 'admin-tok' })
+  assert.equal(result.saved, true)
+  assert.deepEqual(store.get('telegram:account'), { botToken: 'admin-tok' })
+  assert.equal(store.get('admin:channel:telegram:outbound'), undefined, 'Admin 不制造第二写入域')
+})
+
+test('S12: admin disabled 只关闭 legacy 读回，不改变 canonical 事实（共享服务仍读写同一键）', () => {
+  const { file } = tempState({ 'channel:bark:outbound': { key: 'canonical' } })
+  const store = createStore(file)
+  const source = createOutboundSource([{ type: 'bark', config: { key: 'canonical' } }])
+  // adminEnabled=false：仅影响 legacy 键读取，canonical 事实不受影响。
+  const outboundConfig = createOutboundConfigService({ store, yamlRows: new Map(), source, adminEnabled: false, allowLegacy: false })
+  const channelControl = createChannelControlService({ outboundConfig })
+
+  assert.deepEqual(outboundConfig.raw('bark'), { key: 'canonical' }, 'admin 关闭不影响 canonical 读')
+  const saved = channelControl.saveOutbound('bark', { barkUrl: 'https://self.example' })
+  assert.equal(saved.saved, true)
+  assert.deepEqual(
+    store.get('channel:bark:outbound'),
+    { key: 'canonical', barkUrl: 'https://self.example' },
+    'admin 关闭不影响 canonical 的事务化字段级合并写',
+  )
+})

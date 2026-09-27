@@ -30,10 +30,7 @@ import { createRoutingControlService, controlSummary } from '../control-plane/se
 import { createQuestionsControlService } from '../control-plane/questions.mjs'
 import { tasksSnapshot } from '../routing/task-projection.mjs'
 import { createHostCapabilitySnapshot } from '../host/capability.mjs'
-import { deleteDurable, setDurable } from '../inbound/store.mjs'
-import { isPublicExposure } from '../security/exposure.mjs'
 import { diagnosticErrorMessage, redactDiagnosticValue } from '../security/diagnostic.mjs'
-import { splitSecretPatch } from '../security/secret-patch.mjs'
 import {
   CONTROL_OVERLAY_MAX_MEMBERS,
   CONTROL_OVERLAY_MAX_STRING,
@@ -86,15 +83,6 @@ const INBOUND_SET = INBOUND_CHANNEL_SET
 function plainObjectOf(value) {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return null
   return value
-}
-
-/** 深拷贝纯 JSON 值（表拷贝语义：外部修改返回值不污染 store）；不可序列化时原样返回兜底。 */
-function deepCopyPlain(value) {
-  try {
-    return JSON.parse(JSON.stringify(value ?? null))
-  } catch {
-    return value
-  }
 }
 
 /** 错误 → 可读消息（日志与审计用）。 */
@@ -201,13 +189,9 @@ function channelKeyWhitelist(type) {
  *   出站渠道配置表（type → resolved config，装配层注入 resolved.channels 快照）；
  *   getChannels 出站行展示「YAML ⊕ store 账号」合并视图（store 字段覆盖同名 YAML 字段）；
  *   缺省/抛错按无 YAML 配置降级（store 账号独立成视图）
- * @param {() => Record<string, object>} [options.yamlRawConfigs] - 零配置首访：YAML 原始
- *   出站行表（type → raw row，未 resolve、含 ${ENV:NAME} 原文）。testOutboundChannel 的
- *   合并基底——即时测试必须走「当前 YAML 原文 + 当前 state 出站键」重新 resolve，
- *   不能用启动快照或已 resolve 配置二次 resolve（幂等性无保证）。缺省时回落 outboundConfigs。
  * @param {(type: string, rawConfig?: object) => Promise<object>} [options.channelTest] - 单渠道
  *   连通性自检（装配层注入，如 health/self-check 包装）；缺省时 testChannel 抛 501。
- *   零配置首访起支持可选第二参 rawConfig（testOutboundChannel 现场合并结果）；
+ *   零配置首访起支持可选第二参 rawConfig（共享服务 testOutbound 传入 canonical raw）；
  *   省略时由装配层回落启动快照（旧 testChannel 行为不变）。
  * @param {Record<string, () => Promise<{qrContent, done, saved?}>>} [options.scanHandlers] -
  *   各入站通道的网页扫码处理器（装配层保证形状）；无对应通道处理器时 scanChannel 抛 501
@@ -246,7 +230,6 @@ export function createAdminApi(options = {}) {
     routingControl = null,
     identity, pairing, guidedProbe = null, stateDir, logger, questions = null, control = null,
     questionsControl = null,
-    yamlRawConfigs = null,
     // v0.10 提交7「管理台暴露 DSH 连接与任务状态」：宿主上下文 + 任务投影注入 + 宿主
     // 能力快照注入（全部只读；缺失一律安全降级，绝不抛）。
     ctx = null, attentionOf = null, hostSnapshot = null,
@@ -291,19 +274,6 @@ export function createAdminApi(options = {}) {
     } catch {
       return {}
     }
-  }
-
-  /**
-   * YAML 原始出站行表（type → raw row，未 resolve）：testOutboundChannel 合并基底。
-   * 注入缺失/抛错时回落 yamlOutboundOf()（已 resolve 配置二次 resolve 是降级路径，
-   * 适配器 resolve 对幂等输入宽容；装配层生产路径恒注入 raw 行）。
-   */
-  const yamlRawOf = () => {
-    try {
-      const table = typeof yamlRawConfigs === 'function' ? yamlRawConfigs() : null
-      if (table !== null) return plainObjectOf(table) ?? {}
-    } catch { /* 注入失败走回落 */ }
-    return yamlOutboundOf()
   }
 
   /** v0.13 production path delegates outbound truth to the shared service. */
@@ -899,11 +869,12 @@ export function createAdminApi(options = {}) {
         if (bad !== null) throw new ApiError(422, bad)
       }
       try {
-        if (typeof store?.set !== 'function') throw new Error('store 不可用')
-        const existing = plainObjectOf(safeGet(`${type}:account`)) ?? {}
-        if (setDurable(store, `${type}:account`, deepCopyPlain({ ...existing, ...config })) !== true) {
-          throw new Error('store 写入未落盘')
-        }
+        // v0.14（S12）：持久化收敛到共享 ChannelControlService -> 入站凭证域事务化合并写，
+        // Admin 适配器不再直接触达 store（I9）；读-改-写在同一事务内完成，并发写兄弟字段
+        // 不会被静默覆盖（I10）。落盘失败归一为 storage-failed -> 本方法按 legacy 契约降级
+        // 为 saved:false，绝不假报成功（I2/I16）。
+        const result = channelControlService.saveChannelAccount(type, config)
+        if (result?.saved !== true) throw new Error('store 写入未落盘')
       } catch (error) {
         warn(`通道凭证写入失败: ${errorMessage(error)}`)
         return { type, saved: false }
@@ -1237,132 +1208,66 @@ export function createAdminApi(options = {}) {
     },
 
     // ---------- 零配置首访：方向明确的通道 API ----------
-    // 出站与入站分离：出站写 admin:channel:<type>:outbound，入站写 <type>:account。
-    // 旧 putChannel/testChannel 语义一字不改（旧路由与旧 state 数据兼容红线）——
-    // 旧路由仍写 <type>:account、仍受双域 webhook 422 约束；新代码一律走方向路由。
+    // 出站与入站分离：出站写 canonical `channel:<type>:outbound`，入站写 `<type>:account`。
+    // S12 起两条方向路由都只调用共享 ChannelControlService / 入站端口——适配器不再持有任何
+    // 直写 store 的分支（I1/I9）；`admin:channel:<type>:outbound` 退化为只读迁移源。
 
     /**
-     * 写出站通道配置（admin 自有键 `admin:channel:<type>:outbound`）。
-     * 字段级合并：新 config 覆盖既有同名键，其余键保留。双域通道（feishu/dingtalk）
-     * 的出站 webhook 在此写入——不再受旧 `<type>:account` 入站键域限制。
+     * 写出站通道配置（canonical `channel:<type>:outbound`）。
+     * 字段级合并由共享 ChannelControlService -> canonical outbound service 完成。
+     * 双域通道（feishu/dingtalk）的出站 webhook 在此写入——不受旧 `<type>:account` 入站键域限制。
+     * v0.14（S12）：不再回落直写 `admin:channel:<type>:outbound` 的 legacy 分支；该 legacy 键
+     * 只作为迁移输入读取。未装配 canonical 出站服务时 fail-closed 501，绝不制造第二写入域。
      * @param {string} type - 出站通道类型（∈ CHANNEL_TYPES）
      * @param {object} config - 非空普通对象
      * @returns {{ type: string, saved: boolean, direction: 'outbound' }}
-     * @throws {ApiError} 422 校验失败；500 存储写入失败
+     * @throws {ApiError} 422 校验失败；500 存储写入失败；501 canonical 服务不可用
      */
     putOutboundChannel(type, config) {
       if (typeof type !== 'string' || !OUTBOUND_SET.has(type)) {
         throw new ApiError(422, `未知出站通道类型 "${String(type)}"（可用：${CHANNEL_TYPES.join('/')}）`)
       }
-      if (outboundConfig !== null && typeof outboundConfig?.save === 'function') {
-        try {
-          const result = channelControlService.saveOutbound(type, config)
-          auditGuard('putOutboundChannel', { type })
-          return { ...result, type, saved: result?.saved === true, direction: 'outbound' }
-        } catch (error) {
-          warn(`出站通道配置写入失败: ${errorMessage(error)}`)
-          const status = error?.code === 'bad-request' || error?.code === 'not-configured' ? 422 : 500
-          throw new ApiError(status, errorMessage(error))
-        }
-      }
-      let split
       try {
-        split = splitSecretPatch(config)
-      } catch (error) {
-        throw new ApiError(422, error.message)
-      }
-      const patch = split.patch
-      const clear = new Set(split.clear)
-      if (patch === null || (Object.keys(patch).length === 0 && clear.size === 0)) {
-        throw new ApiError(422, 'config 必须是非空对象')
-      }
-      const allowed = channelKeyWhitelist(type)
-      if (allowed.size === 0) {
-        throw new ApiError(422, `${type} 暂不支持手工配置`)
-      }
-      if (Object.keys(patch).length + clear.size > MAX_CHANNEL_KEYS) {
-        throw new ApiError(422, `字段数超过上限（最多 ${MAX_CHANNEL_KEYS} 个）`)
-      }
-      for (const key of clear) {
-        if (DANGEROUS_KEYS.has(key) || !allowed.has(key)) {
-          throw new ApiError(422, `未知字段 "${key}"（${type} 可用字段：${[...allowed].join('/')}）`)
-        }
-        if (isPublicExposure(fields[key])) {
-          throw new ApiError(422, `公共字段 "${key}" 不支持清除`)
-        }
-      }
-      for (const [key, value] of Object.entries(patch)) {
-        if (DANGEROUS_KEYS.has(key)) {
-          throw new ApiError(422, `保留键 "${key}" 不可写入`)
-        }
-        if (!allowed.has(key)) {
-          throw new ApiError(422, `未知字段 "${key}"（${type} 可用字段：${[...allowed].join('/')}）`)
-        }
-        if (value === null) {
-          if (isPublicExposure(fields[key])) {
-            throw new ApiError(422, `公共字段 "${key}" 不支持清除`)
-          }
-          clear.add(key)
-          delete patch[key]
-          continue
-        }
-        const bad = describeBadChannelValue(key, value)
-        if (bad !== null) throw new ApiError(422, bad)
-      }
-      try {
-        if (typeof store?.set !== 'function') throw new Error('store 不可用')
-        const existing = plainObjectOf(safeGet(`admin:channel:${type}:outbound`)) ?? {}
-        const next = { ...existing, ...patch }
-        for (const key of clear) delete next[key]
-        if (setDurable(store, `admin:channel:${type}:outbound`, deepCopyPlain(next)) !== true) {
-          throw new Error('store 写入未落盘')
-        }
+        const result = channelControlService.saveOutbound(type, config)
+        auditGuard('putOutboundChannel', { type })
+        return { ...result, type, saved: result?.saved === true, direction: 'outbound' }
       } catch (error) {
         warn(`出站通道配置写入失败: ${errorMessage(error)}`)
-        return { type, saved: false, direction: 'outbound' }
+        const status = error?.code === 'not-supported' ? 501
+          : error?.code === 'bad-request' || error?.code === 'not-configured' ? 422 : 500
+        throw new ApiError(status, errorMessage(error))
       }
-      auditGuard('putOutboundChannel', { type })
-      return { type, saved: true, direction: 'outbound' }
     },
 
     /**
-     * 删除出站通道配置（移除 `admin:channel:<type>:outbound` 键）。
+     * 删除出站通道配置（canonical `channel:<type>:outbound`）。
+     * v0.14（S12）：不再回落直删 `admin:channel:<type>:outbound` 的 legacy 分支；未装配 canonical
+     * 出站服务时 fail-closed 501。
      * @param {string} type - 出站通道类型
      * @returns {{ type: string, deleted: boolean, direction: 'outbound' }}
-     * @throws {ApiError} 422 类型非法；404 配置不存在；500 存储写入失败
+     * @throws {ApiError} 422 类型非法；404 配置不存在；500 存储写入失败；501 canonical 服务不可用
      */
     deleteOutboundChannel(type, options = {}) {
       if (typeof type !== 'string' || !OUTBOUND_SET.has(type)) {
         throw new ApiError(422, `未知出站通道类型 "${String(type)}"`)
       }
-      if (outboundConfig !== null && typeof outboundConfig?.remove === 'function') {
-        try {
-          const result = channelControlService.removeOutbound(type, options)
-          auditGuard('deleteOutboundChannel', { type, mode: options?.mode ?? 'fallback' })
-          return { ...result, type, deleted: result?.deleted === true, direction: 'outbound' }
-        } catch (error) {
-          warn(`出站通道配置删除失败: ${errorMessage(error)}`)
-          const status = error?.code === 'not-found' ? 404 : error?.code === 'bad-request' ? 422 : 500
-          throw new ApiError(status, errorMessage(error))
-        }
-      }
-      const key = `admin:channel:${type}:outbound`
-      const existing = plainObjectOf(safeGet(key))
-      if (existing === null) {
-        throw new ApiError(404, `出站配置不存在：${type}`)
-      }
       try {
-        if (deleteDurable(store, key).durable !== true) throw new Error('store 删除未落盘')
+        const result = channelControlService.removeOutbound(type, options)
+        auditGuard('deleteOutboundChannel', { type, mode: options?.mode ?? 'fallback' })
+        return { ...result, type, deleted: result?.deleted === true, direction: 'outbound' }
       } catch (error) {
         warn(`出站通道配置删除失败: ${errorMessage(error)}`)
-        throw new ApiError(500, '出站配置删除失败')
+        const status = error?.code === 'not-found' ? 404
+          : error?.code === 'bad-request' ? 422
+            : error?.code === 'not-supported' ? 501 : 500
+        throw new ApiError(status, errorMessage(error))
       }
-      auditGuard('deleteOutboundChannel', { type })
-      return { type, deleted: true, direction: 'outbound' }
     },
 
     /**
-     * 即时测试出站通道（读取最新 YAML+state 合并配置，无需重启）。
+     * 即时测试出站通道（读取 canonical raw 配置，无需重启）。
+     * v0.14（S12）：只走共享 ChannelControlService.testOutbound（canonical raw 唯一读源），
+     * 不再回落直读 legacy 键的合并分支。
      * @param {string} type - 出站通道类型
      * @returns {Promise<object>} runChannelTest 结果原样透传
      * @throws {ApiError} 501 渠道未配置或 channelTest 未注入
@@ -1374,26 +1279,13 @@ export function createAdminApi(options = {}) {
       if (typeof type !== 'string' || !OUTBOUND_SET.has(type)) {
         throw new ApiError(501, `未知出站通道类型 "${String(type)}"`)
       }
-      if (outboundConfig !== null && typeof outboundConfig?.raw === 'function') {
-        try {
-          return await channelControlService.testOutbound(type)
-        } catch (error) {
-          if (error?.code === 'not-configured') throw new ApiError(501, `渠道 "${type}" 未配置，无法测试`)
-          if (error?.code === 'not-supported') throw new ApiError(501, '连通性测试不可用')
-          throw error
-        }
+      try {
+        return await channelControlService.testOutbound(type)
+      } catch (error) {
+        if (error?.code === 'not-configured') throw new ApiError(501, `渠道 "${type}" 未配置，无法测试`)
+        if (error?.code === 'not-supported') throw new ApiError(501, '连通性测试不可用')
+        throw error
       }
-      // 读取最新合并配置（当前 YAML 原始行 ⊕ 当前 admin:channel:<type>:outbound）——
-      // raw 行剔除 type/enabled 元键，runChannelTest 内部自行 resolveEnvRefs + adapter.resolve。
-      const rawTable = yamlRawOf()
-      const adminOutbound = plainObjectOf(safeGet(`channel:${type}:outbound`)) ?? plainObjectOf(safeGet(`admin:channel:${type}:outbound`))
-      const rawRow = plainObjectOf(rawTable[type]) ?? {}
-      const { type: _dropType, enabled: _dropEnabled, ...yamlRaw } = rawRow
-      const merged = adminOutbound !== null ? { ...yamlRaw, ...adminOutbound } : yamlRaw
-      if (Object.keys(merged).length === 0) {
-        throw new ApiError(501, `渠道 "${type}" 未配置，无法测试`)
-      }
-      return await channelTest(type, merged)
     },
 
     /**

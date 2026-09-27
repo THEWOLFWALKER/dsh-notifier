@@ -43,6 +43,7 @@ function requireOutbound(outboundConfig) {
  * @param {(type: string, raw: object) => Promise<object>} [deps.channelTest] - provider connectivity test
  * @param {(type: string, patch: object) => Promise<object>} [deps.saveInbound] - inbound save fallback when no port
  * @param {(type: string) => object} [deps.removeInbound] - inbound remove fallback when no port
+ * @param {(type: string, patch: object) => object} [deps.mergeAccount] - `<type>:account` merge fallback when no port
  */
 export function createChannelControlService({
   outboundConfig = null,
@@ -50,6 +51,7 @@ export function createChannelControlService({
   channelTest = null,
   saveInbound: saveInboundFn = null,
   removeInbound: removeInboundFn = null,
+  mergeAccount: mergeAccountFn = null,
 } = {}) {
   const hasInboundPort = inboundConfig !== null && inboundConfig !== undefined && isFn(inboundConfig.put)
 
@@ -105,6 +107,27 @@ export function createChannelControlService({
     throw error
   }
 
+  // v0.14（S12）：凭证域 `<type>:account` 的事务化字段级合并写，收敛 Admin legacy 兼容路由
+  // （`PUT /api/channels/:type`）的持久化入口——适配器不再直接写 store（I9），服务不再自持第二套
+  // 读-改-写（I10）。只做持久化，字段校验留给调用方（I9 允许表现层做形态校验）。
+  // 落盘失败归一为 `storage-failed`，绝不假报成功（I2/I16）。
+  const saveChannelAccount = (type, patch) => {
+    let saved
+    if (hasInboundPort && isFn(inboundConfig.mergeAccount)) saved = inboundConfig.mergeAccount(type, patch)
+    else if (isFn(mergeAccountFn)) saved = mergeAccountFn(type, patch)
+    else {
+      const error = new Error('通道凭证写入能力不可用')
+      error.code = 'not-supported'
+      throw error
+    }
+    if (saved?.saved !== true) {
+      const error = new Error('通道凭证写入失败：未落盘，已保留当前状态')
+      error.code = 'storage-failed'
+      throw error
+    }
+    return saved
+  }
+
   const testOutbound = async (type) => {
     if (!isFn(channelTest)) {
       const error = new Error('连通性测试不可用')
@@ -127,6 +150,7 @@ export function createChannelControlService({
     describeOutbound,
     saveInbound,
     removeInbound,
+    saveChannelAccount,
     testOutbound,
   }
 }

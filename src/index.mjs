@@ -963,17 +963,15 @@ export function apply(ctx, config = {}) {
         outboundConfigs: () => Object.fromEntries(outboundSource.snapshot().map((entry) => [entry.type, entry.config])),
         outboundConfig: outboundConfigService,
         channelControl,
-        // 零配置首访：channelTest 支持第二参 rawConfig——testOutboundChannel 现场合并
-        // 「当前 YAML + 当前 state 出站键」后传入，保存后无需重启即可真实测试；
-        // 旧 testChannel(type) 单参路径不变，仍用启动快照 testRawConfigOf。
+        // 零配置首访：channelTest 支持第二参 rawConfig——共享服务 testOutbound 传入 canonical
+        // raw（YAML ⊕ store overlay）后即时真测，保存后无需重启；旧 testChannel(type) 单参路径
+        // 不变，仍用启动快照 testRawConfigOf。v0.14（S12）：不再注入 yamlRawConfigs——
+        // 即时测试统一由 canonical outbound service 解析 raw。
         channelTest: (type, rawConfig) => runChannelTest({
           type,
           rawConfig: rawConfig !== undefined && rawConfig !== null ? rawConfig : testRawConfigOf(type),
           strings,
         }),
-        // 零配置首访：YAML 原始出站行表（type → raw row 含 type/enabled 元键，api 层自剔除）——
-        // testOutboundChannel 的即时真测合并基底（raw 原文重新 resolve，不用启动快照）。
-        yamlRawConfigs: () => Object.fromEntries(yamlRowOf),
         scanHandlers,
         identity, // v0.7 成员页：与 inbound 共用同一实例（store 读收敛 → 写入半秒内热生效）
         pairing, // v0.7 配对码铸造/撤销
