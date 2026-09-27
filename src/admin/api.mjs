@@ -26,6 +26,7 @@ import { INBOUND_CHANNELS, INBOUND_CHANNEL_SET } from '../inbound/channels-regis
 import { createInboundChannelConfigPort, INBOUND_FIELDS, describeBadChannelValue, inboundKeyWhitelist } from '../inbound/channel-config.mjs'
 import { createChannelControlService } from '../control-plane/channels.mjs'
 import { createMembersControlService, parseMemberKey, MEMBER_KEY_HINT } from '../control-plane/members.mjs'
+import { createRoutingControlService, controlSummary } from '../control-plane/sessions.mjs'
 import { tasksSnapshot } from '../routing/task-projection.mjs'
 import { createHostCapabilitySnapshot } from '../host/capability.mjs'
 import { deleteDurable, setDurable } from '../inbound/store.mjs'
@@ -71,11 +72,6 @@ export class ApiError extends Error {
   }
 }
 
-/** state.json 路由表键（与 agent-router.mjs 同名常量；本层只读原始表，写经 router）。 */
-const KEY_AGENTS = 'route:agents'
-const KEY_CHANNELS = 'route:channels'
-const KEY_SESSIONS = 'route:sessions'
-
 /** 审计文件名（<stateDir>/admin-audit.jsonl，每行 { time, action, detail }）。 */
 const AUDIT_FILENAME = 'admin-audit.jsonl'
 /** stateDir 缺省回落 './state'（与 store.mjs 的默认数据目录约定一致）。 */
@@ -98,26 +94,6 @@ function deepCopyPlain(value) {
   } catch {
     return value
   }
-}
-
-/**
- * 会话控制覆盖层的**安全脱敏摘要**（getSessions 行 / patchSessionControl 返回值用）。
- * 只暴露 mode / approvalOwnerOnly / ownerConfigured / approvalMembersCount——绝不回显任何
- * 原始 owner、成员 channel/accountId/userId 标识（credential/identifier 零泄漏；token 与完整
- * 身份从不进入任何 API 响应）。覆盖层缺失或损坏时返回 undefined（行内省略该键）。
- * @param {unknown} control - route:sessions[id].control 原始值。
- * @returns {{mode?: string, approvalOwnerOnly?: boolean, ownerConfigured?: boolean,
- *   approvalMembersCount?: number} | undefined}
- */
-function controlSummary(control) {
-  const raw = plainObjectOf(control)
-  if (raw === null || Object.keys(raw).length === 0) return undefined
-  const summary = {}
-  if (raw.mode === 'team' || raw.mode === 'personal') summary.mode = raw.mode
-  if (typeof raw.approvalOwnerOnly === 'boolean') summary.approvalOwnerOnly = raw.approvalOwnerOnly
-  if (typeof raw.owner === 'string' && raw.owner !== '') summary.ownerConfigured = true
-  if (Array.isArray(raw.approvalMembers)) summary.approvalMembersCount = raw.approvalMembers.length
-  return Object.keys(summary).length > 0 ? summary : undefined
 }
 
 /** 错误 → 可读消息（日志与审计用）。 */
@@ -154,16 +130,6 @@ function plainFieldsOf(type) {
     if (plainObjectOf(field)?.plain === true) out.add(key)
   }
   return out
-}
-
-/** lastActiveAt → 毫秒时间戳（数字/ISO 字符串；缺失或非法视为 0，排序兜底）。 */
-function lastActiveMs(value) {
-  if (typeof value === 'number' && Number.isFinite(value)) return value
-  if (typeof value === 'string') {
-    const ms = Date.parse(value)
-    if (Number.isFinite(ms)) return ms
-  }
-  return 0
 }
 
 /**
@@ -273,6 +239,7 @@ export function createAdminApi(options = {}) {
     router, registry, store, notifier, channelsEnabled, outboundConfigs, outboundConfig = null, channelTest, scanHandlers,
     channelControl = null,
     membersControl = null,
+    routingControl = null,
     identity, pairing, guidedProbe = null, stateDir, logger, questions = null, control = null,
     yamlRawConfigs = null,
     // v0.10 提交7「管理台暴露 DSH 连接与任务状态」：宿主上下文 + 任务投影注入 + 宿主
@@ -297,8 +264,6 @@ export function createAdminApi(options = {}) {
       return fallback
     }
   }
-  /** 读路由原始表：表级损坏（非普通对象）回退 {}（下次写入顺带修复）。 */
-  const readTable = (key) => plainObjectOf(safeGet(key)) ?? {}
   /** `<type>:account` 凭证键是否存在（出站/入站同域）。 */
   const hasAccount = (type) => safeGet(`${type}:account`) !== undefined
 
@@ -352,10 +317,6 @@ export function createAdminApi(options = {}) {
   /** registry.isActive 防御包装：缺失/抛错一律 false。 */
   const isActiveOf = (id) => {
     try { return typeof registry?.isActive === 'function' ? registry.isActive(id) === true : false } catch { return false }
-  }
-  /** registry.getSession 防御包装：缺失/抛错一律 undefined。 */
-  const registrySessionOf = (id) => {
-    try { return typeof registry?.getSession === 'function' ? registry.getSession(id) : undefined } catch { return undefined }
   }
 
   /**
@@ -414,6 +375,10 @@ export function createAdminApi(options = {}) {
   // v0.14（S02）：成员/配对编排单例（与 Native 共享同一实例或等价构造）。
   // 生产装配注入共享实例；测试/旧调用方未注入时用既有 identity/pairing 构造等价服务。
   const membersControlService = membersControl ?? createMembersControlService({ identity, pairing })
+  // v0.14（S03）：会话/路由编排单例（与 Native 共享同一实例或等价构造）。
+  // 生产装配注入共享实例；测试/旧调用方未注入时用既有 router/registry/store 构造等价服务。
+  // 收敛 bindings 快照/替换、会话列表投影、会话 outbound/control 覆盖写入。
+  const routingControlService = routingControl ?? createRoutingControlService({ router, registry, store, warn })
 
   /**
    * 通道行全集（overview 与 getChannels 共用）：出站 = CHANNEL_TYPES 全量 + 入站 =
@@ -466,16 +431,6 @@ export function createAdminApi(options = {}) {
     return rows
   }
 
-  /** router setter 防御包装：非函数/抛错/返回非 true 一律视为写入失败。 */
-  const callSetter = (setter, ...args) => {
-    try {
-      return typeof setter === 'function' ? setter(...args) === true : false
-    } catch (error) {
-      warn(`路由写入失败: ${errorMessage(error)}`)
-      return false
-    }
-  }
-
   // 方法集：先落 `api` 变量再返回——overview/putBindings 需按名复用同对象的
   // getAudit()/getBindings()（与 CLI/HTTP 层走完全相同的读取路径）。
   const api = {
@@ -491,7 +446,7 @@ export function createAdminApi(options = {}) {
      *   判活跃数；members.guided = 无成员即引导态；audit = 最近 20 条新在前。
      */
     overview() {
-      const sessionIds = Object.keys(readTable(KEY_SESSIONS))
+      const sessionIds = routingControlService.sessionIds()
       let active = 0
       for (const id of sessionIds) {
         if (isActiveOf(id)) active += 1
@@ -571,10 +526,7 @@ export function createAdminApi(options = {}) {
      * @returns {{ agents: object, channels: object }} 表级损坏数据回退空表。
      */
     getBindings() {
-      return {
-        agents: deepCopyPlain(readTable(KEY_AGENTS)),
-        channels: deepCopyPlain(readTable(KEY_CHANNELS)),
-      }
+      return routingControlService.bindingsSnapshot()
     },
 
     /**
@@ -651,56 +603,16 @@ export function createAdminApi(options = {}) {
         nextChannels = table
       }
 
-      // 逐键重建（替换语义）：先清旧表里不在新表的键，再写新表全部键。
-      // v0.6.5（审查 R4-2-P2-2）：router 提供 replaceAgentBindings/replaceChannelDefaults
-      // 时走整表单次落盘（一次锁周期 + 一次整文件写）；旧 router 契约/测试桩回退逐键路径。
-      if (nextAgents !== null) {
-        if (typeof router?.replaceAgentBindings === 'function') {
-          let written = false
-          try { written = router.replaceAgentBindings(nextAgents) } catch (error) {
-            throw new ApiError(422, `绑定表校验失败：${errorMessage(error)}`)
-          }
-          if (!written) throw new ApiError(500, '绑定写入存储失败')
-        } else {
-          let currentKeys = []
-          try { currentKeys = typeof router?.listAgentKeys === 'function' ? router.listAgentKeys() : [] } catch { currentKeys = [] }
-          const wanted = new Set(Object.keys(nextAgents))
-          for (const key of currentKeys) {
-            if (wanted.has(key)) continue
-            // 不在新表的旧键：两字段显式 null = 从条目删除，条目清空即整键回收
-            // （agent-router 语义：空条目无覆盖语义，不留无意义键；走 setAgentBinding 契约）
-            if (!callSetter(router?.setAgentBinding, key, { channels: null, quiet: null })) {
-              throw new ApiError(500, '绑定写入存储失败')
-            }
-          }
-          for (const [key, entry] of Object.entries(nextAgents)) {
-            // 未出现字段显式 null = 从条目删除（agent-router 字段级语义），保证整表替换不残留旧值
-            const entryPatch = {
-              channels: entry.channels === undefined ? null : entry.channels,
-              quiet: entry.quiet === undefined ? null : entry.quiet,
-            }
-            if (!callSetter(router?.setAgentBinding, key, entryPatch)) throw new ApiError(500, '绑定写入存储失败')
-          }
-        }
-      }
-      if (nextChannels !== null) {
-        if (typeof router?.replaceChannelDefaults === 'function') {
-          let written = false
-          try { written = router.replaceChannelDefaults(nextChannels) } catch (error) {
-            throw new ApiError(422, `绑定表校验失败：${errorMessage(error)}`)
-          }
-          if (!written) throw new ApiError(500, '绑定写入存储失败')
-        } else {
-          const currentKeys = Object.keys(readTable(KEY_CHANNELS))
-          const wanted = new Set(Object.keys(nextChannels))
-          for (const channel of currentKeys) {
-            if (wanted.has(channel)) continue
-            if (!callSetter(router?.clearChannelDefault, channel)) throw new ApiError(500, '绑定写入存储失败')
-          }
-          for (const [channel, entry] of Object.entries(nextChannels)) {
-            if (!callSetter(router?.setChannelDefault, channel, entry.defaultAgent)) throw new ApiError(500, '绑定写入存储失败')
-          }
-        }
+      // 整表替换落盘（v0.14 S03 起经共享 RoutingControlService 收敛）：
+      // 只出现一侧时单键写（store 单键原子写）；两侧同时出现时 router 走单事务提交（I3），
+      // 任一侧失败两键都不落盘——绝不会半提交后仍返回 success。
+      const writeResult = routingControlService.replaceBindings({
+        agents: nextAgents === null ? undefined : nextAgents,
+        channels: nextChannels === null ? undefined : nextChannels,
+      })
+      if (writeResult.ok !== true) {
+        if (writeResult.reason === 'invalid') throw new ApiError(422, '绑定表校验失败')
+        throw new ApiError(500, '绑定写入存储失败')
       }
 
       auditGuard('putBindings', {
@@ -720,40 +632,7 @@ export function createAdminApi(options = {}) {
      *   时回落「无路由配置」的等价解析（全局渠道池、quiet=false、source='global'），绝不抛。
      */
     getSessions() {
-      const enabled = enabledTypes()
-      const fallbackResolved = { channelTypes: [...enabled], quiet: false, source: 'global' }
-      const rows = []
-      for (const [id, record] of Object.entries(readTable(KEY_SESSIONS))) {
-        const rec = plainObjectOf(record)
-        if (rec === null) continue // 损坏条目（手工编辑/半截写入）：跳过，不弄崩列表
-        const workspace = typeof rec.workspace === 'string' ? rec.workspace : undefined
-        let resolved = fallbackResolved
-        try {
-          if (typeof router?.resolveOutbound === 'function') {
-            resolved = router.resolveOutbound(id, workspace, enabled)
-          }
-        } catch {
-          resolved = fallbackResolved
-        }
-        const row = {
-          id,
-          workspace: rec.workspace,
-          inherit: rec.inherit,
-          active: isActiveOf(id),
-          lastActiveAt: rec.lastActiveAt,
-          resolved,
-        }
-        if (rec.disposedAt !== undefined) row.disposedAt = rec.disposedAt
-        if (rec.outbound !== undefined) row.outbound = deepCopyPlain(rec.outbound)
-        if (rec.inbound !== undefined) row.inbound = deepCopyPlain(rec.inbound)
-        const ctrl = controlSummary(rec.control)
-        if (ctrl !== undefined) row.control = ctrl // Stage 4 安全脱敏覆盖层摘要（绝无原始标识符）
-        rows.push(row)
-      }
-      rows.sort((a, b) => (a.active === b.active
-        ? lastActiveMs(b.lastActiveAt) - lastActiveMs(a.lastActiveAt)
-        : (a.active ? -1 : 1)))
-      return rows
+      return routingControlService.sessionsView({ enabledTypes: enabledTypes() })
     },
 
     /**
@@ -794,17 +673,15 @@ export function createAdminApi(options = {}) {
       }
 
       // 从未建档判定：store 无记录且 registry 无记录（registry 内存态可能领先盘上）
-      const stored = plainObjectOf(readTable(KEY_SESSIONS)[id])
-      if (stored === null && registrySessionOf(id) === undefined) {
+      if (!routingControlService.hasSession(id)) {
         throw new ApiError(404, `会话 "${id}" 不存在`)
       }
-
-      if (!callSetter(router?.setSessionOutbound, id, normalized)) {
-        throw new ApiError(500, '会话覆盖写入存储失败')
-      }
+      // v0.14 S03：写入经共享 RoutingControlService 收敛（内部 router.setSessionOutbound
+      // 再读合并落盘，防 sibling clobber）；adapter 只保留 422 校验与 HTTP 映射。
+      const writeResult = routingControlService.patchSessionOutbound(id, normalized)
+      if (writeResult.ok !== true) throw new ApiError(500, '会话覆盖写入存储失败')
       auditGuard('patchSession', { id, diff: normalized })
-      const outbound = plainObjectOf(plainObjectOf(readTable(KEY_SESSIONS)[id])?.outbound)
-      return { id, outbound: outbound === null ? undefined : deepCopyPlain(outbound) }
+      return { id, outbound: writeResult.outbound }
     },
 
     /**
@@ -907,17 +784,15 @@ export function createAdminApi(options = {}) {
       }
 
       // 从未建档判定：store 无记录且 registry 无记录（同 patchSession 口径）
-      const stored = plainObjectOf(readTable(KEY_SESSIONS)[id])
-      if (stored === null && registrySessionOf(id) === undefined) {
+      if (!routingControlService.hasSession(id)) {
         throw new ApiError(404, `会话 "${id}" 不存在`)
       }
-
-      if (!callSetter(router?.setSessionControl, id, normalized)) {
-        throw new ApiError(500, '会话控制覆盖写入存储失败')
-      }
+      // v0.14 S03：写入经共享 RoutingControlService 收敛（内部 router.setSessionControl
+      // 再读合并 + session-arbiter 归一落盘）；adapter 只保留 422 校验与 HTTP 映射。
+      const writeResult = routingControlService.patchSessionControl(id, normalized)
+      if (writeResult.ok !== true) throw new ApiError(500, '会话控制覆盖写入存储失败')
       auditGuard('setSessionControl', { id, diff: controlSummary(normalized) })
-      const control = plainObjectOf(plainObjectOf(readTable(KEY_SESSIONS)[id])?.control)
-      return { id, control: controlSummary(control) }
+      return { id, control: writeResult.control }
     },
 
     /**

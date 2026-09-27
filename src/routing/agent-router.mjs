@@ -30,7 +30,7 @@ const KEY_SESSIONS = 'route:sessions'
 
 import { normalizeControlOverlay } from '../control/session-arbiter.mjs'
 import { bindingKey } from '../inbound/identity.mjs'
-import { setDurable } from '../inbound/store.mjs'
+import { setDurable, transactDurable } from '../inbound/store.mjs'
 
 /** 入站显式绑定键前缀（与 conversation.mjs 键格式一致：bind:<channel>:<userId>，分量经
  * identity.bindingKey 归一——G-49 单一构造点，读写两侧同键）。 */
@@ -40,6 +40,11 @@ const BIND_PREFIX = 'bind:'
 function plainObjectOf(value) {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return null
   return value
+}
+
+/** 深拷贝纯 JSON 值（整表快照 copy-on-read：外部改返回值绝不污染 store）。 */
+function deepCopyPlain(value) {
+  try { return JSON.parse(JSON.stringify(value ?? null)) } catch { return value }
 }
 
 /** 归一渠道类型列表：仅保留非空字符串、trim、去重（保序）。非数组返回 []。 */
@@ -85,6 +90,54 @@ function assertNonEmptyString(value, name) {
   if (typeof value !== 'string' || value.trim() === '') {
     throw new TypeError(`agent-router: ${name} 必须是非空字符串`)
   }
+}
+
+/**
+ * 归一 agent 绑定整表（v0.6.5 R4-2-P2-2 整表替换语义，v0.14 S03 抽为可复用纯函数）：
+ * 未出现字段删除、空条目整键回收、channels trim 去重去空、quiet 归 bool。
+ * @param {object} table - { [key]: { channels?: string[], quiet?: boolean } }
+ * @returns {object} 归一后的新表
+ * @throws {TypeError} table 非普通对象、键非字符串/空串、条目非普通对象、channels 非数组
+ */
+function normalizeAgentsTable(table) {
+  if (plainObjectOf(table) === null) throw new TypeError('agent-router: replaceAgentBindings: table 必须是对象')
+  const next = {}
+  for (const [key, rawEntry] of Object.entries(table)) {
+    assertNonEmptyString(key, 'replaceAgentBindings: key')
+    const entry = plainObjectOf(rawEntry)
+    if (entry === null) throw new TypeError(`agent-router: replaceAgentBindings: "${key}" 必须是对象`)
+    const normalized = {}
+    if (entry.channels !== undefined && entry.channels !== null) {
+      if (!Array.isArray(entry.channels)) {
+        throw new TypeError('agent-router: replaceAgentBindings: channels 必须是字符串数组')
+      }
+      const channels = normalizeChannelTypes(entry.channels)
+      if (channels.length > 0) normalized.channels = channels // 归一后为空 = 未配置语义
+    }
+    if (entry.quiet !== undefined && entry.quiet !== null) normalized.quiet = normalizeQuiet(entry.quiet)
+    if (Object.keys(normalized).length > 0) next[key] = normalized // 空条目 = 整键回收
+  }
+  return next
+}
+
+/**
+ * 归一通道默认去向整表（v0.6.5 R4-2-P2-2 整表替换语义，v0.14 S03 抽为可复用纯函数）。
+ * @param {object} table - { [channel]: { defaultAgent: string } }
+ * @returns {object} 归一后的新表
+ * @throws {TypeError} table 非普通对象、条目非普通对象、defaultAgent 非非空字符串
+ */
+function normalizeChannelDefaultsTable(table) {
+  if (plainObjectOf(table) === null) throw new TypeError('agent-router: replaceChannelDefaults: table 必须是对象')
+  const next = {}
+  for (const [channel, rawEntry] of Object.entries(table)) {
+    const entry = plainObjectOf(rawEntry)
+    if (entry === null) throw new TypeError(`agent-router: replaceChannelDefaults: "${channel}" 必须是对象`)
+    if (typeof entry.defaultAgent !== 'string' || entry.defaultAgent.trim() === '') {
+      throw new TypeError(`agent-router: replaceChannelDefaults: "${channel}".defaultAgent 必须是非空字符串`)
+    }
+    next[channel] = { defaultAgent: entry.defaultAgent }
+  }
+  return next
 }
 
 /**
@@ -303,24 +356,7 @@ export function createAgentRouter({ store, agentsList } = {}) {
      * @throws {TypeError} table 非普通对象、键非字符串/空串、条目非普通对象、channels 非数组。
      */
     replaceAgentBindings(table) {
-      if (plainObjectOf(table) === null) throw new TypeError('agent-router: replaceAgentBindings: table 必须是对象')
-      const next = {}
-      for (const [key, rawEntry] of Object.entries(table)) {
-        assertNonEmptyString(key, 'replaceAgentBindings: key')
-        const entry = plainObjectOf(rawEntry)
-        if (entry === null) throw new TypeError(`agent-router: replaceAgentBindings: "${key}" 必须是对象`)
-        const normalized = {}
-        if (entry.channels !== undefined && entry.channels !== null) {
-          if (!Array.isArray(entry.channels)) {
-            throw new TypeError('agent-router: replaceAgentBindings: channels 必须是字符串数组')
-          }
-          const channels = normalizeChannelTypes(entry.channels)
-          if (channels.length > 0) normalized.channels = channels // 归一后为空 = 未配置语义
-        }
-        if (entry.quiet !== undefined && entry.quiet !== null) normalized.quiet = normalizeQuiet(entry.quiet)
-        if (Object.keys(normalized).length > 0) next[key] = normalized // 空条目 = 整键回收
-      }
-      return writeMap(KEY_AGENTS, next)
+      return writeMap(KEY_AGENTS, normalizeAgentsTable(table))
     },
 
     /**
@@ -407,17 +443,52 @@ export function createAgentRouter({ store, agentsList } = {}) {
      * @throws {TypeError} table 非普通对象、条目非普通对象、defaultAgent 非非空字符串。
      */
     replaceChannelDefaults(table) {
-      if (plainObjectOf(table) === null) throw new TypeError('agent-router: replaceChannelDefaults: table 必须是对象')
-      const next = {}
-      for (const [channel, rawEntry] of Object.entries(table)) {
-        const entry = plainObjectOf(rawEntry)
-        if (entry === null) throw new TypeError(`agent-router: replaceChannelDefaults: "${channel}" 必须是对象`)
-        if (typeof entry.defaultAgent !== 'string' || entry.defaultAgent.trim() === '') {
-          throw new TypeError(`agent-router: replaceChannelDefaults: "${channel}".defaultAgent 必须是非空字符串`)
-        }
-        next[channel] = { defaultAgent: entry.defaultAgent }
+      return writeMap(KEY_CHANNELS, normalizeChannelDefaultsTable(table))
+    },
+
+    /**
+     * v0.14（S03）整表绑定快照（copy-on-read）：route:agents / route:channels 当前全量。
+     * 读权威仍在 router（本模块持有两键的 canonical 读写语义），adapter/service 不再各自
+     * 直读 store 原表拼投影（I9）。损坏表级数据回退空表。
+     * @returns {{ agents: object, channels: object }} 深拷贝快照
+     */
+    snapshotBindings() {
+      return {
+        agents: deepCopyPlain(readMap(KEY_AGENTS)),
+        channels: deepCopyPlain(readMap(KEY_CHANNELS)),
       }
-      return writeMap(KEY_CHANNELS, next)
+    },
+
+    /**
+     * v0.14（S03）双表绑定提交（Native / Advanced Console 共用写路径）。
+     *
+     * 语义：只出现的一侧退化为单键写（保持既有 store 单键原子写）；两侧同时出现时——
+     * store 具备 transact 能力则在**一个事务**内提交两键（I3：多键业务动作原子化），
+     * 任一侧失败两键都不落盘；store 无事务原语（遗留 mock）时退化为两次单键原子写，
+     * 但**返回诚实失败**（ok=false），绝不在半提交后报告成功。
+     *
+     * @param {{ agents?: object, channels?: object }} tables - 已由调用方校验形状的整表
+     * @returns {{ ok: boolean, durable: boolean }} ok=false 表示未完整落盘（可能部分，调用方必须报失败）
+     * @throws {TypeError} 某侧整表形状违规（整表拒绝，零写入）
+     */
+    replaceBindings({ agents, channels } = {}) {
+      const hasAgents = agents !== undefined && agents !== null
+      const hasChannels = channels !== undefined && channels !== null
+      if (!hasAgents && !hasChannels) return { ok: true, durable: true }
+      const normalizedAgents = hasAgents ? normalizeAgentsTable(agents) : undefined
+      const normalizedChannels = hasChannels ? normalizeChannelDefaultsTable(channels) : undefined
+      if (hasAgents && hasChannels && typeof store?.transact === 'function') {
+        const result = transactDurable(store, (draft) => {
+          draft[KEY_AGENTS] = normalizedAgents
+          draft[KEY_CHANNELS] = normalizedChannels
+          return true
+        })
+        return { ok: result.committed === true, durable: result.committed === true }
+      }
+      let ok = true
+      if (hasAgents && safeSet(KEY_AGENTS, normalizedAgents) !== true) ok = false
+      if (ok && hasChannels && safeSet(KEY_CHANNELS, normalizedChannels) !== true) ok = false
+      return { ok, durable: ok }
     },
 
     /**
