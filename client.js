@@ -8,6 +8,14 @@ window.__ModuleLoader__.load({
     } = React
 
     const PANEL_ID = 'dsh-notifier'
+    // Native 主面板的导航入口（S05/S06 起：提问收件箱 / 任务 / 成员 / 渠道 / 活动）。
+    const NAV_ITEMS = Object.freeze([
+      ['questions', 'questions'],
+      ['tasks', 'tasks'],
+      ['members', 'members'],
+      ['channels', 'channels'],
+      ['activity', 'activity'],
+    ])
     const RPC_CHANNEL = '/dsh-notifier'
     const NS = 'dsh-notifier.native'
 
@@ -55,6 +63,16 @@ window.__ModuleLoader__.load({
       tasks: '任务',
       questions: '待处理提问',
       noQuestions: '暂无待处理提问',
+      members: '成员',
+      noMembers: '暂无成员',
+      owner: '所有者',
+      roleMember: '普通成员',
+      promote: '设为所有者',
+      demote: '降为普通成员',
+      remove: '移除',
+      removing: '正在移除…',
+      memberUpdated: '已更新',
+      memberRemoved: '已移除',
       noTasks: '暂无任务',
       noActivity: '暂无最近活动',
       reject: '拒绝',
@@ -132,6 +150,16 @@ window.__ModuleLoader__.load({
       tasks: 'Tasks',
       questions: 'Questions',
       noQuestions: 'No pending questions',
+      members: 'Members',
+      noMembers: 'No members yet',
+      owner: 'Owner',
+      roleMember: 'Member',
+      promote: 'Make owner',
+      demote: 'Make member',
+      remove: 'Remove',
+      removing: 'Removing…',
+      memberUpdated: 'Updated',
+      memberRemoved: 'Removed',
       noTasks: 'No tasks',
       noActivity: 'No recent activity',
       reject: 'Reject',
@@ -209,6 +237,7 @@ window.__ModuleLoader__.load({
         channels: null,
         tasks: null,
         questions: null,
+        members: null,
         activity: null,
         channel: null,
         busy: Object.freeze({}),
@@ -223,7 +252,7 @@ window.__ModuleLoader__.load({
       let fallbackTimer = null
       let disposed = false
       // v0.12.1（P1-13）：同一资源只接受最新一代请求的响应，避免迟到数据覆盖当前视图。
-      const generations = { home: 0, channels: 0, channel: 0, tasks: 0, questions: 0, activity: 0 }
+      const generations = { home: 0, channels: 0, channel: 0, tasks: 0, questions: 0, members: 0, activity: 0 }
       let paused = false
 
       const emit = (patch) => {
@@ -241,7 +270,7 @@ window.__ModuleLoader__.load({
         return {
           epochChanged,
           patch: {
-            ...(epochChanged ? { home: null, channels: null, tasks: null, questions: null, activity: null, channel: null } : {}),
+            ...(epochChanged ? { home: null, channels: null, tasks: null, questions: null, members: null, activity: null, channel: null } : {}),
             epoch: incomingEpoch,
             revision: epochChanged ? incomingRevision : Math.max(snapshot.revision, incomingRevision),
             connectionState: 'connected',
@@ -317,6 +346,18 @@ window.__ModuleLoader__.load({
           throw error
         }
       }
+      async function loadMembers() {
+        const generation = ++generations.members
+        try {
+          const value = await rpc.call('members.list')
+          if (generation !== generations.members) return value
+          commit('members', value)
+          return value
+        } catch (error) {
+          if (generation !== generations.members) return null
+          throw error
+        }
+      }
       async function loadActivity() {
         const generation = ++generations.activity
         try {
@@ -337,12 +378,13 @@ window.__ModuleLoader__.load({
           else if (kind === 'channel') await loadChannel(snapshot.view.type)
           else if (kind === 'tasks') await loadTasks()
           else if (kind === 'questions') await loadQuestions()
+          else if (kind === 'members') await loadMembers()
           else if (kind === 'activity') await loadActivity()
           else await loadHome()
           emit({ staleAt: null, connectionState: 'connected' })
           return true
         } catch {
-          const hasData = snapshot.home !== null || snapshot.channels !== null || snapshot.channel !== null || snapshot.tasks !== null || snapshot.questions !== null || snapshot.activity !== null
+          const hasData = snapshot.home !== null || snapshot.channels !== null || snapshot.channel !== null || snapshot.tasks !== null || snapshot.questions !== null || snapshot.members !== null || snapshot.activity !== null
           emit({ staleAt: Date.now(), connectionState: hasData ? 'stale' : 'disconnected' })
           return false
         }
@@ -390,6 +432,28 @@ window.__ModuleLoader__.load({
       }
       async function createStandaloneLaunch() {
         return rpc.call('standalone.createLaunch')
+      }
+      async function updateMember(key, diff) {
+        const busyKey = `member:${key}`
+        setBusy(busyKey, true)
+        try {
+          const value = await rpc.call('members.update', { key, ...diff })
+          await loadMembers().catch(() => {})
+          return value
+        } finally {
+          setBusy(busyKey, false)
+        }
+      }
+      async function removeMember(key) {
+        const busyKey = `member:${key}`
+        setBusy(busyKey, true)
+        try {
+          const value = await rpc.call('members.remove', { key })
+          await loadMembers().catch(() => {})
+          return value
+        } finally {
+          setBusy(busyKey, false)
+        }
       }
       function navigate(view) {
         // v0.12.1（P2-10）：导航只负责切视图；目标视图的 mount effect 是唯一加载 owner。
@@ -459,8 +523,9 @@ window.__ModuleLoader__.load({
       return Object.freeze({
         getSnapshot: () => snapshot,
         subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener) },
-        loadHome, loadChannels, loadChannel, loadTasks, loadQuestions, loadActivity,
+        loadHome, loadChannels, loadChannel, loadTasks, loadQuestions, loadMembers, loadActivity,
         refreshCurrent, saveChannel, testChannel, settleQuestion, createStandaloneLaunch,
+        updateMember, removeMember,
         navigate, startWait, setActive, dispose,
         // v0.12.1（P1-09）：视图必须能把业务失败写入统一错误出口。
         reportError(error) { setError(error ?? null) },
@@ -683,6 +748,8 @@ window.__ModuleLoader__.load({
       ]
       return h('div', { className: 'dn-page' },
         h(PageHead, { title: t('title'), intro: t('intro'), actions }),
+        h('div', { className: 'dn-nav' }, ...NAV_ITEMS.map(([kind, key]) =>
+          h('button', { key: kind, type: 'button', className: 'dn-navBtn', onClick: () => controller.navigate({ kind }) }, t(key)))),
         h(StatusRow, { ctx, summary: home?.summary, t, onRetry: () => void controller.refreshCurrent() }),
         state.connectionState === 'stale'
           ? h('p', { className: 'dn-error', role: 'status' }, t('staleData'))
@@ -958,6 +1025,47 @@ window.__ModuleLoader__.load({
             : [h('p', { className: 'dn-empty', key: 'empty' }, t('noQuestions'))])))
     }
 
+    function MemberRow({ ctx, member, controller, t, busy, canUpdate, canRemove }) {
+      const isOwner = member?.role === 'owner'
+      const meta = [member?.channel, member?.accountId, isOwner ? t('owner') : t('roleMember')].filter(Boolean).join(' · ')
+      return h('div', { className: 'dn-row' },
+        h(StateDot, { state: isOwner ? 'done' : 'idle' }),
+        h('div', { className: 'dn-rowMain' },
+          h('strong', { className: 'dn-rowTitle' }, String(member?.label || member?.userId || '')),
+          h('span', { className: 'dn-rowMeta' }, meta)),
+        h('div', { className: 'dn-rowAside' },
+          canUpdate
+            ? h(Button, {
+                disabled: busy,
+                onClick: () => void controller.updateMember(member.key, { role: isOwner ? 'member' : 'owner' }).catch(error => controller.reportError(error)),
+              }, isOwner ? t('demote') : t('promote'))
+            : null,
+          canRemove
+            ? h(Button, {
+                disabled: busy,
+                onClick: () => void controller.removeMember(member.key).catch(error => controller.reportError(error)),
+              }, busy ? t('removing') : t('remove'))
+            : null))
+    }
+
+    function MembersView({ ctx, controller, state, t }) {
+      useEffect(() => { void controller.loadMembers().catch(error => controller.reportError(error)) }, [])
+      const rows = state.members?.members ?? []
+      const canUpdate = state.members?.canUpdate === true
+      const canRemove = state.members?.canRemove === true
+      return h('div', { className: 'dn-page' },
+        h('div', { className: 'dn-detailBack' }, h('button', { className: 'dn-link', onClick: () => controller.navigate({ kind: 'home' }) }, `← ${t('back')}`)),
+        h(PageHead, { title: t('members') }),
+        h(ErrorNotice, { error: state.error, t, onRetry: () => void controller.loadMembers().catch(error => controller.reportError(error)) }),
+        h('div', { className: 'dn-list' },
+          ...(rows.length
+            ? rows.map(member => h(MemberRow, {
+                key: member.key, ctx, member, controller, t,
+                busy: state.busy[`member:${member.key}`] === true, canUpdate, canRemove,
+              }))
+            : [h('p', { className: 'dn-empty', key: 'empty' }, t('noMembers'))])))
+    }
+
     function ActivityView({ ctx, controller, state, t }) {
       useEffect(() => { void controller.loadActivity().catch(error => controller.reportError(error)) }, [])
       return h('div', { className: 'dn-page' },
@@ -978,6 +1086,7 @@ window.__ModuleLoader__.load({
       if (state.view.kind === 'channel') return h(ChannelDetailView, { key: state.view.type, ctx, controller, state, t })
       if (state.view.kind === 'tasks') return h(TasksView, { ctx, controller, state, t })
       if (state.view.kind === 'questions') return h(QuestionsView, { ctx, controller, state, t })
+      if (state.view.kind === 'members') return h(MembersView, { ctx, controller, state, t })
       if (state.view.kind === 'activity') return h(ActivityView, { ctx, controller, state, t })
       return h(HomeView, { ctx, controller, state, t })
     }
@@ -1062,6 +1171,9 @@ window.__ModuleLoader__.load({
       .dn-success{display:flex;gap:12px;align-items:center;justify-content:space-between;margin-top:12px}
       .dn-inlineStatus{display:flex;gap:8px;align-items:center;font-size:13px}.dn-inlineStatus .dn-stateDot{margin-top:0}
       .dn-channelPicker{display:flex;flex-direction:column;gap:2px;margin-top:12px}.dn-pickerRow{display:flex;justify-content:space-between;border:0;background:transparent;color:inherit;padding:10px;border-radius:var(--dsw-radius-md);cursor:pointer;text-align:left}.dn-pickerRow:hover{background:var(--dsw-alias-interactive-bg-hover)}
+      .dn-nav{display:flex;gap:6px;flex-wrap:wrap;margin:-12px 0 20px}
+      .dn-navBtn{min-height:28px;border:.5px solid var(--dsw-alias-border-l2);border-radius:999px;background:var(--dsw-alias-bg-layer-1);color:inherit;padding:4px 12px;font:inherit;font-size:13px;cursor:pointer}
+      .dn-navBtn:hover{background:var(--dsw-alias-interactive-bg-hover)}
       .dn-healthGrid{display:flex;gap:16px;flex-wrap:wrap;font-size:13px}.dn-activityTime{width:48px;color:var(--dsw-alias-label-tertiary);font-size:12px}
       .dn-pluginConfig{display:flex;flex-direction:column;gap:8px;padding:8px 0}.dn-pluginConfig>p,.dn-activation>p{margin:0;color:var(--dsw-alias-label-secondary);font-size:13px;line-height:20px}
       @keyframes dnPulse{0%,100%{opacity:.35}50%{opacity:1}}

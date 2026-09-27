@@ -45,7 +45,7 @@ function loadModule({ rpcCall } = {}) {
   let source = readFileSync(new URL('../client.js', import.meta.url), 'utf8')
   source = source.replace(
     "return {\n      inject: ['slots', 'connection', 'locale', 'layout'],",
-    "return {\n      __test: { createController, launchAdvancedConsole, QuestionCard, QuestionsView, TaskRow, ChannelRow, ActivityRow },\n      inject: ['slots', 'connection', 'locale', 'layout'],",
+    "return {\n      __test: { createController, launchAdvancedConsole, QuestionCard, QuestionsView, MemberRow, MembersView, TaskRow, ChannelRow, ActivityRow },\n      inject: ['slots', 'connection', 'locale', 'layout'],",
   )
   assert.match(source, /__test:/)
   let registration
@@ -241,6 +241,68 @@ test('settling from the inbox refreshes the inbox list, not the home cache', asy
   controller.navigate({ kind: 'questions' })
   await controller.settleQuestion('q1', 'choose', ['0'])
   assert.deepEqual(calls, ['questions.settle', 'questions.list'], '结算后必须重载当前 questions 视图')
+  controller.dispose()
+})
+
+test('members view loads the member list from members.list', async () => {
+  const calls = []
+  const { mod, ctx } = loadModule({
+    async rpcCall(_channel, endpoint) {
+      calls.push(endpoint)
+      if (endpoint === 'members.list') return { ok: true, value: { epoch: 'e', revision: 2, members: [{ key: 'telegram:u1', role: 'owner' }], canUpdate: true, canRemove: true } }
+      return { ok: true, value: { epoch: 'e', revision: 2 } }
+    },
+  })
+  const controller = mod.__test.createController(ctx)
+  await controller.loadMembers()
+  assert.deepEqual(calls, ['members.list'])
+  assert.equal(controller.getSnapshot().members.members[0].key, 'telegram:u1')
+  controller.dispose()
+})
+
+test('members view renders rows with role actions and an empty state', () => {
+  const { mod, ctx } = loadModule()
+  const t = key => key
+  const controller = {
+    async loadMembers() { return {} }, reportError() {}, navigate() {},
+    async updateMember() { return {} }, async removeMember() { return {} },
+  }
+  const view = mod.__test.MembersView({
+    ctx, t, controller,
+    state: {
+      error: null, busy: {},
+      members: {
+        canUpdate: true, canRemove: true,
+        members: [
+          { key: 'telegram:1', channel: 'telegram', userId: '1', role: 'owner', label: 'Alice' },
+          { key: 'telegram:2', channel: 'telegram', userId: '2', role: 'member' },
+        ],
+      },
+    },
+  })
+  assert.match(textOf(view), /Alice/)
+  assert.match(textOf(view), /owner/)
+  assert.match(textOf(view), /demote/)
+  assert.match(textOf(view), /promote/)
+  assert.match(textOf(view), /remove/)
+
+  const empty = mod.__test.MembersView({ ctx, t, controller, state: { error: null, busy: {}, members: { members: [] } } })
+  assert.match(textOf(empty), /noMembers/)
+})
+
+test('member role change and removal refresh the member list', async () => {
+  const calls = []
+  const { mod, ctx } = loadModule({
+    async rpcCall(_channel, endpoint) {
+      calls.push(endpoint)
+      if (endpoint === 'members.list') return { ok: true, value: { epoch: 'e', revision: 3, members: [] } }
+      return { ok: true, value: { epoch: 'e', revision: 3 } }
+    },
+  })
+  const controller = mod.__test.createController(ctx)
+  await controller.updateMember('telegram:1', { role: 'owner' })
+  await controller.removeMember('telegram:2')
+  assert.deepEqual(calls, ['members.update', 'members.list', 'members.remove', 'members.list'])
   controller.dispose()
 })
 

@@ -53,6 +53,8 @@ function titleFor(row) {
     'channel-saved': { en: `Channel configuration saved${channel}`, zh: `渠道配置已保存${channel}` },
     'channel-removed': { en: `Channel configuration removed${channel}`, zh: `渠道配置已删除${channel}` },
     'question-settled': { en: 'Question handled', zh: '问题已处理' },
+    'member-updated': { en: 'Member updated', zh: '成员已更新' },
+    'member-removed': { en: 'Member removed', zh: '成员已移除' },
   }
   return map[row.action] ?? { en: row.action, zh: row.action }
 }

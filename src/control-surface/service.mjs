@@ -106,6 +106,7 @@ export function createControlSurfaceService({
   channelTest,
   tasks,
   questions,
+  members,
   activity,
   health,
   storageStatus,
@@ -222,6 +223,26 @@ export function createControlSurfaceService({
         const value = questions.settle(payload)
         revision.touch('questions')
         activity.record('control', 'question-settled', { action: payload?.action ?? 'unknown', status: 'ok' })
+        return ok(value)
+      }
+
+      // v0.14（S06）：Native 成员面。读取 / 校验 / 末位 owner 守卫都在共享
+      // MembersControlService（S02）；本层只做 RPC 形态映射与 revision/activity 记账。
+      if (members && method === 'members.list') {
+        return ok({ ...revisionView(), members: members.list(), canUpdate: members.canUpdate === true, canRemove: members.canRemove === true })
+      }
+
+      if (members && method === 'members.update') {
+        const value = members.update(payload)
+        revision.touch('members')
+        activity.record('control', 'member-updated', { channel: String(payload?.key ?? '').split(':')[0], status: 'ok' })
+        return ok(value)
+      }
+
+      if (members && method === 'members.remove') {
+        const value = members.remove(payload)
+        revision.touch('members')
+        activity.record('control', 'member-removed', { channel: String(payload?.key ?? '').split(':')[0], status: 'ok' })
         return ok(value)
       }
 

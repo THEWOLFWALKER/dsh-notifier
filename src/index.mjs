@@ -52,6 +52,7 @@ import { migrateCanonicalChannelConfig } from './control-surface/channel-config-
 import { createChannelProjection } from './control-surface/channels.mjs'
 import { createTaskProjection } from './control-surface/tasks.mjs'
 import { createQuestionProjection } from './control-surface/questions.mjs'
+import { createMembersProjection } from './control-surface/members.mjs'
 import { createLaunchTickets } from './control-surface/launch-ticket.mjs'
 import { createAdminSessions } from './control-surface/admin-session.mjs'
 import { createControlSurfaceService } from './control-surface/service.mjs'
@@ -816,6 +817,9 @@ export function apply(ctx, config = {}) {
   // 谁都不再直接持有成员/配对写入编排（I1 / I9）；实例在装配处创建，非 admin 私有，
   // 后续 S06/S07 Native surface 可直接复用同一实例。
   const membersControl = createMembersControlService({ identity, pairing })
+  // v0.14（S06）：Native 成员面与 Admin 共用同一 MembersControlService（S02）实例；
+  // 本层只做 `members.*` 的 RPC 形态映射。
+  const surfaceMembers = createMembersProjection({ service: membersControl })
   const surfaceService = createControlSurfaceService({
     revision: surfaceRevision,
     channels: surfaceChannels,
@@ -832,6 +836,7 @@ export function apply(ctx, config = {}) {
     channelTest: (type, raw) => runChannelTest({ type, rawConfig: raw, strings }),
     tasks: surfaceTasks,
     questions: surfaceQuestions,
+    members: surfaceMembers,
     activity: surfaceActivity,
     health: surfaceHealth,
     storageStatus: () => {
