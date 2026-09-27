@@ -105,6 +105,112 @@ v0.12 Native client metadata depends on these DSH client packages:
 
 They are Host-provided client dependencies, not npm runtime dependencies of dsh-notifier.
 
+## DSH host seam audit (v0.14 S14)
+
+This section audits, target by target, whether *the seam dsh-notifier believes exists* matches
+the official host source/shape for the declared supported hosts. It is deliberately an **audit
+first** artifact: the current carrier is kept unless a new carrier is evidenced for every
+declared host *and* the migration benefit is clear. A `fixtureCovered: true` row means an
+automated test drives the real module (not a re-description); a row that is only source/artifact
+verified is marked so.
+
+| Seam target | Official/source evidence | Current notifier path | Probe | Fixture-covered | Known fallback | Risk |
+|---|---|---|---|---|---|---|
+| `connection.rpc.handle` | connection service exposes `rpc.handle(channel, handler)` on its owner ctx | `src/control-surface/rpc.mjs` primary branch | `test/control-surface-rpc-v012.test.mjs` | yes | webServer prefix mount | rc.2 owner ctx lacks `webServer` injection → throws; guarded |
+| `connection.fetch.register` | `connection.fetch.register` mounts routes under the shared `/api` prefix | **not adopted** (carrier decision) | `test/host-seam-audit.test.mjs` | yes | n/a — deliberately not adopted | browser carrier uses `<channel>/<endpoint>` relative paths; `dsh-im` usage alone is not a reason to rewrite |
+| `webServer.fallback` | `webServer.register({ kind:'prefix', path, handler })` + `connection.admit()` | `src/control-surface/rpc.mjs::mountOnWebServer` | `test/control-surface-rpc-v012.test.mjs` | yes | none — undefined seam → Standalone degrade (`null`) | `webServer` only exists in the web profile; headless degrades |
+| `client.slots` | client `slots.register/inject`; `locale`; `layout.selectPanel`; plugin-manager bundle slots | `client.js` slots `main` / `sidebar.panellist` / `plugins.bundle.config` / `plugins.bundle.activation` | `test/client-module.test.mjs` | yes | slot error boundary keeps the host slot alive | `label` must be a thunk (real rc.2 sidebar crash reproduced); slot names are host-owned |
+| `user-questions.waterfall` | `UserQuestionService.ask()` → `ctx.waterfall('user-questions/request', req, next)` | `src/host/native-questions.mjs` waterfall interceptor | `test/native-questions.test.mjs`, `test/issue38-host-compat.test.mjs` | yes | `registerProvider` (future/legacy) else `unsupported` + plugin `ask_user` tool | after interception the host `ask()` does not abort its signal → orphan GUI card (host-side) |
+| `agents.sessions` | `ctx.agents.list()/get()/roots()` | `src/routing/agent-router.mjs`, `src/routing/session-registry.mjs`, `src/inbound/conversation.mjs`, `src/host/capability.mjs` | `test/host-seam-audit.test.mjs`, `test/host-capability.test.mjs` | yes | throwing/missing → `[]` / `unknown`; never false-`available` | `ctx.agents.get` availability varies by host; conversation mode stays conservative |
+| `attachments` | cordis Service `'attachments'`; `saveImage`/`saveFile` → `AttachmentRef` | `src/host/messages.mjs` `readAttachments` / `admitInboundImage` / `admitInboundFile` | `test/host-seam-audit.test.mjs`, `test/attachments-bounds-v0121.test.mjs` | yes | missing service / non-whitelisted mediaType / reject → `null`; never a remote URL into the Session | a host that exposes the service but not `saveFile` is outside the file-inbound boundary (fail closed) |
+| `client.services` | host injects the declared client package set into the client bundle | `package.json` `dsh.client.inject` (6 packages) | `test/host-seam-audit.test.mjs`, `test/client-module.test.mjs` | yes | none — declared host-provided, not npm runtime deps | a host release renaming/removing a client package breaks the bundle inject list |
+
+Machine-readable block (locks the audit; verified by `test/host-seam-audit.test.mjs`):
+
+```json dsh-host-seam-matrix
+{
+  "auditedHosts": ["0.1.7-alpha.1", "0.1.7-alpha.2", "0.1.7-rc.1", "0.1.7-rc.2"],
+  "seams": [
+    {
+      "id": "connection.rpc.handle",
+      "official": "connection service exposes rpc.handle(channel, handler) on its owner ctx",
+      "notifierPath": "src/control-surface/rpc.mjs",
+      "probe": "test/control-surface-rpc-v012.test.mjs",
+      "fixtureCovered": true,
+      "fallback": "webServer prefix mount",
+      "risk": "rc.2 owner ctx lacks webServer injection and throws; guarded, falls back"
+    },
+    {
+      "id": "connection.fetch.register",
+      "official": "connection.fetch.register mounts routes under the shared /api prefix",
+      "notifierPath": "src/control-surface/rpc.mjs",
+      "probe": "test/host-seam-audit.test.mjs",
+      "fixtureCovered": true,
+      "fallback": "n/a - deliberately not adopted",
+      "risk": "browser carrier uses <channel>/<endpoint> relative paths; dsh-im usage is not a reason to rewrite"
+    },
+    {
+      "id": "webServer.fallback",
+      "official": "webServer.register({kind:'prefix',path,handler}) plus connection.admit()",
+      "notifierPath": "src/control-surface/rpc.mjs",
+      "probe": "test/control-surface-rpc-v012.test.mjs",
+      "fixtureCovered": true,
+      "fallback": "none - undefined seam degrades to Standalone (null)",
+      "risk": "webServer exists only in the web profile; headless degrades without crashing"
+    },
+    {
+      "id": "client.slots",
+      "official": "client slots.register/inject, locale, layout.selectPanel, plugin-manager bundle slots",
+      "notifierPath": "client.js",
+      "probe": "test/client-module.test.mjs",
+      "fixtureCovered": true,
+      "fallback": "slot error boundary keeps the host slot alive",
+      "risk": "label must be a thunk (real rc.2 sidebar crash); slot names are host-owned"
+    },
+    {
+      "id": "user-questions.waterfall",
+      "official": "UserQuestionService.ask() calls ctx.waterfall('user-questions/request', req, next)",
+      "notifierPath": "src/host/native-questions.mjs",
+      "probe": "test/native-questions.test.mjs",
+      "fixtureCovered": true,
+      "fallback": "registerProvider (future/legacy) else unsupported + plugin ask_user tool",
+      "risk": "after interception the host ask() does not abort its signal, leaving an orphan GUI card (host-side)"
+    },
+    {
+      "id": "agents.sessions",
+      "official": "ctx.agents.list()/get()/roots()",
+      "notifierPath": "src/routing/agent-router.mjs",
+      "probe": "test/host-seam-audit.test.mjs",
+      "fixtureCovered": true,
+      "fallback": "throwing/missing maps to [] or unknown, never false-available",
+      "risk": "ctx.agents.get availability varies by host; conversation mode stays conservative"
+    },
+    {
+      "id": "attachments",
+      "official": "cordis Service 'attachments'; saveImage/saveFile return an AttachmentRef",
+      "notifierPath": "src/host/messages.mjs",
+      "probe": "test/host-seam-audit.test.mjs",
+      "fixtureCovered": true,
+      "fallback": "missing service / non-whitelisted mediaType / reject maps to null; never a remote URL into the Session",
+      "risk": "a host exposing the service without saveFile is outside the file-inbound boundary (fail closed)"
+    },
+    {
+      "id": "client.services",
+      "official": "host injects the declared client package set into the client bundle",
+      "notifierPath": "package.json",
+      "probe": "test/host-seam-audit.test.mjs",
+      "fixtureCovered": true,
+      "fallback": "none - declared host-provided, not npm runtime dependencies",
+      "risk": "a host release renaming or removing a client package breaks the bundle inject list"
+    }
+  ]
+}
+```
+
+Evidence pending (non-blocking): a real DSH visual walkthrough of the Native slots on every declared
+host, and an end-to-end image/file admission run on a real host, are still external evidence and are
+not claimed by this audit. The audit asserts the automated-fixture column only.
+
 ## Provider/device scope
 
 The v0.12 real-host gate verifies DSH integration. It does **not** automatically certify every Telegram/Feishu/QQ/DingTalk/WeChat/WxPusher provider payload, button ACK, media limit or reconnect condition.
