@@ -33,6 +33,28 @@ function makeRouter({ state = {}, agents = [] } = {}) {
   return { store, router }
 }
 
+/**
+ * 带真实事务语义的内存 store（对齐 src/inbound/store.mjs 的 transact：mutator 只拿 detached
+ * draft，提交后一次性发布）。用于验证「读取 + 记录级合并」确实发生在事务 mutator 内，而非
+ * 事务外的旧快照回写。测试可包装 `transact` 在提交前注入一次并发写，模拟另一写者抢先落盘。
+ */
+function makeTxStore(initial = {}) {
+  let state = { ...initial }
+  return {
+    get state() { return state },
+    get: (key, fallback) => (Object.prototype.hasOwnProperty.call(state, key) ? state[key] : fallback),
+    set: (key, value) => { state[key] = JSON.parse(JSON.stringify(value === undefined ? null : value)) },
+    delete: (key) => { const had = Object.prototype.hasOwnProperty.call(state, key); delete state[key]; return had },
+    keys: (prefix = '') => Object.keys(state).filter((key) => key.startsWith(prefix ?? '')),
+    transact(mutator) {
+      const draft = JSON.parse(JSON.stringify(state))
+      const value = mutator(draft)
+      state = draft
+      return { ok: true, committed: true, durable: true, value }
+    },
+  }
+}
+
 // ———————— 出站解析链（四层逐层命中与优先级） ————————
 
 test('resolveOutbound：无任何路由配置 → 全局渠道池兜底（source=global，quiet=false）', () => {
@@ -517,6 +539,55 @@ test('setSessionOutbound 与 setSessionControl 并发：分别更新不同字段
   const rec2 = store.get('route:sessions')['s-1']
   assert.deepEqual(rec2.outbound, { channels: ['telegram'], quiet: true }, 'outbound 已合并更新')
   assert.equal(rec2.control.owner, 'u1', 'control 不被 outbound 写入清除')
+})
+
+// ———————— v0.14 S03-P1：读-改-写必须在事务内（TOCTOU 回归） ————————
+// 旧实现先事务外读 latest 再写回整条记录，第二次读与真正提交之间仍有窗口；真正的修复是把
+// 「读最新记录 + 记录级字段合并」关进 store.transact 的 mutator。下列测试在提交前注入一次
+// 并发写，旧实现会把它覆盖，修复后必须保留。
+
+test('P1 回归：setSessionOutbound 的事务内合并——并发写入的 control 不被出站旧快照覆盖', () => {
+  const store = makeTxStore({
+    'route:sessions': { s1: { workspace: 'ws', outbound: { channels: ['old'] }, control: { owner: 'old-owner' } } },
+  })
+  const router = createAgentRouter({ store, agentsList: () => [] })
+  const realTransact = store.transact
+  let injected = false
+  store.transact = (mutator) => {
+    if (!injected) {
+      injected = true
+      // 模拟提交前另一写者已把同一 session 的 control.owner 改成 concurrent-update
+      realTransact((draft) => { draft['route:sessions'].s1.control = { owner: 'concurrent-update' }; return true })
+    }
+    return realTransact(mutator)
+  }
+  assert.equal(router.setSessionOutbound('s1', { quiet: true }), true)
+  const rec = store.state['route:sessions'].s1
+  assert.deepEqual(rec.outbound, { channels: ['old'], quiet: true }, '本次出站 diff 已合并写入')
+  assert.equal(rec.control.owner, 'concurrent-update', '并发写入的 control 必须保留（不可被旧快照回写覆盖）')
+  assert.equal(rec.workspace, 'ws', 'registry 字段保留')
+})
+
+test('P1 回归：setSessionControl 的事务内合并——并发写入的 outbound 不被控制旧快照覆盖', () => {
+  const store = makeTxStore({
+    'route:sessions': { s1: { workspace: 'ws', control: { owner: 'old-owner' }, outbound: { channels: ['old'] } } },
+  })
+  const router = createAgentRouter({ store, agentsList: () => [] })
+  const realTransact = store.transact
+  let injected = false
+  store.transact = (mutator) => {
+    if (!injected) {
+      injected = true
+      // 模拟提交前另一写者已把同一 session 的 outbound 改成 concurrent
+      realTransact((draft) => { draft['route:sessions'].s1.outbound = { channels: ['concurrent'] }; return true })
+    }
+    return realTransact(mutator)
+  }
+  assert.equal(router.setSessionControl('s1', { owner: 'new-owner' }), true)
+  const rec = store.state['route:sessions'].s1
+  assert.equal(rec.control.owner, 'new-owner', '本次控制覆盖层已写入')
+  assert.deepEqual(rec.outbound, { channels: ['concurrent'] }, '并发写入的 outbound 必须保留（不可被旧快照回写覆盖）')
+  assert.equal(rec.workspace, 'ws', 'registry 字段保留')
 })
 
 // ———————— 阶段 3：跨进程 session 状态写入测试 ————————

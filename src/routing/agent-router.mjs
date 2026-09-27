@@ -175,6 +175,27 @@ export function createAgentRouter({ store, agentsList } = {}) {
   const readMap = (key) => plainObjectOf(safeGet(key)) ?? {}
   const writeMap = (key, next) => safeSet(key, next)
 
+  /**
+   * 会话表提交 helper（v0.14 S03-P1 修复）：把「读取 route:sessions 最新整表 + 记录级字段
+   * 合并」关进**同一个** `store.transact()` mutator 内，提交瞬间以事务 draft 为最新基底，
+   * 消除「事务外读 latest、提交时仍写回旧快照」的 TOCTOU（并发写 control 层时不再被 outbound
+   * 写覆盖，反之亦然）。无真实事务能力的旧 store 退回单键读-改-写（单进程 best-effort，
+   * 不伪造原子性）。
+   * @param {(sessions: object) => object} mutate - 传入提交瞬间的 sessions 表，返回写回的新整表
+   * @returns {boolean} 是否落盘成功
+   */
+  const commitSessions = (mutate) => {
+    if (typeof store?.transact === 'function') {
+      const result = transactDurable(store, (draft) => {
+        const sessions = plainObjectOf(draft[KEY_SESSIONS]) ?? {}
+        draft[KEY_SESSIONS] = mutate(sessions)
+        return true
+      })
+      return result.committed === true
+    }
+    return writeMap(KEY_SESSIONS, mutate(readMap(KEY_SESSIONS)))
+  }
+
   // —— agentsList 防御包装：非函数 / 抛错 / 返回非数组 / 元素缺 id → 过滤为空 ——
   const listAgents = () => {
     try {
@@ -508,31 +529,34 @@ export function createAgentRouter({ store, agentsList } = {}) {
       assertNonEmptyString(sessionId, 'setSessionOutbound: sessionId')
       const normalized = patch === undefined || patch === null ? {} : patch
       if (plainObjectOf(normalized) === null) throw new TypeError('agent-router: setSessionOutbound: patch 必须是对象')
-      // 阶段 5 P2：整表读-改-写防 sibling clobber——先读当前表计算本次 outbound diff，
-      // 再 re-read 最新整表（捕获并发写入），把 diff 合并到最新记录上写回。
-      const sessions = readMap(KEY_SESSIONS)
-      const record = { ...plainObjectOf(sessions[sessionId]) }
-      const diff = { ...plainObjectOf(record.outbound) }
-      if (Object.prototype.hasOwnProperty.call(normalized, 'channels')) {
-        if (normalized.channels === undefined || normalized.channels === null) {
-          delete diff.channels
-        } else {
-          if (!Array.isArray(normalized.channels)) {
-            throw new TypeError('agent-router: setSessionOutbound: channels 必须是字符串数组')
-          }
-          diff.channels = normalizeChannelTypes(normalized.channels)
-        }
+      // 事务外只做纯校验 / 归一（不改状态）：入参违规仍同步抛 TypeError。
+      const hasChannels = Object.prototype.hasOwnProperty.call(normalized, 'channels')
+      const hasQuiet = Object.prototype.hasOwnProperty.call(normalized, 'quiet')
+      if (hasChannels && normalized.channels !== undefined && normalized.channels !== null && !Array.isArray(normalized.channels)) {
+        throw new TypeError('agent-router: setSessionOutbound: channels 必须是字符串数组')
       }
-      if (Object.prototype.hasOwnProperty.call(normalized, 'quiet')) {
-        if (normalized.quiet === undefined || normalized.quiet === null) delete diff.quiet
-        else diff.quiet = normalizeQuiet(normalized.quiet)
-      }
-      // Re-read 最新整表，合并本次 outbound diff 到最新记录（防并发覆盖 sibling）
-      const latest = readMap(KEY_SESSIONS)
-      const merged = { ...plainObjectOf(latest[sessionId]) }
-      if (Object.keys(diff).length > 0) merged.outbound = diff
-      else delete merged.outbound
-      return writeMap(KEY_SESSIONS, { ...latest, [sessionId]: merged })
+      const channelsAction = !hasChannels
+        ? 'none'
+        : (normalized.channels === undefined || normalized.channels === null ? 'delete' : 'set')
+      const channelsValue = channelsAction === 'set' ? normalizeChannelTypes(normalized.channels) : undefined
+      const quietAction = !hasQuiet
+        ? 'none'
+        : (normalized.quiet === undefined || normalized.quiet === null ? 'delete' : 'set')
+      const quietValue = quietAction === 'set' ? normalizeQuiet(normalized.quiet) : undefined
+      // v0.14 S03-P1：读取最新记录 + 字段级合并全部在事务内完成，提交瞬间以 draft 为基底，
+      // 并发写入的 sibling 字段（含 control/workspace 等）绝不被本次 outbound 写的旧快照覆盖。
+      return commitSessions((sessions) => {
+        const current = plainObjectOf(sessions[sessionId]) ?? {}
+        const diff = { ...(plainObjectOf(current.outbound) ?? {}) }
+        if (channelsAction === 'delete') delete diff.channels
+        else if (channelsAction === 'set') diff.channels = channelsValue
+        if (quietAction === 'delete') delete diff.quiet
+        else if (quietAction === 'set') diff.quiet = quietValue
+        const merged = { ...current }
+        if (Object.keys(diff).length > 0) merged.outbound = diff
+        else delete merged.outbound
+        return { ...sessions, [sessionId]: merged }
+      })
     },
 
     /**
@@ -555,24 +579,28 @@ export function createAgentRouter({ store, agentsList } = {}) {
       assertNonEmptyString(sessionId, 'setSessionControl: sessionId')
       const normalized = patch === undefined || patch === null ? {} : patch
       if (plainObjectOf(normalized) === null) throw new TypeError('agent-router: setSessionControl: patch 必须是对象')
-      // 阶段 5 P2：整表读-改-写防 sibling clobber——先读当前表计算本次 control overlay，
-      // 再 re-read 最新整表（捕获并发写入），把 overlay 合并到最新记录上写回。
-      const sessions = readMap(KEY_SESSIONS)
-      const record = { ...plainObjectOf(sessions[sessionId]) }
-      const overlay = { ...(plainObjectOf(record.control) ?? {}) }
+      // 事务外只做纯校验 / 归一（不改状态）：把本次 patch 拆成「删除字段」与「写入字段」两组。
+      const overlayDelete = []
+      const overlaySet = {}
       for (const key of ['mode', 'owner', 'approvalOwnerOnly', 'approvalMembers']) {
         if (!Object.prototype.hasOwnProperty.call(normalized, key)) continue
         const value = normalized[key]
-        if (value === undefined || value === null) delete overlay[key]
-        else overlay[key] = value
+        if (value === undefined || value === null) overlayDelete.push(key)
+        else overlaySet[key] = value
       }
-      const canonical = normalizeControlOverlay(overlay)
-      // Re-read 最新整表，合并本次 control overlay 到最新记录（防并发覆盖 sibling）
-      const latest = readMap(KEY_SESSIONS)
-      const merged = { ...plainObjectOf(latest[sessionId]) }
-      if (canonical === null) delete merged.control
-      else merged.control = JSON.parse(JSON.stringify(canonical))
-      return writeMap(KEY_SESSIONS, { ...latest, [sessionId]: merged })
+      // v0.14 S03-P1：读取最新记录 + 覆盖层归一全部在事务内完成，提交瞬间以 draft 为基底，
+      // 并发写入的 sibling 字段（含 outbound/workspace 等）绝不被本次 control 写的旧快照覆盖。
+      return commitSessions((sessions) => {
+        const current = plainObjectOf(sessions[sessionId]) ?? {}
+        const overlay = { ...(plainObjectOf(current.control) ?? {}) }
+        for (const key of overlayDelete) delete overlay[key]
+        for (const [key, value] of Object.entries(overlaySet)) overlay[key] = value
+        const canonical = normalizeControlOverlay(overlay)
+        const merged = { ...current }
+        if (canonical === null) delete merged.control
+        else merged.control = JSON.parse(JSON.stringify(canonical))
+        return { ...sessions, [sessionId]: merged }
+      })
     },
 
     /**
