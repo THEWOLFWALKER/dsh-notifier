@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+v0.14 **Native-first Completion** 开发线（尚未发布；版本号仍停留在 `0.13.1`，发布阶段再 bump）。把日常控制面继续收进 DSH Native，并把高级管理台收敛为 recovery。
+
+### 新增
+
+- **Native 日常视图**：待处理提问、任务、成员、待确认身份、配对码、会话、通知渠道、最近活动、诊断九个视图，覆盖此前只能在高级管理台完成的成员 / 配对 / 会话管理。
+- **Native 诊断中心 + Support Report**：只读快照回答“是否需要处理、为什么、最近一次检查”，分层显示 Host / 存储 / 渠道摘要 / 能力可用性 / 最近失败，并一键生成脱敏、可直接粘贴的 support report。
+- **共享控制服务（单一写者）**：出站渠道、成员/配对、会话/路由、提问结算各自收敛为一个共享应用服务；Native 与高级管理台都经它读写，适配器不再直写 store。
+
+### 修复
+
+- **会话覆盖层 TOCTOU**：字段级合并移入同一个 `store.transact()` 事务，并发写入不再被过期快照覆盖。
+- **高级管理台写路径收敛**：`putChannel` 的凭证读写走事务内 `mergeAccount`；出站保存/删除/测试只走 canonical 服务，未接线时 fail-closed 501，不再制造第二个 `admin:channel:<type>:outbound` 域。
+
+### 变更
+
+- **高级管理台重新定位**为 recovery / 原始审计 / 低层存储诊断入口（仍 loopback + Bearer）；日常管理移至 Native。
+
+### 验证边界
+
+- `npm test`：**2119 tests，2119 pass，0 fail，0 skip**（v0.14 dev 线，S15 checkpoint）。
+- `npm run verify:release`：版本、文档、测试计数、Host 兼容性门禁通过。
+- v0.14 未新增真机 DSH / 真实 provider 账号 / 真实投递回执证据；Native 视图的真机视觉走查与 provider 级缺口继续登记在 [`docs/memory/risks.md`](docs/memory/risks.md)。
+
 ## [0.13.1] - 2026-09-26（v0.13 follow-up release）
 
 本次补丁发行收口 v0.13 后续验证与公开交付边界：管理台补齐中英文资源表与安全内联序列化，公开投递能力改为证据边界表述，npm 白名单覆盖 README 文档/图片并加入包内容回归；高风险专项复核同步完成。

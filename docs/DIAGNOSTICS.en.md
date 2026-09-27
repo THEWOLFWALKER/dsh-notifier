@@ -4,6 +4,18 @@ Use this after first-line troubleshooting has not resolved the problem.
 
 The goal is a **small reproducible support report**, not a giant log dump.
 
+## Faster path: the Native Diagnostics view
+
+Since v0.14 the Native **Notify & Control → Diagnostics** view can produce that report for you:
+
+- it first answers three questions — **does anything need attention, why, and when did we last check**;
+- it layers Host, storage, channel summary, capability availability and recent failures;
+- **Generate support report** serializes the already-redacted canonical snapshot into a markdown
+  block (front-matter summary + fenced JSON) that can be copied or downloaded.
+
+The manual collection below is therefore the **fallback**: use it when the Native UI is unavailable,
+or when the problem is in the UI / host rendering itself.
+
 ## Evidence to collect
 
 Record:

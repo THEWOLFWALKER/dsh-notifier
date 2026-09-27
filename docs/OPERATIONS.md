@@ -33,10 +33,13 @@ The project has no runtime install step for tests. Optional packages are only ne
 
 ## Control-plane model
 
-v0.12 has three distinct operator surfaces:
+Three distinct operator surfaces:
 
-1. **DSH Native Notify & Control** — primary daily surface.
-2. **Advanced Console** — loopback-only (`127.0.0.1`) deep management/recovery.
+1. **DSH Native Notify & Control** — primary daily surface. Since v0.14 it carries the daily
+   Questions, Tasks, Members, Pending identities, Pairing codes, Sessions, Channels, Activity and
+   Diagnostics views itself.
+2. **Advanced Console** — loopback-only (`127.0.0.1`) recovery / raw-audit fallback: raw storage,
+   the bindings matrix and low-level storage diagnosis when the Native surface cannot be used.
 3. **YAML / CLI** — automation/headless/reproducible deployment.
 
 Do not describe the Advanced Console as the only control console.
@@ -94,7 +97,7 @@ Advanced Console remains:
 
 - loopback-only;
 - Bearer-protected for privileged APIs;
-- available for members/pairing/bindings/sessions/diagnostics.
+- recovery access to members, pairing, bindings, sessions and diagnostics (the Native surface owns the daily path).
 
 Normal Native handoff uses a short-lived one-time launch ticket. Native does not receive the long-lived Admin bearer.
 
@@ -115,6 +118,7 @@ Recovery address: use the actual `Web 管理台已就绪` startup line; never gu
 | `ask_user` missing | installed version, questions assembly, task/session binding |
 | `/pair` rejected | private-chat boundary, code age/use state, failure lock |
 | Advanced Console unavailable | `admin.enabled`, loopback bind, current port; Native will not auto-enable it |
+| Need a pasteable diagnostic | Native Diagnostics view (attention summary + one-click redacted report); Advanced Console for raw storage |
 | Behavior differs on provider/device | consult `docs/memory/risks.md`; contract tests do not certify provider payloads |
 
 Provider-specific media, callback ACK and long-connection behavior remains evidence-scoped. Do not turn “contract-tested” into “real-device-verified”.

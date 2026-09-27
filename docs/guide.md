@@ -168,12 +168,14 @@ DingTalk
 
 ### 配对流程
 
-在高级管理台：
+在 Native「通知与控制」：
 
 ```text
-成员
-→ 生成配对码
+配对码 / Pairing codes
+→ 生成
 ```
+
+「成员」和「待确认身份」也在同一个 Native 面板里。
 
 然后手机私聊机器人：
 
@@ -230,18 +232,19 @@ DingTalk
 
 ---
 
-## 第八步：高级管理台什么时候用
+## 第八步：Native 与高级管理台怎么分工
 
-Native 「通知与控制」负责日常操作。
+Native「通知与控制」负责日常操作，面板里已经有这些视图：
 
-Advanced Console 更适合：
+```text
+待处理提问 / 任务 / 成员 / 待确认身份 / 配对码 / 会话 / 通知渠道 / 最近活动 / 诊断
+```
 
-- 成员 / 配对码；
-- 待确认身份；
-- 绑定矩阵；
-- Session 管理；
-- 深度诊断；
-- Native UI 不可用时 Recovery。
+Advanced Console 是 recovery / 原始审计入口，只在下面这些情况用：
+
+- Native UI 打不开或渲染异常时的 Recovery；
+- 直接查看或编辑底层存储、绑定矩阵等原始数据；
+- 需要绕过 Native 投影做低层存储诊断。
 
 Advanced Console 只监听：
 
@@ -317,7 +320,7 @@ dsh plugin add dsh-notifier@latest --profile <profile名>
 
 [DIAGNOSTICS.md](DIAGNOSTICS.md)
 
-生成 Support Report 后上报。
+生成 Support Report 后上报。也可以直接打开 Native 的**「诊断」**视图：它会先回答“是否需要处理、为什么、最近一次检查”，并提供一键生成脱敏、可直接粘贴的 support report。
 
 常见现象：
 

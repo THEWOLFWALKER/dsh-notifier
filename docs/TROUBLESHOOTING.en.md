@@ -72,4 +72,7 @@ Provider acceptance is not the same as confirmed client delivery. Record the pro
 ### Pairing fails
 Check private-chat source, code expiry/use, lockout, and identity/account scope.
 
-If unresolved, use [DIAGNOSTICS.en.md](DIAGNOSTICS.en.md) to generate a compact support report.
+### Want a redacted diagnostic report first
+The Native **Notify & Control → Diagnostics** view answers “does anything need attention / why / when did we last check” and can generate a redacted, pasteable support report in one click.
+
+Only collect evidence by hand (per [DIAGNOSTICS.en.md](DIAGNOSTICS.en.md)) when the UI will not open or the failure is in host rendering.

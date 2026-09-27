@@ -14,6 +14,7 @@ Docs:
 - [Guide](guide.en.md)
 - [Troubleshooting](TROUBLESHOOTING.en.md)
 - [Diagnostics](DIAGNOSTICS.en.md)
+- One-click report: the Native **Notify & Control → Diagnostics** view's **Generate support report** (redacted, pasteable)
 
 Contact:
 - QQ: **3622976831**

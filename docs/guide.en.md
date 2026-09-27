@@ -111,7 +111,7 @@ Membership uses the canonical principal:
 
 `chatId` / `chatType` scope the event source; they are not the membership identity itself.
 
-Create a pairing code in Advanced Console, then send:
+Create a pairing code in the Native **Notify & Control** panel (**Pairing codes**; **Members** and **Pending identities** live there too), then send:
 
 ```text
 /pair <code>
@@ -148,16 +148,17 @@ Useful commands:
 
 Unsafe remote-control semantics are not enabled in group chats.
 
-## 8. Advanced Console
+## 8. Native vs Advanced Console
 
-Use the Native UI for daily work. Use Advanced Console for:
+Use the Native **Notify & Control** panel for daily work — it already carries views for
+Questions, Tasks, Members, Pending identities, Pairing codes, Sessions, Channels, Activity and
+Diagnostics.
 
-- members / pairing;
-- pending identities;
-- bindings;
-- session management;
-- deeper diagnostics;
-- Native recovery.
+Use the Advanced Console only as a recovery / raw-audit entry:
+
+- Native recovery when the panel will not open or render;
+- inspecting or editing raw storage and the bindings matrix directly;
+- low-level storage diagnosis that bypasses the Native projection.
 
 It remains loopback-only on `127.0.0.1`.
 
@@ -204,6 +205,8 @@ Start with AI-assisted read-only diagnosis:
 If it remains unresolved, generate a support bundle using:
 
 [DIAGNOSTICS.en.md](DIAGNOSTICS.en.md)
+
+The Native **Diagnostics** view can also answer “does anything need attention / why / when did we last check” and produce that redacted, pasteable report for you.
 
 Do not post secrets, full state files, authorization headers, or unredacted private messages.
 

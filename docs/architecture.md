@@ -59,6 +59,21 @@ Outbound resolution layers are, in order: session diff, exact agent id, workspac
 
 Persistent route keys are `route:agents`, `route:channels`, `route:sessions`, and `bind:*` compatibility records. The route CLI and admin API use the same router setters; they must not write these tables directly.
 
+## Control-Plane Services (v0.14)
+
+Each control domain has one shared application service. The Native surface and the loopback Advanced Console consume the same service and are projections/adapters over it — neither writes the store directly (contract I9), and the Native read-only views add no second authority.
+
+| Domain | Shared service | Note |
+| --- | --- | --- |
+| Outbound channels | `createChannelControlService` (`src/control-plane/channels.mjs`), `createOutboundConfigService` (`src/control-surface/outbound-config.mjs`) | validate → durable write → atomic `OutboundSource.replace`; credential merge stays in the inbound port |
+| Inbound credentials | inbound port `mergeAccount` (`src/inbound/channel-config.mjs`) | read-merge-commit inside one `store.transact` |
+| Members / pairing / pending | `createMembersControlService` (`src/control-plane/members.mjs`) | identity + pairing lifecycle; backs Native Members / Pending identities / Pairing codes |
+| Sessions / routing / bindings | `createRoutingControlService` (`src/control-plane/sessions.mjs`) | writes `route:*` through the router transaction, never a direct table write |
+| Questions settlement | `createQuestionsControlService` (`src/control-plane/questions.mjs`) | delegates to the Control Core bridge; backs the Native Questions Inbox |
+| Diagnostics | `createDiagnosticsService` (`src/control-surface/diagnostics.mjs`) | read-only redacted snapshot; backs the Native Diagnostics Center + support report |
+
+Cross-field credential merges and session-overlay updates run inside a single `store.transact()` (read the latest draft → field-level merge → durable commit) so a concurrent sibling-field write is preserved instead of overwritten — the v0.14 session-overlay TOCTOU fix.
+
 ## State And Files
 
 The shared file is `<stateDir>/state.json` (default `$DSH_HOME/dsh-notifier/state.json`, then `~/.dsh/dsh-notifier/state.json`). The store uses dirty-key merge, a lock file, mtime convergence reads, 0600 best effort permissions, and corruption backup before self-healing.

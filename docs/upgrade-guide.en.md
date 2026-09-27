@@ -180,3 +180,23 @@ Before publishing or reporting a real-host result, install the registry build, t
 - one real post-save outbound operation without restart.
 
 Green mocks/contracts do not certify external provider/device behavior.
+
+## 8. v0.13.1 → v0.14 (dev line) preview
+
+v0.14 is the **Native-first Completion** development line and is not released yet. It keeps moving
+daily management into the Native **Notify & Control** panel and demotes the Advanced Console further
+toward recovery:
+
+- **Native gains the daily views**: Questions, Tasks, Members, Pending identities, Pairing codes,
+  Sessions, Channels, Activity and Diagnostics. Members / pairing / pending / session management
+  that used to require the Advanced Console are done in Native on v0.14.
+- **New Diagnostics view**: answers “does anything need attention / why / when did we last check” and
+  offers a one-click, redacted, pasteable support report.
+- **Advanced Console**: still loopback + Bearer, now positioned as recovery / raw audit / low-level
+  storage diagnosis rather than a daily management entry.
+- **Outbound and canonical keys are unchanged**: `channel:<type>:outbound`, Hot Apply, and the
+  “Admin-off must not resurrect the overlay” rule all match v0.13; v0.13.1 → v0.14 needs **no new
+  state migration** (the v0.12 legacy-key migration already ran in earlier versions and is idempotent).
+
+This preview describes dev-line behavior only; installs should follow the published release, and do
+not change production based on it before it ships.

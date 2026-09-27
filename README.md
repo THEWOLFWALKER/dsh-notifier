@@ -28,7 +28,7 @@ dsh-notifier is the notification and remote-operations layer for DeepSeek Harnes
 
 - **Get notified anywhere** — task completion, approvals, errors, long-running status, and model-triggered notifications.
 - **Respond from your phone** — approve/reject, answer `ask_user`, continue a conversation, steer a running turn, or switch tasks/sessions.
-- **Manage it inside DSH** — the Native **Notify & Control** panel is the daily control surface; the loopback Advanced Console remains available for recovery and deeper management.
+- **Manage it inside DSH** — the Native **Notify & Control** panel is the daily control surface, with its own views for Questions, Tasks, Members, Pending identities, Pairing codes, Sessions, Channels, Activity and Diagnostics; the loopback Advanced Console is now a recovery / raw-audit fallback.
 - **Keep failures contained** — unsafe or unknown inbound actions fail closed; outbound channel failures do not take down the rest of the notifier.
 
 ## Screenshots
@@ -81,7 +81,7 @@ Outbound configuration changes are hot-applied after installation. Inbound trans
 | Approve / answer questions from my phone | Add a supported inbound channel, then pair your identity |
 | Talk to the agent remotely | Pair your identity, then send plain text in the private bot chat |
 | Steer a running task | Send `! <instruction>` from the bound private chat |
-| Manage members, bindings, sessions or recovery | Open the **Advanced Console** from Native |
+| Manage members, pairing, sessions or diagnostics | Use the Native **Notify & Control** views; keep the **Advanced Console** for recovery / raw audit |
 | Automate or run headless | Use YAML / CLI from the [guide](docs/guide.en.md) |
 
 ## Channels
@@ -183,7 +183,7 @@ Please **do not start by pasting a large log into an issue**. The fastest suppor
 1. Give an AI the [troubleshooting prompt](docs/TROUBLESHOOTING.en.md) and let it perform read-only diagnosis first.
 2. Let the AI identify the installed version, DSH profile/version, install source, failing subsystem, and a minimal reproduction — with secrets redacted.
 3. If the problem is safely fixable locally, fix and re-test it.
-4. If it remains unresolved, have the AI generate a compact [diagnostic report](docs/DIAGNOSTICS.en.md).
+4. If it remains unresolved, generate a compact [diagnostic report](docs/DIAGNOSTICS.en.md) — the Native **Diagnostics** view can produce this redacted, pasteable report for you.
 5. Send that report through GitHub Issues or the contact channels below.
 
 This keeps “old package / wrong profile / stale `file:` install / missing restart / provider credential” cases out of maintainer triage, while giving us a reproducible report when there is a real project bug.

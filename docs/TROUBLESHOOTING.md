@@ -188,6 +188,14 @@ confirmed delivery
 
 不要为了访问方便改成 `0.0.0.0`。
 
+### 想先拿到一份脱敏诊断报告
+
+Native「通知与控制 → 诊断」会先回答“是否需要处理、为什么、最近一次检查”，并可一键生成脱敏、可直接粘贴的 support report。
+
+只有 UI 打不开或问题出在宿主渲染时，才需要手工收集：
+
+[DIAGNOSTICS.md](DIAGNOSTICS.md)
+
 ## 如果 AI 能解决
 
 让 AI：

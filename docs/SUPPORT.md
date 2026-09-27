@@ -15,6 +15,7 @@
 - 使用指南：[guide.md](guide.md)
 - AI 排障：[TROUBLESHOOTING.md](TROUBLESHOOTING.md)
 - 定位与诊断：[DIAGNOSTICS.md](DIAGNOSTICS.md)
+- 一键报告：Native「通知与控制 → 诊断」的「生成诊断报告」（脱敏、可直接粘贴）
 
 ## 联系方式
 

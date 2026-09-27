@@ -227,3 +227,14 @@ dsh plugin add dsh-notifier@latest --profile <profile名>
 - 一次 Hot Apply 后的真实下一次发送。
 
 mock/contract 全绿不等于 provider/device 已验证。
+
+## 八、v0.13.1 → v0.14（开发线）预览
+
+v0.14 是 **Native-first Completion** 开发线，尚未发布；它把日常管理继续收进 Native「通知与控制」，并把高级管理台进一步降级为 recovery。要点：
+
+- **Native 新增/补全日常视图**：待处理提问、任务、成员、待确认身份、配对码、会话、通知渠道、最近活动、诊断。此前需要在高级管理台做的成员 / 配对码 / 待确认身份 / 会话管理，v0.14 直接在 Native 完成。
+- **新增「诊断」视图**：回答“是否需要处理、为什么、最近一次检查”，并提供一键生成脱敏、可直接粘贴的 support report。
+- **高级管理台**：保留 loopback + Bearer，定位为 recovery / 原始审计 / 低层存储诊断，不再是日常管理入口。
+- **出站与 canonical key 不变**：`channel:<type>:outbound` 语义、Hot Apply、Admin 关闭时不复活 overlay 等规则与 v0.13 一致；v0.13.1 → v0.14 **不需要新的 state 迁移**（v0.12 旧键迁移已在前序版本完成，且迁移是幂等的）。
+
+因此：本预览只描述开发线行为，正式安装仍以发布版为准；未发布前不要据此改生产环境。
