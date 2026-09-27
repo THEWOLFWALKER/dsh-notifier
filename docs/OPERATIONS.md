@@ -15,7 +15,7 @@ Release evidence (2026-09-26):
 - npm publish: `dsh-notifier@0.13.1` accepted by npm from the reviewed release head
 - v0.13.1 adds no fresh real DSH/provider run; the inherited host compatibility evidence and remaining gaps stay in `docs/memory/risks.md`
 
-`main` is pinned to the reviewed v0.13.1 release head. Never retag or force-push an existing release.
+The `v0.13.1` tag is pinned to reviewed release commit `9e0d3b6`; `main` and `dev` contain only later documentation/topology follow-ups. Never retag or force-push an existing release.
 
 ## Local checks
 

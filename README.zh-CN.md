@@ -20,10 +20,7 @@
 
 </div>
 
-<p align="center">
-  <img src="https://img.shields.io/badge/tests-2011-brightgreen" alt="2011 个测试">
-  `dsh-notifier@0.13.1` · test/ 2011 个测试 · 2011 个自动化契约测试
-</p>
+`dsh-notifier@0.13.1` · test/ 2011 个测试 · 2011 个自动化契约测试
 
 ## 它解决什么
 

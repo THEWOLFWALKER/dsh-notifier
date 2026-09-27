@@ -19,7 +19,7 @@
 
 - 真机/协议：Telegram 4096 边界、Feishu WS、QQ gateway/按钮 ACK、DingTalk stream、WeChat iLink QR/长轮询、WxPusher 回调、图片/文件 payload 与各 provider 限制。
 - 宿主/桌面：DSH 真实事件装配、真实浏览器管理台操作、重启读取持久化 overlay、Windows BurntToast/PowerShell toast。桌面 `ask_user` 没有安全宿主接口，不能宣称可用或双端共享。
-- 发布：npm `0.13.0` 已发布并通过 registry artifact 校验；`0.13.1` 继续要求 disposable profile 的 registry 安装、Native UI、一次出站 Hot Apply 与至少一条入站路径 smoke。
+- 发布：npm `0.13.1` 已发布并通过 registry 元数据校验；后续版本仍要求 disposable profile 的 registry 安装、Native UI、一次出站 Hot Apply 与至少一条入站路径 smoke。
 
 ## 维护规则
 
