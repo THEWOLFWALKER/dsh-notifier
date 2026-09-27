@@ -109,6 +109,7 @@ export function createControlSurfaceService({
   members,
   sessions = null,
   bindings = null,
+  diagnostics = null,
   activity,
   health,
   storageStatus,
@@ -318,6 +319,12 @@ export function createControlSurfaceService({
         revision.touch('bindings')
         activity.record('control', 'bindings-replaced', { status: 'ok' })
         return ok({ ...revisionView(), ...value, canEdit: bindings.canEdit === true })
+      }
+
+      // v0.14（S10）：只读 canonical 诊断快照。Diagnostics 不是 authority，
+      // 不写状态、不自动修复，故不 touch revision、不记 activity。
+      if (diagnostics && method === 'diagnostics.snapshot') {
+        return ok({ ...revisionView(), ...diagnostics.snapshot() })
       }
 
       if (method === 'activity.list') {

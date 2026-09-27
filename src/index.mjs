@@ -2,7 +2,7 @@
 // cordis 插件入口：组装配置解析、adapter 注册表、两条触发线（事件自动推送 + notify 工具）。
 // 空配置绝不弄崩启动：任何渠道解析问题只 warn + 跳过（学 dsh-email）。
 
-import { chmodSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { CHANNEL_TYPES, resolveConfig } from './config.mjs'
 import { composeOutboundChannels, accountOf } from './assembly/outbound.mjs'
 import { resolveAdminToken } from './assembly/admin-token.mjs'
@@ -55,6 +55,8 @@ import { createQuestionProjection } from './control-surface/questions.mjs'
 import { createMembersProjection } from './control-surface/members.mjs'
 import { createSessionsProjection } from './control-surface/sessions.mjs'
 import { createBindingsProjection } from './control-surface/bindings.mjs'
+import { createDiagnosticsService } from './control-surface/diagnostics.mjs'
+import { createHostCapabilitySnapshot } from './host/capability.mjs'
 import { createLaunchTickets } from './control-surface/launch-ticket.mjs'
 import { createAdminSessions } from './control-surface/admin-session.mjs'
 import { createControlSurfaceService } from './control-surface/service.mjs'
@@ -832,6 +834,38 @@ export function apply(ctx, config = {}) {
   })
   // v0.14（S09）：Native 高级绑定面，与 Sessions 共用同一路由控制单例（同一 canonical 事实）。
   const surfaceBindings = createBindingsProjection({ service: routingControl })
+  // v0.14（S10）：只读 canonical 诊断快照。只观察，不写状态、不自动修复；版本取自 package.json。
+  const pluginVersion = (() => {
+    try {
+      const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
+      return typeof pkg.version === 'string' && pkg.version !== '' ? pkg.version : 'unknown'
+    } catch { return 'unknown' }
+  })()
+  const surfaceDiagnostics = createDiagnosticsService({
+    version: pluginVersion,
+    revision: surfaceRevision,
+    hostCapabilities: () => {
+      try {
+        return createHostCapabilitySnapshot({
+          ctx,
+          events: hostEventsRegistrar !== null ? hostEventsRegistrar.snapshot() : null,
+          questionsFallbackEnabled: questionsBridge !== null,
+          webLocal: 'available',
+          imageInput: conversationRouterActive ? 'available' : 'unknown',
+        })
+      } catch {
+        return createHostCapabilitySnapshot({ ctx: {}, events: null })
+      }
+    },
+    storage: () => store.bootStatus?.() ?? { readFailed: false },
+    channels: surfaceChannels,
+    questions: surfaceQuestions,
+    sessions: surfaceSessions,
+    bindings: surfaceBindings,
+    members: surfaceMembers,
+    activity: surfaceActivity,
+    advancedConsole: () => (adminListenInfo?.port ? 'available' : 'unavailable'),
+  })
   const surfaceService = createControlSurfaceService({
     revision: surfaceRevision,
     channels: surfaceChannels,
@@ -851,6 +885,7 @@ export function apply(ctx, config = {}) {
     members: surfaceMembers,
     sessions: surfaceSessions,
     bindings: surfaceBindings,
+    diagnostics: surfaceDiagnostics,
     activity: surfaceActivity,
     health: surfaceHealth,
     storageStatus: () => {

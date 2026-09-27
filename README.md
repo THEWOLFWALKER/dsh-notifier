@@ -20,7 +20,7 @@ Bring DeepSeek Harness to your phone: notifications, approvals, questions, remot
 
 </div>
 
-`dsh-notifier@0.13.1` · test/ 2078 tests · 2078 automated contract tests
+`dsh-notifier@0.13.1` · test/ 2086 tests · 2086 automated contract tests
 
 ## What it does
 
