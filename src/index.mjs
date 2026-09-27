@@ -56,6 +56,7 @@ import { createLaunchTickets } from './control-surface/launch-ticket.mjs'
 import { createAdminSessions } from './control-surface/admin-session.mjs'
 import { createControlSurfaceService } from './control-surface/service.mjs'
 import { createChannelControlService } from './control-plane/channels.mjs'
+import { createMembersControlService } from './control-plane/members.mjs'
 import { registerControlSurfaceRpc } from './control-surface/rpc.mjs'
 // lang 文案表：入站回执 / 晨报标题等手机可见文案取词（未知 lang 已在 resolveConfig 归一回落 zh）
 import { stringsOf } from './strings.mjs'
@@ -805,6 +806,10 @@ export function apply(ctx, config = {}) {
     inboundConfig: inboundConfigPort,
     channelTest: (type, raw) => runChannelTest({ type, rawConfig: raw, strings }),
   })
+  // v0.14（S02）：Native 与 Advanced Console 共用的成员/配对编排单例。
+  // 谁都不再直接持有成员/配对写入编排（I1 / I9）；实例在装配处创建，非 admin 私有，
+  // 后续 S06/S07 Native surface 可直接复用同一实例。
+  const membersControl = createMembersControlService({ identity, pairing })
   const surfaceService = createControlSurfaceService({
     revision: surfaceRevision,
     channels: surfaceChannels,
@@ -912,6 +917,7 @@ export function apply(ctx, config = {}) {
         scanHandlers,
         identity, // v0.7 成员页：与 inbound 共用同一实例（store 读收敛 → 写入半秒内热生效）
         pairing, // v0.7 配对码铸造/撤销
+        membersControl, // v0.14（S02）：成员/配对编排共享单例（装配处创建，非 admin 私有）
         guidedProbe: () => identity.isEmpty() && allowUsers.length === 0, // 与 bus.isGuided 同口径（R5-2-P2-2）
         stateDir,
         logger,

@@ -25,6 +25,7 @@ import { CHANNEL_TYPES, channelFieldsOf, channelFixedOptions, channelDocUrlOf } 
 import { INBOUND_CHANNELS, INBOUND_CHANNEL_SET } from '../inbound/channels-registry.mjs'
 import { createInboundChannelConfigPort, INBOUND_FIELDS, describeBadChannelValue, inboundKeyWhitelist } from '../inbound/channel-config.mjs'
 import { createChannelControlService } from '../control-plane/channels.mjs'
+import { createMembersControlService, parseMemberKey, MEMBER_KEY_HINT } from '../control-plane/members.mjs'
 import { tasksSnapshot } from '../routing/task-projection.mjs'
 import { createHostCapabilitySnapshot } from '../host/capability.mjs'
 import { deleteDurable, setDurable } from '../inbound/store.mjs'
@@ -117,47 +118,6 @@ function controlSummary(control) {
   if (typeof raw.owner === 'string' && raw.owner !== '') summary.ownerConfigured = true
   if (Array.isArray(raw.approvalMembers)) summary.approvalMembersCount = raw.approvalMembers.length
   return Object.keys(summary).length > 0 ? summary : undefined
-}
-
-/**
- * v0.7 成员复合键 "<channel>:<userId>" 解析（管理台路由用）。
- * userId 内含冒号也容忍（只按第一个冒号切）；渠道必须属六入站通道，userId 非空且 ≤128。
- *
- * C3 审查（v0.8.7）：这里**故意不拒**含冒号的 userId。C3 的纵深防御设在「写入面」
- * （identity.addBinding/addPending + wxpusher UID_PATTERN 已 fail-closed，新的冒号
- * 身份再也进不来），而本函数只服务四条**读改删**路由（PUT 改角色 / DELETE 删成员 /
- * confirm / dismiss）。若在此一并拒收，C3 之前落盘的存量冒号绑定行（旧 wxpusher
- * UID_PATTERN 放行冒号 → addBinding 直落 `wxpusher:UID:EVIL`）仍会照常准入放行，却
- * 再也无法经管理台降级或删除——等于把一条越权身份永久钉死在白名单里（违反宪法 #7
- * 「fail-open 要有度」的反面：过度收紧反而锁死唯一清理入口）。confirm 路径不构成
- * 提权面：confirmPending 末端仍走 addBinding，冒号 userId 在那里被拒。
- * @returns {{ channel: string, accountId?: string, userId: string, raw: string } | null} 非法形状返回 null
- */
-const MEMBER_KEY_HINT = '成员键形状：<channel>:<userId> 或 <channel>:<accountId>:<userId>（channel ∈ telegram/feishu/qq/wxpusher/wechat/dingtalk）'
-function parseMemberKey(key) {
-  const raw = String(key ?? '').trim()
-  const colon = raw.indexOf(':')
-  if (colon <= 0) return null
-  const channel = raw.slice(0, colon)
-  const remainder = raw.slice(colon + 1)
-  const parts = remainder.split(':')
-  const accountId = parts.length >= 2 ? parts[0] : undefined
-  const userId = parts.length >= 2 ? parts.slice(1).join(':') : remainder
-  if (!INBOUND_SET.has(channel)) return null
-  if (userId === '' || userId.length > 128 || (accountId !== undefined && (accountId === '' || accountId.length > 128))) return null
-  return { channel, ...(accountId === undefined ? {} : { accountId }), userId, raw }
-}
-
-function memberKeyOf(record) {
-  if (record?.accountId !== undefined && String(record.accountId) !== '') {
-    return `${record.channel}:${record.accountId}:${record.userId}`
-  }
-  return `${record?.channel}:${record?.userId}`
-}
-
-function resolveMemberRecord(identity, parsed, pending = false) {
-  const records = pending ? identity.listPending() : identity.list(parsed.channel)
-  return records.find((record) => memberKeyOf(record) === parsed.raw)
 }
 
 /** 错误 → 可读消息（日志与审计用）。 */
@@ -289,6 +249,9 @@ function channelKeyWhitelist(type) {
  *   缺失时成员查询按空表降级、成员写方法抛 501（能力不可用）
  * @param {object} [options.pairing] - v0.7 配对码状态机实例（src/inbound/pairing.mjs）；
  *   缺失时配对码查询按空表降级、铸造/撤销抛 501
+ * @param {object} [options.membersControl] - v0.14（S02）成员/配对编排共享单例
+ *   （src/control-plane/members.mjs createMembersControlService）；装配层注入以让 Native 与
+ *   Admin 共用同一实例；缺失时用 identity/pairing 构造等价服务（旧测试不变）
  * @param {object} [options.questions] - 问题桥（src/questions/router.mjs 的 createQuestionBridge
  *   返回面）带 `adminPending()`/`adminSettle()` facade；缺省时待决查询按空表降级、
  *   结算抛 501（能力不可用）
@@ -309,6 +272,7 @@ export function createAdminApi(options = {}) {
   const {
     router, registry, store, notifier, channelsEnabled, outboundConfigs, outboundConfig = null, channelTest, scanHandlers,
     channelControl = null,
+    membersControl = null,
     identity, pairing, guidedProbe = null, stateDir, logger, questions = null, control = null,
     yamlRawConfigs = null,
     // v0.10 提交7「管理台暴露 DSH 连接与任务状态」：宿主上下文 + 任务投影注入 + 宿主
@@ -447,6 +411,9 @@ export function createAdminApi(options = {}) {
     inboundConfig: inboundPort,
     channelTest,
   })
+  // v0.14（S02）：成员/配对编排单例（与 Native 共享同一实例或等价构造）。
+  // 生产装配注入共享实例；测试/旧调用方未注入时用既有 identity/pairing 构造等价服务。
+  const membersControlService = membersControl ?? createMembersControlService({ identity, pairing })
 
   /**
    * 通道行全集（overview 与 getChannels 共用）：出站 = CHANNEL_TYPES 全量 + 入站 =
@@ -1119,26 +1086,9 @@ export function createAdminApi(options = {}) {
       const readSafe = (fn, fallback) => {
         try { return fn() } catch (error) { warn(`成员数据读取失败: ${errorMessage(error)}`); return fallback }
       }
-      const members = identity === null ? [] : readSafe(() => identity.list().map((record) => ({
-        key: memberKeyOf(record),
-        channel: record.channel,
-        ...(record.accountId !== undefined ? { accountId: record.accountId } : {}),
-        userId: record.userId,
-        label: record.label,
-        role: record.role,
-        origin: record.origin,
-        pairedAt: record.pairedAt,
-        lastSeenAt: record.lastSeenAt,
-      })), [])
-      const pending = identity === null ? [] : readSafe(() => identity.listPending().map((entry) => ({
-        key: memberKeyOf(entry),
-        channel: entry.channel,
-        ...(entry.accountId !== undefined ? { accountId: entry.accountId } : {}),
-        userId: entry.userId,
-        origin: entry.origin,
-        at: entry.at,
-      })), [])
-      const pairingCodes = pairing === null ? [] : readSafe(() => pairing.listActive(), [])
+      const members = membersControlService.hasIdentity ? readSafe(() => membersControlService.listMembers(), []) : []
+      const pending = membersControlService.hasIdentity ? readSafe(() => membersControlService.listPending(), []) : []
+      const pairingCodes = membersControlService.hasPairing ? readSafe(() => membersControlService.listPairingCodes(), []) : []
       // 引导态口径与 bus.isGuided 一致（R5 审查 R5-2-P2-2：只判 identity.isEmpty() 时，
       // allowUsers 非空但无通道凭证/整栈未启动的实例也亮「stderr 有引导码」——用户按提示
       // 翻日志永远翻不到。引导码只在「绑定表空 + allowUsers 空 + 凭证就绪」时铸造）
@@ -1147,13 +1097,14 @@ export function createAdminApi(options = {}) {
     },
 
     /**
-     * 改成员 label / role。末位 owner 不可降级（守卫在此层，identity 只做数据操作）。
+     * 改成员 label / role。末位 owner 不可降级（业务守卫在 MembersControlService，
+     * identity 只做数据操作）。表现层形状校验在本层，编排委托共享服务。
      * @param {string} key - 复合键 "<channel>:<userId>"
      * @param {{ label?: string, role?: string }} diff
      * @throws {ApiError} 501 identity 未装配；422 键形状/字段校验失败或末位 owner 降级；404 成员不存在
      */
     putMember(key, diff) {
-      if (identity === null || typeof identity.updateBinding !== 'function') {
+      if (!membersControlService.canUpdateMember) {
         throw new ApiError(501, '身份绑定层未装配（宿主未启用 inbound）')
       }
       const parsed = parseMemberKey(key)
@@ -1173,66 +1124,58 @@ export function createAdminApi(options = {}) {
         }
       }
       if (Object.keys(normalized).length === 0) throw new ApiError(422, '至少提供 label 或 role 之一')
-      const current = resolveMemberRecord(identity, parsed)
-      if (current === undefined) throw new ApiError(404, `成员不存在：${parsed.raw}`)
-      if (normalized.role === 'member' && current.role === 'owner') {
-        let owners = 0
-        try { owners = identity.ownerCount() } catch { owners = 1 }
-        if (owners <= 1) {
+      const result = membersControlService.updateMember(key, normalized)
+      if (result.ok !== true) {
+        if (result.reason === 'owner-last') {
           throw new ApiError(422, '末位 owner 不可降级（否则实例将无人可管理）；请先在成员页提升另一位 owner')
         }
+        throw new ApiError(404, `成员不存在：${parsed.raw}`)
       }
-      const result = identity.updateBinding(current.channel, current.userId, normalized, current.accountId)
-      if (result.ok !== true) throw new ApiError(404, `成员不存在：${parsed.raw}`)
-      auditGuard('putMember', { key: parsed.raw, diff: normalized })
-      return { key: parsed.raw, saved: true, record: result.record }
+      auditGuard('putMember', { key: result.key, diff: normalized })
+      return { key: result.key, saved: true, record: result.record }
     },
 
     /**
-     * 移除成员（末位 owner 不可删）。审计记录键与角色。
+     * 移除成员（末位 owner 不可删）。审计记录键与角色（业务守卫在 MembersControlService）。
      * @param {string} key - 复合键 "<channel>:<userId>"
      * @throws {ApiError} 501 identity 未装配；422 键形状非法或末位 owner；404 成员不存在
      */
     deleteMember(key) {
-      if (identity === null || typeof identity.removeBinding !== 'function') {
+      if (!membersControlService.canRemoveMember) {
         throw new ApiError(501, '身份绑定层未装配（宿主未启用 inbound）')
       }
       const parsed = parseMemberKey(key)
       if (parsed === null) throw new ApiError(422, MEMBER_KEY_HINT)
-      const current = resolveMemberRecord(identity, parsed)
-      if (current === undefined) throw new ApiError(404, `成员不存在：${parsed.raw}`)
-      if (current.role === 'owner') {
-        let owners = 0
-        try { owners = identity.ownerCount() } catch { owners = 1 }
-        if (owners <= 1) {
+      const result = membersControlService.removeMember(key)
+      if (result.ok !== true) {
+        if (result.reason === 'owner-last') {
           throw new ApiError(422, '末位 owner 不可删除（否则实例将无人可管理）；请先转移角色或添加成员')
         }
+        throw new ApiError(404, `成员不存在：${parsed.raw}`)
       }
-      const result = identity.removeBinding(current.channel, current.userId, current.accountId)
-      if (result.ok !== true) throw new ApiError(404, `成员不存在：${parsed.raw}`)
-      auditGuard('deleteMember', { key: parsed.raw, role: current.role })
-      return { key: parsed.raw, deleted: true }
+      auditGuard('deleteMember', { key: result.key, role: result.role })
+      return { key: result.key, deleted: true }
     },
 
     /**
      * 确认待确认绑定 → 转正为正式成员（扫码/订阅学习链的收口动作）。
+     * 原子提升经共享服务 → identity.confirmPending 单事务路径（I3）。
      * @param {string} key - 复合键 "<channel>:<userId>"
      * @throws {ApiError} 501 identity 未装配；422 键形状非法；404 待确认条目不存在；409 已是成员
      */
     confirmPendingMember(key) {
-      if (identity === null || typeof identity.confirmPending !== 'function') {
+      if (!membersControlService.canConfirmPending) {
         throw new ApiError(501, '身份绑定层未装配（宿主未启用 inbound）')
       }
       const parsed = parseMemberKey(key)
       if (parsed === null) throw new ApiError(422, MEMBER_KEY_HINT)
-      const pending = resolveMemberRecord(identity, parsed, true)
-      const result = identity.confirmPending(pending?.channel ?? parsed.channel, pending?.userId ?? parsed.userId, pending?.accountId ?? parsed.accountId)
+      const result = membersControlService.approvePending(key)
       if (result.ok !== true) {
         if (result.reason === 'already-bound') throw new ApiError(409, `该身份已是成员：${parsed.raw}`)
         throw new ApiError(404, `待确认绑定不存在：${parsed.raw}`)
       }
-      auditGuard('confirmPending', { key: parsed.raw })
-      return { key: parsed.raw, confirmed: true, record: result.record }
+      auditGuard('confirmPending', { key: result.key })
+      return { key: result.key, confirmed: true, record: result.record }
     },
 
     /**
@@ -1241,16 +1184,15 @@ export function createAdminApi(options = {}) {
      * @throws {ApiError} 501 identity 未装配；422 键形状非法；404 条目不存在
      */
     dismissPendingMember(key) {
-      if (identity === null || typeof identity.dismissPending !== 'function') {
+      if (!membersControlService.canDismissPending) {
         throw new ApiError(501, '身份绑定层未装配（宿主未启用 inbound）')
       }
       const parsed = parseMemberKey(key)
       if (parsed === null) throw new ApiError(422, MEMBER_KEY_HINT)
-      const pending = resolveMemberRecord(identity, parsed, true)
-      const result = identity.dismissPending(pending?.channel ?? parsed.channel, pending?.userId ?? parsed.userId, pending?.accountId ?? parsed.accountId)
+      const result = membersControlService.removePending(key)
       if (result.ok !== true) throw new ApiError(404, `待确认绑定不存在：${parsed.raw}`)
-      auditGuard('dismissPending', { key: parsed.raw })
-      return { key: parsed.raw, dismissed: true }
+      auditGuard('dismissPending', { key: result.key })
+      return { key: result.key, dismissed: true }
     },
 
     /**
@@ -1261,7 +1203,7 @@ export function createAdminApi(options = {}) {
      * @throws {ApiError} 501 pairing 未装配；422 ttlMin/label 校验失败
      */
     mintPairingCode(body = {}) {
-      if (pairing === null || typeof pairing.mint !== 'function') {
+      if (!membersControlService.canMintPairing) {
         throw new ApiError(501, '配对码状态机未装配（宿主未启用 inbound）')
       }
       const input = plainObjectOf(body) ?? {}
@@ -1274,7 +1216,7 @@ export function createAdminApi(options = {}) {
         ttlMs = input.ttlMin * 60 * 1000
       }
       const label = typeof input.label === 'string' ? input.label.slice(0, 64) : ''
-      const result = pairing.mint({ origin: 'admin', mintedBy: 'admin:web', ttlMs, label })
+      const result = membersControlService.mintPairingCode({ origin: 'admin', mintedBy: 'admin:web', ttlMs, label })
       if (result.ok !== true) throw new ApiError(500, `配对码铸造失败：${String(result.reason ?? '未知')}`)
       return { id: result.id, code: result.code, expiresAt: result.expiresAt }
     },
@@ -1285,12 +1227,12 @@ export function createAdminApi(options = {}) {
      * @throws {ApiError} 501 pairing 未装配；422 id 形状非法；404 不存在或已终态
      */
     revokePairingCode(id) {
-      if (pairing === null || typeof pairing.revoke !== 'function') {
+      if (!membersControlService.canRevokePairing) {
         throw new ApiError(501, '配对码状态机未装配（宿主未启用 inbound）')
       }
       const normalized = String(id ?? '').trim()
       if (normalized === '' || normalized.length > 32) throw new ApiError(422, '配对码 id 非法')
-      const result = pairing.revoke(normalized, { by: 'admin:web' })
+      const result = membersControlService.revokePairingCode(normalized, { by: 'admin:web' })
       if (result.ok !== true) {
         throw new ApiError(404, `配对码不存在或已终态（${String(result.reason ?? 'not-found')}）`)
       }
