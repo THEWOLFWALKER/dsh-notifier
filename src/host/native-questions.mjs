@@ -34,6 +34,7 @@
 // 保留插件自有 `ask_user` fallback，绝不伪造「已桥接」。
 
 import { detectQuestionsMode, readUserQuestions } from './capability.mjs'
+import { createQuestionsControlService } from '../control-plane/questions.mjs'
 
 const isRecord = (value) => typeof value === 'object' && value !== null
 
@@ -60,10 +61,16 @@ function normalizeOptions(options) {
  * @param {object} deps.ctx - cordis 上下文（含可选 ctx.userQuestions seam）
  * @param {ReturnType<typeof import('../questions/router.mjs').createQuestionBridge>} deps.questionBridge
  *   - 已装配的远程提问桥，承载 aq: 账本、推送、首达采纳与 askQuestions 循环
+ * @param {ReturnType<typeof import('../control-plane/questions.mjs').createQuestionsControlService>} [deps.questionsControl]
+ *   - v0.14（S04）远程提问结算契约共享单例；注入时待决/结算走它（与 Native / Admin 同一入口），
+ *     缺失时用 questionBridge 构造等价服务
  * @param {object} [deps.logger]
  */
 export function createNativeQuestionBridge(deps = {}) {
   const { ctx, questionBridge } = deps
+  // v0.14（S04）：待决/结算统一走共享提问控制服务（与 Native / Admin 同一结算入口）。
+  // 装配层注入共享实例；未注入时用既有 questionBridge 构造等价服务（旧调用方行为不变）。
+  const questionsControl = deps.questionsControl ?? createQuestionsControlService({ bridge: questionBridge })
   const logger = deps.logger ?? null
   const warn = (message) => {
     try { logger?.warn?.('[dsh-notifier/native-questions]', message) } catch { /* 日志失败绝不致命 */ }
@@ -266,26 +273,18 @@ export function createNativeQuestionBridge(deps = {}) {
     return true
   }
 
-  /** 当前待决原生问题（脱敏快照，标记来源 native；委托 questionBridge）。 */
+  /** 当前待决原生问题（脱敏快照，标记来源 native；委托共享提问控制服务）。 */
   function pending() {
-    if (typeof questionBridge?.adminPending !== 'function') return []
     try {
-      return questionBridge.adminPending().map((row) => ({ ...row, source: 'native' }))
+      return questionsControl.pending().map((row) => ({ ...row, source: 'native' }))
     } catch {
       return []
     }
   }
 
-  /** 经 Control Core 首达结算后回宿主（委托 questionBridge.adminSettle）。 */
+  /** 经 Control Core 首达结算后回宿主（委托共享提问控制服务 → 桥 adminSettle）。 */
   function settle(input = {}) {
-    if (typeof questionBridge?.adminSettle !== 'function') {
-      return { ok: false, handled: false, reason: 'no_settle', message: '原生桥未装配结算入口' }
-    }
-    try {
-      return questionBridge.adminSettle(input)
-    } catch (error) {
-      return { ok: false, handled: false, reason: 'settle_failed', message: error instanceof Error ? error.message : String(error) }
-    }
+    return questionsControl.settle(input)
   }
 
   /** 管理台诊断快照（无敏感数据）。 */

@@ -192,7 +192,8 @@ test('native questions: pending and settle delegate to questionBridge', () => {
 test('native questions: pending/settle fail closed when bridge methods are missing', () => {
   const bridge = createNativeQuestionBridge({ ctx: {}, questionBridge: {} })
   assert.deepEqual(bridge.pending(), [])
-  assert.deepEqual(bridge.settle({}), { ok: false, handled: false, reason: 'no_settle', message: '原生桥未装配结算入口' })
+  // v0.14（S04）：结算走共享提问控制服务，降级码统一为 not_available（不再是桥私有的 no_settle）
+  assert.deepEqual(bridge.settle({}), { ok: false, handled: false, reason: 'not_available', message: '问题桥未装配，无法结算远程提问' })
 })
 // ---------- #27 / waterfall 拦截器契约 ----------
 

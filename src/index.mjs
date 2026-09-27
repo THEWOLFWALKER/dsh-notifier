@@ -57,6 +57,7 @@ import { createAdminSessions } from './control-surface/admin-session.mjs'
 import { createControlSurfaceService } from './control-surface/service.mjs'
 import { createChannelControlService } from './control-plane/channels.mjs'
 import { createMembersControlService } from './control-plane/members.mjs'
+import { createQuestionsControlService } from './control-plane/questions.mjs'
 import { registerControlSurfaceRpc } from './control-surface/rpc.mjs'
 // lang 文案表：入站回执 / 晨报标题等手机可见文案取词（未知 lang 已在 resolveConfig 归一回落 zh）
 import { stringsOf } from './strings.mjs'
@@ -386,6 +387,9 @@ export function apply(ctx, config = {}) {
   let busRef = null
   let questionsBridge = null
   let nativeBridge = null
+  // v0.14（S04）：远程提问结算契约共享单例（Native RPC 投影 / Admin HTTP / 宿主原生桥共用）。
+  // 桥未装配时为「无桥」服务（待决空表 / 结算 fail-closed）；桥装配后重新绑定同一实例。
+  let questionsControl = createQuestionsControlService()
   // v0.10 提交7：宿主事件 registrar 快照（管理台 /host 的 events.received 视图）
   // 与图片入站能力标记（会话路由装配成功即 available）。惰性读取，装配前为 null/false。
   let hostEventsRegistrar = null
@@ -681,6 +685,8 @@ export function apply(ctx, config = {}) {
           logger,
           config: resolved.questions,
         }, strings)
+        // v0.14（S04）：把共享提问控制服务绑定到刚装配的桥。
+        questionsControl = createQuestionsControlService({ bridge: questionsBridge })
         const disposeAskTool = registerAskUserTool(ctx, questionsBridge, {
           rateLimitPerMinute: resolved.questions.rateLimitPerMinute,
           defaultTimeoutMs: resolved.questions.timeoutMs,
@@ -700,6 +706,7 @@ export function apply(ctx, config = {}) {
         nativeBridge = createNativeQuestionBridge({
           ctx,
           questionBridge: questionsBridge,
+          questionsControl, // v0.14（S04）：待决/结算与 Native/Admin 同一入口
           logger,
           canDeliver: () => Array.isArray(interactiveRaw) && interactiveRaw.length > 0,
         })
@@ -779,10 +786,9 @@ export function apply(ctx, config = {}) {
       }
     },
   })
-  const surfaceQuestions = createQuestionProjection({
-    getQuestions: () => questionsBridge?.adminPending?.() ?? [],
-    settle: (payload) => questionsBridge?.adminSettle?.(payload) ?? { ok: false, reason: 'not_available', message: '问题桥未装配' },
-  })
+  // v0.14（S04）：Native `questions.list`/`questions.settle` 走共享提问控制服务
+  // （与 Admin / 宿主原生桥同一结算入口）；本层只做 RPC 形态映射。
+  const surfaceQuestions = createQuestionProjection({ service: questionsControl })
   const surfaceChannels = {
     list: () => createChannelProjection({
       outboundSource,
@@ -923,6 +929,7 @@ export function apply(ctx, config = {}) {
         logger,
         inboundConfig: inboundConfigPort,
         questions: questionsBridge, // 路线图阶段 2A：远程提问管理台裁决（脱敏查询 + 受保护结算）
+        questionsControl, // v0.14（S04）：共享提问结算契约单例（与 Native / 宿主桥同一入口）
         control, // 结算必须经 Control Core 唯一裁决（注入同一实例，缺线即 fail-closed）
         // v0.10 提交7：暴露 DSH 连接与任务状态——宿主上下文 + 任务投影关注判定 + 宿主
         // 事件 registrar 快照 + 会话/提问/图片能力信号（全只读，装配期惰性闭包）。

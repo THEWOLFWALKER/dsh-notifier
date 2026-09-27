@@ -27,6 +27,7 @@ import { createInboundChannelConfigPort, INBOUND_FIELDS, describeBadChannelValue
 import { createChannelControlService } from '../control-plane/channels.mjs'
 import { createMembersControlService, parseMemberKey, MEMBER_KEY_HINT } from '../control-plane/members.mjs'
 import { createRoutingControlService, controlSummary } from '../control-plane/sessions.mjs'
+import { createQuestionsControlService } from '../control-plane/questions.mjs'
 import { tasksSnapshot } from '../routing/task-projection.mjs'
 import { createHostCapabilitySnapshot } from '../host/capability.mjs'
 import { deleteDurable, setDurable } from '../inbound/store.mjs'
@@ -221,6 +222,9 @@ function channelKeyWhitelist(type) {
  * @param {object} [options.questions] - 问题桥（src/questions/router.mjs 的 createQuestionBridge
  *   返回面）带 `adminPending()`/`adminSettle()` facade；缺省时待决查询按空表降级、
  *   结算抛 501（能力不可用）
+ * @param {object} [options.questionsControl] - v0.14（S04）远程提问结算契约共享单例
+ *   （src/control-plane/questions.mjs createQuestionsControlService）；装配层注入以让 Native /
+ *   宿主原生桥与 Admin 共用同一实例；缺失时用既有 `questions` 桥构造等价服务（旧测试不变）
  * @param {object} [options.control] - Control Core（src/control/entry.mjs createControlEntry）；
  *   结算必须经其唯一裁决；缺省 + questions 存在视为未接线 → 结算 fail-closed 501，绝不直通
  * @param {() => boolean} [options.guidedProbe] - v0.7 引导态探针（与 bus.isGuided 同口径：
@@ -241,6 +245,7 @@ export function createAdminApi(options = {}) {
     membersControl = null,
     routingControl = null,
     identity, pairing, guidedProbe = null, stateDir, logger, questions = null, control = null,
+    questionsControl = null,
     yamlRawConfigs = null,
     // v0.10 提交7「管理台暴露 DSH 连接与任务状态」：宿主上下文 + 任务投影注入 + 宿主
     // 能力快照注入（全部只读；缺失一律安全降级，绝不抛）。
@@ -379,6 +384,10 @@ export function createAdminApi(options = {}) {
   // 生产装配注入共享实例；测试/旧调用方未注入时用既有 router/registry/store 构造等价服务。
   // 收敛 bindings 快照/替换、会话列表投影、会话 outbound/control 覆盖写入。
   const routingControlService = routingControl ?? createRoutingControlService({ router, registry, store, warn })
+  // v0.14（S04）：远程提问结算契约共享单例（与 Native / 宿主原生桥共享同一实例或等价构造）。
+  // 生产装配注入共享实例；测试/旧调用方未注入时用既有问题桥构造等价服务。
+  // 收敛「读待决快照 + 委托首达结算」，本层不再自行触达桥（消除与 Native 的重复投影/校验入口）。
+  const questionsControlService = questionsControl ?? createQuestionsControlService({ bridge: questions })
 
   /**
    * 通道行全集（overview 与 getChannels 共用）：出站 = CHANNEL_TYPES 全量 + 入站 =
@@ -1154,8 +1163,8 @@ export function createAdminApi(options = {}) {
      * @returns {Array<object>}
      */
     getPendingQuestions() {
-      if (questions === null || typeof questions.adminPending !== 'function') return []
-      try { return questions.adminPending() } catch { return [] }
+      // v0.14（S04）：读待决快照统一走共享提问控制服务（单一投影源；服务内已 fail-closed 降级空表）。
+      return questionsControlService.pending()
     },
 
     /**
@@ -1182,7 +1191,7 @@ export function createAdminApi(options = {}) {
       let ownerCount = 0
       try { ownerCount = identity.ownerCount() } catch { ownerCount = 0 }
       if (ownerCount < 1) throw new ApiError(403, '当前没有已绑定 owner，无法证明本地管理员身份')
-      if (questions === null || typeof questions?.adminSettle !== 'function') {
+      if (questionsControlService.canSettle !== true) {
         throw new ApiError(501, '问题桥未装配，无法结算远程提问')
       }
       if (control === null || typeof control?.handle !== 'function') {
@@ -1190,7 +1199,7 @@ export function createAdminApi(options = {}) {
       }
       let result
       try {
-        result = questions.adminSettle({
+        result = questionsControlService.settle({
           ref,
           action,
           options: Array.isArray(body?.options) ? body.options : [],
@@ -1221,6 +1230,8 @@ export function createAdminApi(options = {}) {
       if (result.reason === 'invalid_action' || result.reason === 'invalid_option') throw new ApiError(422, String(result.message ?? '非法选项/动作'))
       if (result.reason === 'unauthorized') throw new ApiError(403, String(result.message ?? '无权限结算该问题'))
       if (result.reason === 'not_available') throw new ApiError(501, String(result.message ?? '结算当前不可用'))
+      // 桥内异常或不可解释返回 → 500 内部错误（未执行任何变更，绝不假报成功）
+      if (result.reason === 'settle_failed' || result.reason === 'no_result') throw new ApiError(500, String(result.message ?? '结算时发生内部错误，未执行任何变更'))
       // 兜底：任何未枚举失败都按未生效处理（fail-closed，绝不假报成功）
       throw new ApiError(409, String(result.message ?? '结算未生效（未知原因）'))
     },
