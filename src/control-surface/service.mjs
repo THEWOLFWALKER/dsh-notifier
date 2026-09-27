@@ -3,6 +3,7 @@ const PUBLIC_ERROR_CODES = new Set([
   'storage-failed', 'conflict', 'host-unavailable', 'internal',
 ])
 import { inboundApplyMode, isHotApplied } from './apply-mode.mjs'
+import { createChannelControlService } from '../control-plane/channels.mjs'
 import { isConfirmedReceipt } from '../delivery-evidence.mjs'
 import { redactDiagnosticValue } from '../security/diagnostic.mjs'
 import { isStorageUntrusted } from '../inbound/store.mjs'
@@ -100,6 +101,7 @@ export function createControlSurfaceService({
   revision,
   channels,
   outboundConfig,
+  channelControl = null,
   saveInbound,
   channelTest,
   tasks,
@@ -110,6 +112,9 @@ export function createControlSurfaceService({
   launchTickets,
   adminLocation,
 } = {}) {
+  // v0.14（S01）：Native 不再自行编排通道写入——统一走共享 ChannelControlService。
+  // 未注入时用既有依赖构造一个等价实例，保证旧调用方与测试行为不变。
+  const control = channelControl ?? createChannelControlService({ outboundConfig, channelTest, saveInbound })
   const revisionView = () => {
     const current = revision.current()
     return { epoch: current.epoch, revision: current.revision }
@@ -162,19 +167,9 @@ export function createControlSurfaceService({
         const direction = String(payload?.direction ?? '')
         let result
         if (direction === 'outbound') {
-          result = outboundConfig.save(payload?.type, payload?.patch)
+          result = control.saveOutbound(payload?.type, payload?.patch)
         } else if (direction === 'inbound') {
-          if (typeof saveInbound !== 'function') {
-            const error = new Error('入站配置写入能力不可用')
-            error.code = 'not-supported'
-            throw error
-          }
-          const saved = await saveInbound(payload?.type, payload?.patch)
-          if (saved?.saved !== true) {
-            const error = new Error('入站配置写入失败：未落盘，已保留当前状态')
-            error.code = 'storage-failed'
-            throw error
-          }
+          const saved = await control.saveInbound(payload?.type, payload?.patch)
           result = {
             saved: true,
             applied: isHotApplied('inbound'),
@@ -198,13 +193,8 @@ export function createControlSurfaceService({
 
       if (method === 'channels.test') {
         const type = String(payload?.type ?? '')
-        const raw = outboundConfig.raw(type)
-        if (raw === null || Object.keys(raw).length === 0) {
-          const error = new Error(`渠道 "${type}" 未配置`)
-          error.code = 'not-configured'
-          throw error
-        }
-        const rawResult = await channelTest(type, raw)
+        const rawResult = await control.testOutbound(type)
+        const raw = control.rawOutbound(type) ?? {}
         const safeRawResult = redactDiagnosticValue(rawResult, raw)
         health.recordTest(type, safeRawResult)
         revision.touch('health')

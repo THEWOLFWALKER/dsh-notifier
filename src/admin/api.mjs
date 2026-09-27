@@ -24,6 +24,7 @@ import { dirname, join } from 'node:path'
 import { CHANNEL_TYPES, channelFieldsOf, channelFixedOptions, channelDocUrlOf } from '../config.mjs'
 import { INBOUND_CHANNELS, INBOUND_CHANNEL_SET } from '../inbound/channels-registry.mjs'
 import { createInboundChannelConfigPort, INBOUND_FIELDS, describeBadChannelValue, inboundKeyWhitelist } from '../inbound/channel-config.mjs'
+import { createChannelControlService } from '../control-plane/channels.mjs'
 import { tasksSnapshot } from '../routing/task-projection.mjs'
 import { createHostCapabilitySnapshot } from '../host/capability.mjs'
 import { deleteDurable, setDurable } from '../inbound/store.mjs'
@@ -307,6 +308,7 @@ function channelKeyWhitelist(type) {
 export function createAdminApi(options = {}) {
   const {
     router, registry, store, notifier, channelsEnabled, outboundConfigs, outboundConfig = null, channelTest, scanHandlers,
+    channelControl = null,
     identity, pairing, guidedProbe = null, stateDir, logger, questions = null, control = null,
     yamlRawConfigs = null,
     // v0.10 提交7「管理台暴露 DSH 连接与任务状态」：宿主上下文 + 任务投影注入 + 宿主
@@ -438,6 +440,13 @@ export function createAdminApi(options = {}) {
 
   // v0.12.1（P1-03）：Admin 与 Native 共用同一入站配置端口，端口本身不依赖 Admin 生命周期。
   const inboundPort = inboundConfig ?? createInboundChannelConfigPort({ store, warn, audit: auditGuard })
+  // v0.14（S01）：通道写入编排单例（与 Native 共享同一实例或等价构造）。
+  // 生产装配注入共享实例；测试/旧调用方未注入时用既有依赖构造等价服务。
+  const channelControlService = channelControl ?? createChannelControlService({
+    outboundConfig,
+    inboundConfig: inboundPort,
+    channelTest,
+  })
 
   /**
    * 通道行全集（overview 与 getChannels 共用）：出站 = CHANNEL_TYPES 全量 + 入站 =
@@ -1419,7 +1428,7 @@ export function createAdminApi(options = {}) {
       }
       if (outboundConfig !== null && typeof outboundConfig?.save === 'function') {
         try {
-          const result = outboundConfig.save(type, config)
+          const result = channelControlService.saveOutbound(type, config)
           auditGuard('putOutboundChannel', { type })
           return { ...result, type, saved: result?.saved === true, direction: 'outbound' }
         } catch (error) {
@@ -1500,7 +1509,7 @@ export function createAdminApi(options = {}) {
       }
       if (outboundConfig !== null && typeof outboundConfig?.remove === 'function') {
         try {
-          const result = outboundConfig.remove(type, options)
+          const result = channelControlService.removeOutbound(type, options)
           auditGuard('deleteOutboundChannel', { type, mode: options?.mode ?? 'fallback' })
           return { ...result, type, deleted: result?.deleted === true, direction: 'outbound' }
         } catch (error) {
@@ -1538,9 +1547,13 @@ export function createAdminApi(options = {}) {
         throw new ApiError(501, `未知出站通道类型 "${String(type)}"`)
       }
       if (outboundConfig !== null && typeof outboundConfig?.raw === 'function') {
-        const raw = serviceRawOf(type)
-        if (Object.keys(raw).length === 0) throw new ApiError(501, `渠道 "${type}" 未配置，无法测试`)
-        return await channelTest(type, raw)
+        try {
+          return await channelControlService.testOutbound(type)
+        } catch (error) {
+          if (error?.code === 'not-configured') throw new ApiError(501, `渠道 "${type}" 未配置，无法测试`)
+          if (error?.code === 'not-supported') throw new ApiError(501, '连通性测试不可用')
+          throw error
+        }
       }
       // 读取最新合并配置（当前 YAML 原始行 ⊕ 当前 admin:channel:<type>:outbound）——
       // raw 行剔除 type/enabled 元键，runChannelTest 内部自行 resolveEnvRefs + adapter.resolve。

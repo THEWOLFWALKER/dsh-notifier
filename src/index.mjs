@@ -55,6 +55,7 @@ import { createQuestionProjection } from './control-surface/questions.mjs'
 import { createLaunchTickets } from './control-surface/launch-ticket.mjs'
 import { createAdminSessions } from './control-surface/admin-session.mjs'
 import { createControlSurfaceService } from './control-surface/service.mjs'
+import { createChannelControlService } from './control-plane/channels.mjs'
 import { registerControlSurfaceRpc } from './control-surface/rpc.mjs'
 // lang 文案表：入站回执 / 晨报标题等手机可见文案取词（未知 lang 已在 resolveConfig 归一回落 zh）
 import { stringsOf } from './strings.mjs'
@@ -797,10 +798,18 @@ export function apply(ctx, config = {}) {
       health: surfaceHealth,
     }).get(type),
   }
+  // v0.14（S01）：Native 与 Advanced Console 共用的通道写入编排单例。
+  // 两个适配器都只调用它，谁都不再持有第二套写入/测试编排逻辑（I1 / I9）。
+  const channelControl = createChannelControlService({
+    outboundConfig: outboundConfigService,
+    inboundConfig: inboundConfigPort,
+    channelTest: (type, raw) => runChannelTest({ type, rawConfig: raw, strings }),
+  })
   const surfaceService = createControlSurfaceService({
     revision: surfaceRevision,
     channels: surfaceChannels,
     outboundConfig: outboundConfigService,
+    channelControl,
     saveInbound: async (type, patch) => {
       if (typeof surfaceAdminApi?.putInboundChannel !== 'function') {
         const error = new Error('入站配置写入能力不可用')
@@ -888,6 +897,7 @@ export function apply(ctx, config = {}) {
         channelsEnabled: () => outboundSource.types(),
         outboundConfigs: () => Object.fromEntries(outboundSource.snapshot().map((entry) => [entry.type, entry.config])),
         outboundConfig: outboundConfigService,
+        channelControl,
         // 零配置首访：channelTest 支持第二参 rawConfig——testOutboundChannel 现场合并
         // 「当前 YAML + 当前 state 出站键」后传入，保存后无需重启即可真实测试；
         // 旧 testChannel(type) 单参路径不变，仍用启动快照 testRawConfigOf。
