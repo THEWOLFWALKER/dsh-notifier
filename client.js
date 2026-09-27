@@ -96,6 +96,14 @@ window.__ModuleLoader__.load({
       silence: '静默',
       resumeNotify: '恢复通知',
       noChannelsResolved: '无渠道',
+      advancedBindings: '高级绑定',
+      bindings: '路由绑定',
+      noBindings: '暂无路由绑定',
+      agentBindings: '工作区 → 渠道',
+      channelBindings: '入站通道 → 默认工作区',
+      defaultAgent: '默认工作区',
+      viewRawIdentifiers: '查看原始标识',
+      bindingsSaved: '绑定已保存',
       noTasks: '暂无任务',
       noActivity: '暂无最近活动',
       reject: '拒绝',
@@ -203,6 +211,14 @@ window.__ModuleLoader__.load({
       silence: 'Silence',
       resumeNotify: 'Resume',
       noChannelsResolved: 'No channels',
+      advancedBindings: 'Advanced bindings',
+      bindings: 'Routing bindings',
+      noBindings: 'No routing bindings',
+      agentBindings: 'Workspace → channels',
+      channelBindings: 'Inbound channel → default workspace',
+      defaultAgent: 'Default workspace',
+      viewRawIdentifiers: 'View raw identifiers',
+      bindingsSaved: 'Bindings saved',
       noTasks: 'No tasks',
       noActivity: 'No recent activity',
       reject: 'Reject',
@@ -284,6 +300,7 @@ window.__ModuleLoader__.load({
         pending: null,
         pairing: null,
         sessions: null,
+        bindings: null,
         activity: null,
         channel: null,
         busy: Object.freeze({}),
@@ -298,7 +315,7 @@ window.__ModuleLoader__.load({
       let fallbackTimer = null
       let disposed = false
       // v0.12.1（P1-13）：同一资源只接受最新一代请求的响应，避免迟到数据覆盖当前视图。
-      const generations = { home: 0, channels: 0, channel: 0, tasks: 0, questions: 0, members: 0, pending: 0, pairing: 0, sessions: 0, activity: 0 }
+      const generations = { home: 0, channels: 0, channel: 0, tasks: 0, questions: 0, members: 0, pending: 0, pairing: 0, sessions: 0, bindings: 0, activity: 0 }
       let paused = false
 
       const emit = (patch) => {
@@ -316,7 +333,7 @@ window.__ModuleLoader__.load({
         return {
           epochChanged,
           patch: {
-            ...(epochChanged ? { home: null, channels: null, tasks: null, questions: null, members: null, pending: null, pairing: null, sessions: null, activity: null, channel: null } : {}),
+            ...(epochChanged ? { home: null, channels: null, tasks: null, questions: null, members: null, pending: null, pairing: null, sessions: null, bindings: null, activity: null, channel: null } : {}),
             epoch: incomingEpoch,
             revision: epochChanged ? incomingRevision : Math.max(snapshot.revision, incomingRevision),
             connectionState: 'connected',
@@ -464,12 +481,13 @@ window.__ModuleLoader__.load({
           else if (kind === 'pending') await loadPending()
           else if (kind === 'pairing') await loadPairingCodes()
           else if (kind === 'sessions') await loadSessions()
+          else if (kind === 'bindings') await loadBindings()
           else if (kind === 'activity') await loadActivity()
           else await loadHome()
           emit({ staleAt: null, connectionState: 'connected' })
           return true
         } catch {
-          const hasData = snapshot.home !== null || snapshot.channels !== null || snapshot.channel !== null || snapshot.tasks !== null || snapshot.questions !== null || snapshot.members !== null || snapshot.pending !== null || snapshot.pairing !== null || snapshot.sessions !== null || snapshot.activity !== null
+          const hasData = snapshot.home !== null || snapshot.channels !== null || snapshot.channel !== null || snapshot.tasks !== null || snapshot.questions !== null || snapshot.members !== null || snapshot.pending !== null || snapshot.pairing !== null || snapshot.sessions !== null || snapshot.bindings !== null || snapshot.activity !== null
           emit({ staleAt: Date.now(), connectionState: hasData ? 'stale' : 'disconnected' })
           return false
         }
@@ -594,6 +612,28 @@ window.__ModuleLoader__.load({
           setBusy(busyKey, false)
         }
       }
+      async function loadBindings() {
+        const generation = ++generations.bindings
+        try {
+          const value = await rpc.call('bindings.get')
+          if (generation !== generations.bindings) return value
+          commit('bindings', value)
+          return value
+        } catch (error) {
+          if (generation !== generations.bindings) return null
+          throw error
+        }
+      }
+      async function putBindings(patch) {
+        setBusy('bindings:save', true)
+        try {
+          const value = await rpc.call('bindings.put', patch)
+          await loadBindings().catch(() => {})
+          return value
+        } finally {
+          setBusy('bindings:save', false)
+        }
+      }
       function navigate(view) {
         // v0.12.1（P2-10）：导航只负责切视图；目标视图的 mount effect 是唯一加载 owner。
         const changingChannel = view?.kind === 'channel'
@@ -662,9 +702,9 @@ window.__ModuleLoader__.load({
       return Object.freeze({
         getSnapshot: () => snapshot,
         subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener) },
-        loadHome, loadChannels, loadChannel, loadTasks, loadQuestions, loadMembers, loadPending, loadPairingCodes, loadSessions, loadActivity,
+        loadHome, loadChannels, loadChannel, loadTasks, loadQuestions, loadMembers, loadPending, loadPairingCodes, loadSessions, loadBindings, loadActivity,
         refreshCurrent, saveChannel, testChannel, settleQuestion, createStandaloneLaunch,
-        updateMember, removeMember, approvePending, dismissPending, mintPairingCode, revokePairingCode, patchSessionOutbound,
+        updateMember, removeMember, approvePending, dismissPending, mintPairingCode, revokePairingCode, patchSessionOutbound, putBindings,
         navigate, startWait, setActive, dispose,
         // v0.12.1（P1-09）：视图必须能把业务失败写入统一错误出口。
         reportError(error) { setError(error ?? null) },
@@ -1333,6 +1373,7 @@ window.__ModuleLoader__.load({
       return h('div', { className: 'dn-page' },
         h('div', { className: 'dn-detailBack' }, h('button', { className: 'dn-link', onClick: () => controller.navigate({ kind: 'home' }) }, `← ${t('back')}`)),
         h(PageHead, { title: t('sessions') }),
+        h('div', { className: 'dn-detailBack' }, h('button', { className: 'dn-link', onClick: () => controller.navigate({ kind: 'bindings' }) }, t('advancedBindings'))),
         h(ErrorNotice, { error: state.error, t, onRetry: () => void controller.loadSessions().catch(error => controller.reportError(error)) }),
         h('div', { className: 'dn-list' },
           ...(rows.length
@@ -1341,6 +1382,94 @@ window.__ModuleLoader__.load({
                 busy: state.busy[`session:${row.id}`] === true, canPatch,
               }))
             : [h('p', { className: 'dn-empty', key: 'empty' }, t('noSessions'))])))
+    }
+
+    function BindingAgentRow({ ctx, controller, t, table, name, entry, canEdit, busy }) {
+      const channels = Array.isArray(entry?.channels) ? entry.channels : []
+      const quiet = entry?.quiet === true
+      const meta = [
+        channels.length ? channels.join(', ') : t('noChannelsResolved'),
+        quiet ? t('silence') : null,
+      ].filter(Boolean).join(' · ')
+      const write = (next) => {
+        const nextTable = { ...table, [name]: next }
+        return void controller.putBindings({ agents: nextTable }).catch(error => controller.reportError(error))
+      }
+      const remove = () => {
+        const nextTable = { ...table }
+        delete nextTable[name]
+        return void controller.putBindings({ agents: nextTable }).catch(error => controller.reportError(error))
+      }
+      return h('div', { className: 'dn-row' },
+        h(StateDot, { state: quiet ? 'idle' : 'done' }),
+        h('div', { className: 'dn-rowMain' },
+          h('strong', { className: 'dn-rowTitle' }, String(name)),
+          h('span', { className: 'dn-rowMeta' }, meta)),
+        h('div', { className: 'dn-rowAside' },
+          canEdit
+            ? h(Button, { disabled: busy, onClick: () => write({ ...entry, quiet: !quiet }) }, quiet ? t('resumeNotify') : t('silence'))
+            : null,
+          canEdit
+            ? h(Button, { disabled: busy, onClick: remove }, t('remove'))
+            : null))
+    }
+
+    function BindingChannelRow({ ctx, controller, t, table, name, entry, canEdit, busy }) {
+      const [draft, setDraft] = useState(entry?.defaultAgent ?? '')
+      const save = () => {
+        const nextTable = { ...table, [name]: { defaultAgent: draft.trim() } }
+        return void controller.putBindings({ channels: nextTable }).catch(error => controller.reportError(error))
+      }
+      const remove = () => {
+        const nextTable = { ...table }
+        delete nextTable[name]
+        return void controller.putBindings({ channels: nextTable }).catch(error => controller.reportError(error))
+      }
+      return h('div', { className: 'dn-row' },
+        h(StateDot, { state: 'idle' }),
+        h('div', { className: 'dn-rowMain' },
+          h('strong', { className: 'dn-rowTitle' }, String(name)),
+          h('span', { className: 'dn-rowMeta' }, String(entry?.defaultAgent ?? ''))),
+        canEdit
+          ? h('div', { className: 'dn-rowAside' },
+              h('input', {
+                type: 'text', value: draft, maxLength: 256, placeholder: t('defaultAgent'),
+                onChange: event => setDraft(event.target.value),
+              }),
+              h(Button, { disabled: busy || draft.trim() === '', onClick: save }, t('save')),
+              h(Button, { disabled: busy, onClick: remove }, t('remove')))
+          : null)
+    }
+
+    function BindingsView({ ctx, controller, state, t }) {
+      useEffect(() => { void controller.loadBindings().catch(error => controller.reportError(error)) }, [])
+      const agents = state.bindings?.agents ?? {}
+      const channels = state.bindings?.channels ?? {}
+      const canEdit = state.bindings?.canEdit === true
+      const busy = state.busy['bindings:save'] === true
+      const agentNames = Object.keys(agents)
+      const channelNames = Object.keys(channels)
+      return h('div', { className: 'dn-page' },
+        h('div', { className: 'dn-detailBack' }, h('button', { className: 'dn-link', onClick: () => controller.navigate({ kind: 'sessions' }) }, `← ${t('back')}`)),
+        h(PageHead, { title: t('bindings') }),
+        h(ErrorNotice, { error: state.error, t, onRetry: () => void controller.loadBindings().catch(error => controller.reportError(error)) }),
+        h('h3', { className: 'dn-subhead' }, t('agentBindings')),
+        h('div', { className: 'dn-list' },
+          ...(agentNames.length
+            ? agentNames.map(name => h(BindingAgentRow, {
+                key: name, ctx, controller, t, table: agents, name, entry: agents[name], canEdit, busy,
+              }))
+            : [h('p', { className: 'dn-empty', key: 'empty' }, t('noBindings'))])),
+        h('h3', { className: 'dn-subhead' }, t('channelBindings')),
+        h('div', { className: 'dn-list' },
+          ...(channelNames.length
+            ? channelNames.map(name => h(BindingChannelRow, {
+                key: name, ctx, controller, t, table: channels, name, entry: channels[name], canEdit, busy,
+              }))
+            : [h('p', { className: 'dn-empty', key: 'empty' }, t('noBindings'))])),
+        h('details', { className: 'dn-detail' },
+          h('summary', null, t('viewRawIdentifiers')),
+          h('pre', { className: 'dn-raw' }, JSON.stringify({ agents, channels }, null, 2))))
     }
 
     function ActivityView({ ctx, controller, state, t }) {
@@ -1367,6 +1496,7 @@ window.__ModuleLoader__.load({
       if (state.view.kind === 'pending') return h(PendingIdentitiesView, { ctx, controller, state, t })
       if (state.view.kind === 'pairing') return h(PairingCodesView, { ctx, controller, state, t })
       if (state.view.kind === 'sessions') return h(SessionsView, { ctx, controller, state, t })
+      if (state.view.kind === 'bindings') return h(BindingsView, { ctx, controller, state, t })
       if (state.view.kind === 'activity') return h(ActivityView, { ctx, controller, state, t })
       return h(HomeView, { ctx, controller, state, t })
     }

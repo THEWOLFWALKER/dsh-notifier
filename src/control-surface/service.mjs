@@ -108,6 +108,7 @@ export function createControlSurfaceService({
   questions,
   members,
   sessions = null,
+  bindings = null,
   activity,
   health,
   storageStatus,
@@ -305,6 +306,18 @@ export function createControlSurfaceService({
         revision.touch('sessions')
         activity.record('control', 'session-outbound', { status: 'ok' })
         return ok(value)
+      }
+
+      // v0.14（S09）：Native 高级绑定面。写权威在 agent-router，经共享 RoutingControlService（S03）。
+      if (bindings && method === 'bindings.get') {
+        return ok({ ...revisionView(), ...bindings.get(), canEdit: bindings.canEdit === true })
+      }
+
+      if (bindings && method === 'bindings.put') {
+        const value = bindings.put(payload)
+        revision.touch('bindings')
+        activity.record('control', 'bindings-replaced', { status: 'ok' })
+        return ok({ ...revisionView(), ...value, canEdit: bindings.canEdit === true })
       }
 
       if (method === 'activity.list') {

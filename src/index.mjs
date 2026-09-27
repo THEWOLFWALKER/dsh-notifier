@@ -54,6 +54,7 @@ import { createTaskProjection } from './control-surface/tasks.mjs'
 import { createQuestionProjection } from './control-surface/questions.mjs'
 import { createMembersProjection } from './control-surface/members.mjs'
 import { createSessionsProjection } from './control-surface/sessions.mjs'
+import { createBindingsProjection } from './control-surface/bindings.mjs'
 import { createLaunchTickets } from './control-surface/launch-ticket.mjs'
 import { createAdminSessions } from './control-surface/admin-session.mjs'
 import { createControlSurfaceService } from './control-surface/service.mjs'
@@ -829,6 +830,8 @@ export function apply(ctx, config = {}) {
     service: routingControl,
     enabledTypes: () => { try { return outboundSource.types() } catch { return [] } },
   })
+  // v0.14（S09）：Native 高级绑定面，与 Sessions 共用同一路由控制单例（同一 canonical 事实）。
+  const surfaceBindings = createBindingsProjection({ service: routingControl })
   const surfaceService = createControlSurfaceService({
     revision: surfaceRevision,
     channels: surfaceChannels,
@@ -847,6 +850,7 @@ export function apply(ctx, config = {}) {
     questions: surfaceQuestions,
     members: surfaceMembers,
     sessions: surfaceSessions,
+    bindings: surfaceBindings,
     activity: surfaceActivity,
     health: surfaceHealth,
     storageStatus: () => {

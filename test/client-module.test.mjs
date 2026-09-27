@@ -45,7 +45,7 @@ function loadModule({ rpcCall } = {}) {
   let source = readFileSync(new URL('../client.js', import.meta.url), 'utf8')
   source = source.replace(
     "return {\n      inject: ['slots', 'connection', 'locale', 'layout'],",
-    "return {\n      __test: { createController, launchAdvancedConsole, QuestionCard, QuestionsView, MemberRow, MembersView, PendingRow, PendingIdentitiesView, PairingCodeRow, PairingCodesView, SessionRow, SessionsView, TaskRow, ChannelRow, ActivityRow },\n      inject: ['slots', 'connection', 'locale', 'layout'],",
+    "return {\n      __test: { createController, launchAdvancedConsole, QuestionCard, QuestionsView, MemberRow, MembersView, PendingRow, PendingIdentitiesView, PairingCodeRow, PairingCodesView, SessionRow, SessionsView, BindingAgentRow, BindingChannelRow, BindingsView, TaskRow, ChannelRow, ActivityRow },\n      inject: ['slots', 'connection', 'locale', 'layout'],",
   )
   assert.match(source, /__test:/)
   let registration
@@ -468,6 +468,67 @@ test('sessions view hides the override control when patching is unsupported', ()
   })
   assert.doesNotMatch(textOf(view), /silence/)
   assert.doesNotMatch(textOf(view), /resumeNotify/)
+})
+
+test('bindings view loads bindings.get and putBindings reloads the snapshot', async () => {
+  const calls = []
+  const { mod, ctx } = loadModule({
+    async rpcCall(_channel, endpoint) {
+      calls.push(endpoint)
+      if (endpoint === 'bindings.get') {
+        return { ok: true, value: { epoch: 'e', revision: 7, canEdit: true, agents: { 'ws-a': { channels: ['bark'] } }, channels: { telegram: { defaultAgent: 'ws-a' } } } }
+      }
+      return { ok: true, value: { epoch: 'e', revision: 7, canEdit: true, agents: { 'ws-a': { channels: ['bark'], quiet: true } }, channels: {} } }
+    },
+  })
+  const controller = mod.__test.createController(ctx)
+  await controller.loadBindings()
+  assert.deepEqual(controller.getSnapshot().bindings.agents, { 'ws-a': { channels: ['bark'] } })
+  const written = await controller.putBindings({ agents: { 'ws-a': { channels: ['bark'], quiet: true } } })
+  assert.deepEqual(written.agents, { 'ws-a': { channels: ['bark'], quiet: true } })
+  assert.deepEqual(calls, ['bindings.get', 'bindings.put', 'bindings.get'], '写入后必须重载绑定快照')
+  controller.dispose()
+})
+
+test('bindings view renders agent + channel rows, a raw-identifier collapse, and empty states', () => {
+  const { mod, ctx } = loadModule()
+  const t = key => key
+  const controller = {
+    async loadBindings() { return {} }, reportError() {}, navigate() {}, async putBindings() { return {} },
+  }
+  const view = mod.__test.BindingsView({
+    ctx, t, controller,
+    state: {
+      error: null, busy: {}, bindings: {
+        canEdit: true,
+        agents: { 'ws-a': { channels: ['bark', 'webhook'], quiet: true } },
+        channels: { telegram: { defaultAgent: 'ws-a' } },
+      },
+    },
+  })
+  assert.match(textOf(view), /agentBindings/)
+  assert.match(textOf(view), /channelBindings/)
+  assert.match(textOf(view), /ws-a/)
+  assert.match(textOf(view), /bark, webhook/)
+  assert.match(textOf(view), /telegram/)
+  assert.match(textOf(view), /viewRawIdentifiers/)
+  assert.match(textOf(view), /resumeNotify/)
+
+  const empty = mod.__test.BindingsView({ ctx, t, controller, state: { error: null, busy: {}, bindings: { agents: {}, channels: {} } } })
+  assert.match(textOf(empty), /noBindings/)
+})
+
+test('bindings view hides edit controls when canEdit is false', () => {
+  const { mod, ctx } = loadModule()
+  const t = key => key
+  const controller = { async loadBindings() { return {} }, reportError() {}, navigate() {}, async putBindings() { return {} } }
+  const view = mod.__test.BindingsView({
+    ctx, t, controller,
+    state: { error: null, busy: {}, bindings: { canEdit: false, agents: { 'ws-a': { quiet: true } }, channels: { telegram: { defaultAgent: 'ws-a' } } } },
+  })
+  assert.doesNotMatch(textOf(view), /resumeNotify/)
+  assert.doesNotMatch(textOf(view), /remove/)
+  assert.match(textOf(view), /silence/, '只读时仍显示状态，但不显示编辑控件')
 })
 
 test('frozen Question/Task/Channel/Activity view fields render exactly', () => {
