@@ -18,6 +18,7 @@ window.__ModuleLoader__.load({
       ['sessions', 'sessions'],
       ['channels', 'channels'],
       ['activity', 'activity'],
+      ['diagnostics', 'diagnosticsCenter'],
     ])
     const RPC_CHANNEL = '/dsh-notifier'
     const NS = 'dsh-notifier.native'
@@ -135,6 +136,57 @@ window.__ModuleLoader__.load({
       unknownError: '发生未知错误',
       staleData: '连接中断，当前显示的是上次成功读取的数据。',
       renderFailed: '通知与控制界面发生错误',
+      diagnosticsCenter: '诊断中心',
+      diagnosticsIntro: '是否需要处理、为什么，以及最近一次检查',
+      attentionQuestion: '现在是否需要注意？',
+      noneRequired: '运行正常，无需处理',
+      why: '原因',
+      lastChecked: '最近检查',
+      notAvailableYet: '暂时无法读取',
+      pluginVersion: '插件版本',
+      hostVersion: '宿主版本',
+      processId: '进程标识',
+      eventsMode: '事件模式',
+      questionsMode: '提问模式',
+      imageInput: '图片入站',
+      storageState: '存储状态',
+      storageWritable: '可写入',
+      migration: '状态迁移',
+      channelSummaryTitle: '渠道摘要',
+      totalChannels: '渠道总数',
+      notifyConfiguredActive: '通知（已配置/运行）',
+      controlConfiguredActive: '远程控制（已配置/运行）',
+      evidenceLevel: '证据等级',
+      evidenceNone: '无投递证据',
+      evidenceAccepted: '已发送到提供方',
+      evidenceConfirmed: '已确认送达',
+      restartPendingList: '等待重启生效',
+      noEvidenceList: '尚无投递证据',
+      inactiveList: '已配置未激活',
+      degradedList: '最近失败渠道',
+      noneList: '无',
+      capabilityTitle: '能力',
+      capQuestions: '待处理提问',
+      capSessions: '会话',
+      capBindings: '路由绑定',
+      capMembers: '成员',
+      capAdvanced: '高级管理台',
+      available: '可用',
+      yes: '是',
+      no: '否',
+      supportReport: '支持报告',
+      reportIntro: '生成一份脱敏、可直接粘贴到 issue 的诊断报告。',
+      generateReport: '生成支持报告',
+      copyReport: '复制',
+      downloadReport: '下载',
+      copiedOk: '已复制到剪贴板',
+      downloadedOk: '已下载报告文件',
+      copyFailedDownload: '无法复制，已改为下载',
+      failuresTitle: '最近失败',
+      noFailures: '暂无失败记录',
+      hostTitle: '宿主',
+      storageTitle: '存储',
+      controlTitle: '控制面',
     })
 
     const en = Object.freeze({
@@ -250,6 +302,57 @@ window.__ModuleLoader__.load({
       unknownError: 'An unknown error occurred',
       staleData: 'Connection interrupted; showing the last successfully loaded data.',
       renderFailed: 'Notify & Control could not render',
+      diagnosticsCenter: 'Diagnostics',
+      diagnosticsIntro: 'Whether anything needs attention, why, and when we last checked',
+      attentionQuestion: 'Does anything need attention right now?',
+      noneRequired: 'Running normally — nothing to do',
+      why: 'Why',
+      lastChecked: 'Last checked',
+      notAvailableYet: 'Not available yet',
+      pluginVersion: 'Plugin version',
+      hostVersion: 'Host version',
+      processId: 'Process id',
+      eventsMode: 'Events mode',
+      questionsMode: 'Questions mode',
+      imageInput: 'Image input',
+      storageState: 'Storage state',
+      storageWritable: 'Writable',
+      migration: 'State migration',
+      channelSummaryTitle: 'Channel summary',
+      totalChannels: 'Total channels',
+      notifyConfiguredActive: 'Notify (configured / active)',
+      controlConfiguredActive: 'Remote control (configured / active)',
+      evidenceLevel: 'Evidence level',
+      evidenceNone: 'No delivery evidence',
+      evidenceAccepted: 'Sent to provider',
+      evidenceConfirmed: 'Delivery confirmed',
+      restartPendingList: 'Awaiting restart',
+      noEvidenceList: 'No delivery evidence yet',
+      inactiveList: 'Configured but inactive',
+      degradedList: 'Recently failed',
+      noneList: 'None',
+      capabilityTitle: 'Capabilities',
+      capQuestions: 'Pending questions',
+      capSessions: 'Sessions',
+      capBindings: 'Routing bindings',
+      capMembers: 'Members',
+      capAdvanced: 'Advanced console',
+      available: 'Available',
+      yes: 'Yes',
+      no: 'No',
+      supportReport: 'Support report',
+      reportIntro: 'Generate a redacted diagnostics report you can paste straight into an issue.',
+      generateReport: 'Generate support report',
+      copyReport: 'Copy',
+      downloadReport: 'Download',
+      copiedOk: 'Copied to clipboard',
+      downloadedOk: 'Report downloaded',
+      copyFailedDownload: 'Could not copy — downloaded instead',
+      failuresTitle: 'Recent failures',
+      noFailures: 'No recent failures',
+      hostTitle: 'Host',
+      storageTitle: 'Storage',
+      controlTitle: 'Control plane',
     })
 
     function resolveText(ctx, value) {
@@ -288,6 +391,48 @@ window.__ModuleLoader__.load({
       }
     }
 
+    // S11：支持报告必须 deterministic + redacted —— 只序列化已脱敏的 canonical 快照，
+    // 不追加任何新采集字段；导出方式按运行环境在剪贴板 / 浏览器下载间二选一。
+    function buildSupportReport(snapshot) {
+      const value = snapshot !== null && typeof snapshot === 'object' ? snapshot : {}
+      return [
+        '### dsh-notifier support report',
+        '',
+        `- plugin version: ${String(value.version ?? 'unknown')}`,
+        `- generated at: ${String(value.generatedAt ?? 'unknown')}`,
+        `- attention required: ${value.attention?.required === true ? 'yes' : 'no'}`,
+        `- evidence level: ${String(value.channels?.latestEvidence ?? 'none')}`,
+        '',
+        '```json',
+        JSON.stringify(value, null, 2),
+        '```',
+        '',
+      ].join('\n')
+    }
+
+    async function deliverReport(report) {
+      try {
+        if (typeof navigator === 'object' && navigator?.clipboard?.writeText) {
+          await navigator.clipboard.writeText(report)
+          return { ok: true, type: 'copied' }
+        }
+      } catch {}
+      try {
+        const blob = new Blob([report], { type: 'text/markdown' })
+        const url = URL.createObjectURL(blob)
+        const anchor = document.createElement('a')
+        anchor.href = url
+        anchor.download = `dsh-notifier-diagnostics-${new Date().toISOString().slice(0, 10)}.md`
+        document.body.appendChild(anchor)
+        anchor.click()
+        document.body.removeChild(anchor)
+        URL.revokeObjectURL(url)
+        return { ok: true, type: 'downloaded' }
+      } catch {
+        return { ok: false, type: 'failed' }
+      }
+    }
+
     function createController(ctx) {
       const rpc = createRpcClient(ctx)
       let snapshot = Object.freeze({
@@ -302,6 +447,7 @@ window.__ModuleLoader__.load({
         sessions: null,
         bindings: null,
         activity: null,
+        diagnostics: null,
         channel: null,
         busy: Object.freeze({}),
         error: null,
@@ -315,7 +461,7 @@ window.__ModuleLoader__.load({
       let fallbackTimer = null
       let disposed = false
       // v0.12.1（P1-13）：同一资源只接受最新一代请求的响应，避免迟到数据覆盖当前视图。
-      const generations = { home: 0, channels: 0, channel: 0, tasks: 0, questions: 0, members: 0, pending: 0, pairing: 0, sessions: 0, bindings: 0, activity: 0 }
+      const generations = { home: 0, channels: 0, channel: 0, tasks: 0, questions: 0, members: 0, pending: 0, pairing: 0, sessions: 0, bindings: 0, activity: 0, diagnostics: 0 }
       let paused = false
 
       const emit = (patch) => {
@@ -333,7 +479,7 @@ window.__ModuleLoader__.load({
         return {
           epochChanged,
           patch: {
-            ...(epochChanged ? { home: null, channels: null, tasks: null, questions: null, members: null, pending: null, pairing: null, sessions: null, bindings: null, activity: null, channel: null } : {}),
+            ...(epochChanged ? { home: null, channels: null, tasks: null, questions: null, members: null, pending: null, pairing: null, sessions: null, bindings: null, activity: null, diagnostics: null, channel: null } : {}),
             epoch: incomingEpoch,
             revision: epochChanged ? incomingRevision : Math.max(snapshot.revision, incomingRevision),
             connectionState: 'connected',
@@ -483,11 +629,12 @@ window.__ModuleLoader__.load({
           else if (kind === 'sessions') await loadSessions()
           else if (kind === 'bindings') await loadBindings()
           else if (kind === 'activity') await loadActivity()
+          else if (kind === 'diagnostics') await loadDiagnostics()
           else await loadHome()
           emit({ staleAt: null, connectionState: 'connected' })
           return true
         } catch {
-          const hasData = snapshot.home !== null || snapshot.channels !== null || snapshot.channel !== null || snapshot.tasks !== null || snapshot.questions !== null || snapshot.members !== null || snapshot.pending !== null || snapshot.pairing !== null || snapshot.sessions !== null || snapshot.bindings !== null || snapshot.activity !== null
+          const hasData = snapshot.home !== null || snapshot.channels !== null || snapshot.channel !== null || snapshot.tasks !== null || snapshot.questions !== null || snapshot.members !== null || snapshot.pending !== null || snapshot.pairing !== null || snapshot.sessions !== null || snapshot.bindings !== null || snapshot.activity !== null || snapshot.diagnostics !== null
           emit({ staleAt: Date.now(), connectionState: hasData ? 'stale' : 'disconnected' })
           return false
         }
@@ -624,6 +771,28 @@ window.__ModuleLoader__.load({
           throw error
         }
       }
+      // v0.14（S11）：诊断快照是只读 canonical 读；不写 revision、不记 activity。
+      async function loadDiagnostics() {
+        const generation = ++generations.diagnostics
+        try {
+          const value = await rpc.call('diagnostics.snapshot')
+          if (generation !== generations.diagnostics) return value
+          commit('diagnostics', value)
+          return value
+        } catch (error) {
+          if (generation !== generations.diagnostics) return null
+          throw error
+        }
+      }
+      async function generateSupportReport() {
+        setBusy('diagnostics:report', true)
+        try {
+          const value = await loadDiagnostics()
+          return await deliverReport(buildSupportReport(value))
+        } finally {
+          setBusy('diagnostics:report', false)
+        }
+      }
       async function putBindings(patch) {
         setBusy('bindings:save', true)
         try {
@@ -702,9 +871,9 @@ window.__ModuleLoader__.load({
       return Object.freeze({
         getSnapshot: () => snapshot,
         subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener) },
-        loadHome, loadChannels, loadChannel, loadTasks, loadQuestions, loadMembers, loadPending, loadPairingCodes, loadSessions, loadBindings, loadActivity,
+        loadHome, loadChannels, loadChannel, loadTasks, loadQuestions, loadMembers, loadPending, loadPairingCodes, loadSessions, loadBindings, loadActivity, loadDiagnostics,
         refreshCurrent, saveChannel, testChannel, settleQuestion, createStandaloneLaunch,
-        updateMember, removeMember, approvePending, dismissPending, mintPairingCode, revokePairingCode, patchSessionOutbound, putBindings,
+        updateMember, removeMember, approvePending, dismissPending, mintPairingCode, revokePairingCode, patchSessionOutbound, putBindings, generateSupportReport,
         navigate, startWait, setActive, dispose,
         // v0.12.1（P1-09）：视图必须能把业务失败写入统一错误出口。
         reportError(error) { setError(error ?? null) },
@@ -1481,6 +1650,120 @@ window.__ModuleLoader__.load({
           ...(state.activity?.items?.length ? state.activity.items.map(item => h(ActivityRow, { key: item.id, ctx, item })) : [h('p', { className: 'dn-empty', key: 'empty' }, t('noActivity'))])))
     }
 
+    function evidenceText(t, value) {
+      return value === 'confirmed' ? t('evidenceConfirmed')
+        : value === 'accepted' ? t('evidenceAccepted')
+          : t('evidenceNone')
+    }
+
+    // v0.14（S11）：只读诊断中心。顶部先回答「是否需要注意 / 为什么 / 最近何时检查」，
+    // 再分层展示 Host / Storage / Channels / Capabilities / Recent failures，并可导出脱敏报告。
+    function DiagnosticsView({ ctx, controller, state, t }) {
+      useEffect(() => { void controller.loadDiagnostics().catch(error => controller.reportError(error)) }, [])
+      const [report, setReport] = useState(null)
+      const snapshot = state.diagnostics
+      const busy = state.busy['diagnostics:report'] === true
+      const onGenerate = () => {
+        void controller.generateSupportReport()
+          .then(result => setReport(result ?? null))
+          .catch(error => controller.reportError(error))
+      }
+      const back = h('div', { className: 'dn-detailBack' },
+        h('button', { className: 'dn-link', onClick: () => controller.navigate({ kind: 'home' }) }, `← ${t('back')}`))
+      const retry = () => void controller.loadDiagnostics().catch(error => controller.reportError(error))
+      if (!snapshot) {
+        return h('div', { className: 'dn-page' }, back,
+          h(PageHead, { title: t('diagnosticsCenter'), intro: t('diagnosticsIntro') }),
+          h(ErrorNotice, { error: state.error, t, onRetry: retry }),
+          state.error ? null : h('p', { className: 'dn-empty' }, t('notAvailableYet')))
+      }
+
+      const attention = snapshot.attention ?? {}
+      const reasons = Array.isArray(attention.reasons) ? attention.reasons : []
+      const host = snapshot.host ?? {}
+      const storage = snapshot.storage ?? {}
+      const channels = snapshot.channels ?? {}
+      const capabilities = snapshot.capabilities ?? {}
+      const failures = Array.isArray(snapshot.recentFailures) ? snapshot.recentFailures : []
+      const listRow = (key, title, list) => h('div', { className: 'dn-row', key },
+        h('div', { className: 'dn-rowMain' },
+          h('strong', { className: 'dn-rowTitle' }, title),
+          h('span', { className: 'dn-rowMeta' }, Array.isArray(list) && list.length ? list.join(', ') : t('noneList'))))
+      const capText = (entry, detail) => entry?.available === true ? detail : t('unavailable')
+
+      return h('div', { className: 'dn-page' }, back,
+        h(PageHead, { title: t('diagnosticsCenter'), intro: t('diagnosticsIntro') }),
+        h(ErrorNotice, { error: state.error, t, onRetry: retry }),
+        h('div', { className: 'dn-statusLine' },
+          h(StateDot, { state: attention.required === true ? 'warn' : 'done' }),
+          h('div', null,
+            h('strong', null, t('attentionQuestion')),
+            h('span', null, attention.required === true ? t('needsAction') : t('noneRequired')))),
+        reasons.length
+          ? h('div', { className: 'dn-list' }, ...reasons.map((reason, index) => h('div', { className: 'dn-row', key: reason?.code || index },
+              h(StateDot, { state: 'warn' }),
+              h('div', { className: 'dn-rowMain' },
+                h('strong', { className: 'dn-rowTitle' }, String(reason?.code || '')),
+                h('span', { className: 'dn-rowMeta' }, resolveText(ctx, reason?.detail))))))
+          : null,
+        h('p', { className: 'dn-note' }, `${t('lastChecked')}: ${String(snapshot.generatedAt ?? '')}`),
+        h(Section, { title: t('hostTitle') },
+          h('div', { className: 'dn-healthGrid' },
+            h('span', null, `${t('pluginVersion')}: ${String(snapshot.version ?? '')}`),
+            h('span', null, `${t('hostVersion')}: ${String(host.version ?? '')}`),
+            h('span', null, `${t('eventsMode')}: ${String(host.eventsMode ?? '')}`),
+            h('span', null, `${t('questionsMode')}: ${String(host.questionsMode ?? '')}`),
+            h('span', null, `${t('imageInput')}: ${String(host.mediaImageInput ?? '')}`),
+            h('span', null, `${t('processId')}: ${String(snapshot.process?.epoch ?? '')} #${String(snapshot.process?.revision ?? '')}`))),
+        h(Section, { title: t('storageTitle') },
+          h('div', { className: 'dn-healthGrid' },
+            h('span', null, `${t('storageState')}: ${String(storage.state ?? '')}`),
+            h('span', null, `${t('storageWritable')}: ${storage.writable === true ? t('yes') : t('no')}`),
+            storage.migration
+              ? h('span', null, `${t('migration')}: ${String(storage.migration.status ?? '')} (${String(storage.migration.migratedCount ?? 0)})`)
+              : null)),
+        h(Section, { title: t('channelSummaryTitle') },
+          h('div', { className: 'dn-healthGrid' },
+            h('span', null, `${t('totalChannels')}: ${String(channels.total ?? 0)}`),
+            h('span', null, `${t('notifyConfiguredActive')}: ${String(channels.notifyConfigured ?? 0)}/${String(channels.notifyActive ?? 0)}`),
+            h('span', null, `${t('controlConfiguredActive')}: ${String(channels.controlConfigured ?? 0)}/${String(channels.controlActive ?? 0)}`),
+            h('span', null, `${t('evidenceLevel')}: ${evidenceText(t, channels.latestEvidence)}`)),
+          h('div', { className: 'dn-list' },
+            listRow('restart', t('restartPendingList'), channels.restartPending),
+            listRow('noEvidence', t('noEvidenceList'), channels.noEvidenceTypes),
+            listRow('inactive', t('inactiveList'), channels.inactive),
+            listRow('degraded', t('degradedList'), channels.degradedTypes))),
+        h(Section, { title: t('capabilityTitle') },
+          h('div', { className: 'dn-healthGrid' },
+            h('span', null, `${t('capQuestions')}: ${capText(capabilities.questions, String(capabilities.questions?.pending ?? 0))}`),
+            h('span', null, `${t('capSessions')}: ${capText(capabilities.sessions, String(capabilities.sessions?.count ?? 0))}`),
+            h('span', null, `${t('capBindings')}: ${capText(capabilities.bindings, capabilities.bindings?.editable === true ? t('yes') : t('no'))}`),
+            h('span', null, `${t('capMembers')}: ${capText(capabilities.members, capabilities.members?.removable === true ? t('yes') : t('no'))}`),
+            h('span', null, `${t('capAdvanced')}: ${capabilities.advancedConsole === 'available' ? t('available') : t('unavailable')}`))),
+        h(Section, { title: t('failuresTitle') },
+          failures.length
+            ? h('div', { className: 'dn-list' }, ...failures.map((failure, index) => h('div', { className: 'dn-row', key: `${String(failure?.at ?? '')}-${index}` },
+                h(StateDot, { state: 'error' }),
+                h('div', { className: 'dn-rowMain' },
+                  h('strong', { className: 'dn-rowTitle' }, String(failure?.action ?? '')),
+                  h('span', { className: 'dn-rowMeta' }, [
+                    failure?.category,
+                    failure?.at,
+                    failure?.detail ? resolveText(ctx, failure.detail) : null,
+                  ].filter(Boolean).join(' · '))))))
+            : h('p', { className: 'dn-empty' }, t('noFailures'))),
+        h(Section, { title: t('supportReport') },
+          h('p', { className: 'dn-note' }, t('reportIntro')),
+          h('div', { className: 'dn-formActions' },
+            h(Button, { kind: 'primary', disabled: busy, onClick: onGenerate }, t('generateReport'))),
+          report
+            ? h('p', { className: 'dn-note', role: 'status' },
+                report.type === 'copied' ? t('copiedOk')
+                  : report.type === 'downloaded' ? t('downloadedOk')
+                    : t('copyFailedDownload'))
+            : null))
+    }
+
     function MainPanel({ controller, ctx }) {
       const state = useController(controller)
       const t = useT(ctx)
@@ -1498,6 +1781,7 @@ window.__ModuleLoader__.load({
       if (state.view.kind === 'sessions') return h(SessionsView, { ctx, controller, state, t })
       if (state.view.kind === 'bindings') return h(BindingsView, { ctx, controller, state, t })
       if (state.view.kind === 'activity') return h(ActivityView, { ctx, controller, state, t })
+      if (state.view.kind === 'diagnostics') return h(DiagnosticsView, { ctx, controller, state, t })
       return h(HomeView, { ctx, controller, state, t })
     }
 

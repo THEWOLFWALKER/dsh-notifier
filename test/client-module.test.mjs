@@ -45,7 +45,7 @@ function loadModule({ rpcCall } = {}) {
   let source = readFileSync(new URL('../client.js', import.meta.url), 'utf8')
   source = source.replace(
     "return {\n      inject: ['slots', 'connection', 'locale', 'layout'],",
-    "return {\n      __test: { createController, launchAdvancedConsole, QuestionCard, QuestionsView, MemberRow, MembersView, PendingRow, PendingIdentitiesView, PairingCodeRow, PairingCodesView, SessionRow, SessionsView, BindingAgentRow, BindingChannelRow, BindingsView, TaskRow, ChannelRow, ActivityRow },\n      inject: ['slots', 'connection', 'locale', 'layout'],",
+    "return {\n      __test: { createController, launchAdvancedConsole, QuestionCard, QuestionsView, MemberRow, MembersView, PendingRow, PendingIdentitiesView, PairingCodeRow, PairingCodesView, SessionRow, SessionsView, BindingAgentRow, BindingChannelRow, BindingsView, TaskRow, ChannelRow, ActivityRow, DiagnosticsView, buildSupportReport },\n      inject: ['slots', 'connection', 'locale', 'layout'],",
   )
   assert.match(source, /__test:/)
   let registration
@@ -529,6 +529,90 @@ test('bindings view hides edit controls when canEdit is false', () => {
   assert.doesNotMatch(textOf(view), /resumeNotify/)
   assert.doesNotMatch(textOf(view), /remove/)
   assert.match(textOf(view), /silence/, '只读时仍显示状态，但不显示编辑控件')
+})
+
+test('diagnostics center loads the canonical snapshot and refreshCurrent reloads it', async () => {
+  const calls = []
+  const { mod, ctx } = loadModule({
+    async rpcCall(_channel, endpoint) {
+      calls.push(endpoint)
+      if (endpoint === 'diagnostics.snapshot') {
+        return { ok: true, value: { epoch: 'e', revision: 8, version: '0.13.1', generatedAt: '2026-09-27T00:00:00.000Z', attention: { required: false, reasons: [] } } }
+      }
+      return { ok: true, value: { epoch: 'e', revision: 8 } }
+    },
+  })
+  const controller = mod.__test.createController(ctx)
+  await controller.loadDiagnostics()
+  assert.deepEqual(calls, ['diagnostics.snapshot'])
+  assert.equal(controller.getSnapshot().diagnostics.version, '0.13.1')
+  controller.navigate({ kind: 'diagnostics' })
+  await controller.refreshCurrent()
+  assert.deepEqual(calls, ['diagnostics.snapshot', 'diagnostics.snapshot'], '刷新当前诊断视图必须重载快照')
+  controller.dispose()
+})
+
+test('diagnostics view renders attention, layered state, and a support-report control', () => {
+  const { mod, ctx } = loadModule()
+  const t = key => key
+  const controller = {
+    async loadDiagnostics() { return {} }, reportError() {}, navigate() {},
+    async generateSupportReport() { return { ok: true, type: 'copied' } },
+  }
+  const view = mod.__test.DiagnosticsView({
+    ctx, t, controller,
+    state: {
+      error: null, busy: {},
+      diagnostics: {
+        version: '0.13.1', generatedAt: '2026-09-27T00:00:00.000Z',
+        process: { epoch: 'epoch-1', revision: 12 },
+        host: { version: '1.2.3', eventsMode: 'dual', questionsMode: 'native-event', mediaImageInput: 'available' },
+        storage: { state: 'ready', writable: true, migration: { status: 'complete', migratedCount: 2 } },
+        channels: { total: 3, notifyConfigured: 2, notifyActive: 1, controlConfigured: 1, controlActive: 1, latestEvidence: 'accepted', restartPending: ['telegram'], noEvidenceTypes: ['bark'], inactive: ['webhook'], degradedTypes: [] },
+        capabilities: { questions: { available: true, pending: 4 }, sessions: { available: true, count: 2 }, bindings: { available: true, editable: true }, members: { available: true, removable: false }, advancedConsole: 'available' },
+        recentFailures: [{ at: '2026-09-27T00:00:00.000Z', category: 'delivery', action: 'channel-send', detail: { en: 'boom', zh: '炸' } }],
+        attention: { required: true, reasons: [{ code: 'channel-degraded', detail: { en: 'failed', zh: '失败' } }] },
+      },
+    },
+  })
+  const text = textOf(view)
+  assert.match(text, /attentionQuestion/)
+  assert.match(text, /channel-degraded/)
+  assert.match(text, /1\.2\.3/)
+  assert.match(text, /ready/)
+  assert.match(text, /evidenceAccepted/)
+  assert.match(text, /restartPendingList/)
+  assert.match(text, /capAdvanced/)
+  assert.match(text, /channel-send/)
+  assert.match(text, /generateReport/)
+
+  const calm = mod.__test.DiagnosticsView({
+    ctx, t, controller,
+    state: {
+      error: null, busy: {},
+      diagnostics: { generatedAt: 'now', attention: { required: false, reasons: [] }, host: {}, storage: {}, channels: {}, capabilities: {}, recentFailures: [] },
+    },
+  })
+  assert.match(textOf(calm), /noneRequired/)
+  assert.match(textOf(calm), /noFailures/)
+
+  const empty = mod.__test.DiagnosticsView({ ctx, t, controller, state: { error: null, busy: {}, diagnostics: null } })
+  assert.match(textOf(empty), /notAvailableYet/)
+})
+
+test('support report is deterministic, redacted, and states the evidence level', () => {
+  const { mod } = loadModule()
+  const snapshot = { version: '0.13.1', generatedAt: '2026-09-27T00:00:00.000Z', attention: { required: true }, channels: { latestEvidence: 'accepted' }, host: { version: '1.2.3' } }
+  const first = mod.__test.buildSupportReport(snapshot)
+  assert.equal(first, mod.__test.buildSupportReport(snapshot), '同一快照必须产出同一报告')
+  assert.match(first, /plugin version: 0\.13\.1/)
+  assert.match(first, /attention required: yes/)
+  assert.match(first, /evidence level: accepted/)
+  assert.match(first, /"host"/)
+
+  const fallback = mod.__test.buildSupportReport(null)
+  assert.match(fallback, /evidence level: none/)
+  assert.doesNotMatch(fallback, /undefined/)
 })
 
 test('frozen Question/Task/Channel/Activity view fields render exactly', () => {
