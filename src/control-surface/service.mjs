@@ -107,6 +107,7 @@ export function createControlSurfaceService({
   tasks,
   questions,
   members,
+  sessions = null,
   activity,
   health,
   storageStatus,
@@ -291,6 +292,18 @@ export function createControlSurfaceService({
         const value = members.revokeCode(payload)
         revision.touch('members')
         activity.record('control', 'pairing-revoked', { source: 'native', status: 'ok' })
+        return ok(value)
+      }
+
+      // v0.14（S08）：Native 会话面。读取 / 校验 / 写入编排都在共享 RoutingControlService（S03）。
+      if (sessions && method === 'sessions.list') {
+        return ok({ ...revisionView(), sessions: sessions.list(), canPatch: sessions.canPatch === true })
+      }
+
+      if (sessions && method === 'sessions.patch') {
+        const value = sessions.patch(payload)
+        revision.touch('sessions')
+        activity.record('control', 'session-outbound', { status: 'ok' })
         return ok(value)
       }
 

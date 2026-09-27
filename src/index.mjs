@@ -53,11 +53,13 @@ import { createChannelProjection } from './control-surface/channels.mjs'
 import { createTaskProjection } from './control-surface/tasks.mjs'
 import { createQuestionProjection } from './control-surface/questions.mjs'
 import { createMembersProjection } from './control-surface/members.mjs'
+import { createSessionsProjection } from './control-surface/sessions.mjs'
 import { createLaunchTickets } from './control-surface/launch-ticket.mjs'
 import { createAdminSessions } from './control-surface/admin-session.mjs'
 import { createControlSurfaceService } from './control-surface/service.mjs'
 import { createChannelControlService } from './control-plane/channels.mjs'
 import { createMembersControlService } from './control-plane/members.mjs'
+import { createRoutingControlService } from './control-plane/sessions.mjs'
 import { createQuestionsControlService } from './control-plane/questions.mjs'
 import { registerControlSurfaceRpc } from './control-surface/rpc.mjs'
 // lang 文案表：入站回执 / 晨报标题等手机可见文案取词（未知 lang 已在 resolveConfig 归一回落 zh）
@@ -820,6 +822,13 @@ export function apply(ctx, config = {}) {
   // v0.14（S06）：Native 成员面与 Admin 共用同一 MembersControlService（S02）实例；
   // 本层只做 `members.*` 的 RPC 形态映射。
   const surfaceMembers = createMembersProjection({ service: membersControl })
+  // v0.14（S03/S08）：Native 与 Advanced Console 共用的会话/路由编排单例。两个适配器都只调用它，
+  // 谁都不再持有第二套会话投影 / 路由覆盖写入编排（I1 / I9）。
+  const routingControl = createRoutingControlService({ router, registry, store, warn })
+  const surfaceSessions = createSessionsProjection({
+    service: routingControl,
+    enabledTypes: () => { try { return outboundSource.types() } catch { return [] } },
+  })
   const surfaceService = createControlSurfaceService({
     revision: surfaceRevision,
     channels: surfaceChannels,
@@ -837,6 +846,7 @@ export function apply(ctx, config = {}) {
     tasks: surfaceTasks,
     questions: surfaceQuestions,
     members: surfaceMembers,
+    sessions: surfaceSessions,
     activity: surfaceActivity,
     health: surfaceHealth,
     storageStatus: () => {
@@ -929,6 +939,7 @@ export function apply(ctx, config = {}) {
         identity, // v0.7 成员页：与 inbound 共用同一实例（store 读收敛 → 写入半秒内热生效）
         pairing, // v0.7 配对码铸造/撤销
         membersControl, // v0.14（S02）：成员/配对编排共享单例（装配处创建，非 admin 私有）
+        routingControl, // v0.14（S03/S08）：会话/路由编排共享单例（Native sessions.* 同一实例）
         guidedProbe: () => identity.isEmpty() && allowUsers.length === 0, // 与 bus.isGuided 同口径（R5-2-P2-2）
         stateDir,
         logger,

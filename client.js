@@ -15,6 +15,7 @@ window.__ModuleLoader__.load({
       ['members', 'members'],
       ['pending', 'pendingIdentities'],
       ['pairing', 'pairingCodes'],
+      ['sessions', 'sessions'],
       ['channels', 'channels'],
       ['activity', 'activity'],
     ])
@@ -88,6 +89,13 @@ window.__ModuleLoader__.load({
       labelOptional: '备注（可选）',
       codeShownOnce: '此配对码只显示一次，请立即保存。',
       clearCode: '清除',
+      sessions: '会话',
+      noSessions: '暂无会话',
+      sessionActive: '活跃',
+      sessionIdle: '空闲',
+      silence: '静默',
+      resumeNotify: '恢复通知',
+      noChannelsResolved: '无渠道',
       noTasks: '暂无任务',
       noActivity: '暂无最近活动',
       reject: '拒绝',
@@ -188,6 +196,13 @@ window.__ModuleLoader__.load({
       labelOptional: 'Label (optional)',
       codeShownOnce: 'This pairing code is shown only once — save it now.',
       clearCode: 'Clear',
+      sessions: 'Sessions',
+      noSessions: 'No sessions',
+      sessionActive: 'Active',
+      sessionIdle: 'Idle',
+      silence: 'Silence',
+      resumeNotify: 'Resume',
+      noChannelsResolved: 'No channels',
       noTasks: 'No tasks',
       noActivity: 'No recent activity',
       reject: 'Reject',
@@ -268,6 +283,7 @@ window.__ModuleLoader__.load({
         members: null,
         pending: null,
         pairing: null,
+        sessions: null,
         activity: null,
         channel: null,
         busy: Object.freeze({}),
@@ -282,7 +298,7 @@ window.__ModuleLoader__.load({
       let fallbackTimer = null
       let disposed = false
       // v0.12.1（P1-13）：同一资源只接受最新一代请求的响应，避免迟到数据覆盖当前视图。
-      const generations = { home: 0, channels: 0, channel: 0, tasks: 0, questions: 0, members: 0, pending: 0, pairing: 0, activity: 0 }
+      const generations = { home: 0, channels: 0, channel: 0, tasks: 0, questions: 0, members: 0, pending: 0, pairing: 0, sessions: 0, activity: 0 }
       let paused = false
 
       const emit = (patch) => {
@@ -300,7 +316,7 @@ window.__ModuleLoader__.load({
         return {
           epochChanged,
           patch: {
-            ...(epochChanged ? { home: null, channels: null, tasks: null, questions: null, members: null, pending: null, pairing: null, activity: null, channel: null } : {}),
+            ...(epochChanged ? { home: null, channels: null, tasks: null, questions: null, members: null, pending: null, pairing: null, sessions: null, activity: null, channel: null } : {}),
             epoch: incomingEpoch,
             revision: epochChanged ? incomingRevision : Math.max(snapshot.revision, incomingRevision),
             connectionState: 'connected',
@@ -412,6 +428,18 @@ window.__ModuleLoader__.load({
           throw error
         }
       }
+      async function loadSessions() {
+        const generation = ++generations.sessions
+        try {
+          const value = await rpc.call('sessions.list')
+          if (generation !== generations.sessions) return value
+          commit('sessions', value)
+          return value
+        } catch (error) {
+          if (generation !== generations.sessions) return null
+          throw error
+        }
+      }
       async function loadActivity() {
         const generation = ++generations.activity
         try {
@@ -435,12 +463,13 @@ window.__ModuleLoader__.load({
           else if (kind === 'members') await loadMembers()
           else if (kind === 'pending') await loadPending()
           else if (kind === 'pairing') await loadPairingCodes()
+          else if (kind === 'sessions') await loadSessions()
           else if (kind === 'activity') await loadActivity()
           else await loadHome()
           emit({ staleAt: null, connectionState: 'connected' })
           return true
         } catch {
-          const hasData = snapshot.home !== null || snapshot.channels !== null || snapshot.channel !== null || snapshot.tasks !== null || snapshot.questions !== null || snapshot.members !== null || snapshot.pending !== null || snapshot.pairing !== null || snapshot.activity !== null
+          const hasData = snapshot.home !== null || snapshot.channels !== null || snapshot.channel !== null || snapshot.tasks !== null || snapshot.questions !== null || snapshot.members !== null || snapshot.pending !== null || snapshot.pairing !== null || snapshot.sessions !== null || snapshot.activity !== null
           emit({ staleAt: Date.now(), connectionState: hasData ? 'stale' : 'disconnected' })
           return false
         }
@@ -554,6 +583,17 @@ window.__ModuleLoader__.load({
           setBusy(busyKey, false)
         }
       }
+      async function patchSessionOutbound(id, diff) {
+        const busyKey = `session:${id}`
+        setBusy(busyKey, true)
+        try {
+          const value = await rpc.call('sessions.patch', { id, diff })
+          await loadSessions().catch(() => {})
+          return value
+        } finally {
+          setBusy(busyKey, false)
+        }
+      }
       function navigate(view) {
         // v0.12.1（P2-10）：导航只负责切视图；目标视图的 mount effect 是唯一加载 owner。
         const changingChannel = view?.kind === 'channel'
@@ -622,9 +662,9 @@ window.__ModuleLoader__.load({
       return Object.freeze({
         getSnapshot: () => snapshot,
         subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener) },
-        loadHome, loadChannels, loadChannel, loadTasks, loadQuestions, loadMembers, loadPending, loadPairingCodes, loadActivity,
+        loadHome, loadChannels, loadChannel, loadTasks, loadQuestions, loadMembers, loadPending, loadPairingCodes, loadSessions, loadActivity,
         refreshCurrent, saveChannel, testChannel, settleQuestion, createStandaloneLaunch,
-        updateMember, removeMember, approvePending, dismissPending, mintPairingCode, revokePairingCode,
+        updateMember, removeMember, approvePending, dismissPending, mintPairingCode, revokePairingCode, patchSessionOutbound,
         navigate, startWait, setActive, dispose,
         // v0.12.1（P1-09）：视图必须能把业务失败写入统一错误出口。
         reportError(error) { setError(error ?? null) },
@@ -1263,6 +1303,46 @@ window.__ModuleLoader__.load({
             : [h('p', { className: 'dn-empty', key: 'empty' }, t('noCodes'))])))
     }
 
+    function SessionRow({ ctx, controller, t, row, busy, canPatch }) {
+      const active = row?.active === true
+      const channels = row?.resolved?.channelTypes ?? []
+      const quiet = row?.resolved?.quiet === true
+      const meta = [
+        active ? t('sessionActive') : t('sessionIdle'),
+        channels.length ? channels.join(', ') : t('noChannelsResolved'),
+        quiet ? t('silence') : null,
+      ].filter(Boolean).join(' · ')
+      return h('div', { className: 'dn-row' },
+        h(StateDot, { state: active ? 'done' : 'idle' }),
+        h('div', { className: 'dn-rowMain' },
+          h('strong', { className: 'dn-rowTitle' }, String(row?.workspace || row?.id || '')),
+          h('span', { className: 'dn-rowMeta' }, meta)),
+        h('div', { className: 'dn-rowAside' },
+          canPatch
+            ? h(Button, {
+                disabled: busy,
+                onClick: () => void controller.patchSessionOutbound(row.id, { quiet: !quiet }).catch(error => controller.reportError(error)),
+              }, quiet ? t('resumeNotify') : t('silence'))
+            : null))
+    }
+
+    function SessionsView({ ctx, controller, state, t }) {
+      useEffect(() => { void controller.loadSessions().catch(error => controller.reportError(error)) }, [])
+      const rows = state.sessions?.sessions ?? []
+      const canPatch = state.sessions?.canPatch === true
+      return h('div', { className: 'dn-page' },
+        h('div', { className: 'dn-detailBack' }, h('button', { className: 'dn-link', onClick: () => controller.navigate({ kind: 'home' }) }, `← ${t('back')}`)),
+        h(PageHead, { title: t('sessions') }),
+        h(ErrorNotice, { error: state.error, t, onRetry: () => void controller.loadSessions().catch(error => controller.reportError(error)) }),
+        h('div', { className: 'dn-list' },
+          ...(rows.length
+            ? rows.map(row => h(SessionRow, {
+                key: row.id, ctx, controller, t, row,
+                busy: state.busy[`session:${row.id}`] === true, canPatch,
+              }))
+            : [h('p', { className: 'dn-empty', key: 'empty' }, t('noSessions'))])))
+    }
+
     function ActivityView({ ctx, controller, state, t }) {
       useEffect(() => { void controller.loadActivity().catch(error => controller.reportError(error)) }, [])
       return h('div', { className: 'dn-page' },
@@ -1286,6 +1366,7 @@ window.__ModuleLoader__.load({
       if (state.view.kind === 'members') return h(MembersView, { ctx, controller, state, t })
       if (state.view.kind === 'pending') return h(PendingIdentitiesView, { ctx, controller, state, t })
       if (state.view.kind === 'pairing') return h(PairingCodesView, { ctx, controller, state, t })
+      if (state.view.kind === 'sessions') return h(SessionsView, { ctx, controller, state, t })
       if (state.view.kind === 'activity') return h(ActivityView, { ctx, controller, state, t })
       return h(HomeView, { ctx, controller, state, t })
     }

@@ -45,7 +45,7 @@ function loadModule({ rpcCall } = {}) {
   let source = readFileSync(new URL('../client.js', import.meta.url), 'utf8')
   source = source.replace(
     "return {\n      inject: ['slots', 'connection', 'locale', 'layout'],",
-    "return {\n      __test: { createController, launchAdvancedConsole, QuestionCard, QuestionsView, MemberRow, MembersView, PendingRow, PendingIdentitiesView, PairingCodeRow, PairingCodesView, TaskRow, ChannelRow, ActivityRow },\n      inject: ['slots', 'connection', 'locale', 'layout'],",
+    "return {\n      __test: { createController, launchAdvancedConsole, QuestionCard, QuestionsView, MemberRow, MembersView, PendingRow, PendingIdentitiesView, PairingCodeRow, PairingCodesView, SessionRow, SessionsView, TaskRow, ChannelRow, ActivityRow },\n      inject: ['slots', 'connection', 'locale', 'layout'],",
   )
   assert.match(source, /__test:/)
   let registration
@@ -404,6 +404,70 @@ test('pairing view renders active codes, mint control, and an empty state', () =
 
   const empty = mod.__test.PairingCodesView({ ctx, t, controller, state: { error: null, busy: {}, pairing: { codes: [] } } })
   assert.match(textOf(empty), /noCodes/)
+})
+
+test('sessions list loads and outbound override patch refreshes the list', async () => {
+  const calls = []
+  const { mod, ctx } = loadModule({
+    async rpcCall(_channel, endpoint) {
+      calls.push(endpoint)
+      if (endpoint === 'sessions.list') {
+        return { ok: true, value: { epoch: 'e', revision: 6, canPatch: true, sessions: [{ id: 's1', workspace: 'ws-a', active: true, resolved: { channelTypes: ['bark'], quiet: false, source: 'agent-workspace' } }] } }
+      }
+      return { ok: true, value: { epoch: 'e', revision: 6, id: 's1', outbound: { quiet: true } } }
+    },
+  })
+  const controller = mod.__test.createController(ctx)
+  await controller.loadSessions()
+  assert.equal(controller.getSnapshot().sessions.sessions[0].id, 's1')
+  const patched = await controller.patchSessionOutbound('s1', { quiet: true })
+  assert.deepEqual(patched.outbound, { quiet: true })
+  assert.deepEqual(calls, ['sessions.list', 'sessions.patch', 'sessions.list'], '写入后必须重载会话列表')
+  controller.dispose()
+})
+
+test('sessions view renders rows, a silence toggle, and an empty state', () => {
+  const { mod, ctx } = loadModule()
+  const t = key => key
+  const controller = {
+    async loadSessions() { return {} }, reportError() {}, navigate() {},
+    async patchSessionOutbound() { return {} },
+  }
+  const view = mod.__test.SessionsView({
+    ctx, t, controller,
+    state: {
+      error: null, busy: {}, sessions: {
+        canPatch: true,
+        sessions: [
+          { id: 's1', workspace: 'ws-a', active: true, resolved: { channelTypes: ['bark', 'webhook'], quiet: false, source: 'session' } },
+          { id: 's2', active: false, resolved: { channelTypes: [], quiet: true, source: 'global' } },
+        ],
+      },
+    },
+  })
+  assert.match(textOf(view), /ws-a/)
+  assert.match(textOf(view), /bark, webhook/)
+  assert.match(textOf(view), /sessionActive/)
+  assert.match(textOf(view), /sessionIdle/)
+  assert.match(textOf(view), /silence/)
+  assert.match(textOf(view), /resumeNotify/)
+  assert.match(textOf(view), /noChannelsResolved/)
+  assert.match(textOf(view), /s2/)
+
+  const empty = mod.__test.SessionsView({ ctx, t, controller, state: { error: null, busy: {}, sessions: { sessions: [] } } })
+  assert.match(textOf(empty), /noSessions/)
+})
+
+test('sessions view hides the override control when patching is unsupported', () => {
+  const { mod, ctx } = loadModule()
+  const t = key => key
+  const controller = { async loadSessions() { return {} }, reportError() {}, navigate() {}, async patchSessionOutbound() { return {} } }
+  const view = mod.__test.SessionsView({
+    ctx, t, controller,
+    state: { error: null, busy: {}, sessions: { canPatch: false, sessions: [{ id: 's1', workspace: 'ws-a', active: true, resolved: { channelTypes: ['bark'] } }] } },
+  })
+  assert.doesNotMatch(textOf(view), /silence/)
+  assert.doesNotMatch(textOf(view), /resumeNotify/)
 })
 
 test('frozen Question/Task/Channel/Activity view fields render exactly', () => {

@@ -60,6 +60,8 @@ function titleFor(row) {
     'pending-dismissed': { en: 'Pending identity dismissed', zh: '待确认身份已忽略' },
     'pairing-minted': { en: 'Pairing code minted', zh: '配对码已铸造' },
     'pairing-revoked': { en: 'Pairing code revoked', zh: '配对码已撤销' },
+    // v0.14（S08）：会话出站覆盖。
+    'session-outbound': { en: 'Session notification override saved', zh: '会话通知覆盖已保存' },
   }
   return map[row.action] ?? { en: row.action, zh: row.action }
 }
