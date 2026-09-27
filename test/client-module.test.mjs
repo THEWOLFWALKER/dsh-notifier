@@ -45,7 +45,7 @@ function loadModule({ rpcCall } = {}) {
   let source = readFileSync(new URL('../client.js', import.meta.url), 'utf8')
   source = source.replace(
     "return {\n      inject: ['slots', 'connection', 'locale', 'layout'],",
-    "return {\n      __test: { createController, launchAdvancedConsole, QuestionCard, QuestionsView, MemberRow, MembersView, TaskRow, ChannelRow, ActivityRow },\n      inject: ['slots', 'connection', 'locale', 'layout'],",
+    "return {\n      __test: { createController, launchAdvancedConsole, QuestionCard, QuestionsView, MemberRow, MembersView, PendingRow, PendingIdentitiesView, PairingCodeRow, PairingCodesView, TaskRow, ChannelRow, ActivityRow },\n      inject: ['slots', 'connection', 'locale', 'layout'],",
   )
   assert.match(source, /__test:/)
   let registration
@@ -304,6 +304,106 @@ test('member role change and removal refresh the member list', async () => {
   await controller.removeMember('telegram:2')
   assert.deepEqual(calls, ['members.update', 'members.list', 'members.remove', 'members.list'])
   controller.dispose()
+})
+
+test('pending identities load and approve/dismiss refresh the list', async () => {
+  const calls = []
+  const { mod, ctx } = loadModule({
+    async rpcCall(_channel, endpoint) {
+      calls.push(endpoint)
+      if (endpoint === 'members.pending') {
+        return { ok: true, value: { epoch: 'e', revision: 4, pending: [{ key: 'qq:u9', channel: 'qq', userId: 'u9', origin: 'learned' }], canApprove: true, canDismiss: true } }
+      }
+      return { ok: true, value: { epoch: 'e', revision: 4 } }
+    },
+  })
+  const controller = mod.__test.createController(ctx)
+  await controller.loadPending()
+  assert.deepEqual(calls, ['members.pending'])
+  assert.equal(controller.getSnapshot().pending.pending[0].key, 'qq:u9')
+  await controller.approvePending('qq:u9')
+  await controller.dismissPending('qq:u10')
+  assert.deepEqual(calls, [
+    'members.pending', 'members.approve', 'members.pending', 'members.dismiss', 'members.pending',
+  ])
+  controller.dispose()
+})
+
+test('pending identities view renders rows with approve/dismiss and an empty state', () => {
+  const { mod, ctx } = loadModule()
+  const t = key => key
+  const controller = {
+    async loadPending() { return {} }, reportError() {}, navigate() {},
+    async approvePending() { return {} }, async dismissPending() { return {} },
+  }
+  const view = mod.__test.PendingIdentitiesView({
+    ctx, t, controller,
+    state: {
+      error: null, busy: {},
+      pending: {
+        canApprove: true, canDismiss: true,
+        pending: [{ key: 'qq:u9', channel: 'qq', userId: 'u9', origin: 'learned' }],
+      },
+    },
+  })
+  assert.match(textOf(view), /u9/)
+  assert.match(textOf(view), /learned/)
+  assert.match(textOf(view), /approve/)
+  assert.match(textOf(view), /dismiss/)
+
+  const empty = mod.__test.PendingIdentitiesView({ ctx, t, controller, state: { error: null, busy: {}, pending: { pending: [] } } })
+  assert.match(textOf(empty), /noPending/)
+})
+
+test('pairing codes load, mint returns the code once, revoke refreshes', async () => {
+  const calls = []
+  const { mod, ctx } = loadModule({
+    async rpcCall(_channel, endpoint) {
+      calls.push(endpoint)
+      if (endpoint === 'pairing.list') {
+        return { ok: true, value: { epoch: 'e', revision: 5, codes: [{ id: 'abcd1234', origin: 'owner', state: 'minted-active' }], canMint: true, canRevoke: true } }
+      }
+      if (endpoint === 'pairing.mint') {
+        return { ok: true, value: { id: 'ef567890', code: 'ABCD-EFGH', expiresAt: 1 } }
+      }
+      return { ok: true, value: { epoch: 'e', revision: 5 } }
+    },
+  })
+  const controller = mod.__test.createController(ctx)
+  await controller.loadPairingCodes()
+  assert.equal(controller.getSnapshot().pairing.codes[0].id, 'abcd1234')
+  const minted = await controller.mintPairingCode('laptop')
+  assert.equal(minted.code, 'ABCD-EFGH', '码面只在铸造响应中出现一次')
+  await controller.revokePairingCode('abcd1234')
+  assert.deepEqual(calls, [
+    'pairing.list', 'pairing.mint', 'pairing.list', 'pairing.revoke', 'pairing.list',
+  ])
+  controller.dispose()
+})
+
+test('pairing view renders active codes, mint control, and an empty state', () => {
+  const { mod, ctx } = loadModule()
+  const t = key => key
+  const controller = {
+    async loadPairingCodes() { return {} }, reportError() {}, navigate() {},
+    async mintPairingCode() { return { code: 'X' } }, async revokePairingCode() { return {} },
+  }
+  const view = mod.__test.PairingCodesView({
+    ctx, t, controller,
+    state: {
+      error: null, busy: {},
+      pairing: {
+        canMint: true, canRevoke: true,
+        codes: [{ id: 'abcd1234', origin: 'owner', mintedBy: 'native', state: 'minted-active' }],
+      },
+    },
+  })
+  assert.match(textOf(view), /abcd1234/)
+  assert.match(textOf(view), /mintCode/)
+  assert.match(textOf(view), /revoke/)
+
+  const empty = mod.__test.PairingCodesView({ ctx, t, controller, state: { error: null, busy: {}, pairing: { codes: [] } } })
+  assert.match(textOf(empty), /noCodes/)
 })
 
 test('frozen Question/Task/Channel/Activity view fields render exactly', () => {

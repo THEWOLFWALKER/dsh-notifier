@@ -55,6 +55,11 @@ function titleFor(row) {
     'question-settled': { en: 'Question handled', zh: '问题已处理' },
     'member-updated': { en: 'Member updated', zh: '成员已更新' },
     'member-removed': { en: 'Member removed', zh: '成员已移除' },
+    // v0.14（S07）：待确认身份与配对码生命周期。
+    'pending-approved': { en: 'Pending identity approved', zh: '待确认身份已转正' },
+    'pending-dismissed': { en: 'Pending identity dismissed', zh: '待确认身份已忽略' },
+    'pairing-minted': { en: 'Pairing code minted', zh: '配对码已铸造' },
+    'pairing-revoked': { en: 'Pairing code revoked', zh: '配对码已撤销' },
   }
   return map[row.action] ?? { en: row.action, zh: row.action }
 }

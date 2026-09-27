@@ -8,11 +8,13 @@ window.__ModuleLoader__.load({
     } = React
 
     const PANEL_ID = 'dsh-notifier'
-    // Native 主面板的导航入口（S05/S06 起：提问收件箱 / 任务 / 成员 / 渠道 / 活动）。
+    // Native 主面板的导航入口（S05/S06/S07 起：提问收件箱 / 任务 / 成员 / 待确认身份 / 配对码 / 渠道 / 活动）。
     const NAV_ITEMS = Object.freeze([
       ['questions', 'questions'],
       ['tasks', 'tasks'],
       ['members', 'members'],
+      ['pending', 'pendingIdentities'],
+      ['pairing', 'pairingCodes'],
       ['channels', 'channels'],
       ['activity', 'activity'],
     ])
@@ -73,6 +75,19 @@ window.__ModuleLoader__.load({
       removing: '正在移除…',
       memberUpdated: '已更新',
       memberRemoved: '已移除',
+      pendingIdentities: '待确认身份',
+      noPending: '暂无待确认身份',
+      approve: '转正',
+      dismiss: '忽略',
+      pairingCodes: '配对码',
+      noCodes: '暂无在铸配对码',
+      mintCode: '生成配对码',
+      minting: '正在生成…',
+      revoke: '撤销',
+      revoking: '正在撤销…',
+      labelOptional: '备注（可选）',
+      codeShownOnce: '此配对码只显示一次，请立即保存。',
+      clearCode: '清除',
       noTasks: '暂无任务',
       noActivity: '暂无最近活动',
       reject: '拒绝',
@@ -160,6 +175,19 @@ window.__ModuleLoader__.load({
       removing: 'Removing…',
       memberUpdated: 'Updated',
       memberRemoved: 'Removed',
+      pendingIdentities: 'Pending identities',
+      noPending: 'No pending identities',
+      approve: 'Approve',
+      dismiss: 'Dismiss',
+      pairingCodes: 'Pairing codes',
+      noCodes: 'No active pairing codes',
+      mintCode: 'Generate code',
+      minting: 'Generating…',
+      revoke: 'Revoke',
+      revoking: 'Revoking…',
+      labelOptional: 'Label (optional)',
+      codeShownOnce: 'This pairing code is shown only once — save it now.',
+      clearCode: 'Clear',
       noTasks: 'No tasks',
       noActivity: 'No recent activity',
       reject: 'Reject',
@@ -238,6 +266,8 @@ window.__ModuleLoader__.load({
         tasks: null,
         questions: null,
         members: null,
+        pending: null,
+        pairing: null,
         activity: null,
         channel: null,
         busy: Object.freeze({}),
@@ -252,7 +282,7 @@ window.__ModuleLoader__.load({
       let fallbackTimer = null
       let disposed = false
       // v0.12.1（P1-13）：同一资源只接受最新一代请求的响应，避免迟到数据覆盖当前视图。
-      const generations = { home: 0, channels: 0, channel: 0, tasks: 0, questions: 0, members: 0, activity: 0 }
+      const generations = { home: 0, channels: 0, channel: 0, tasks: 0, questions: 0, members: 0, pending: 0, pairing: 0, activity: 0 }
       let paused = false
 
       const emit = (patch) => {
@@ -270,7 +300,7 @@ window.__ModuleLoader__.load({
         return {
           epochChanged,
           patch: {
-            ...(epochChanged ? { home: null, channels: null, tasks: null, questions: null, members: null, activity: null, channel: null } : {}),
+            ...(epochChanged ? { home: null, channels: null, tasks: null, questions: null, members: null, pending: null, pairing: null, activity: null, channel: null } : {}),
             epoch: incomingEpoch,
             revision: epochChanged ? incomingRevision : Math.max(snapshot.revision, incomingRevision),
             connectionState: 'connected',
@@ -358,6 +388,30 @@ window.__ModuleLoader__.load({
           throw error
         }
       }
+      async function loadPending() {
+        const generation = ++generations.pending
+        try {
+          const value = await rpc.call('members.pending')
+          if (generation !== generations.pending) return value
+          commit('pending', value)
+          return value
+        } catch (error) {
+          if (generation !== generations.pending) return null
+          throw error
+        }
+      }
+      async function loadPairingCodes() {
+        const generation = ++generations.pairing
+        try {
+          const value = await rpc.call('pairing.list')
+          if (generation !== generations.pairing) return value
+          commit('pairing', value)
+          return value
+        } catch (error) {
+          if (generation !== generations.pairing) return null
+          throw error
+        }
+      }
       async function loadActivity() {
         const generation = ++generations.activity
         try {
@@ -379,12 +433,14 @@ window.__ModuleLoader__.load({
           else if (kind === 'tasks') await loadTasks()
           else if (kind === 'questions') await loadQuestions()
           else if (kind === 'members') await loadMembers()
+          else if (kind === 'pending') await loadPending()
+          else if (kind === 'pairing') await loadPairingCodes()
           else if (kind === 'activity') await loadActivity()
           else await loadHome()
           emit({ staleAt: null, connectionState: 'connected' })
           return true
         } catch {
-          const hasData = snapshot.home !== null || snapshot.channels !== null || snapshot.channel !== null || snapshot.tasks !== null || snapshot.questions !== null || snapshot.members !== null || snapshot.activity !== null
+          const hasData = snapshot.home !== null || snapshot.channels !== null || snapshot.channel !== null || snapshot.tasks !== null || snapshot.questions !== null || snapshot.members !== null || snapshot.pending !== null || snapshot.pairing !== null || snapshot.activity !== null
           emit({ staleAt: Date.now(), connectionState: hasData ? 'stale' : 'disconnected' })
           return false
         }
@@ -450,6 +506,49 @@ window.__ModuleLoader__.load({
         try {
           const value = await rpc.call('members.remove', { key })
           await loadMembers().catch(() => {})
+          return value
+        } finally {
+          setBusy(busyKey, false)
+        }
+      }
+      async function approvePending(key) {
+        const busyKey = `pending:${key}`
+        setBusy(busyKey, true)
+        try {
+          const value = await rpc.call('members.approve', { key })
+          await loadPending().catch(() => {})
+          return value
+        } finally {
+          setBusy(busyKey, false)
+        }
+      }
+      async function dismissPending(key) {
+        const busyKey = `pending:${key}`
+        setBusy(busyKey, true)
+        try {
+          const value = await rpc.call('members.dismiss', { key })
+          await loadPending().catch(() => {})
+          return value
+        } finally {
+          setBusy(busyKey, false)
+        }
+      }
+      async function mintPairingCode(label = '') {
+        setBusy('pairing:mint', true)
+        try {
+          const value = await rpc.call('pairing.mint', { label })
+          await loadPairingCodes().catch(() => {})
+          return value
+        } finally {
+          setBusy('pairing:mint', false)
+        }
+      }
+      async function revokePairingCode(id) {
+        const busyKey = `pairing:${id}`
+        setBusy(busyKey, true)
+        try {
+          const value = await rpc.call('pairing.revoke', { id })
+          await loadPairingCodes().catch(() => {})
           return value
         } finally {
           setBusy(busyKey, false)
@@ -523,9 +622,9 @@ window.__ModuleLoader__.load({
       return Object.freeze({
         getSnapshot: () => snapshot,
         subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener) },
-        loadHome, loadChannels, loadChannel, loadTasks, loadQuestions, loadMembers, loadActivity,
+        loadHome, loadChannels, loadChannel, loadTasks, loadQuestions, loadMembers, loadPending, loadPairingCodes, loadActivity,
         refreshCurrent, saveChannel, testChannel, settleQuestion, createStandaloneLaunch,
-        updateMember, removeMember,
+        updateMember, removeMember, approvePending, dismissPending, mintPairingCode, revokePairingCode,
         navigate, startWait, setActive, dispose,
         // v0.12.1（P1-09）：视图必须能把业务失败写入统一错误出口。
         reportError(error) { setError(error ?? null) },
@@ -1066,6 +1165,104 @@ window.__ModuleLoader__.load({
             : [h('p', { className: 'dn-empty', key: 'empty' }, t('noMembers'))])))
     }
 
+    function PendingRow({ member, controller, t, busy, canApprove, canDismiss }) {
+      const meta = [member?.channel, member?.accountId, member?.origin].filter(Boolean).join(' · ')
+      return h('div', { className: 'dn-row' },
+        h(StateDot, { state: 'warn' }),
+        h('div', { className: 'dn-rowMain' },
+          h('strong', { className: 'dn-rowTitle' }, String(member?.userId || member?.key || '')),
+          h('span', { className: 'dn-rowMeta' }, meta)),
+        h('div', { className: 'dn-rowAside' },
+          canApprove
+            ? h(Button, {
+                disabled: busy,
+                onClick: () => void controller.approvePending(member.key).catch(error => controller.reportError(error)),
+              }, t('approve'))
+            : null,
+          canDismiss
+            ? h(Button, {
+                disabled: busy,
+                onClick: () => void controller.dismissPending(member.key).catch(error => controller.reportError(error)),
+              }, t('dismiss'))
+            : null))
+    }
+
+    function PendingIdentitiesView({ ctx, controller, state, t }) {
+      useEffect(() => { void controller.loadPending().catch(error => controller.reportError(error)) }, [])
+      const rows = state.pending?.pending ?? []
+      const canApprove = state.pending?.canApprove === true
+      const canDismiss = state.pending?.canDismiss === true
+      return h('div', { className: 'dn-page' },
+        h('div', { className: 'dn-detailBack' }, h('button', { className: 'dn-link', onClick: () => controller.navigate({ kind: 'home' }) }, `← ${t('back')}`)),
+        h(PageHead, { title: t('pendingIdentities') }),
+        h(ErrorNotice, { error: state.error, t, onRetry: () => void controller.loadPending().catch(error => controller.reportError(error)) }),
+        h('div', { className: 'dn-list' },
+          ...(rows.length
+            ? rows.map(member => h(PendingRow, {
+                key: member.key, ctx, member, controller, t,
+                busy: state.busy[`pending:${member.key}`] === true, canApprove, canDismiss,
+              }))
+            : [h('p', { className: 'dn-empty', key: 'empty' }, t('noPending'))])))
+    }
+
+    function PairingCodeRow({ code, controller, t, busy, canRevoke }) {
+      const meta = [code?.origin, code?.mintedBy, code?.state].filter(Boolean).join(' · ')
+      return h('div', { className: 'dn-row' },
+        h(StateDot, { state: 'idle' }),
+        h('div', { className: 'dn-rowMain' },
+          h('strong', { className: 'dn-rowTitle' }, String(code?.label || code?.id || '')),
+          h('span', { className: 'dn-rowMeta' }, meta)),
+        h('div', { className: 'dn-rowAside' },
+          canRevoke
+            ? h(Button, {
+                disabled: busy,
+                onClick: () => void controller.revokePairingCode(code.id).catch(error => controller.reportError(error)),
+              }, busy ? t('revoking') : t('revoke'))
+            : null))
+    }
+
+    function PairingCodesView({ ctx, controller, state, t }) {
+      useEffect(() => { void controller.loadPairingCodes().catch(error => controller.reportError(error)) }, [])
+      // 码面只在本次响应出现一次：本地持有、刷新即丢（不落任何持久层）。
+      const [minted, setMinted] = useState(null)
+      const [label, setLabel] = useState('')
+      const rows = state.pairing?.codes ?? []
+      const canMint = state.pairing?.canMint === true
+      const canRevoke = state.pairing?.canRevoke === true
+      const busyMint = state.busy['pairing:mint'] === true
+      const onMint = () => {
+        void controller.mintPairingCode(label).then(value => {
+          setMinted(value ?? null)
+          setLabel('')
+        }).catch(error => controller.reportError(error))
+      }
+      return h('div', { className: 'dn-page' },
+        h('div', { className: 'dn-detailBack' }, h('button', { className: 'dn-link', onClick: () => controller.navigate({ kind: 'home' }) }, `← ${t('back')}`)),
+        h(PageHead, { title: t('pairingCodes') }),
+        h(ErrorNotice, { error: state.error, t, onRetry: () => void controller.loadPairingCodes().catch(error => controller.reportError(error)) }),
+        canMint
+          ? h('div', { className: 'dn-field' },
+              h('input', {
+                type: 'text', value: label, maxLength: 64, placeholder: t('labelOptional'),
+                onChange: event => setLabel(event.target.value),
+              }),
+              h(Button, { kind: 'primary', disabled: busyMint, onClick: onMint }, busyMint ? t('minting') : t('mintCode')))
+          : null,
+        minted
+          ? h('div', { className: 'dn-code', key: 'minted' },
+              h('p', { className: 'dn-note' }, t('codeShownOnce')),
+              h('code', { className: 'dn-codeValue' }, String(minted.code ?? '')),
+              h('button', { className: 'dn-link', onClick: () => setMinted(null) }, t('clearCode')))
+          : null,
+        h('div', { className: 'dn-list' },
+          ...(rows.length
+            ? rows.map(code => h(PairingCodeRow, {
+                key: code.id, ctx, code, controller, t,
+                busy: state.busy[`pairing:${code.id}`] === true, canRevoke,
+              }))
+            : [h('p', { className: 'dn-empty', key: 'empty' }, t('noCodes'))])))
+    }
+
     function ActivityView({ ctx, controller, state, t }) {
       useEffect(() => { void controller.loadActivity().catch(error => controller.reportError(error)) }, [])
       return h('div', { className: 'dn-page' },
@@ -1087,6 +1284,8 @@ window.__ModuleLoader__.load({
       if (state.view.kind === 'tasks') return h(TasksView, { ctx, controller, state, t })
       if (state.view.kind === 'questions') return h(QuestionsView, { ctx, controller, state, t })
       if (state.view.kind === 'members') return h(MembersView, { ctx, controller, state, t })
+      if (state.view.kind === 'pending') return h(PendingIdentitiesView, { ctx, controller, state, t })
+      if (state.view.kind === 'pairing') return h(PairingCodesView, { ctx, controller, state, t })
       if (state.view.kind === 'activity') return h(ActivityView, { ctx, controller, state, t })
       return h(HomeView, { ctx, controller, state, t })
     }
@@ -1167,6 +1366,9 @@ window.__ModuleLoader__.load({
       .dn-detailBack{margin-bottom:12px}.dn-field{display:flex;flex-direction:column;gap:5px;margin:12px 0;font-size:13px}
       .dn-field input{box-sizing:border-box;width:100%;max-width:560px;height:34px;border:.5px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-md);background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);padding:7px 10px;font:inherit}
       .dn-field small{color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px}
+      .dn-code{display:flex;flex-direction:column;gap:6px;margin:12px 0;padding:12px;border:.5px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-md);background:var(--dsw-alias-bg-layer-1)}
+      .dn-codeValue{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:16px;letter-spacing:.04em;color:var(--dsw-alias-label-primary);word-break:break-all}
+      .dn-code .dn-link{align-self:flex-start}
       .dn-error{color:var(--dsw-alias-state-error-primary);font-size:13px;line-height:20px}.dn-successText,.dn-success{color:var(--dsw-alias-state-success-primary);font-size:13px}
       .dn-success{display:flex;gap:12px;align-items:center;justify-content:space-between;margin-top:12px}
       .dn-inlineStatus{display:flex;gap:8px;align-items:center;font-size:13px}.dn-inlineStatus .dn-stateDot{margin-top:0}

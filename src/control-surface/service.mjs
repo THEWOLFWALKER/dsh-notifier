@@ -246,6 +246,54 @@ export function createControlSurfaceService({
         return ok(value)
       }
 
+      // v0.14（S07）：Native 待确认身份 + 配对码面。同为共享 MembersControlService（S02）。
+      if (members && method === 'members.pending') {
+        return ok({
+          ...revisionView(),
+          pending: members.listPending(),
+          canApprove: members.canApprove === true,
+          canDismiss: members.canDismiss === true,
+        })
+      }
+
+      if (members && method === 'members.approve') {
+        const value = members.approve(payload)
+        revision.touch('members')
+        activity.record('control', 'pending-approved', { status: 'ok' })
+        return ok(value)
+      }
+
+      if (members && method === 'members.dismiss') {
+        const value = members.dismiss(payload)
+        revision.touch('members')
+        activity.record('control', 'pending-dismissed', { status: 'ok' })
+        return ok(value)
+      }
+
+      if (members && method === 'pairing.list') {
+        return ok({
+          ...revisionView(),
+          codes: members.listCodes(),
+          canMint: members.canMint === true,
+          canRevoke: members.canRevoke === true,
+        })
+      }
+
+      if (members && method === 'pairing.mint') {
+        const value = members.mintCode(payload)
+        revision.touch('members')
+        // 审计只记 id/来源，绝不记码面（码面只在本次响应出现一次）。
+        activity.record('control', 'pairing-minted', { source: 'native', status: 'ok' })
+        return ok(value)
+      }
+
+      if (members && method === 'pairing.revoke') {
+        const value = members.revokeCode(payload)
+        revision.touch('members')
+        activity.record('control', 'pairing-revoked', { source: 'native', status: 'ok' })
+        return ok(value)
+      }
+
       if (method === 'activity.list') {
         return ok({ ...revisionView(), items: activity.list(payload) })
       }
