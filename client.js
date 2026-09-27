@@ -53,6 +53,8 @@ window.__ModuleLoader__.load({
       reconnecting: '正在重新连接 DSH…',
       loading: '正在读取通知状态…',
       tasks: '任务',
+      questions: '待处理提问',
+      noQuestions: '暂无待处理提问',
       noTasks: '暂无任务',
       noActivity: '暂无最近活动',
       reject: '拒绝',
@@ -128,6 +130,8 @@ window.__ModuleLoader__.load({
       reconnecting: 'Reconnecting to DSH…',
       loading: 'Loading notification status…',
       tasks: 'Tasks',
+      questions: 'Questions',
+      noQuestions: 'No pending questions',
       noTasks: 'No tasks',
       noActivity: 'No recent activity',
       reject: 'Reject',
@@ -204,6 +208,7 @@ window.__ModuleLoader__.load({
         home: null,
         channels: null,
         tasks: null,
+        questions: null,
         activity: null,
         channel: null,
         busy: Object.freeze({}),
@@ -218,7 +223,7 @@ window.__ModuleLoader__.load({
       let fallbackTimer = null
       let disposed = false
       // v0.12.1（P1-13）：同一资源只接受最新一代请求的响应，避免迟到数据覆盖当前视图。
-      const generations = { home: 0, channels: 0, channel: 0, tasks: 0, activity: 0 }
+      const generations = { home: 0, channels: 0, channel: 0, tasks: 0, questions: 0, activity: 0 }
       let paused = false
 
       const emit = (patch) => {
@@ -236,7 +241,7 @@ window.__ModuleLoader__.load({
         return {
           epochChanged,
           patch: {
-            ...(epochChanged ? { home: null, channels: null, tasks: null, activity: null, channel: null } : {}),
+            ...(epochChanged ? { home: null, channels: null, tasks: null, questions: null, activity: null, channel: null } : {}),
             epoch: incomingEpoch,
             revision: epochChanged ? incomingRevision : Math.max(snapshot.revision, incomingRevision),
             connectionState: 'connected',
@@ -300,6 +305,18 @@ window.__ModuleLoader__.load({
           throw error
         }
       }
+      async function loadQuestions() {
+        const generation = ++generations.questions
+        try {
+          const value = await rpc.call('questions.list')
+          if (generation !== generations.questions) return value
+          commit('questions', value)
+          return value
+        } catch (error) {
+          if (generation !== generations.questions) return null
+          throw error
+        }
+      }
       async function loadActivity() {
         const generation = ++generations.activity
         try {
@@ -319,12 +336,13 @@ window.__ModuleLoader__.load({
           if (kind === 'channels') await loadChannels()
           else if (kind === 'channel') await loadChannel(snapshot.view.type)
           else if (kind === 'tasks') await loadTasks()
+          else if (kind === 'questions') await loadQuestions()
           else if (kind === 'activity') await loadActivity()
           else await loadHome()
           emit({ staleAt: null, connectionState: 'connected' })
           return true
         } catch {
-          const hasData = snapshot.home !== null || snapshot.channels !== null || snapshot.channel !== null || snapshot.tasks !== null || snapshot.activity !== null
+          const hasData = snapshot.home !== null || snapshot.channels !== null || snapshot.channel !== null || snapshot.tasks !== null || snapshot.questions !== null || snapshot.activity !== null
           emit({ staleAt: Date.now(), connectionState: hasData ? 'stale' : 'disconnected' })
           return false
         }
@@ -358,11 +376,11 @@ window.__ModuleLoader__.load({
         setBusy(key, true)
         try {
           const value = await rpc.call('questions.settle', { ref, action, options })
-          await loadHome().catch(() => {})
+          await refreshCurrent().catch(() => {})
           return value
         } catch (error) {
           if (error?.code === 'dsh-notifier/conflict' || error?.code === 'dsh-notifier/already-handled') {
-            await loadHome().catch(() => {})
+            await refreshCurrent().catch(() => {})
             return { settled: false, alreadyHandled: true }
           }
           throw error
@@ -441,7 +459,7 @@ window.__ModuleLoader__.load({
       return Object.freeze({
         getSnapshot: () => snapshot,
         subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener) },
-        loadHome, loadChannels, loadChannel, loadTasks, loadActivity,
+        loadHome, loadChannels, loadChannel, loadTasks, loadQuestions, loadActivity,
         refreshCurrent, saveChannel, testChannel, settleQuestion, createStandaloneLaunch,
         navigate, startWait, setActive, dispose,
         // v0.12.1（P1-09）：视图必须能把业务失败写入统一错误出口。
@@ -672,7 +690,10 @@ window.__ModuleLoader__.load({
             ? h('p', { className: 'dn-error', role: 'alert' }, t('connectionLost'))
           : null,
         (home?.questions?.length ?? 0) > 0
-          ? h(Section, { title: `${t('needsAttention')}  ${home.questions.length}` },
+          ? h(Section, {
+              title: `${t('needsAttention')}  ${home.questions.length}`,
+              action: h('button', { className: 'dn-link', onClick: () => controller.navigate({ kind: 'questions' }) }, `${t('viewAll')} →`),
+            },
               ...home.questions.slice(0, 3).map(question =>
                 h(QuestionCard, {
                   key: question.ref, ctx, question, controller, t,
@@ -921,6 +942,22 @@ window.__ModuleLoader__.load({
           ...(state.tasks?.tasks?.length ? state.tasks.tasks.map(task => h(TaskRow, { key: task.taskRef, ctx, task })) : [h('p', { className: 'dn-empty', key: 'empty' }, t('noTasks'))])))
     }
 
+    function QuestionsView({ ctx, controller, state, t }) {
+      useEffect(() => { void controller.loadQuestions().catch(error => controller.reportError(error)) }, [])
+      const rows = state.questions?.questions ?? []
+      return h('div', { className: 'dn-page' },
+        h('div', { className: 'dn-detailBack' }, h('button', { className: 'dn-link', onClick: () => controller.navigate({ kind: 'home' }) }, `← ${t('back')}`)),
+        h(PageHead, { title: t('questions') }),
+        h(ErrorNotice, { error: state.error, t, onRetry: () => void controller.loadQuestions().catch(error => controller.reportError(error)) }),
+        h('div', { className: 'dn-list' },
+          ...(rows.length
+            ? rows.map(question => h(QuestionCard, {
+                key: question.ref, ctx, question, controller, t,
+                busy: state.busy[`question:${question.ref}`] === true,
+              }))
+            : [h('p', { className: 'dn-empty', key: 'empty' }, t('noQuestions'))])))
+    }
+
     function ActivityView({ ctx, controller, state, t }) {
       useEffect(() => { void controller.loadActivity().catch(error => controller.reportError(error)) }, [])
       return h('div', { className: 'dn-page' },
@@ -940,6 +977,7 @@ window.__ModuleLoader__.load({
       // v0.12.1（P1-12）：按渠道类型重建详情组件，避免草稿/测试结果跨渠道串台。
       if (state.view.kind === 'channel') return h(ChannelDetailView, { key: state.view.type, ctx, controller, state, t })
       if (state.view.kind === 'tasks') return h(TasksView, { ctx, controller, state, t })
+      if (state.view.kind === 'questions') return h(QuestionsView, { ctx, controller, state, t })
       if (state.view.kind === 'activity') return h(ActivityView, { ctx, controller, state, t })
       return h(HomeView, { ctx, controller, state, t })
     }

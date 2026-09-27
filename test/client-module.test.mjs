@@ -11,7 +11,12 @@ function fakeReact() {
   }
   return {
     Component,
-    createElement(type, props, ...children) { return { type, props: props ?? {}, children } },
+    createElement(type, props, ...children) {
+      const merged = { ...(props ?? {}) }
+      if (children.length === 1) merged.children = children[0]
+      else if (children.length > 1) merged.children = children
+      return { type, props: merged, children }
+    },
     useCallback(fn) { return fn },
     useEffect() {},
     useMemo(fn) { return fn() },
@@ -27,7 +32,10 @@ function textOf(node) {
     if (value === null || value === undefined || value === false) return
     if (typeof value === 'string' || typeof value === 'number') { chunks.push(String(value)); return }
     if (Array.isArray(value)) { for (const item of value) visit(item); return }
-    if (typeof value === 'object') visit(value.children)
+    if (typeof value === 'object') {
+      if (typeof value.type === 'function') { visit(value.type(value.props ?? {})); return }
+      visit(value.children)
+    }
   }
   visit(node)
   return chunks.join('')
@@ -37,7 +45,7 @@ function loadModule({ rpcCall } = {}) {
   let source = readFileSync(new URL('../client.js', import.meta.url), 'utf8')
   source = source.replace(
     "return {\n      inject: ['slots', 'connection', 'locale', 'layout'],",
-    "return {\n      __test: { createController, launchAdvancedConsole, QuestionCard, TaskRow, ChannelRow, ActivityRow },\n      inject: ['slots', 'connection', 'locale', 'layout'],",
+    "return {\n      __test: { createController, launchAdvancedConsole, QuestionCard, QuestionsView, TaskRow, ChannelRow, ActivityRow },\n      inject: ['slots', 'connection', 'locale', 'layout'],",
   )
   assert.match(source, /__test:/)
   let registration
@@ -173,6 +181,66 @@ test('channel navigation clears previous channel before the next request resolve
   assert.equal(controller.getSnapshot().channel.channel.type, 'telegram')
   controller.navigate({ kind: 'channel', type: 'feishu' })
   assert.equal(controller.getSnapshot().channel, null, 'B 详情加载前不得短暂显示 A 的数据')
+  controller.dispose()
+})
+
+test('questions inbox loads the full pending list from questions.list', async () => {
+  const calls = []
+  const { mod, ctx } = loadModule({
+    async rpcCall(_channel, endpoint) {
+      calls.push(endpoint)
+      if (endpoint === 'questions.list') return { ok: true, value: { epoch: 'e', revision: 2, questions: [{ ref: 'q1' }] } }
+      return { ok: true, value: { epoch: 'e', revision: 2 } }
+    },
+  })
+  const controller = mod.__test.createController(ctx)
+  await controller.loadQuestions()
+  assert.deepEqual(calls, ['questions.list'])
+  assert.deepEqual(controller.getSnapshot().questions.questions, [{ ref: 'q1' }])
+  controller.dispose()
+})
+
+test('questions inbox renders every pending row and an empty state', () => {
+  const { mod, ctx } = loadModule()
+  const t = key => key
+  const controller = { async loadQuestions() { return {} }, reportError() {}, navigate() {}, async settleQuestion() { return { settled: true } } }
+  const view = mod.__test.QuestionsView({
+    ctx, t, controller,
+    state: {
+      error: null, busy: {},
+      questions: { questions: [
+        { ref: 'q1', question: 'Pick one', multiple: false, status: 'pending', options: [{ value: '0', label: 'Alpha' }] },
+        { ref: 'q2', question: 'Pick many', multiple: true, status: 'pending', options: [{ value: '0', label: 'Beta' }] },
+      ] },
+    },
+  })
+  assert.match(textOf(view), /Pick one/)
+  assert.match(textOf(view), /Alpha/)
+  assert.match(textOf(view), /Pick many/)
+  assert.match(textOf(view), /Beta/)
+  assert.match(textOf(view), /questions/)
+
+  const empty = mod.__test.QuestionsView({
+    ctx, t, controller,
+    state: { error: null, busy: {}, questions: { questions: [] } },
+  })
+  assert.match(textOf(empty), /noQuestions/)
+})
+
+test('settling from the inbox refreshes the inbox list, not the home cache', async () => {
+  const calls = []
+  const { mod, ctx } = loadModule({
+    async rpcCall(_channel, endpoint) {
+      calls.push(endpoint)
+      if (endpoint === 'questions.settle') return { ok: true, value: { epoch: 'e', revision: 5, settled: true, alreadyHandled: false } }
+      if (endpoint === 'questions.list') return { ok: true, value: { epoch: 'e', revision: 5, questions: [] } }
+      return { ok: true, value: { epoch: 'e', revision: 5 } }
+    },
+  })
+  const controller = mod.__test.createController(ctx)
+  controller.navigate({ kind: 'questions' })
+  await controller.settleQuestion('q1', 'choose', ['0'])
+  assert.deepEqual(calls, ['questions.settle', 'questions.list'], '结算后必须重载当前 questions 视图')
   controller.dispose()
 })
 
