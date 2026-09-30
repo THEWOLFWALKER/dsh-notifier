@@ -2,7 +2,7 @@
 
 - **identity**: agent `flash`, task pack `dsh-notifier-flash-complete-taskpack` (T01–T30)
 - **branch**: `codex/core-distillation-v015` (off `dev`)
-- **status**: in progress — T01–T08 done (T06 partial)
+- **status**: in progress — T01–T09 done (T06 partial)
 - **owner scope**: core authority convergence, Native/Recovery UX, local config export/import, dsh-im
   bridge, remote URL, optional CF Tunnel, Workers/Pages extension package, docs/tests/delivery.
 - **explicitly out of scope**: `main`, tags, npm publish, real cloud deploy, full encrypted secret
@@ -333,6 +333,38 @@ channel-config-migration-v013, durability-contract-v0121, outbound-source-v012) 
 
 **Count**: 2175 → **2183** (README.md / README.zh-CN.md / HANDOFF.md / docs/memory/project-state.md synced).
 
+## T09 — 简单 HTTP sender 试点
+
+**Result**: the provider path gains an explicit **stateless sender contract** and a pilot registry; the
+simple HTTP channels (Bark, Webhook) are switched onto it without touching a byte of protocol code.
+
+- **Contract** (`src/adapters/sender.mjs`): a stateless sender exposes exactly
+  `validate(cfg) -> resolved` and `send(resolved, msg) -> { accepted, confirmed }` and **declares
+  `lifecycle:'stateless'`**. It deliberately exports **no** `createRuntime` / `start` / `stop` /
+  `candidate` / `dispose` — a channel that owns no resident resource must not fabricate resource
+  verbs (02 §生命周期与资源; T09 边界「没有常驻资源就不实现 start/stop/candidate lifecycle」).
+  `bridgeStatelessAdapter(adapter)` wraps a legacy `{type, resolve, send}` adapter and converges its
+  success into the two-level evidence vocabulary (`accepted` = provider took the request;
+  `confirmed` = explicit receipt, per `delivery-evidence.mjs`). Failure semantics are unchanged: the
+  original `NotifyError` propagates, so `publicMessage`/`detail` layering still holds.
+- **Pilot registry** (`src/adapters/senders.mjs`): `bark` and `webhook` only. `senderOf(type)` returns
+  `null` for every other channel — unregistered channels keep the legacy `adapter.send` path
+  (回退要求「只切该渠道 wrapper；其他渠道原状」). T10/T11 plug stateful senders into the same table.
+- **Dispatch** (`src/notify.mjs`): `sendOne` uses `senderOf(type)` when present, else the legacy
+  adapter. Both are shape-compatible `(resolved,msg) -> value`, so segmentation / retry / evidence
+  inference are unchanged. No double-send: exactly one of the two paths runs per attempt.
+- **Boundaries honored**: endpoint / payload / validation / timeout range / SSRF are owned by the
+  adapters and untouched; no new runtime connection resource; custom endpoints are **not** relaxed
+  (webhook private targets still fail closed without `allowPrivateNetwork: true`).
+
+**Tests**: `test/v015-stage-s3-http-sender.test.mjs` (14 cases) — contract shape (no lifecycle verbs),
+evidence mapping (accepted vs confirmed), Bark/Webhook payload goldens identical to the adapter,
+2xx/4xx (`API_ERROR`/`HTTP_ERROR`), timeout→`TIMEOUT`+`noRetry`, Webhook SSRF block + explicit
+allow, frozen-resolved send, real-assembly notifier dispatch, and unregistered-channel fallback.
+
+**Count**: 2183 → **2197** (README.md / README.zh-CN.md / HANDOFF.md / package.json
+`dshQuality.testCount` / docs/memory/project-state.md synced).
+
 ## Task status
 
 | Task | Status | Commit | Evidence |
@@ -344,5 +376,6 @@ channel-config-migration-v013, durability-contract-v0121, outbound-source-v012) 
 | T05 | done | `8f59965` | in-lock last-owner in identity authority; K03/K04/K05 covered |
 | T06 | partial | `ca5097a` | identity pending writes transactional; pairing mint/revoke deferred (registered) |
 | T07 | done | `ca5097a` | `docs/state-writer-registry.md` |
-| T08 | done | (this commit) | desired/resolved/resources layers + apply-failure divergence + runtime revision fence; `test/v015-stage-s2-config-layers.test.mjs` → 8 pass |
-| T09–T30 | not started | — | — |
+| T08 | done | `93dfc50` | desired/resolved/resources layers + apply-failure divergence + runtime revision fence; `test/v015-stage-s2-config-layers.test.mjs` → 8 pass |
+| T09 | done | (this commit) | stateless sender contract + Bark/Webhook pilot registry; `test/v015-stage-s3-http-sender.test.mjs` → 14 pass |
+| T10–T30 | not started | — | — |

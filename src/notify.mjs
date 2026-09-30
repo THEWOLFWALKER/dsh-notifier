@@ -6,6 +6,7 @@ import { ADAPTERS, normalizeMessage, channelResult } from './config.mjs'
 import { resolveRouting, routeTargets, retryPolicyOf, sendWithRetry, normalizeLevel } from './routing.mjs'
 import { sendSegmented } from './inbound/segment.mjs'
 import { isConfirmedReceipt } from './delivery-evidence.mjs'
+import { senderOf } from './adapters/senders.mjs'
 
 /**
  * 创建一个 notifier：内部持有「已启用渠道」列表。
@@ -51,10 +52,17 @@ export function createNotifier(ctx, channels, options = {}) {
   /** 包装单渠道发送：分段开启且超预算时切段顺序送达，任一段失败即整体失败。 */
   const sendOne = async (type, config, msg) => {
     const adapter = ADAPTERS[type]
-    if (segment.enabled === false) return adapter.send(config, msg)
+    // v0.15（T09）：已登记 sender 的渠道走显式 sender 契约（validate→send→evidence）；
+    // 未登记渠道保持原 adapter.send 路径不变（回退要求「其他渠道原状」）。sender.send 与
+    // adapter.send 同形（resolved,msg）→ 返回值，故分段/重试/证据推断全部复用。
+    const sender = senderOf(type)
+    const deliver = sender !== null
+      ? (resolved, message) => sender.send(resolved, message)
+      : (resolved, message) => adapter.send(resolved, message)
+    if (segment.enabled === false) return deliver(config, msg)
     let last
     const outcome = await sendSegmented(async (piece) => {
-      last = await adapter.send(config, piece)
+      last = await deliver(config, piece)
       return last
     }, msg, { maxCodepoints: segment.maxCodepoints })
     if (outcome.error === null) return last
