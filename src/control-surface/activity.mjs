@@ -62,6 +62,8 @@ function titleFor(row) {
     'pairing-revoked': { en: 'Pairing code revoked', zh: '配对码已撤销' },
     // v0.14（S08）：会话出站覆盖。
     'session-outbound': { en: 'Session notification override saved', zh: '会话通知覆盖已保存' },
+    // v0.14（Stage E）：会话控制覆盖层（mode / 审批归属）。
+    'session-control': { en: 'Session control policy saved', zh: '会话控制策略已保存' },
     // v0.14（S09）：高级绑定整表替换。
     'bindings-replaced': { en: 'Routing bindings replaced', zh: '路由绑定已整表替换' },
   }

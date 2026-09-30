@@ -105,6 +105,36 @@ window.__ModuleLoader__.load({
       defaultAgent: '默认工作区',
       viewRawIdentifiers: '查看原始标识',
       bindingsSaved: '绑定已保存',
+      // v0.14（Stage E / P1-09）：破坏性操作二次确认（成员移除 / 配对码撤销 / 绑定移除 / 入站默认绑定移除）。
+      confirmRemove: '确认移除',
+      confirmRevoke: '确认撤销',
+      cancelAction: '取消',
+      // v0.14（Stage E / P1-10）：Session Detail（路由 / 出站 / 静默 / 控制 / 绑定）。
+      openSession: '查看详情',
+      sessionDetail: '会话详情',
+      routingSection: '路由',
+      outboundSection: '通知渠道',
+      quietSection: '静默',
+      controlSection: '控制策略',
+      bindingsSection: '绑定',
+      workspaceLabel: '工作区',
+      inheritLabel: '继承',
+      resolvedByLabel: '解析来源',
+      sourceSession: '会话覆盖',
+      sourceWorkspace: '工作区绑定',
+      sourceGlobal: '全局默认',
+      lastActiveLabel: '最近活动',
+      disposedLabel: '已释放',
+      modeLabel: '控制模式',
+      modeTeam: '团队',
+      modePersonal: '个人',
+      modeUnset: '未设置',
+      approvalOwnerOnlyLabel: '仅所有者审批',
+      ownerConfiguredLabel: '已指定所有者',
+      approvalMembersCountLabel: '审批成员数',
+      saveControl: '保存控制策略',
+      controlSaved: '控制策略已保存',
+      rawIdentifiersNote: '原始标识默认脱敏显示，展开后可查看完整值。',
       noTasks: '暂无任务',
       noActivity: '暂无最近活动',
       reject: '拒绝',
@@ -272,6 +302,36 @@ window.__ModuleLoader__.load({
       defaultAgent: 'Default workspace',
       viewRawIdentifiers: 'View raw identifiers',
       bindingsSaved: 'Bindings saved',
+      // v0.14 (Stage E / P1-09): destructive confirmation (member remove / pairing revoke / binding remove).
+      confirmRemove: 'Confirm remove',
+      confirmRevoke: 'Confirm revoke',
+      cancelAction: 'Cancel',
+      // v0.14 (Stage E / P1-10): Session Detail (routing / outbound / quiet / control / bindings).
+      openSession: 'Open details',
+      sessionDetail: 'Session detail',
+      routingSection: 'Routing',
+      outboundSection: 'Notification channels',
+      quietSection: 'Quiet',
+      controlSection: 'Control policy',
+      bindingsSection: 'Bindings',
+      workspaceLabel: 'Workspace',
+      inheritLabel: 'Inherit',
+      resolvedByLabel: 'Resolved by',
+      sourceSession: 'Session override',
+      sourceWorkspace: 'Workspace binding',
+      sourceGlobal: 'Global default',
+      lastActiveLabel: 'Last active',
+      disposedLabel: 'Disposed',
+      modeLabel: 'Control mode',
+      modeTeam: 'Team',
+      modePersonal: 'Personal',
+      modeUnset: 'Not set',
+      approvalOwnerOnlyLabel: 'Owner-only approval',
+      ownerConfiguredLabel: 'Owner configured',
+      approvalMembersCountLabel: 'Approval members',
+      saveControl: 'Save control policy',
+      controlSaved: 'Control policy saved',
+      rawIdentifiersNote: 'Raw identifiers are redacted by default; expand to reveal the full value.',
       noTasks: 'No tasks',
       noActivity: 'No recent activity',
       reject: 'Reject',
@@ -451,6 +511,7 @@ window.__ModuleLoader__.load({
         activity: null,
         diagnostics: null,
         channel: null,
+        session: null,
         busy: Object.freeze({}),
         error: null,
         epoch: null,
@@ -463,7 +524,7 @@ window.__ModuleLoader__.load({
       let fallbackTimer = null
       let disposed = false
       // v0.12.1（P1-13）：同一资源只接受最新一代请求的响应，避免迟到数据覆盖当前视图。
-      const generations = { home: 0, channels: 0, channel: 0, tasks: 0, questions: 0, members: 0, pending: 0, pairing: 0, sessions: 0, bindings: 0, activity: 0, diagnostics: 0 }
+      const generations = { home: 0, channels: 0, channel: 0, tasks: 0, questions: 0, members: 0, pending: 0, pairing: 0, sessions: 0, session: 0, bindings: 0, activity: 0, diagnostics: 0 }
       let paused = false
 
       const emit = (patch) => {
@@ -481,7 +542,7 @@ window.__ModuleLoader__.load({
         return {
           epochChanged,
           patch: {
-            ...(epochChanged ? { home: null, channels: null, tasks: null, questions: null, members: null, pending: null, pairing: null, sessions: null, bindings: null, activity: null, diagnostics: null, channel: null } : {}),
+            ...(epochChanged ? { home: null, channels: null, tasks: null, questions: null, members: null, pending: null, pairing: null, sessions: null, session: null, bindings: null, activity: null, diagnostics: null, channel: null } : {}),
             epoch: incomingEpoch,
             revision: epochChanged ? incomingRevision : Math.max(snapshot.revision, incomingRevision),
             connectionState: 'connected',
@@ -605,6 +666,20 @@ window.__ModuleLoader__.load({
           throw error
         }
       }
+      // v0.14（Stage E / P1-10）：Session Detail 单行读取；导航切走时丢弃迟到响应。
+      async function loadSession(id) {
+        const generation = ++generations.session
+        try {
+          const value = await rpc.call('sessions.detail', { id })
+          if (generation !== generations.session) return value
+          if (snapshot.view.kind !== 'session' || snapshot.view.id !== id) return value
+          commit('session', value)
+          return value
+        } catch (error) {
+          if (generation !== generations.session) return null
+          throw error
+        }
+      }
       async function loadActivity() {
         const generation = ++generations.activity
         try {
@@ -629,6 +704,7 @@ window.__ModuleLoader__.load({
           else if (kind === 'pending') await loadPending()
           else if (kind === 'pairing') await loadPairingCodes()
           else if (kind === 'sessions') await loadSessions()
+          else if (kind === 'session') await loadSession(snapshot.view.id)
           else if (kind === 'bindings') await loadBindings()
           else if (kind === 'activity') await loadActivity()
           else if (kind === 'diagnostics') await loadDiagnostics()
@@ -636,7 +712,7 @@ window.__ModuleLoader__.load({
           emit({ staleAt: null, connectionState: 'connected' })
           return true
         } catch {
-          const hasData = snapshot.home !== null || snapshot.channels !== null || snapshot.channel !== null || snapshot.tasks !== null || snapshot.questions !== null || snapshot.members !== null || snapshot.pending !== null || snapshot.pairing !== null || snapshot.sessions !== null || snapshot.bindings !== null || snapshot.activity !== null || snapshot.diagnostics !== null
+          const hasData = snapshot.home !== null || snapshot.channels !== null || snapshot.channel !== null || snapshot.tasks !== null || snapshot.questions !== null || snapshot.members !== null || snapshot.pending !== null || snapshot.pairing !== null || snapshot.sessions !== null || snapshot.session !== null || snapshot.bindings !== null || snapshot.activity !== null || snapshot.diagnostics !== null
           emit({ staleAt: Date.now(), connectionState: hasData ? 'stale' : 'disconnected' })
           return false
         }
@@ -761,6 +837,18 @@ window.__ModuleLoader__.load({
           setBusy(busyKey, false)
         }
       }
+      // v0.14（Stage E / P1-10）：控制覆盖层写入；写到当前 Session Detail 时重载详情而非列表。
+      async function patchSessionControl(id, diff) {
+        const busyKey = `session-control:${id}`
+        setBusy(busyKey, true)
+        try {
+          const value = await rpc.call('sessions.control', { id, diff })
+          if (snapshot.view.kind === 'session' && snapshot.view.id === id) await loadSession(id).catch(() => {})
+          return value
+        } finally {
+          setBusy(busyKey, false)
+        }
+      }
       async function loadBindings() {
         const generation = ++generations.bindings
         try {
@@ -810,7 +898,16 @@ window.__ModuleLoader__.load({
         const changingChannel = view?.kind === 'channel'
           && (snapshot.view.kind !== 'channel' || snapshot.view.type !== view.type)
         if (changingChannel) generations.channel += 1
-        emit({ view, error: null, ...(changingChannel ? { channel: null } : {}) })
+        // v0.14（Stage E）：切换 Session Detail 时先清缓存，避免 A 的详情在 B 加载前短暂显示。
+        const changingSession = view?.kind === 'session'
+          && (snapshot.view.kind !== 'session' || snapshot.view.id !== view.id)
+        if (changingSession) generations.session += 1
+        emit({
+          view,
+          error: null,
+          ...(changingChannel ? { channel: null } : {}),
+          ...(changingSession ? { session: null } : {}),
+        })
       }
       function startWait() {
         if (disposed || paused || waitAbort !== null) return
@@ -873,9 +970,9 @@ window.__ModuleLoader__.load({
       return Object.freeze({
         getSnapshot: () => snapshot,
         subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener) },
-        loadHome, loadChannels, loadChannel, loadTasks, loadQuestions, loadMembers, loadPending, loadPairingCodes, loadSessions, loadBindings, loadActivity, loadDiagnostics,
+        loadHome, loadChannels, loadChannel, loadTasks, loadQuestions, loadMembers, loadPending, loadPairingCodes, loadSessions, loadSession, loadBindings, loadActivity, loadDiagnostics,
         refreshCurrent, saveChannel, testChannel, settleQuestion, createStandaloneLaunch,
-        updateMember, removeMember, approvePending, dismissPending, mintPairingCode, revokePairingCode, patchSessionOutbound, putBindings, generateSupportReport,
+        updateMember, removeMember, approvePending, dismissPending, mintPairingCode, revokePairingCode, patchSessionOutbound, patchSessionControl, putBindings, generateSupportReport,
         navigate, startWait, setActive, dispose,
         // v0.12.1（P1-09）：视图必须能把业务失败写入统一错误出口。
         reportError(error) { setError(error ?? null) },
@@ -912,6 +1009,49 @@ window.__ModuleLoader__.load({
         type,
         className: `dn-button dn-button--${kind}${className ? ` ${className}` : ''}`,
       }, children)
+    }
+
+    // v0.14（Stage E / P1-09）：破坏性操作统一二次确认。
+    // 首次点击只「武装」，必须再点确认才执行；4 秒无操作自动回落，避免误触后长期悬置。
+    // last-owner 等底层约束仍由 authority 强制，UI 确认只是防手滑，不替代权威校验。
+    function ConfirmButton({ children, confirmLabel, busy, disabled, onConfirm, t, kind = 'default' }) {
+      const [armed, setArmed] = useState(false)
+      useEffect(() => {
+        if (!armed) return undefined
+        const timer = setTimeout(() => setArmed(false), 4000)
+        return () => clearTimeout(timer)
+      }, [armed])
+      if (!armed) {
+        return h(Button, { kind, disabled, onClick: () => setArmed(true) }, children)
+      }
+      return h('span', { className: 'dn-confirm' },
+        h(Button, {
+          kind: 'danger',
+          disabled,
+          onClick: () => { setArmed(false); onConfirm() },
+        }, busy ? children : (confirmLabel ?? children)),
+        h(Button, { disabled, onClick: () => setArmed(false) }, t('cancelAction')))
+    }
+
+    // v0.14（Stage E / P1-10）：原始标识默认脱敏——保留首尾少量字符，中间打码。
+    // 仅在用户显式展开 raw 区时渲染完整值（见 RawIdentifiers）。
+    function redactIdentifier(value) {
+      const raw = String(value ?? '')
+      if (raw === '') return ''
+      if (raw.length <= 4) return `${raw.slice(0, 1)}***`
+      if (raw.length <= 10) return `${raw.slice(0, 2)}***${raw.slice(-2)}`
+      return `${raw.slice(0, 3)}***${raw.slice(-3)}`
+    }
+
+    function RawIdentifiers({ t, value }) {
+      return h('details', { className: 'dn-detail' },
+        h('summary', null, t('viewRawIdentifiers')),
+        h('p', { className: 'dn-note' }, t('rawIdentifiersNote')),
+        h('pre', { className: 'dn-raw' }, JSON.stringify(value, (key, item) => (
+          typeof item === 'string' && key !== '' && /id|key|user|owner|member|account/i.test(key)
+            ? redactIdentifier(item)
+            : item
+        ), 2)))
     }
 
     function ErrorNotice({ error, t, onRetry }) {
@@ -1392,9 +1532,13 @@ window.__ModuleLoader__.load({
               }, isOwner ? t('demote') : t('promote'))
             : null,
           canRemove
-            ? h(Button, {
+            ? h(ConfirmButton, {
+                t,
+                kind: 'default',
+                confirmLabel: t('confirmRemove'),
+                busy,
                 disabled: busy,
-                onClick: () => void controller.removeMember(member.key).catch(error => controller.reportError(error)),
+                onConfirm: () => void controller.removeMember(member.key).catch(error => controller.reportError(error)),
               }, busy ? t('removing') : t('remove'))
             : null))
     }
@@ -1466,9 +1610,12 @@ window.__ModuleLoader__.load({
           h('span', { className: 'dn-rowMeta' }, meta)),
         h('div', { className: 'dn-rowAside' },
           canRevoke
-            ? h(Button, {
+            ? h(ConfirmButton, {
+                t,
+                confirmLabel: t('confirmRevoke'),
+                busy,
                 disabled: busy,
-                onClick: () => void controller.revokePairingCode(code.id).catch(error => controller.reportError(error)),
+                onConfirm: () => void controller.revokePairingCode(code.id).catch(error => controller.reportError(error)),
               }, busy ? t('revoking') : t('revoke'))
             : null))
     }
@@ -1535,7 +1682,101 @@ window.__ModuleLoader__.load({
                 disabled: busy,
                 onClick: () => void controller.patchSessionOutbound(row.id, { quiet: !quiet }).catch(error => controller.reportError(error)),
               }, quiet ? t('resumeNotify') : t('silence'))
-            : null))
+            : null,
+          // v0.14（Stage E / P1-10）：进入 Session Detail（路由 / 出站 / 控制 / 绑定）。
+          h('button', {
+            type: 'button', className: 'dn-link',
+            onClick: () => controller.navigate({ kind: 'session', id: row.id }),
+          }, t('openSession'))))
+    }
+
+    // v0.14（Stage E / P1-10）：Session Detail。只做投影与「写入口」编排——路由写权威在
+    // agent-router、控制归一在 session-arbiter、生命周期在 session-registry，本视图不另造 authority。
+    function SessionDetailSection({ title, children }) {
+      return h('section', { className: 'dn-section' },
+        h('h3', { className: 'dn-subhead' }, title),
+        ...children)
+    }
+
+    function SourceLabel(source, t) {
+      return source === 'session' ? t('sourceSession')
+        : source === 'agent-workspace' ? t('sourceWorkspace')
+          : source === 'global' ? t('sourceGlobal')
+            : String(source ?? '')
+    }
+
+    function SessionDetailView({ ctx, controller, state, t }) {
+      const id = state.view.id
+      useEffect(() => { void controller.loadSession(id).catch(error => controller.reportError(error)) }, [id])
+      const detail = state.session ?? null
+      const session = detail?.session ?? null
+      const canPatch = detail?.canPatch === true
+      const canControl = detail?.canControl === true
+      const busy = state.busy[`session:${id}`] === true
+      const controlBusy = state.busy[`session-control:${id}`] === true
+      const back = h('div', { className: 'dn-detailBack' }, h('button', { className: 'dn-link', onClick: () => controller.navigate({ kind: 'sessions' }) }, `← ${t('back')}`))
+      if (session === null) {
+        return h('div', { className: 'dn-page' }, back,
+          h(PageHead, { title: t('sessionDetail') }),
+          h(ErrorNotice, { error: state.error, t, onRetry: () => void controller.loadSession(id).catch(error => controller.reportError(error)) }),
+          h('p', { className: 'dn-empty' }, t('loading')))
+      }
+      const resolved = session.resolved ?? {}
+      const channels = Array.isArray(resolved.channelTypes) ? resolved.channelTypes : []
+      const quiet = resolved.quiet === true
+      const control = session.control ?? {}
+      const modeValue = control.mode ?? null
+      const nextMode = modeValue === 'team' ? 'personal' : 'team'
+      const writeControl = (diff) => void controller.patchSessionControl(id, diff).catch(error => controller.reportError(error))
+      const rowLine = (label, value) => h('p', { className: 'dn-rowMeta' }, `${label}: ${value}`)
+      return h('div', { className: 'dn-page' },
+        back,
+        h(PageHead, { title: t('sessionDetail'), intro: String(session.workspace || session.id || '') }),
+        h(ErrorNotice, { error: state.error, t, onRetry: () => void controller.loadSession(id).catch(error => controller.reportError(error)) }),
+        h(SessionDetailSection, { title: t('routingSection') }, [
+          rowLine(t('workspaceLabel'), String(session.workspace || t('modeUnset'))),
+          rowLine(t('inheritLabel'), String(session.inherit ?? t('modeUnset'))),
+          rowLine(t('resolvedByLabel'), SourceLabel(resolved.source, t)),
+          rowLine(t('outboundSection'), channels.length ? channels.join(', ') : t('noChannelsResolved')),
+          rowLine(t('lastActiveLabel'), String(session.lastActiveAt ?? t('modeUnset'))),
+          session.disposedAt !== undefined ? rowLine(t('disposedLabel'), String(session.disposedAt)) : null,
+        ]),
+        h(SessionDetailSection, { title: t('outboundSection') }, [
+          canPatch
+            ? h('div', { className: 'dn-formActions' },
+                h(Button, {
+                  disabled: busy,
+                  onClick: () => void controller.patchSessionOutbound(id, { quiet: !quiet }).catch(error => controller.reportError(error)),
+                }, quiet ? t('resumeNotify') : t('silence')))
+            : h('p', { className: 'dn-note' }, t('unavailable')),
+        ]),
+        h(SessionDetailSection, { title: t('controlSection') }, [
+          rowLine(t('modeLabel'), modeValue === 'team' ? t('modeTeam') : modeValue === 'personal' ? t('modePersonal') : t('modeUnset')),
+          rowLine(t('approvalOwnerOnlyLabel'), control.approvalOwnerOnly === true ? t('yes') : t('no')),
+          rowLine(t('ownerConfiguredLabel'), control.ownerConfigured === true ? t('yes') : t('no')),
+          rowLine(t('approvalMembersCountLabel'), String(control.approvalMembersCount ?? 0)),
+          canControl
+            ? h('div', { className: 'dn-formActions' },
+                h(Button, {
+                  disabled: controlBusy,
+                  onClick: () => writeControl({ mode: nextMode }),
+                }, `${t('modeLabel')}: ${nextMode === 'team' ? t('modeTeam') : t('modePersonal')}`),
+                h(Button, {
+                  disabled: controlBusy,
+                  onClick: () => writeControl({ approvalOwnerOnly: control.approvalOwnerOnly !== true }),
+                }, `${t('approvalOwnerOnlyLabel')}: ${control.approvalOwnerOnly === true ? t('no') : t('yes')}`))
+            : h('p', { className: 'dn-note' }, t('unavailable')),
+        ]),
+        h(SessionDetailSection, { title: t('bindingsSection') }, [
+          h('p', { className: 'dn-rowMeta' }, `${t('inheritLabel')}: ${String(session.inherit ?? t('modeUnset'))}`),
+          h('div', { className: 'dn-formActions' },
+            h(Button, { onClick: () => controller.navigate({ kind: 'bindings' }) }, t('advancedBindings'))),
+        ]),
+        // 原始标识默认折叠 + 脱敏。
+        h(RawIdentifiers, {
+          t,
+          value: { id: session.id, workspace: session.workspace, outbound: session.outbound ?? null, inbound: session.inbound ?? null, control: session.control ?? null },
+        }))
     }
 
     function SessionsView({ ctx, controller, state, t }) {
@@ -1582,7 +1823,13 @@ window.__ModuleLoader__.load({
             ? h(Button, { disabled: busy, onClick: () => write({ ...entry, quiet: !quiet }) }, quiet ? t('resumeNotify') : t('silence'))
             : null,
           canEdit
-            ? h(Button, { disabled: busy, onClick: remove }, t('remove'))
+            ? h(ConfirmButton, {
+                t,
+                confirmLabel: t('confirmRemove'),
+                busy,
+                disabled: busy,
+                onConfirm: remove,
+              }, t('remove'))
             : null))
     }
 
@@ -1609,7 +1856,13 @@ window.__ModuleLoader__.load({
                 onChange: event => setDraft(event.target.value),
               }),
               h(Button, { disabled: busy || draft.trim() === '', onClick: save }, t('save')),
-              h(Button, { disabled: busy, onClick: remove }, t('remove')))
+              h(ConfirmButton, {
+                t,
+                confirmLabel: t('confirmRemove'),
+                busy,
+                disabled: busy,
+                onConfirm: remove,
+              }, t('remove')))
           : null)
     }
 
@@ -1639,9 +1892,8 @@ window.__ModuleLoader__.load({
                 key: name, ctx, controller, t, table: channels, name, entry: channels[name], canEdit, busy,
               }))
             : [h('p', { className: 'dn-empty', key: 'empty' }, t('noBindings'))])),
-        h('details', { className: 'dn-detail' },
-          h('summary', null, t('viewRawIdentifiers')),
-          h('pre', { className: 'dn-raw' }, JSON.stringify({ agents, channels }, null, 2))))
+        // v0.14（Stage E / P1-10）：原始标识默认折叠 + 脱敏（展开也只显示打码值）。
+        h(RawIdentifiers, { t, value: { agents, channels } }))
     }
 
     function ActivityView({ ctx, controller, state, t }) {
@@ -1782,6 +2034,7 @@ window.__ModuleLoader__.load({
       if (state.view.kind === 'pending') return h(PendingIdentitiesView, { ctx, controller, state, t })
       if (state.view.kind === 'pairing') return h(PairingCodesView, { ctx, controller, state, t })
       if (state.view.kind === 'sessions') return h(SessionsView, { ctx, controller, state, t })
+      if (state.view.kind === 'session') return h(SessionDetailView, { key: state.view.id, ctx, controller, state, t })
       if (state.view.kind === 'bindings') return h(BindingsView, { ctx, controller, state, t })
       if (state.view.kind === 'activity') return h(ActivityView, { ctx, controller, state, t })
       if (state.view.kind === 'diagnostics') return h(DiagnosticsView, { ctx, controller, state, t })
@@ -1846,6 +2099,11 @@ window.__ModuleLoader__.load({
       .dn-button{min-height:30px;border:.5px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-md);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);padding:5px 10px;font:inherit;font-size:13px;cursor:pointer}
       .dn-button:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}.dn-button:disabled{opacity:.5;cursor:default}
       .dn-button--primary{border-color:transparent;background:var(--dsw-alias-state-business-primary);color:var(--dsw-alias-bg-base)}
+      .dn-button--danger{border-color:transparent;background:var(--dsw-alias-state-error-primary);color:var(--dsw-alias-bg-base)}
+      .dn-confirm{display:inline-flex;gap:6px;align-items:center}
+      .dn-subhead{margin:20px 0 6px;font-size:13px;line-height:20px;font-weight:500;color:var(--dsw-alias-label-secondary)}
+      .dn-detail{margin-top:20px;font-size:13px}.dn-detail summary{cursor:pointer;color:var(--dsw-alias-label-secondary)}
+      .dn-raw{overflow:auto;margin:8px 0 0;padding:10px;border:.5px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-md);background:var(--dsw-alias-bg-layer-1);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary)}
       .dn-statusLine{display:flex;gap:10px;align-items:flex-start;padding:10px 0}.dn-statusLine>div{display:flex;flex-direction:column}
       .dn-statusLine strong{font-size:14px;line-height:20px;font-weight:500}.dn-statusLine span{font-size:13px;line-height:20px;color:var(--dsw-alias-label-secondary)}
       .dn-statusLine--error strong{color:var(--dsw-alias-state-error-primary)}

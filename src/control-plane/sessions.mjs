@@ -210,6 +210,18 @@ export function createRoutingControlService({ router = null, registry = null, st
   }
 
   /**
+   * 单会话详情视图（Native Session Detail）：与 sessionsView 同一行口径，按 id 取出。
+   * 未建档 → null（适配器据此映射 not-found）。
+   * @param {string} id
+   * @param {{ enabledTypes?: string[] }} [options]
+   * @returns {object|null}
+   */
+  const sessionView = (id, { enabledTypes = [] } = {}) => {
+    const wanted = typeof id === 'string' ? id : ''
+    return sessionsView({ enabledTypes }).find((row) => row.id === wanted) ?? null
+  }
+
+  /**
    * 编辑会话出站覆盖层（字段级 diff，经 router 的再读合并落盘，防 sibling clobber）。
    * @returns {{ ok: boolean, reason?: string, outbound?: object }}
    */
@@ -239,6 +251,7 @@ export function createRoutingControlService({ router = null, registry = null, st
     hasSession,
     resolveOutbound,
     sessionsView,
+    sessionView,
     patchSessionOutbound,
     patchSessionControl,
   }

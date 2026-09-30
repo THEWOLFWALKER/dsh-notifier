@@ -299,13 +299,26 @@ export function createControlSurfaceService({
 
       // v0.14（S08）：Native 会话面。读取 / 校验 / 写入编排都在共享 RoutingControlService（S03）。
       if (sessions && method === 'sessions.list') {
-        return ok({ ...revisionView(), sessions: sessions.list(), canPatch: sessions.canPatch === true })
+        return ok({ ...revisionView(), sessions: sessions.list(), canPatch: sessions.canPatch === true, canControl: sessions.canControl === true })
+      }
+
+      // v0.14（Stage E / P1-10）：Session Detail 单行读取（只读，不 touch revision / activity）。
+      if (sessions && method === 'sessions.detail') {
+        return ok({ ...revisionView(), ...sessions.detail(payload), canPatch: sessions.canPatch === true, canControl: sessions.canControl === true })
       }
 
       if (sessions && method === 'sessions.patch') {
         const value = sessions.patch(payload)
         revision.touch('sessions')
         activity.record('control', 'session-outbound', { status: 'ok' })
+        return ok(value)
+      }
+
+      // v0.14（Stage E / P1-10）：会话控制覆盖层写入（mode/owner/approvalOwnerOnly/approvalMembers）。
+      if (sessions && method === 'sessions.control') {
+        const value = sessions.patchControl(payload)
+        revision.touch('sessions')
+        activity.record('control', 'session-control', { status: 'ok' })
         return ok(value)
       }
 
