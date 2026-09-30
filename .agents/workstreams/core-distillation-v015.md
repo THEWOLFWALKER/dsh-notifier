@@ -268,6 +268,30 @@ same-key sibling preservation, `storage-failed` never rewritten, pending-reject 
 
 **Validation**: `node --test test/v015-stage-s1-core.test.mjs` → 7 pass / 0 fail; `npm test` → **2173 pass / 0 fail / 0 skip**.
 
+## T06 — identity / pairing 剩余写入
+
+**Done**: `identity.addPending` and `identity.dismissPending` moved from lock-free
+read-bindings + read-pending + whole-table `setDurable` to an in-lock `transactOutcome`
+read-modify-write (shared `planPendingAdd` planner so the real-store path and the legacy
+no-`transact` fallback cannot drift). A business rejection (`already-bound`, `not-found`) now aborts
+with zero write and is no longer conflated with `storage-failed`.
+
+**Deferred (registered in T07)**: `pairing.mint` / `pairing.revoke` still read-modify-write through
+`writeCodes`; `pairing.sweep` itself nests a `writeCodes`, so inlining them into one transaction
+requires extracting a non-writing `sweepInTable` first. `pairing.redeemAndBind` (the security-critical
+path) is already a single transaction, so the residual risk is a lost concurrent **admin** mint/revoke.
+
+## T07 — 试点复核 + 全量 writer 登记
+
+**Artifact**: `docs/state-writer-registry.md` — every store key mapped to its authority, production
+writers, and a convergence verdict; hidden/secondary writers (bootstrap seeding, startup cleanup,
+read-path sweep, CLI, admin adapter, dispose) registered explicitly; deferrals listed with risk and
+next action.
+
+**Verdict**: identity keys (`inbound:bindings`, `inbound:pending`, `inbound:migrated`) are now single
+in-lock authorities. Three multi-owner keys remain and are assigned to later tasks: `route:sessions`
+(T14), outbound and inbound `channel:*` config (T08).
+
 ## Task status
 
 | Task | Status | Commit | Evidence |
@@ -275,6 +299,8 @@ same-key sibling preservation, `storage-failed` never rewritten, pending-reject 
 | T01 | done | `027852d` | baseline table, drift table, writer inventory above |
 | T02 | done | `21bdfca` | `docs/behavior-contract.md` + 2 sanitized legacy fixtures; oracle map above |
 | T03 | done | `eef0d3d` | isolated `test/dom/` bed: real React DOM + fake-Cordis assembly smoke; `node test/dom/run.mjs` → 8 pass / 0 fail |
-| T04 | done | (this commit) | narrow `transactOutcome` abort + failure taxonomy; `test/v015-stage-s1-core.test.mjs` |
-| T05 | done | (this commit) | in-lock last-owner in identity authority; K03/K04/K05 covered |
-| T06–T30 | not started | — | — |
+| T04 | done | `8f59965` | narrow `transactOutcome` abort + failure taxonomy |
+| T05 | done | `8f59965` | in-lock last-owner in identity authority; K03/K04/K05 covered |
+| T06 | partial | (this commit) | identity pending writes transactional; pairing mint/revoke deferred (registered) |
+| T07 | done | (this commit) | `docs/state-writer-registry.md` |
+| T08–T30 | not started | — | — |

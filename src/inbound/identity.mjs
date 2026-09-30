@@ -297,6 +297,24 @@ export function createIdentity(options = {}) {
     return settled
   }
 
+  /**
+   * v0.15（T06）：待确认新增的纯规划器——往 draft 的 pending 表写入（含容量裁剪）。
+   * 抽出来是为了让真 store 的锁内路径与 legacy 无事务回退路径共用同一份判定，避免两处漂移。
+   */
+  const planPendingAdd = (draft, key, entry) => {
+    const table = normalizeBindings(draft[KEY_BINDINGS] ?? {})
+    if (table[key] !== undefined) return { ok: false, reason: 'already-bound' }
+    const pending = normalizePending(draft[KEY_PENDING] ?? {}).out
+    pending[key] = entry
+    const keys = Object.keys(pending)
+    if (keys.length > PENDING_MAX) {
+      keys.sort((a, b) => (pending[a]?.at ?? 0) - (pending[b]?.at ?? 0))
+      for (const stale of keys.slice(0, keys.length - PENDING_MAX)) delete pending[stale]
+    }
+    draft[KEY_PENDING] = pending
+    return { ok: true }
+  }
+
   return {
     /** 复合键准入（v0.7 计划书 §3.1：准入带渠道维度，修跨渠道串扰）。 */
     allows(channel, userId, accountId = undefined) {
@@ -496,21 +514,28 @@ export function createIdentity(options = {}) {
         warn(`拒绝含冒号的 userId 待确认绑定（复合键截断风险）：${channel}:${uid.slice(0, 32)}`)
         return { ok: false, reason: 'invalid-user' }
       }
-      const table = readBindings()
-      const binding = keyFor(channel, uid, normalizedAccountId)
-      if (binding === null) return { ok: false, reason: 'invalid-account' }
-      if (table[binding] !== undefined) return { ok: false, reason: 'already-bound' }
-      const pending = readPending()
-      const at = Date.now()
       const key = keyFor(channel, uid, normalizedAccountId)
-      pending[key] = { channel, userId: uid, origin, at, extra }
-      if (normalizedAccountId !== DEFAULT_ACCOUNT_ID) pending[key].accountId = normalizedAccountId
-      const keys = Object.keys(pending)
-      if (keys.length > PENDING_MAX) {
-        keys.sort((a, b) => (pending[a]?.at ?? 0) - (pending[b]?.at ?? 0))
-        for (const stale of keys.slice(0, keys.length - PENDING_MAX)) delete pending[stale]
+      if (key === null) return { ok: false, reason: 'invalid-account' }
+      const entry = { channel, userId: uid, origin, at: Date.now(), extra }
+      if (normalizedAccountId !== DEFAULT_ACCOUNT_ID) entry.accountId = normalizedAccountId
+      // v0.15（T06）：真 store 走锁内读改写——旧实现锁外 readBindings+readPending 再整表
+      // setDurable，并发两次 addPending 会互相覆盖（同键整表丢失更新）。
+      if (typeof store?.transact === 'function') {
+        const outcome = { ok: false, reason: 'not-found' }
+        const tx = transactOutcome(store, (draft, control) => {
+          const applied = planPendingAdd(draft, key, entry)
+          if (applied.ok !== true) { outcome.reason = applied.reason; return control.abort(applied.reason) }
+          outcome.ok = true
+          return true
+        })
+        if (tx.aborted === true) return outcome
+        if (tx.committed !== true) return { ok: false, reason: 'storage-failed' }
+        return { ok: true }
       }
-      if (store !== null && setDurable(store, KEY_PENDING, pending) !== true) {
+      const legacyDraft = { [KEY_BINDINGS]: readBindings(), [KEY_PENDING]: readPending() }
+      const applied = planPendingAdd(legacyDraft, key, entry)
+      if (applied.ok !== true) return applied
+      if (store !== null && setDurable(store, KEY_PENDING, legacyDraft[KEY_PENDING]) !== true) {
         return { ok: false, reason: 'storage-failed' }
       }
       return { ok: true }
@@ -577,9 +602,24 @@ export function createIdentity(options = {}) {
     },
 
     dismissPending(channel, userId, accountId = undefined) {
-      const pending = readPending()
       const key = keyFor(channel, String(userId ?? ''), accountId)
       if (key === null) return { ok: false, reason: 'invalid-account' }
+      // v0.15（T06）：同 addPending——真 store 锁内读改写，业务拒绝 abort（零写盘）。
+      if (typeof store?.transact === 'function') {
+        const outcome = { ok: false, reason: 'not-found' }
+        const tx = transactOutcome(store, (draft, control) => {
+          const pending = normalizePending(draft[KEY_PENDING] ?? {}).out
+          if (pending[key] === undefined) { outcome.reason = 'not-found'; return control.abort('not-found') }
+          delete pending[key]
+          draft[KEY_PENDING] = pending
+          outcome.ok = true
+          return true
+        })
+        if (tx.aborted === true) return outcome
+        if (tx.committed !== true) return { ok: false, reason: 'storage-failed' }
+        return { ok: true }
+      }
+      const pending = readPending()
       if (pending[key] === undefined) return { ok: false, reason: 'not-found' }
       delete pending[key]
       if (store !== null && setDurable(store, KEY_PENDING, pending) !== true) {

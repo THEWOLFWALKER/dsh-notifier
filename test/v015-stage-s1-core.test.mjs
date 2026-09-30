@@ -168,3 +168,38 @@ test('T05: pending 转正的业务拒绝零写盘、不误报 storage-failed（K
   assert.equal(promoted.ok, true)
   assert.equal(store.get('inbound:bindings')['feishu:ou_x'].origin, 'confirmed')
 })
+
+// ————————————————————— T06：identity 剩余写入收口 —————————————————————
+
+test('T06: addPending 已绑定是业务拒绝（abort 零写盘），不误报 storage-failed', () => {
+  const { file } = tempState()
+  const store = createStore(file)
+  const identity = createIdentity({ store })
+  assert.equal(identity.addBinding({ channel: 'feishu', userId: 'ou_x' }).ok, true)
+  const before = readFileSync(file, 'utf8')
+
+  const rejected = identity.addPending({ channel: 'feishu', userId: 'ou_x' })
+  assert.equal(rejected.ok, false)
+  assert.equal(rejected.reason, 'already-bound', '业务拒绝必须与 storage-failed 区分')
+  assert.equal(readFileSync(file, 'utf8'), before, '业务拒绝不得触发整表写盘')
+
+  const ok = identity.addPending({ channel: 'feishu', userId: 'ou_y' })
+  assert.equal(ok.ok, true)
+})
+
+test('T06: dismissPending 保留同表其它条目，缺失项为业务拒绝（K02/K05）', () => {
+  const { file } = tempState()
+  const store = createStore(file)
+  const identity = createIdentity({ store })
+  assert.equal(identity.addPending({ channel: 'feishu', userId: 'ou_a' }).ok, true)
+  assert.equal(identity.addPending({ channel: 'feishu', userId: 'ou_b' }).ok, true)
+
+  assert.equal(identity.dismissPending('feishu', 'ou_a').ok, true)
+  const left = store.get('inbound:pending', {})
+  assert.equal(left['feishu:ou_a'], undefined, '被忽略项已移除')
+  assert.ok(left['feishu:ou_b'], '同表其它条目保留')
+
+  const miss = identity.dismissPending('feishu', 'ghost')
+  assert.equal(miss.ok, false)
+  assert.equal(miss.reason, 'not-found', '不存在的待确认是业务拒绝')
+})
