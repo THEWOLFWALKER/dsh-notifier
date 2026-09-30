@@ -31,8 +31,8 @@ to own the fact.
 | `route:agents` | agent-router | `setAgentBinding` (CLI/Admin/router) | **single** |
 | `route:channels` | agent-router | `setChannelDefault` | **single** |
 | `route:sessions` | ⚠️ router **and** session-registry | `agent-router.commitSessions` + `session-registry.persist` | **MULTI — T14 target** |
-| `channel:<type>:outbound` | ⚠️ outbound-config **and** migration | `outbound-config` (save/apply) + `channel-config-migration` | **MULTI — T08 target** |
-| `channel:<type>:inbound` / account keys | ⚠️ channel-config + channel adapters | `channel-config.mergeAccount` + `_feishu-register` + `_qq-scan` | **MULTI — T08 target** |
+| `channel:<type>:outbound` | outbound-config | `outbound-config` `save`/`remove` (single in-transaction merge); `channel-config-migration` is a **one-shot, marker-guarded** projection | **single** (converged at T08) |
+| `channel:<type>:inbound` / `<type>:account` | channel-config | `channel-config.mergeAccount` (in-transaction) + scan onboarding `_feishu-register` / `_qq-scan` (`setDurable` whole-object) | **MULTI — T11 target** |
 | `aq:<id>` | questions router | `questions/router.mjs` | single |
 | approval rows | approval router | `approval/router.mjs` | single |
 | action rows | actions | `actions.mjs` | single |
@@ -68,9 +68,26 @@ to own the fact.
 |---|---|---|---|
 | `inbound:pairing` `mint` / `revoke` still read-modify-write via `writeCodes` (two writes; `sweep` itself nests a `writeCodes`) | inlining `sweep` into one transaction without a nested `transact` needs a non-writing `sweepInTable` variant first | concurrent admin mint/revoke can lose one code entry; redeem path is already atomic | T06 follow-up: extract `sweepInTable` (no write) and run mint/revoke under `transactOutcome` |
 | `route:sessions` multi-writer (router ↔ session-registry) | assigned to T14 | same-key lost update across the two writers | T14 |
-| outbound / inbound channel-config multi-writer | assigned to T08 | desired-vs-resolved divergence, lost sibling patch | T08 |
+| inbound `<type>:account` scan onboarding (`_feishu-register` / `_qq-scan`) writes a whole object via `setDurable` while the port merges in-transaction | assigned to T11 | concurrent scan + manual `put` can drop a sibling field (feishu/qq write the same two fields today; low blast radius) | T11: route scan credential commits through a transactional field merge |
+
+## Outbound config layers (T08)
+
+`channel:<type>:outbound` has exactly three layers, and only the first is persisted:
+
+| Layer | What | Where | Mutability |
+|---|---|---|---|
+| **desired** | YAML base + canonical overlay (`rawOf`) | store key `channel:<type>:outbound` + YAML rows | persisted; returned by `raw()` as a deep clone |
+| **resolved** | `adapter.resolve(desired)` output | live entry in `OutboundSource` | adapter owns it; **not** frozen (legal lazy caches) |
+| **resources** | adapter-private `_`/`__` runtime fields (`_tokenManager`, `_msgSeq`, …) | on the live resolved object | Mutable, kept across sends; **stripped** from every projection |
+| projection | `snapshot()` / `get()` copy | external observers (Native, Support Report) | deep-frozen, no reference sharing with live |
+
+Precedence (outbound): `channel:<type>:outbound` (canonical) → `admin:channel:<type>:outbound` → non-dual `<type>:account` → YAML; the two Admin-legacy tiers are read only when `admin.enabled === true` and `allowLegacy !== false`. Secrets: patch keeps existing unless replaced; explicit `clear`/`null` removes and is rejected for public fields. Disable is explicit (`remove` with `mode:'revoke'` deletes canonical + legacy overlay sources; YAML bootstrap is not deletable).
+
+Runtime truth has one owner (`RuntimeChannelManager`). Its lifecycle updates carry a **monotonic revision fence**: a stale (older `source.version`) apply result can never override a newer runtime state (T08 / C03).
 
 ## Convergence status
 
 Done in S1: `inbound:bindings`, `inbound:pending`, `inbound:migrated` (identity is the single
-in-lock authority; last-owner enforced in-lock). Not yet converged: the three `MULTI` rows above.
+in-lock authority; last-owner enforced in-lock). Done in S2: `channel:<type>:outbound`
+(outbound-config is the single in-transaction authority; migration is a one-shot projection).
+Not yet converged: `route:sessions` (T14) and inbound `<type>:account` scan writers (T11).

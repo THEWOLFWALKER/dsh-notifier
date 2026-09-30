@@ -185,7 +185,9 @@ export function createOutboundConfigService({
    * 未收敛）需要 state=online 与 restartPending=true 并存。
    */
   const markRuntime = (type, state, detail = {}) => {
-    const next = { state, restartPending: state === 'failed', ...detail }
+    // revision 只服务 manager 的单调栅栏，不进 runtimeState 形状（describe/投影契约不变）。
+    const { revision, ...rest } = detail
+    const next = { state, restartPending: state === 'failed', ...rest }
     applyState.set(type, next)
     if (typeof source.setState === 'function') {
       try { source.setState(type, state, detail) } catch { /* manager 不可用：applyState 兜底已写 */ }
@@ -193,15 +195,21 @@ export function createOutboundConfigService({
     return next
   }
 
-  const applyRuntime = (type, resolved) => {
+  const applyRuntime = (type, resolved, wasLive = false) => {
     try {
       source.replace(type, resolved)
-      markRuntime(type, 'online', { restartPending: false })
+      markRuntime(type, 'online', { restartPending: false, revision: source.version })
       return null
     } catch (error) {
-      // Desired state is already durable.  A failed live swap is a runtime
-      // failure/restart-pending, never a false storage failure.
-      markRuntime(type, 'failed', { error: diagnosticErrorMessage(error, resolved) })
+      // v0.15（T08 / C02）：hot apply 失败 ≠ 配置失败——desired 已落盘。若旧 runtime 仍在
+      // 跑（wasLive），观察面必须同时显示**新 desired + 旧 active**（online + restartPending
+      // → diverged），绝不把仍在服务旧配置的渠道谎报成 failed/未运行；只有确实没有旧
+      // runtime 可留时才标记 failed。
+      markRuntime(type, wasLive === true ? 'online' : 'failed', {
+        restartPending: true,
+        revision: source.version,
+        error: diagnosticErrorMessage(error, resolved),
+      })
       return error
     }
   }
@@ -316,7 +324,8 @@ export function createOutboundConfigService({
 
       // Phase 3 — synchronous live swap.  Durable desired state remains truth
       // even if the runtime adapter rejects the hot apply.
-      const applyError = resolveError === null ? applyRuntime(key, resolved) : resolveError
+      const wasLive = source.has(key)
+      const applyError = resolveError === null ? applyRuntime(key, resolved, wasLive) : resolveError
       const result = applyError === null
         ? { type: key, saved: true, applied: true, applyMode: 'hot', configRevision: source.version }
         : { type: key, saved: true, applied: false, applyMode: 'restart-pending', runtimeState: 'failed', configRevision: source.version }
@@ -325,9 +334,10 @@ export function createOutboundConfigService({
         // v0.14（Stage C）：desired 已落盘但 resolve 失败（典型：清掉 required secret）。
         // 旧 runtime 仍在跑 → 报 online + restartPending=true（active 保持 true，但明确
         // 表示「尚未收敛到 desired」）；没有旧 runtime 可留时才标 failed。
-        const stillLive = source.has(key)
+        const stillLive = wasLive === true || source.has(key)
         markRuntime(key, stillLive ? 'online' : 'failed', {
           restartPending: true,
+          revision: source.version,
           error: diagnosticErrorMessage(resolveError, nextRaw),
         })
       }
@@ -391,23 +401,23 @@ export function createOutboundConfigService({
         // resolve of those keys occurs, so malformed leftovers cannot block revoke.
         try {
           source.remove(key)
-          markRuntime(key, 'stopped', { restartPending: false })
+          markRuntime(key, 'stopped', { restartPending: false, revision: source.version })
         } catch (error) {
           applyError = error
-          markRuntime(key, 'failed', { error: diagnosticErrorMessage(error, existing) })
+          markRuntime(key, 'failed', { revision: source.version, error: diagnosticErrorMessage(error, existing) })
         }
       } else {
         try {
           if (fallback === null) {
             source.remove(key)
-            markRuntime(key, 'stopped', { restartPending: false })
+            markRuntime(key, 'stopped', { restartPending: false, revision: source.version })
           } else {
             source.replace(key, fallback)
-            markRuntime(key, 'online', { restartPending: false })
+            markRuntime(key, 'online', { restartPending: false, revision: source.version })
           }
         } catch (error) {
           applyError = error
-          markRuntime(key, 'failed', { error: diagnosticErrorMessage(error, existing) })
+          markRuntime(key, 'failed', { revision: source.version, error: diagnosticErrorMessage(error, existing) })
         }
       }
       const result = applyError === null

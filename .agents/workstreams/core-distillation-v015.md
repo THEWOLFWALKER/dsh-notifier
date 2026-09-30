@@ -2,7 +2,7 @@
 
 - **identity**: agent `flash`, task pack `dsh-notifier-flash-complete-taskpack` (T01–T30)
 - **branch**: `codex/core-distillation-v015` (off `dev`)
-- **status**: in progress — T01–T03 done
+- **status**: in progress — T01–T08 done (T06 partial)
 - **owner scope**: core authority convergence, Native/Recovery UX, local config export/import, dsh-im
   bridge, remote URL, optional CF Tunnel, Workers/Pages extension package, docs/tests/delivery.
 - **explicitly out of scope**: `main`, tags, npm publish, real cloud deploy, full encrypted secret
@@ -292,6 +292,47 @@ next action.
 in-lock authorities. Three multi-owner keys remain and are assigned to later tasks: `route:sessions`
 (T14), outbound and inbound `channel:*` config (T08).
 
+## T08 — desired / resolved / resources 分离
+
+**Result**: the outbound config model's three layers are now explicit and enforced, and the
+runtime-truth owner gained a monotonic revision fence.
+
+- **Layers** (documented in `docs/state-writer-registry.md` §Outbound config layers):
+  `desired` (persisted `channel:<type>:outbound` overlay + YAML base, returned by `raw()` as a
+  deep clone) → `resolved` (`adapter.resolve()` output, the live entry — not frozen, adapter owns
+  it and may lazily cache) → `resources` (adapter-private `_`/`__` fields, mutable, stripped from
+  every projection) → `projection` (`snapshot()`/`get()`, deep-frozen, no reference sharing).
+  Stage A already split resolved/resources (live vs frozen); T08 records the full contract and
+  proves it **through the real assembly**.
+- **C02 apply semantics** (`src/control-surface/outbound-config.mjs`): `applyRuntime` now takes
+  `wasLive`. A failed hot swap where an old runtime is still serving marks the channel
+  **online + restartPending** (new desired + old active = `diverged`) instead of `failed`; only a
+  channel with no prior runtime is marked `failed`. This matches acceptance "apply失败显示新desired
+  和旧active" and no longer slanders a still-working channel.
+- **C03 revision fence** (`src/runtime/channel-manager.mjs`): the runtime-truth owner keeps a
+  per-type monotonic `appliedRevision`. A lifecycle update carrying an older `source.version` is
+  dropped, so a late (superseded) apply result can never roll a newer runtime state back. The
+  revision is consumed for the fence only and never enters the `runtimeState` shape (existing
+  `deepEqual` contracts unchanged). `save`/`remove` stamp `revision: source.version`.
+- **C01 real assembly** (`test/v015-stage-s2-config-layers.test.mjs`): `composeOutboundChannels`
+  → `createOutboundSource` → `createRuntimeChannelManager` → `createNotifier` sends qq-bot and
+  wecom-app with the assembly-produced resolved config; the live object is mutable (lazy caches
+  survive), the projection is frozen, and the public payload matches a direct `resolve()`.
+- **C02 commit-failure** (same suite): a `transact` that returns `committed:false` throws
+  `storage-failed` with **zero** `replace`/`remove` calls and zero desired written.
+
+**Writer convergence**: `channel:<type>:outbound` is now **single** — `outbound-config` is the
+only in-transaction authority; `channel-config-migration` is a one-shot, marker-guarded projection.
+The inbound `<type>:account` scan writers (`_feishu-register` / `_qq-scan`) remain a registered
+multi-writer deferred to **T11** (they write the same two credential fields today; low blast radius).
+
+**Tests**: `test/v015-stage-s2-config-layers.test.mjs` (8 cases). Related suites re-run green
+(v014-stage-c-runtime-truth, runtime-mutability-v014, assembly-runtime, config-runtime-truth-v013,
+channel-control-service-v014, v014-stage-b-persistence-tx, outbound-transaction-rollback-v013,
+channel-config-migration-v013, durability-contract-v0121, outbound-source-v012) → 74 pass / 0 fail.
+
+**Count**: 2175 → **2183** (README.md / README.zh-CN.md / HANDOFF.md / docs/memory/project-state.md synced).
+
 ## Task status
 
 | Task | Status | Commit | Evidence |
@@ -301,6 +342,7 @@ in-lock authorities. Three multi-owner keys remain and are assigned to later tas
 | T03 | done | `eef0d3d` | isolated `test/dom/` bed: real React DOM + fake-Cordis assembly smoke; `node test/dom/run.mjs` → 8 pass / 0 fail |
 | T04 | done | `8f59965` | narrow `transactOutcome` abort + failure taxonomy |
 | T05 | done | `8f59965` | in-lock last-owner in identity authority; K03/K04/K05 covered |
-| T06 | partial | (this commit) | identity pending writes transactional; pairing mint/revoke deferred (registered) |
-| T07 | done | (this commit) | `docs/state-writer-registry.md` |
-| T08–T30 | not started | — | — |
+| T06 | partial | `ca5097a` | identity pending writes transactional; pairing mint/revoke deferred (registered) |
+| T07 | done | `ca5097a` | `docs/state-writer-registry.md` |
+| T08 | done | (this commit) | desired/resolved/resources layers + apply-failure divergence + runtime revision fence; `test/v015-stage-s2-config-layers.test.mjs` → 8 pass |
+| T09–T30 | not started | — | — |

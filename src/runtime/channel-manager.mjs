@@ -28,9 +28,22 @@ export function createRuntimeChannelManager({ source, initial = [] } = {}) {
   }
 
   const stateOf = (type) => runtime.get(String(type ?? '').trim()) ?? { state: 'stopped', restartPending: false }
+  // v0.15（T08 / C03）：runtime truth 的**单调栅栏**。每个 lifecycle 更新可带一个 config
+  // revision（`channel:<type>:outbound` 的 `source.version`）。同一 type 上，携带更旧 revision
+  // 的迟到 apply 结果绝不允许覆盖已更新的 runtime 状态——否则一次被 N+1 超越的旧 apply 迟到
+  // 落地，会把已经生效的新配置在观察面上打回旧态。栅栏只比较 revision，不写进状态对象
+  // （runtimeState 形状保持 `{state, restartPending, ...detail}` 不变）。
+  const appliedRevision = new Map()
   const update = (type, state, detail = {}) => {
     const key = String(type ?? '').trim()
-    const next = { state: STATES.has(state) ? state : 'failed', restartPending: state === 'failed', ...detail }
+    const { revision, ...rest } = detail
+    const incoming = Number.isFinite(revision) ? Number(revision) : null
+    if (incoming !== null) {
+      const known = appliedRevision.get(key)
+      if (known !== undefined && incoming < known) return copy(stateOf(key))
+      appliedRevision.set(key, incoming)
+    }
+    const next = { state: STATES.has(state) ? state : 'failed', restartPending: state === 'failed', ...rest }
     runtime.set(key, next)
     publish({ topic: 'runtime', type: key, state: next.state, restartPending: next.restartPending })
     return next
