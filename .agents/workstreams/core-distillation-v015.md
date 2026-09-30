@@ -2,7 +2,7 @@
 
 - **identity**: agent `flash`, task pack `dsh-notifier-flash-complete-taskpack` (T01–T30)
 - **branch**: `codex/core-distillation-v015` (off `dev`)
-- **status**: in progress — T01 done
+- **status**: in progress — T01–T03 done
 - **owner scope**: core authority convergence, Native/Recovery UX, local config export/import, dsh-im
   bridge, remote URL, optional CF Tunnel, Workers/Pages extension package, docs/tests/delivery.
 - **explicitly out of scope**: `main`, tags, npm publish, real cloud deploy, full encrypted secret
@@ -174,10 +174,57 @@ the v0.14 fixpack.
 
 T03（真实装配与 DOM 测试底座），依赖 T02。
 
+## T03 — 真实装配与 DOM 测试底座
+
+### 交付
+
+- 新增隔离测试工作区 `test/dom/`（独立 `package.json`，`private:true`，devDependencies
+  `jsdom@^25.0.1` / `react@^18.3.1` / `react-dom@^18.3.1`）。**不进核心 `npm install`**：
+  仓库根 `npm test` glob 为 `test/*.test.mjs`（不递归），故 `test/dom/**` 不在其内；
+  `test/dom/node_modules` 与 `test/dom/package-lock.json` 由根 `.gitignore` 命中（已核验）。
+- `test/dom/dom-globals.mjs`：在 `react-dom` 求值前安装 jsdom 的 window/document
+  （react-dom 在模块加载期冻结浏览器探测），每个用例前可重装。
+- `test/dom/harness.mjs`：按 DSH 宿主真实装载契约（IIFE → `window.__ModuleLoader__.load({ id, factory })`
+  → factory `require('react')`）加载**真实** `client.js`，注入真 `react`/`react-dom`，并提供
+  `mount/click/typeInput/buttonByText/flush/actAsync`。以 splice `__test` 导出内部组件
+  （与 `test/client-module.test.mjs` 同法，不改生产代码）。
+- `test/dom/ui-dom.test.mjs`：真 React DOM 渲染 6 例——装配+保存+测试链路；受控输入跨状态
+  更新保持 DOM 节点与焦点（U05）；写忙态与二次点击不重复 RPC（U02）；提交成功后刷新失败
+  不误报提交失败（U01）；查询失败不伪造空态（U04）；延迟失败的保存保留草稿并报错。
+- `test/dom/assembly-harness.mjs`：临时隔离 DSH_HOME + fake HTTP/WS/SDK + 最小 Cordis 替身
+  （`effect`/`on`/`inject`/`provide`/`emit`/`logger`）。
+- `test/dom/assembly-smoke.test.mjs`：启动真 `apply()`；**晚注入** host `connection`/`webServer`
+  被采纳并在 fake webServer 上挂 `/dsh-notifier` prefix 路由（并分发一条合成 RPC 得到
+  server-response 信封）；`dispose()` 撤销 host listener、卸载路由、撤回 notifier 服务；
+  同一 DSH_HOME 重建后可再次完整装配与拆除。
+- `test/dom/run.mjs`：独立 runner，命令 `node test/dom/run.mjs`（带 `--test-force-exit`
+  与 30s `--test-timeout`，任何泄漏句柄导致失败而非挂起）。
+
+### Cordis 可用性（诚实说明）
+
+沙箱内**没有**真实 `@deepseek-ai/cordis`（peer dependency，未安装；`src/` 亦无其运行时
+`import`）。故 `assembly-harness.mjs` 用**最小忠实替身**模拟本插件实际消费的 Cordis 面；
+它只覆盖上述用例触达的缝，不是官方 runtime。若日后真 Cordis 可安装，替换 `createFakeCordis`
+即可，fake HTTP/SDK 与冒烟断言不变。
+
+### 校验
+
+- `node test/dom/run.mjs` → **8 pass / 0 fail / 0 skip**（spec reporter，真实退出码 0，约 1.3s）。
+- 未改 `src/**`、未改根 `package.json`、未加核心运行依赖、未新增绕过 auth 的公开入口。
+
+### reader 兼容性
+
+纯新增测试底座，不触碰任何持久格式或 reader；`client.js` 与 `src/**` 零改动。
+
+### 下一任务
+
+T04（窄事务与失败语义，依赖 T02；不受 T03 阻塞）。
+
 ## Task status
 
 | Task | Status | Commit | Evidence |
 |---|---|---|---|
 | T01 | done | `027852d` | baseline table, drift table, writer inventory above |
-| T02 | done | (this commit) | `docs/behavior-contract.md` + 2 sanitized legacy fixtures; oracle map above |
-| T03–T30 | not started | — | — |
+| T02 | done | `21bdfca` | `docs/behavior-contract.md` + 2 sanitized legacy fixtures; oracle map above |
+| T03 | done | (this commit) | isolated `test/dom/` bed: real React DOM + fake-Cordis assembly smoke; `node test/dom/run.mjs` → 8 pass / 0 fail |
+| T04–T30 | not started | — | — |
