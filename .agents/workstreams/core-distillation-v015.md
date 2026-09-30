@@ -365,6 +365,46 @@ allow, frozen-resolved send, real-assembly notifier dispatch, and unregistered-c
 **Count**: 2183 → **2197** (README.md / README.zh-CN.md / HANDOFF.md / package.json
 `dshQuality.testCount` / docs/memory/project-state.md synced).
 
+## T10 — 复杂 runtime 试点
+
+**Result**: the provider path gains a **stateful (resource) sender contract**, and the two resource-holding
+outbound channels — QQ 官方机器人 and 企业微信应用 — are migrated onto it with an explicit runtime
+lifecycle. Resources stay on the live `resolved` object (T08 layering); the contract adds **who owns the
+lifecycle**, not a second copy of the config.
+
+- **Contract** (`src/adapters/sender.mjs`): `defineStatefulSender({ type, validate, createRuntime })` declares
+  `lifecycle:'stateful'` and exposes exactly `validate` / `createRuntime` / `send` / `retire`. The runtime host
+  is **single-owner per resolved** (WeakMap: concurrent `send` / `createRuntime` reuse one runtime, `start`
+  once) and **epoch-guarded**: `send` that is still in flight when `retire()` runs rejects with
+  `CHANNEL_RETIRED` + `noRetry` — a stopped runtime's late result can never masquerade as a delivered message
+  ("停用后旧 callback 不落地"). `retire()` is idempotent and bounded: `stop()` + `dispose()` each once, then
+  the reference is dropped (GC / no timer leak). `bridgeStatefulAdapter(adapter)` wraps a legacy
+  `{ type, resolve, send, disposeRuntime? }` adapter with zero protocol changes.
+- **Pilot registry** (`src/adapters/senders.mjs`): `qq-bot` / `wecom-app` registered as stateful senders
+  (Bark/Webhook remain stateless per T09). `retireSenderRuntime(type, config)` is the shared release entry.
+- **Bounded dispose** (`src/adapters/qq-bot.mjs`, `wecom-app.mjs`): new `disposeRuntime(resolved)` invalidates
+  the token manager (so a late refresh cannot resurrect a dead credential) and drops `_tokenManager` /
+  `_rateGate` references. No payload / validation / timeout / seq semantics touched → P01 (single-flight) and
+  P02 (segmentation + `msg_seq` idempotency) goldens are byte-identical.
+- **Lifecycle owner** (`src/runtime/outbound-source.mjs`): `createOutboundSource(initial, { onRetire })` now
+  reports every discarded config (replace / remove / replace-all) to the single authority; `src/index.mjs`
+  wires it to `retireSenderRuntime`, so a removed or hot-replaced channel releases its runtime instead of
+  leaking a usable token cache.
+- **QQ 入站实例** (existing `src/inbound/qq-gw.mjs`): token single-flight (`createTokenManager`), connection
+  epoch (`ws !== conn` drops late frames/ACKs from a retired socket), bounded `stop()` (clears every timer)
+  and idempotent `start()` were already in place; T10 re-verifies them as the same per-instance contract.
+
+**Tests**: `test/v015-stage-s4-stateful-sender.test.mjs` (14 cases) — contract shape (stateful verbs vs
+stateless no-lifecycle), single-owner + shared token fetch under concurrency, retire→fresh epoch + refetch,
+in-flight retire → `CHANNEL_RETIRED`, idempotent/bounded retire, lifecycle-verb throw containment, evidence
+without secrets, timeout (`TIMEOUT`+`noRetry`), real-assembly stateful send (frozen projection / mutable live),
+outbound-source retire on replace/remove, unregistered-channel fallback, wecom-app token single-fetch +
+dispose, and the QQ inbound instance (idempotent start = single owner; post-stop late frame never lands).
+T09's registry assertion was updated to include the two new stateful entries.
+
+**Count**: 2197 → **2211** (README.md / README.zh-CN.md / HANDOFF.md / package.json `dshQuality.testCount` /
+docs/memory/project-state.md synced; `verify-release` green).
+
 ## Task status
 
 | Task | Status | Commit | Evidence |
@@ -377,5 +417,6 @@ allow, frozen-resolved send, real-assembly notifier dispatch, and unregistered-c
 | T06 | partial | `ca5097a` | identity pending writes transactional; pairing mint/revoke deferred (registered) |
 | T07 | done | `ca5097a` | `docs/state-writer-registry.md` |
 | T08 | done | `93dfc50` | desired/resolved/resources layers + apply-failure divergence + runtime revision fence; `test/v015-stage-s2-config-layers.test.mjs` → 8 pass |
-| T09 | done | (this commit) | stateless sender contract + Bark/Webhook pilot registry; `test/v015-stage-s3-http-sender.test.mjs` → 14 pass |
-| T10–T30 | not started | — | — |
+| T09 | done | `f6cc400` | stateless sender contract + Bark/Webhook pilot registry; `test/v015-stage-s3-http-sender.test.mjs` → 14 pass |
+| T10 | done | (this commit) | stateful sender runtime (single-owner + epoch + bounded dispose) + QQ/WeCom migration; `test/v015-stage-s4-stateful-sender.test.mjs` → 14 pass |
+| T11–T30 | not started | — | — |

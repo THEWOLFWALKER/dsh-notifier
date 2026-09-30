@@ -100,3 +100,14 @@ export async function send(resolved, msg) {
     throw new NotifyError(`wecom-app 返回错误 ${payload?.errcode ?? '(无码)'}: ${payload?.errmsg ?? '未知错误'}${hint}`, ERROR_CODES.API_ERROR)
   }
 }
+
+/**
+ * v0.15（T10）：释放该 resolved 上持有的运行时资源（有限 dispose）。
+ * 作废 token 缓存并断开引用——渠道被移除/热替换时旧 runtime 不得继续持有可用凭证。
+ * 幂等；无资源时静默返回（不抛错，retire 不得因释放失败卡死）。
+ */
+export function disposeRuntime(resolved) {
+  if (resolved === null || typeof resolved !== 'object') return
+  try { resolved._tokenManager?.invalidate?.() } catch { /* 释放失败不致命 */ }
+  resolved._tokenManager = undefined
+}

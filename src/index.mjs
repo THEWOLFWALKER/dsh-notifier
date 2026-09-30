@@ -44,6 +44,8 @@ import { createScanHandlers } from './admin/scan.mjs'
 import { runChannelTest } from './health.mjs'
 import { createOutboundSource } from './runtime/outbound-source.mjs'
 import { createRuntimeChannelManager } from './runtime/channel-manager.mjs'
+// v0.15（T10）：渠道被移除/热替换时释放其 sender runtime（token 缓存等有限 dispose）
+import { retireSenderRuntime } from './adapters/senders.mjs'
 import { createSurfaceRevision } from './control-surface/revision.mjs'
 import { createSurfaceActivity } from './control-surface/activity.mjs'
 import { createSurfaceHealth } from './control-surface/health.mjs'
@@ -232,7 +234,9 @@ export function apply(ctx, config = {}) {
     allowLegacy: false,
   })
   const outboundSource = createRuntimeChannelManager({
-    source: createOutboundSource(overlay.channels),
+    source: createOutboundSource(overlay.channels, {
+      onRetire: (type, config) => { retireSenderRuntime(type, config) },
+    }),
     initial: overlay.channels,
   })
   resolved.channels = outboundSource.snapshot()

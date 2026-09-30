@@ -73,10 +73,19 @@ function normalize(entries) {
   return map
 }
 
-export function createOutboundSource(initial = []) {
+export function createOutboundSource(initial = [], { onRetire = null } = {}) {
   let byType = normalize(initial)
   let version = 0
   const listeners = new Set()
+
+  // v0.15（T10）：runtime 生命周期 owner。配置被移除/热替换时，旧 resolved 上的运行时资源
+  // （qq-bot/wecom-app 的 token 管理器等）必须在**唯一权威处**释放——否则被丢弃的配置仍持有
+  // 可用凭证、或在飞结果落地到已被替换的 runtime。stateless 渠道无 runtime，hook 由调用方
+  // 按 sender 契约判定（未登记渠道 no-op）。
+  const retire = (type, config) => {
+    if (typeof onRetire !== 'function') return
+    try { onRetire(type, config) } catch { /* 释放失败绝不影响 runtime 真值切换 */ }
+  }
 
   const emit = (event) => {
     version += 1
@@ -122,9 +131,11 @@ export function createOutboundSource(initial = []) {
       if (key === '' || config === null || typeof config !== 'object' || Array.isArray(config)) {
         throw new TypeError('replace(type, config) requires a non-empty type and object config')
       }
+      const previous = byType.get(key)
       const next = new Map(byType)
       next.set(key, liveEntry(key, config))
       byType = next
+      if (previous !== undefined && previous.config !== config) retire(key, previous.config)
       emit({ topic: 'replace', type: key })
       return api.live(key)
     },
@@ -132,15 +143,22 @@ export function createOutboundSource(initial = []) {
     remove(type) {
       const key = typeof type === 'string' ? type.trim() : ''
       if (key === '' || !byType.has(key)) return false
+      const previous = byType.get(key)
       const next = new Map(byType)
       next.delete(key)
       byType = next
+      retire(key, previous.config)
       emit({ topic: 'remove', type: key })
       return true
     },
 
     replaceAll(entries) {
+      const previous = byType
       byType = normalize(entries)
+      for (const [key, entry] of previous) {
+        const kept = byType.get(key)
+        if (kept === undefined || kept.config !== entry.config) retire(key, entry.config)
+      }
       emit({ topic: 'replace-all', type: null })
       return api.snapshot()
     },

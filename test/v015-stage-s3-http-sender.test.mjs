@@ -218,9 +218,11 @@ test('T09 真实装配：notifier 对已登记简单 HTTP 渠道走 sender 契�
 
 test('T09 回退边界：未登记渠道不走 sender（senderOf 返回 null），注册表仅收敛试点渠道', () => {
   assert.equal(senderOf('telegram'), null)
-  assert.equal(senderOf('qq-bot'), null)
-  assert.deepEqual(senderTypes().sort(), ['bark', 'webhook'])
-  assert.deepEqual(Object.keys(SENDERS).sort(), ['bark', 'webhook'])
+  // T10 起 qq-bot/wecom-app 以 stateful sender 接入（此处只断言登记事实，契约形状见 s4 套件）。
+  assert.equal(senderOf('qq-bot')?.lifecycle, 'stateful')
+  assert.equal(senderOf('wecom-app')?.lifecycle, 'stateful')
+  assert.deepEqual(senderTypes().sort(), ['bark', 'qq-bot', 'webhook', 'wecom-app'])
+  assert.deepEqual(Object.keys(SENDERS).sort(), ['bark', 'qq-bot', 'webhook', 'wecom-app'])
   assert.equal(senderOf('bark').type, bark.type)
   assert.equal(senderOf('webhook').type, webhook.type)
 })

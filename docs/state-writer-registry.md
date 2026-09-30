@@ -85,6 +85,14 @@ Precedence (outbound): `channel:<type>:outbound` (canonical) → `admin:channel:
 
 Runtime truth has one owner (`RuntimeChannelManager`). Its lifecycle updates carry a **monotonic revision fence**: a stale (older `source.version`) apply result can never override a newer runtime state (T08 / C03).
 
+The **resources** layer has one lifecycle owner too (T10): the per-`resolved` sender runtime
+(`src/adapters/sender.mjs`). It is created single-owner (concurrent `send` reuse one runtime), epoch-guarded
+(a `retire()` during an in-flight `send` discards the late result — no delivery is published), and bounded
+(a `retire()` runs `stop()`+`dispose()` once and drops the reference). `OutboundSource` reports every
+discarded config through `onRetire`, which `src/index.mjs` wires to `retireSenderRuntime`, so remove /
+hot-replace releases the channel's token cache via the adapter's `disposeRuntime(resolved)` — no second copy
+of the config, no leaked credential.
+
 ## Convergence status
 
 Done in S1: `inbound:bindings`, `inbound:pending`, `inbound:migrated` (identity is the single
