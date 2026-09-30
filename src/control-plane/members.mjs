@@ -155,7 +155,10 @@ export function createMembersControlService({ identity = null, pairing = null } 
       return { ok: false, reason: 'owner-last', key: parsed.raw }
     }
     const result = identity.updateBinding(current.channel, current.userId, diff, current.accountId)
-    if (result.ok !== true) return { ok: false, reason: 'not-found', key: parsed.raw }
+    // v0.14（P1-01）：透传底层 reason——storage-failed 绝不能被改写成 not-found，否则一次
+    // durable 写失败会被报成「成员不存在」，调用方据此误判并放弃重试。只有底层明确
+    // not-found 才是 not-found；非法账户等其它原因原样上抛，交由 adapter 映射 RPC/HTTP code。
+    if (result.ok !== true) return { ok: false, reason: result.reason ?? 'storage-failed', key: parsed.raw }
     return { ok: true, key: parsed.raw, record: result.record }
   }
 
@@ -174,7 +177,8 @@ export function createMembersControlService({ identity = null, pairing = null } 
       return { ok: false, reason: 'owner-last', key: parsed.raw }
     }
     const result = identity.removeBinding(current.channel, current.userId, current.accountId)
-    if (result.ok !== true) return { ok: false, reason: 'not-found', key: parsed.raw }
+    // v0.14（P1-01）：同 updateMember——透传底层 reason，storage-failed 不得伪装成 not-found。
+    if (result.ok !== true) return { ok: false, reason: result.reason ?? 'storage-failed', key: parsed.raw }
     return { ok: true, key: parsed.raw, role: current.role }
   }
 

@@ -170,21 +170,38 @@ export function createOutboundConfigService({
   const rawOf = (type) => ({ ...baseRawOf(type), ...overlayOf(type) })
   const applyState = new Map()
   const runtimeOf = (type) => {
+    // v0.14（P1-07 / Stage C）：runtime truth 的唯一 owner 是 RuntimeChannelManager——
+    // 它存在时读侧一律走它，绝不与本服务的 applyState 形成第二个竞争状态机。
     try {
       if (typeof source.runtimeState === 'function') return source.runtimeState(type)
     } catch {}
     return applyState.get(type) ?? { state: source.has(type) ? 'online' : 'stopped', restartPending: false }
   }
 
+  /**
+   * v0.14（Stage C）：写 runtime lifecycle。优先驱动 RuntimeChannelManager 的 setState；
+   * 缺省退回本服务内的 applyState 兜底（纯 OutboundSource / 测试桩没有 setState）。
+   * 显式给出的 `restartPending` 以它为准——divergence 场景（旧 runtime 仍在跑但 desired
+   * 未收敛）需要 state=online 与 restartPending=true 并存。
+   */
+  const markRuntime = (type, state, detail = {}) => {
+    const next = { state, restartPending: state === 'failed', ...detail }
+    applyState.set(type, next)
+    if (typeof source.setState === 'function') {
+      try { source.setState(type, state, detail) } catch { /* manager 不可用：applyState 兜底已写 */ }
+    }
+    return next
+  }
+
   const applyRuntime = (type, resolved) => {
     try {
       source.replace(type, resolved)
-      applyState.set(type, { state: 'online', applyMode: 'hot' })
+      markRuntime(type, 'online', { restartPending: false })
       return null
     } catch (error) {
       // Desired state is already durable.  A failed live swap is a runtime
       // failure/restart-pending, never a false storage failure.
-      applyState.set(type, { state: 'failed', applyMode: 'restart-pending', error: diagnosticErrorMessage(error, resolved) })
+      markRuntime(type, 'failed', { error: diagnosticErrorMessage(error, resolved) })
       return error
     }
   }
@@ -245,40 +262,56 @@ export function createOutboundConfigService({
       }
       validatePatch(key, actualPatch, [...clear])
 
-      const currentCanonical = plain(safeGet(store, canonicalKey(key)))
+      const canonicalKeyOf = canonicalKey(key)
+      const currentCanonical = plain(safeGet(store, canonicalKeyOf))
       const seed = currentCanonical ?? overlayOf(key)
-      const nextCanonical = { ...seed, ...clone(actualPatch) }
-      for (const field of clear) delete nextCanonical[field]
-      const nextRaw = { ...baseRawOf(key), ...nextCanonical }
+      // Pre-merge view used only for an early, side-effect-free resolve: a non-clear patch
+      // that cannot resolve must be rejected *before* it is committed.
+      const preCanonical = { ...seed, ...clone(actualPatch) }
+      for (const field of clear) delete preCanonical[field]
+      if (clear.size === 0) resolveCandidate(key, { ...baseRawOf(key), ...preCanonical })
 
-      // Phase 1 — resolve before mutation.
+      // Phase 1 — canonical merge + commit happen in one transaction (v0.14 / P1-06).
+      // Concurrent sibling patches to the same channel:<type>:outbound key merge against
+      // the draft at commit time, so a later writer never clobbers an earlier writer's
+      // other fields (the read-outside-then-write-whole-object window is the lost update).
+      let committedCanonical = preCanonical
+      const mergeDraft = (draft) => {
+        const base = plain(draft[canonicalKeyOf]) ?? overlayOf(key)
+        const next = { ...base, ...clone(actualPatch) }
+        for (const field of clear) delete next[field]
+        draft[canonicalKeyOf] = next
+        return next
+      }
+      if (typeof store?.transact === 'function') {
+        const committed = transactDurable(store, mergeDraft)
+        if (committed.committed !== true) {
+          const error = new Error('出站配置写入失败：未落盘，已放弃本次变更')
+          error.code = 'storage-failed'
+          throw error
+        }
+        if (plain(committed.value) !== null) committedCanonical = committed.value
+      } else if (setDurable(store, canonicalKeyOf, mergeDraft({ [canonicalKeyOf]: currentCanonical })) !== true) {
+        // v0.13（C11.5 / R1）：遗留 store 的 set() 先改内存再宣告失败，需调用方补回滚，避免
+        // 内存/磁盘分裂；具备事务语义的 store 绝不回滚（那会制造 lost update）。
+        if (currentCanonical === null) deleteDurable(store, canonicalKeyOf)
+        else setDurable(store, canonicalKeyOf, currentCanonical)
+        const error = new Error('出站配置写入失败：未落盘，已放弃本次变更')
+        error.code = 'storage-failed'
+        throw error
+      }
+
+      // Phase 2 — resolve the *committed* authoritative desired state, then hot-apply.
+      const nextRaw = { ...baseRawOf(key), ...committedCanonical }
       let resolved = null
       let resolveError = null
       try {
         resolved = resolveCandidate(key, nextRaw)
       } catch (error) {
-        // Explicit secret clearing is allowed to leave the desired state
-        // temporarily unconfigured. Persist the deletion and keep the live
-        // source unchanged until a valid replacement or restart is available.
-        if (clear.size === 0) throw error
+        // A non-clear patch was already resolved against the pre-merge view above; reaching
+        // here means a concurrent sibling patch made the merged state unresolvable.  The
+        // desired state stays durable; runtime convergence is deferred to restart.
         resolveError = error
-      }
-
-      // Phase 2 — canonical persistence is the commit point.
-      // v0.12.1（P0-01）：store.set 失败时返回 false 而不抛，必须显式消费 durable 判据。
-      if (setDurable(store, canonicalKey(key), nextCanonical) !== true) {
-        // v0.13（C11.5 / R1）：transactional store 的契约是「commit 失败 ⇒ 内存与磁盘都不变」，
-        // 所以这里绝不能再写「旧值」回滚——并发下那会覆盖别处刚成功提交的新值：
-        //   A 读 old=v1 → A 提交 v2 失败 → B 成功提交 v3 → A 回滚写 v1 → B 的 v3 被抹掉（lost update）。
-        // 只有不具备事务语义的遗留 store（set() 先改内存再宣告失败）才需要调用方补回滚，
-        // 否则会留下「内存新值 / 磁盘旧值」分裂。判据即 store 是否提供 transact。
-        if (typeof store?.transact !== 'function') {
-          if (currentCanonical === null) deleteDurable(store, canonicalKey(key))
-          else setDurable(store, canonicalKey(key), currentCanonical)
-        }
-        const error = new Error('出站配置写入失败：未落盘，已放弃本次变更')
-        error.code = 'storage-failed'
-        throw error
       }
 
       // Phase 3 — synchronous live swap.  Durable desired state remains truth
@@ -289,9 +322,12 @@ export function createOutboundConfigService({
         : { type: key, saved: true, applied: false, applyMode: 'restart-pending', runtimeState: 'failed', configRevision: source.version }
       if (clear.size > 0) result.cleared = [...clear]
       if (resolveError !== null) {
-        applyState.set(key, {
-          state: 'failed',
-          applyMode: 'restart-pending',
+        // v0.14（Stage C）：desired 已落盘但 resolve 失败（典型：清掉 required secret）。
+        // 旧 runtime 仍在跑 → 报 online + restartPending=true（active 保持 true，但明确
+        // 表示「尚未收敛到 desired」）；没有旧 runtime 可留时才标 failed。
+        const stillLive = source.has(key)
+        markRuntime(key, stillLive ? 'online' : 'failed', {
+          restartPending: true,
           error: diagnosticErrorMessage(resolveError, nextRaw),
         })
       }
@@ -355,23 +391,23 @@ export function createOutboundConfigService({
         // resolve of those keys occurs, so malformed leftovers cannot block revoke.
         try {
           source.remove(key)
-          applyState.set(key, { state: 'stopped', applyMode: 'hot' })
+          markRuntime(key, 'stopped', { restartPending: false })
         } catch (error) {
           applyError = error
-          applyState.set(key, { state: 'failed', applyMode: 'restart-pending', error: diagnosticErrorMessage(error, existing) })
+          markRuntime(key, 'failed', { error: diagnosticErrorMessage(error, existing) })
         }
       } else {
         try {
           if (fallback === null) {
             source.remove(key)
-            applyState.set(key, { state: 'stopped', applyMode: 'hot' })
+            markRuntime(key, 'stopped', { restartPending: false })
           } else {
             source.replace(key, fallback)
-            applyState.set(key, { state: 'online', applyMode: 'hot' })
+            markRuntime(key, 'online', { restartPending: false })
           }
         } catch (error) {
           applyError = error
-          applyState.set(key, { state: 'failed', applyMode: 'restart-pending', error: diagnosticErrorMessage(error, existing) })
+          markRuntime(key, 'failed', { error: diagnosticErrorMessage(error, existing) })
         }
       }
       const result = applyError === null
@@ -384,18 +420,22 @@ export function createOutboundConfigService({
     describe(type) {
       const key = String(type ?? '').trim()
       const raw = rawOf(key)
+      const rt = runtimeOf(key)
       return {
         type: key,
         configured: Object.keys(raw).length > 0,
         valid: (() => {
           try { resolveCandidate(key, raw); return true } catch { return false }
         })(),
-        active: runtimeOf(key).state === 'online',
+        active: rt.state === 'online',
         fields: channelFieldsOf(key),
         docUrl: channelDocUrlOf(key),
         applyMode: 'hot',
-        restartPending: runtimeOf(key).restartPending === true,
-        runtime: { ...runtimeOf(key), applyMode: runtimeOf(key).state === 'failed' ? 'restart-pending' : 'hot' },
+        restartPending: rt.restartPending === true,
+        // v0.14（Stage C）：显式 divergence —— desired 与 live runtime 尚未收敛（旧 runtime
+        // 仍在跑但 restartPending=true），供 diagnostics 明确区分「未收敛」与「未配置」。
+        diverged: rt.restartPending === true && rt.state === 'online',
+        runtime: { ...rt, applyMode: rt.state === 'failed' ? 'restart-pending' : 'hot' },
         configRevision: source.version,
       }
     },

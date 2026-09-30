@@ -122,12 +122,30 @@ export function createInboundBus(options = {}) {
     }
   }
 
-  /** 绑定成员使用内存 + 持久化，跨重启继续防重放。 */
+  /** 绑定成员使用内存 + 持久化，跨重启继续防重放。返回去重键是否真正落盘。 */
   function remember(envelope, now = Date.now()) {
     rememberInMemory(envelope, now)
-    if (store !== null && setDurable(store, dedupKeyOf(envelope), now) !== true) {
-      warn(`去重记录未落盘：${dedupKeyOf(envelope)}`)
+    if (store === null) return true
+    const ok = setDurable(store, dedupKeyOf(envelope), now) === true
+    if (!ok) warn(`去重记录未落盘：${dedupKeyOf(envelope)}`)
+    return ok
+  }
+
+  /**
+   * v0.14（P1-04）：已授权（已绑定）消息的 durable dedup/claim。**先落盘、后记内存**——
+   * 落盘失败时绝不留内存痕迹，返回 false，让调用方 fail-closed 拒绝放行业务 handler。
+   * 否则一次写失败被只 warn 吞掉后仍进入 approval/questions/conversation，重启后 provider
+   * 重投同 messageId 会重复进入模型/工具链（不可逆副作用的重复释放）。未绑定来源仍旧
+   * 走 memory-only 的 rememberInMemory，避免陌生 messageId 无限放大 state.json。
+   */
+  function claimDurable(envelope, now = Date.now()) {
+    if (store === null) { rememberInMemory(envelope, now); return true }
+    if (setDurable(store, dedupKeyOf(envelope), now) !== true) {
+      warn(`已授权消息去重记录未落盘，拒绝放行（fail-closed）: ${dedupKeyOf(envelope)}`)
+      return false
     }
+    rememberInMemory(envelope, now)
+    return true
   }
 
   /** 引导态：绑定表空 + 旧白名单空（此时六通道照常启动，仅开放注册面）。 */
@@ -215,7 +233,11 @@ export function createInboundBus(options = {}) {
       }
 
       if (bound) {
-        remember(envelope)
+        // v0.14（P1-04）：已授权消息会释放业务副作用（审批裁决/提问结算/会话路由），
+        // durable dedup/claim 失败必须 fail-closed——否则重启重投会重复进入业务链。
+        if (claimDurable(envelope) !== true) {
+          return { ok: false, reason: 'storage-failed' }
+        }
         // v0.6.3 消费语义：handler 返回 true = 消息已被该处理器消费，停止扇出
         // （审批编号回复吃掉「1」后不再进对话路由，防同一消息双重消费）。
         // G-31：按显式 priority 稳定排序扇出（原 Set 插入序 = 隐式装配顺序契约）。

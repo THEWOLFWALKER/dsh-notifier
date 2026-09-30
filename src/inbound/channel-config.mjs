@@ -169,10 +169,27 @@ export function createInboundChannelConfigPort({ store, warn = () => {}, audit =
       const bad = describeBadChannelValue(key, value)
       if (bad !== null) throw Object.assign(new Error(bad), { status: 422 })
     }
-    const existing = plain(read(`${normalized}:account`)) ?? {}
-    const next = { ...existing, ...obj }
-    for (const key of clear) delete next[key]
-    const okSaved = setDurable(store, `${normalized}:account`, clone(next))
+    const key = `${normalized}:account`
+    // v0.14（P1-05）：read/merge/clear/write 全部放进一次 store.transact——并发 patch 同一
+    // `<type>:account` 的不同字段时，后提交者以 draft 最新值为基底合并，绝不覆盖前一提交的
+    // 兄弟字段（事务外读 existing 再整对象写的读-改-写窗口即 sibling lost update 的来源）。
+    // 校验已在上文事务外完成（本方法只做持久化原语）。
+    let okSaved
+    if (typeof store?.transact === 'function') {
+      const result = transactDurable(store, (draft) => {
+        const existing = plain(draft[key]) ?? {}
+        const next = { ...existing, ...clone(obj) }
+        for (const field of clear) delete next[field]
+        draft[key] = next
+        return true
+      })
+      okSaved = result.committed === true
+    } else {
+      const existing = plain(read(key)) ?? {}
+      const next = { ...existing, ...obj }
+      for (const field of clear) delete next[field]
+      okSaved = setDurable(store, key, clone(next)) === true
+    }
     if (okSaved !== true) {
       warn(`入站通道配置写入失败: ${normalized}`)
       return { type: normalized, saved: false, direction: 'inbound' }

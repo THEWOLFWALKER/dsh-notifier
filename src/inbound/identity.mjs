@@ -324,32 +324,64 @@ export function createIdentity(options = {}) {
       const channels = (Array.isArray(enabledChannels) ? enabledChannels : []).filter((channel) => VALID_CHANNELS.has(channel))
       if (ids.length === 0 || channels.length === 0) return { added: 0, skipped: false }
       if (store !== null && store.get(KEY_MIGRATED, false) === true) return { added: 0, skipped: true }
-      const table = readBindings()
       const now = Date.now()
-      const wasEmpty = Object.keys(table).length === 0
-      let ownerAssigned = false
-      let added = 0
-      for (const userId of ids) {
-        for (const channel of channels) {
-          // 渠道形态过滤：该渠道显然不接受的 id 不播（如 feishu 不吃裸数字、TG 不吃 UID_）
-          if (!isValidTargetId(channel, userId)) continue
-          const key = keyFor(channel, userId, DEFAULT_ACCOUNT_ID)
-          if (table[key] !== undefined) continue
-          // 空表首条（跨通道也只此一条）置 owner——「首位成员即 owner」契约
-          const role = wasEmpty && !ownerAssigned ? 'owner' : 'member'
-          if (role === 'owner') ownerAssigned = true
-          table[key] = { channel, userId, label: '', role, pairedAt: now, lastSeenAt: 0, origin: 'migrated' }
-          added += 1
+      // 纯规划器：只往传入的 table 里补缺失键（已存在键绝不覆盖，保护更新的 canonical 数据）。
+      const plan = (table) => {
+        const wasEmpty = Object.keys(table).length === 0
+        let ownerAssigned = false
+        let added = 0
+        for (const userId of ids) {
+          for (const channel of channels) {
+            // 渠道形态过滤：该渠道显然不接受的 id 不播（如 feishu 不吃裸数字、TG 不吃 UID_）
+            if (!isValidTargetId(channel, userId)) continue
+            const key = keyFor(channel, userId, DEFAULT_ACCOUNT_ID)
+            if (table[key] !== undefined) continue
+            // 空表首条（跨通道也只此一条）置 owner——「首位成员即 owner」契约
+            const role = wasEmpty && !ownerAssigned ? 'owner' : 'member'
+            if (role === 'owner') ownerAssigned = true
+            table[key] = { channel, userId, label: '', role, pairedAt: now, lastSeenAt: 0, origin: 'migrated' }
+            added += 1
+          }
         }
+        return { added }
       }
-      if (added > 0) {
-        if (writeBindings(table) !== true) return { added: 0, reason: 'storage-failed' }
-        warn(`白名单迁移：${added} 条绑定落盘（一次性导入完成，此后增删以管理台为准）`)
+      // 无 store：只做内存态一次性导入（与既有语义一致，本来也无处落盘重放）。
+      if (store === null) {
+        const { added } = plan({})
+        if (added > 0) warn(`白名单迁移：${added} 条绑定（无 store，内存态一次性导入）`)
+        return { added }
       }
-      if (store !== null && setDurable(store, KEY_MIGRATED, true) !== true) {
-        return { added: 0, reason: 'storage-failed' }
+      // 遗留 store 无跨键事务：保留顺序兼容路径（正式 createStore 不走这里）。
+      if (typeof store.transact !== 'function') {
+        const table = readBindings()
+        const { added } = plan(table)
+        if (added > 0) {
+          if (writeBindings(table) !== true) return { added: 0, reason: 'storage-failed' }
+          warn(`白名单迁移：${added} 条绑定落盘（一次性导入完成，此后增删以管理台为准）`)
+        }
+        if (setDurable(store, KEY_MIGRATED, true) !== true) return { added: 0, reason: 'storage-failed' }
+        return { added }
       }
-      return { added }
+      // v0.14（P1-03）：bindings 与 migrated 标记放进同一事务——第二写失败不再留下
+      // 「绑定已播撒但标记未落」的半提交；重跑因标记同事务落定而幂等；事务内以 draft 最新
+      // 绑定表为基底，绝不覆盖并发写入的更新 canonical 数据。
+      const outcome = { added: 0 }
+      const tx = transactDurable(store, (draft) => {
+        if (draft[KEY_MIGRATED] === true) {
+          outcome.added = 0
+          outcome.skipped = true
+          return true
+        }
+        const table = normalizeBindings(draft[KEY_BINDINGS] ?? {})
+        outcome.added = plan(table).added
+        draft[KEY_BINDINGS] = table
+        draft[KEY_MIGRATED] = true
+        return true
+      })
+      if (tx.committed !== true) return { added: 0, reason: 'storage-failed' }
+      if (outcome.skipped === true) return { added: 0, skipped: true }
+      if (outcome.added > 0) warn(`白名单迁移：${outcome.added} 条绑定落盘（一次性导入完成，此后增删以管理台为准）`)
+      return { added: outcome.added }
     },
 
     /**

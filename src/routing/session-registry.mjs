@@ -136,7 +136,7 @@ export function createSessionRegistry(options = {}) {
     return {}
   }
   /** 运行期权威内存态（构造时从 store 载入；此后变更写回 store）。 */
-  const sessions = loadSessions()
+  let sessions = loadSessions()
   let lastWriteMs = now() // 构造即视为刚同步过（内存态来自盘上），touch 摊销的基准点
   let lastSweepMs = -Infinity // 首次内联 prune 即真扫一次（清掉停机期间过期的记录）
   /** 回收删除待落盘的会话 id：写盘失败时保留、下次 persist 再删（对齐 dirty 保留语义）。 */
@@ -248,8 +248,10 @@ export function createSessionRegistry(options = {}) {
         lastWriteMs = now()
         removedIds.clear()
         for (const id of Object.keys(sessions)) dirtyFields.delete(id)
+        return true
       }
-    } catch { /* 写盘失败（set 抛）：内存态继续工作，removedIds 留待下次再删 */ }
+      return false
+    } catch { /* 写盘失败（set 抛）：内存态继续工作，removedIds 留待下次再删 */ return false }
   }
 
   /** 记录读取（形状异常当不存在，返回 undefined）。 */
@@ -267,6 +269,29 @@ export function createSessionRegistry(options = {}) {
       markRecordDirty(id, record)
     }
     return record
+  }
+
+  /**
+   * v0.14（P1-02）：durable business-state 的 commit→publish 守卫。
+   * `apply` 只在内存记录上做变更并返回 `{ changed, result }`；仅当确有变更时才落盘。
+   *  - 落盘成功 → `{ ok: true, result }`（内存新值 = 盘上新值）；
+   *  - 落盘失败 → 回滚本记录的内存值与脏标记，返回 `{ ok: false }`，caller 据此对上层报失败。
+   * 绝不 publish 一个未持久化的业务新值（memory 与 disk 都不变，重启后无幽灵状态）。
+   * 可丢失的 observation（touch 的 lastActiveAt）不走此路径，保持内存优先。
+   */
+  const withDurableRecord = (id, apply) => {
+    const key = String(id)
+    const existed = Object.prototype.hasOwnProperty.call(sessions, key)
+    const before = existed ? deepCopyPlain(sessions[key]) : undefined
+    const applied = apply() ?? { changed: false }
+    if (applied.changed !== true) return { ok: true, result: applied.result, skipped: true }
+    // 纯内存模式（无 store）：本就无处落盘，内存态即真相，直接 publish。
+    if (store === undefined || store === null) return { ok: true, result: applied.result }
+    if (persist() === true) return { ok: true, result: applied.result }
+    if (existed) sessions[key] = before
+    else delete sessions[key]
+    dirtyFields.delete(key)
+    return { ok: false }
   }
 
   // ---- 回收（§4：disposed + ttl 到期才删；bind:* 不清——同 id resume 绑定仍有效）----
@@ -337,7 +362,12 @@ export function createSessionRegistry(options = {}) {
         dirtyFields.delete(id)
         removedIds.add(id)
       }
-      persist()
+      if (persist() !== true) {
+        // v0.14（P1-02）：回收的内存态照旧 publish（墓碑 removedIds 已在 persist 内保留），
+        // 下次成功写会从盘上基底补删过期 id——与既有「墓碑持久化收官」语义一致；此处只记日志，
+        // 不整表回滚（回滚会让 caller 看到与墓碑机制冲突的状态）。
+        warn('会话回收未落盘（墓碑保留，待下次成功写补删）')
+      }
     }
     return removed
   }
@@ -397,30 +427,35 @@ export function createSessionRegistry(options = {}) {
       if (id === '') return undefined
       const nowMs = now()
       const workspace = workspaceOf(agentLike)
-      let record = recordOf(id)
-      if (record === undefined) {
-        record = { inherit: workspace, workspace, createdAt: nowMs, lastActiveAt: nowMs }
-        sessions[id] = record
-        markRecordDirty(id, record)
-        persist()
-        return recordCopy(record)
-      }
-      record.lastActiveAt = nowMs
-      markDirty(id, 'lastActiveAt')
-      if (record.disposedAt !== undefined) {
-        delete record.disposedAt // 同 id 重建 = resume
-        markDirty(id, 'disposedAt')
-      }
-      if ((record.workspace === undefined || record.workspace === '') && workspace !== '') {
-        record.workspace = workspace
-        markDirty(id, 'workspace')
-        if (record.inherit === undefined || record.inherit === '') {
-          record.inherit = workspace
-          markDirty(id, 'inherit')
+      const outcome = withDurableRecord(id, () => {
+        let record = recordOf(id)
+        if (record === undefined) {
+          record = { inherit: workspace, workspace, createdAt: nowMs, lastActiveAt: nowMs }
+          sessions[id] = record
+          markRecordDirty(id, record)
+          return { changed: true, result: record }
         }
+        record.lastActiveAt = nowMs
+        markDirty(id, 'lastActiveAt')
+        if (record.disposedAt !== undefined) {
+          delete record.disposedAt // 同 id 重建 = resume
+          markDirty(id, 'disposedAt')
+        }
+        if ((record.workspace === undefined || record.workspace === '') && workspace !== '') {
+          record.workspace = workspace
+          markDirty(id, 'workspace')
+          if (record.inherit === undefined || record.inherit === '') {
+            record.inherit = workspace
+            markDirty(id, 'inherit')
+          }
+        }
+        return { changed: true, result: record }
+      })
+      if (outcome.ok !== true) {
+        warn(`会话建档未落盘（已保留原状态）: ${id}`)
+        return undefined
       }
-      persist()
-      return recordCopy(record)
+      return recordCopy(outcome.result)
     },
 
     /**
@@ -450,15 +485,27 @@ export function createSessionRegistry(options = {}) {
     markDisposed(sessionId) {
       const id = String(sessionId ?? '')
       if (id === '') return undefined
-      const record = ensureRecord(id)
-      if (record.disposedAt === undefined) {
-        record.disposedAt = now()
-        markDirty(id, 'disposedAt')
-        scheduleSweepTimer(record.disposedAt)
-        persist()
-      }
+      let disposedAtToSchedule = null
+      const outcome = withDurableRecord(id, () => {
+        let record = recordOf(id)
+        if (record === undefined) {
+          const nowMs = now()
+          record = { inherit: '', workspace: '', createdAt: nowMs, lastActiveAt: nowMs }
+          sessions[id] = record
+          markRecordDirty(id, record)
+        }
+        if (record.disposedAt === undefined) {
+          record.disposedAt = now()
+          markDirty(id, 'disposedAt')
+          disposedAtToSchedule = record.disposedAt
+          return { changed: true, result: record }
+        }
+        return { changed: false, result: record }
+      })
+      if (outcome.ok !== true) return undefined
+      if (disposedAtToSchedule !== null) scheduleSweepTimer(disposedAtToSchedule)
       prune()
-      return recordCopy(record)
+      return recordCopy(outcome.result)
     },
 
     /**
@@ -469,15 +516,20 @@ export function createSessionRegistry(options = {}) {
      */
     reactive(sessionId) {
       prune()
-      const record = recordOf(sessionId)
-      if (record === undefined) return undefined
-      if (record.disposedAt !== undefined) {
-        delete record.disposedAt
-        record.lastActiveAt = now()
-        markDirty(sessionId, 'disposedAt', 'lastActiveAt')
-        persist()
-      }
-      return recordCopy(record)
+      const id = String(sessionId ?? '')
+      const outcome = withDurableRecord(id, () => {
+        const record = recordOf(id)
+        if (record === undefined) return { changed: false, result: undefined }
+        if (record.disposedAt !== undefined) {
+          delete record.disposedAt
+          record.lastActiveAt = now()
+          markDirty(id, 'disposedAt', 'lastActiveAt')
+          return { changed: true, result: record }
+        }
+        return { changed: false, result: record }
+      })
+      if (outcome.ok !== true) return undefined
+      return outcome.result === undefined ? undefined : recordCopy(outcome.result)
     },
 
     /**
@@ -586,18 +638,21 @@ export function createSessionRegistry(options = {}) {
       prune()
       const id = String(sessionId ?? '')
       if (id === '') return undefined
-      const record = ensureRecord(id)
       const source = diff !== null && typeof diff === 'object' ? diff : {}
-      const merged = { ...(record.outbound ?? {}) }
-      for (const [key, value] of Object.entries(source)) {
-        if (value === undefined) delete merged[key]
-        else merged[key] = value
-      }
-      if (Object.keys(merged).length > 0) record.outbound = merged
-      else delete record.outbound
-      markDirty(id, 'outbound')
-      persist()
-      return recordCopy(record)
+      const outcome = withDurableRecord(id, () => {
+        const record = ensureRecord(id)
+        const merged = { ...(record.outbound ?? {}) }
+        for (const [key, value] of Object.entries(source)) {
+          if (value === undefined) delete merged[key]
+          else merged[key] = value
+        }
+        if (Object.keys(merged).length > 0) record.outbound = merged
+        else delete record.outbound
+        markDirty(id, 'outbound')
+        return { changed: true, result: record }
+      })
+      if (outcome.ok !== true) return undefined
+      return recordCopy(outcome.result)
     },
 
     /**
@@ -645,35 +700,41 @@ export function createSessionRegistry(options = {}) {
       refreshSessions()
       const id = String(sessionId ?? '')
       if (id === '') return undefined
-      const record = ensureRecord(id)
-      const existing = normalizeControlOverlay(record.control)
-      const merged = existing === null ? {} : deepCopyPlain(existing)
       const input = diff !== null && typeof diff === 'object' ? diff : {}
-      for (const key of ['mode', 'owner', 'approvalOwnerOnly', 'approvalMembers']) {
-        if (!Object.prototype.hasOwnProperty.call(input, key)) continue
-        const value = input[key]
-        if (value === undefined || value === null) delete merged[key]
-        else merged[key] = value
-      }
-      const normalized = normalizeControlOverlay(merged)
-      if (normalized === null) delete record.control
-      else record.control = deepCopyPlain(normalized)
-      markDirty(id, 'control')
-      persist()
-      return recordCopy(record)
+      const outcome = withDurableRecord(id, () => {
+        const record = ensureRecord(id)
+        const existing = normalizeControlOverlay(record.control)
+        const merged = existing === null ? {} : deepCopyPlain(existing)
+        for (const key of ['mode', 'owner', 'approvalOwnerOnly', 'approvalMembers']) {
+          if (!Object.prototype.hasOwnProperty.call(input, key)) continue
+          const value = input[key]
+          if (value === undefined || value === null) delete merged[key]
+          else merged[key] = value
+        }
+        const normalized = normalizeControlOverlay(merged)
+        if (normalized === null) delete record.control
+        else record.control = deepCopyPlain(normalized)
+        markDirty(id, 'control')
+        return { changed: true, result: record }
+      })
+      if (outcome.ok !== true) return undefined
+      return recordCopy(outcome.result)
     },
 
     /** 清空会话控制覆盖层（幂等；记录/覆盖层不存在时安全无操作）。 */
     clearControl(sessionId) {
       refreshSessions()
-      const record = recordOf(String(sessionId ?? ''))
-      if (record === undefined) return undefined
-      if (record.control !== undefined) {
+      const id = String(sessionId ?? '')
+      const outcome = withDurableRecord(id, () => {
+        const record = recordOf(id)
+        if (record === undefined) return { changed: false, result: undefined }
+        if (record.control === undefined) return { changed: false, result: record }
         delete record.control
-        markDirty(sessionId, 'control')
-        persist()
-      }
-      return recordCopy(record)
+        markDirty(id, 'control')
+        return { changed: true, result: record }
+      })
+      if (outcome.ok !== true) return undefined
+      return outcome.result === undefined ? undefined : recordCopy(outcome.result)
     },
 
     /**
@@ -693,14 +754,18 @@ export function createSessionRegistry(options = {}) {
         const existing = recordOf(id)
         return existing === undefined ? undefined : recordCopy(existing)
       }
-      const record = ensureRecord(id)
-      const list = Array.isArray(record.inbound) ? record.inbound.filter((item) => item != null) : []
-      if (!list.some((item) => item.channel === channel && item.userId === userId)) {
+      const outcome = withDurableRecord(id, () => {
+        const record = ensureRecord(id)
+        const list = Array.isArray(record.inbound) ? record.inbound.filter((item) => item != null) : []
+        if (list.some((item) => item.channel === channel && item.userId === userId)) {
+          return { changed: false, result: record }
+        }
         record.inbound = [...list, { channel, userId }]
         markDirty(id, 'inbound')
-        persist()
-      }
-      return recordCopy(record)
+        return { changed: true, result: record }
+      })
+      if (outcome.ok !== true) return undefined
+      return recordCopy(outcome.result)
     },
 
     /**
@@ -711,19 +776,22 @@ export function createSessionRegistry(options = {}) {
      */
     detachInbound(sessionId, binding) {
       prune()
-      const record = recordOf(sessionId)
-      if (record === undefined) return undefined
+      const id = String(sessionId ?? '')
       const channel = binding?.channel
       const userId = binding?.userId
-      const list = Array.isArray(record.inbound) ? record.inbound : []
-      const next = list.filter((item) => !(item?.channel === channel && item?.userId === userId))
-      if (next.length !== list.length) {
+      const outcome = withDurableRecord(id, () => {
+        const record = recordOf(id)
+        if (record === undefined) return { changed: false, result: undefined }
+        const list = Array.isArray(record.inbound) ? record.inbound : []
+        const next = list.filter((item) => !(item?.channel === channel && item?.userId === userId))
+        if (next.length === list.length) return { changed: false, result: record }
         if (next.length === 0) delete record.inbound
         else record.inbound = next
-        markDirty(sessionId, 'inbound')
-        persist()
-      }
-      return recordCopy(record)
+        markDirty(id, 'inbound')
+        return { changed: true, result: record }
+      })
+      if (outcome.ok !== true) return undefined
+      return outcome.result === undefined ? undefined : recordCopy(outcome.result)
     },
 
     /**
@@ -736,7 +804,7 @@ export function createSessionRegistry(options = {}) {
       let keys = []
       try { keys = store?.keys?.('bind:') ?? [] } catch { keys = [] }
       const nowMs = now()
-      let migrated = 0
+      const addedIds = []
       for (const key of keys) {
         let value
         try { value = store?.get?.(key) } catch { continue }
@@ -744,10 +812,15 @@ export function createSessionRegistry(options = {}) {
         if (recordOf(value) !== undefined) continue
         sessions[value] = { inherit: '', workspace: '', createdAt: nowMs, lastActiveAt: nowMs }
         markRecordDirty(value, sessions[value])
-        migrated += 1
+        addedIds.push(value)
       }
-      if (migrated > 0) persist()
-      return migrated
+      if (addedIds.length === 0) return 0
+      if (persist() !== true) {
+        // v0.14（P1-02）：补建未落盘 → 回滚内存，绝不让 caller 看到未持久化的迁移记录。
+        for (const id of addedIds) { delete sessions[id]; dirtyFields.delete(id) }
+        return 0
+      }
+      return addedIds.length
     },
 
     /** 反注册宿主事件 + 清理全部定时兜底（幂等，可重复调用）。 */

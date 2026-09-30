@@ -64,7 +64,7 @@
     "verify:release": "node scripts/verify-release.mjs"
   },
   "dshQuality": {
-    "testCount": 2119
+    "testCount": 2139
   },
   "dsh": {
     "bundle": {
