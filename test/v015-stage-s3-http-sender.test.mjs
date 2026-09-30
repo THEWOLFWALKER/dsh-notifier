@@ -14,7 +14,7 @@ import assert from 'node:assert/strict'
 import * as bark from '../src/adapters/bark.mjs'
 import * as webhook from '../src/adapters/webhook.mjs'
 import * as telegram from '../src/adapters/telegram.mjs'
-import { SENDERS, senderOf, senderTypes } from '../src/adapters/senders.mjs'
+import { senderOf, senderTypes } from '../src/adapters/senders.mjs'
 import { SENDER_LIFECYCLE, defineStatelessSender, bridgeStatelessAdapter } from '../src/adapters/sender.mjs'
 import { NotifyError, ERROR_CODES } from '../src/adapters/_shared.mjs'
 import { composeOutboundChannels } from '../src/assembly/outbound.mjs'
@@ -216,18 +216,20 @@ test('T09 真实装配：notifier 对已登记简单 HTTP 渠道走 sender 契�
   assert.equal(JSON.parse(seen.body).device, 'phone')
 })
 
-test('T09 回退边界：未登记渠道不走 sender（senderOf 返回 null），注册表仅收敛试点渠道', () => {
-  assert.equal(senderOf('telegram'), null)
-  // T10 起 qq-bot/wecom-app 以 stateful sender 接入（此处只断言登记事实，契约形状见 s4 套件）。
+test('T09 回退边界：T11 起全部 provider 登记；未知类型仍 senderOf→null（未登记渠道原状）', () => {
+  // T11 把全部出站 provider 迁入 sender 契约（分类见 provider-registry.mjs / s5 套件）。
+  assert.equal(senderOf('telegram').lifecycle, 'stateless')
   assert.equal(senderOf('qq-bot')?.lifecycle, 'stateful')
   assert.equal(senderOf('wecom-app')?.lifecycle, 'stateful')
-  assert.deepEqual(senderTypes().sort(), ['bark', 'qq-bot', 'webhook', 'wecom-app'])
-  assert.deepEqual(Object.keys(SENDERS).sort(), ['bark', 'qq-bot', 'webhook', 'wecom-app'])
+  // 未知类型 fail-closed：senderOf 返回 null → 调用方回落旧 adapter.send。
+  assert.equal(senderOf('no-such-channel'), null)
+  assert.equal(senderOf(''), null)
+  assert.ok(senderTypes().length >= 28, '全量登记后 sender 数不少于 28 个出站 provider')
   assert.equal(senderOf('bark').type, bark.type)
   assert.equal(senderOf('webhook').type, webhook.type)
 })
 
-test('T09 回退边界：未登记渠道的 notifier 发送行为不变（telegram 旧路径）', async () => {
+test('T09 回退边界：已登记渠道的 notifier 发送行为不变（telegram 经 sender 契约）', async () => {
   const channels = [{ type: 'telegram', config: telegram.resolve({ botToken: '123:ABC', chatId: '-100' }) }]
   const notifier = createNotifier({ logger: { warn() {} } }, channels, { segment: { enabled: false } })
   const cap = capture({ ok: true, result: { message_id: 1 } })

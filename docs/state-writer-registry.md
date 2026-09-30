@@ -17,6 +17,7 @@ to own the fact.
 | `transact(mutator)` | lock → fresh read → detached draft → `mutator(draft)` → atomic rename → publish memory. Returns `{ ok, committed, durable, code, value }`. `false`/`undefined` are **not** aborts. |
 | `transactOutcome(store, mutator)` | narrow variant; mutator gets `(draft, control)` and `control.abort(reason)` = business rejection with **zero write / zero publish**; returns `aborted` + taxonomy `code`. |
 | `setDurable` / `deleteDurable` / `sweepPrefix` | single-key helpers; `committed===true` is the truth test. |
+| `mergeDurable(store, key, patch)` | single-key **field-merge** in one transaction (T11); preserves concurrent sibling writes on `<type>:account`. |
 | `transactDurable` | cross-key transaction; no real `transact` → `TRANSACTION_UNAVAILABLE` (never fakes atomicity). |
 
 ## Registry
@@ -32,7 +33,7 @@ to own the fact.
 | `route:channels` | agent-router | `setChannelDefault` | **single** |
 | `route:sessions` | ⚠️ router **and** session-registry | `agent-router.commitSessions` + `session-registry.persist` | **MULTI — T14 target** |
 | `channel:<type>:outbound` | outbound-config | `outbound-config` `save`/`remove` (single in-transaction merge); `channel-config-migration` is a **one-shot, marker-guarded** projection | **single** (converged at T08) |
-| `channel:<type>:inbound` / `<type>:account` | channel-config | `channel-config.mergeAccount` (in-transaction) + scan onboarding `_feishu-register` / `_qq-scan` (`setDurable` whole-object) | **MULTI — T11 target** |
+| `channel:<type>:inbound` / `<type>:account` | channel-config | `channel-config.mergeAccount` (in-transaction) + scan onboarding `_feishu-register` / `_qq-scan` (`mergeDurable`, in-transaction field merge) | **single** (converged at T11) |
 | `aq:<id>` | questions router | `questions/router.mjs` | single |
 | approval rows | approval router | `approval/router.mjs` | single |
 | action rows | actions | `actions.mjs` | single |
@@ -68,7 +69,7 @@ to own the fact.
 |---|---|---|---|
 | `inbound:pairing` `mint` / `revoke` still read-modify-write via `writeCodes` (two writes; `sweep` itself nests a `writeCodes`) | inlining `sweep` into one transaction without a nested `transact` needs a non-writing `sweepInTable` variant first | concurrent admin mint/revoke can lose one code entry; redeem path is already atomic | T06 follow-up: extract `sweepInTable` (no write) and run mint/revoke under `transactOutcome` |
 | `route:sessions` multi-writer (router ↔ session-registry) | assigned to T14 | same-key lost update across the two writers | T14 |
-| inbound `<type>:account` scan onboarding (`_feishu-register` / `_qq-scan`) writes a whole object via `setDurable` while the port merges in-transaction | assigned to T11 | concurrent scan + manual `put` can drop a sibling field (feishu/qq write the same two fields today; low blast radius) | T11: route scan credential commits through a transactional field merge |
+| inbound `<type>:account` scan onboarding (`_feishu-register` / `_qq-scan`) wrote a whole object via `setDurable` while the port merged in-transaction | assigned to T11 | concurrent scan + manual `put` could drop a sibling field (feishu/qq write the same two fields today; low blast radius) | **resolved at T11**: scan commits now go through `mergeDurable` (in-transaction field merge); see the T11 row in `core-distillation-v015.md` |
 
 ## Outbound config layers (T08)
 
@@ -98,4 +99,6 @@ of the config, no leaked credential.
 Done in S1: `inbound:bindings`, `inbound:pending`, `inbound:migrated` (identity is the single
 in-lock authority; last-owner enforced in-lock). Done in S2: `channel:<type>:outbound`
 (outbound-config is the single in-transaction authority; migration is a one-shot projection).
-Not yet converged: `route:sessions` (T14) and inbound `<type>:account` scan writers (T11).
+Done in S5 (T11): inbound `<type>:account` scan onboarding now merges in-transaction
+(`mergeDurable`), so the credential domain has one merge authority.
+Not yet converged: `route:sessions` (T14).

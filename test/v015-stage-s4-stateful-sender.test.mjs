@@ -64,7 +64,8 @@ test('T10 契约：qq-bot/wecom-app 声明 stateful，只含 validate/createRunt
       assert.equal(typeof sender[verb], 'function', `stateful sender 必须有 ${verb}()`)
     }
   }
-  assert.deepEqual(senderTypes().sort(), ['bark', 'qq-bot', 'webhook', 'wecom-app'])
+  // T11 起全部 provider 已登记，这里只断言两个 stateful 试点在位（全量与分类见 s5 套件）。
+  assert.ok(senderTypes().includes('qq-bot') && senderTypes().includes('wecom-app'))
 })
 
 test('T10 契约：stateless 渠道（bark/webhook）绝不伪造 createRuntime/retire', () => {

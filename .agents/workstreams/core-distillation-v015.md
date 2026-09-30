@@ -2,7 +2,7 @@
 
 - **identity**: agent `flash`, task pack `dsh-notifier-flash-complete-taskpack` (T01–T30)
 - **branch**: `codex/core-distillation-v015` (off `dev`)
-- **status**: in progress — T01–T09 done (T06 partial)
+- **status**: in progress — T01–T11 done (T06 partial)
 - **owner scope**: core authority convergence, Native/Recovery UX, local config export/import, dsh-im
   bridge, remote URL, optional CF Tunnel, Workers/Pages extension package, docs/tests/delivery.
 - **explicitly out of scope**: `main`, tags, npm publish, real cloud deploy, full encrypted secret
@@ -405,6 +405,44 @@ T09's registry assertion was updated to include the two new stateful entries.
 **Count**: 2197 → **2211** (README.md / README.zh-CN.md / HANDOFF.md / package.json `dshQuality.testCount` /
 docs/memory/project-state.md synced; `verify-release` green).
 
+## T11 — 全部 provider 保留迁移
+
+**Result**: every outbound provider is now classified and registered under the sender contract, and the
+last multi-writer credential key converges — all without touching a byte of protocol code.
+
+- **Contract matrix** (`src/adapters/provider-registry.mjs`, new): the single source of truth for all
+  **28** outbound providers — `lifecycle` (stateless/stateful), `owned resources`, and whether the
+  channel is wired for button/card interaction. It is **descriptive only** (never on a payload / validate
+  / timeout path), unknown types return `null` (fail-closed), and `providerRegistryDrift()` proves the
+  matrix and the sender registry cannot disagree (lifecycle written in exactly one place).
+- **Full registration** (`src/adapters/senders.mjs`): all 28 providers are bridged — handwritten HTTP /
+  local channels and the spec-engine channels as `bridgeStatelessAdapter`, QQ 官方机器人 / 企业微信应用 as
+  `bridgeStatefulAdapter`. `senderOf()` is the single lookup; the T09/T10 pilot-only assertions were
+  updated to the full-census fact (the census itself moved to the s5 suite).
+- **No protocol change**: `sender.send` and the legacy `adapter.send` are shape-compatible
+  (`(resolved,msg) → value`), so segmentation / retry / evidence inference are reused verbatim. The s5
+  suite proves the request fingerprint (url/body/headers) and the thrown `NotifyError.code` are identical
+  on both sides for a representative set of channels.
+- **Boundaries honored**: no dsh-im protocol copied, no platform parser/auth lifted into a "universal
+  core", no media/voice/new platform added; inbound negatives (TG offset pause, Feishu ACK/card patch,
+  DingTalk reconnect, WeChat login state) stay owned by their own suites — an import-direction fitness
+  check proves the outbound seam cannot import inbound/transport modules.
+- **Credential merge convergence** (T07 deferral, assigned here): the scan onboarding writers
+  `_feishu-register` / `_qq-scan` no longer write the whole `<type>:account` object via `setDurable`;
+  they commit through the new `mergeDurable(store, key, patch)` — a **single-key field merge inside one
+  transaction** (same semantics as `channel-config.mergeAccount`). A concurrent manual `put` / second
+  scan on the same key can no longer drop a sibling field. `docs/state-writer-registry.md` verdict for
+  `<type>:account` moves **MULTI → single**.
+
+**Tests**: `test/v015-stage-s5-provider-migration.test.mjs` (15 cases) — completeness (28 senders ==
+`CHANNEL_TYPES`), matrix ↔ registry ↔ capability-matrix interaction axis, fail-closed unknown, contract
+shape (stateless has no lifecycle verbs; stateful has exactly the four), protocol goldens, error-code
+parity, import-direction fitness, inbound-negative suite presence, unknown-channel fallback, real-assembly
+send evidence, and the credential field-merge (sibling preserved). T09/T10 registry assertions updated.
+
+**Count**: 2211 → **2226** (README.md / README.zh-CN.md / HANDOFF.md / package.json `dshQuality.testCount` /
+docs/memory/project-state.md synced; `docs/state-writer-registry.md` convergence updated; `verify-release` green).
+
 ## Task status
 
 | Task | Status | Commit | Evidence |
@@ -418,5 +456,6 @@ docs/memory/project-state.md synced; `verify-release` green).
 | T07 | done | `ca5097a` | `docs/state-writer-registry.md` |
 | T08 | done | `93dfc50` | desired/resolved/resources layers + apply-failure divergence + runtime revision fence; `test/v015-stage-s2-config-layers.test.mjs` → 8 pass |
 | T09 | done | `f6cc400` | stateless sender contract + Bark/Webhook pilot registry; `test/v015-stage-s3-http-sender.test.mjs` → 14 pass |
-| T10 | done | (this commit) | stateful sender runtime (single-owner + epoch + bounded dispose) + QQ/WeCom migration; `test/v015-stage-s4-stateful-sender.test.mjs` → 14 pass |
-| T11–T30 | not started | — | — |
+| T10 | done | `a0af7b1` | stateful sender runtime (single-owner + epoch + bounded dispose) + QQ/WeCom migration; `test/v015-stage-s4-stateful-sender.test.mjs` → 14 pass |
+| T11 | done | (this commit) | all-28 provider contract matrix + full sender registration + credential field-merge convergence; `test/v015-stage-s5-provider-migration.test.mjs` → 15 pass |
+| T12–T30 | not started | — | — |

@@ -8,7 +8,7 @@
 // （与 feishu-bot.mjs 的缺包降级模式一致）；超时/抛错一律归一为 { status, message } 结果对象，
 // 形态由 scripts/channel-login.mjs 的 loginQq 消费（status: ok/missing-sdk/failed，ok 带 appId）。
 
-import { setDurable } from './store.mjs'
+import { mergeDurable } from './store.mjs'
 
 const CONNECTOR_PACKAGE = '@tencent-connect/qqbot-connector'
 const ACCOUNT_KEY = 'qq:account'
@@ -121,8 +121,10 @@ export async function qqScan({ store, onQr, timeoutMs = 480000, logger, connecto
     if (timedOut) return { status: 'failed', message: '扫码超时' }
     const appId = String(valid.appId)
     // 「已写入」必须以 durable 结果为准：落盘失败绝不返回 ok（避免假成功）。
+    // v0.15（T11）：走**事务内字段级合并**（mergeDurable）——并发手工 put / 另一次扫码写同一
+    // `qq:account` 的不同字段时以 draft 最新值合并，绝不整对象覆盖掉兄弟字段。
     if (store === undefined || store === null
-      || setDurable(store, ACCOUNT_KEY, { appId, appSecret: String(valid.appSecret), at: Date.now() }) !== true) {
+      || mergeDurable(store, ACCOUNT_KEY, { appId, appSecret: String(valid.appSecret), at: Date.now() }) !== true) {
       return { status: 'failed', message: '扫码授权成功，但凭证写入失败（磁盘/权限/锁），登录未完成；请检查 state 目录后重试' }
     }
     emitLog(`QQ 扫码授权成功：appId=${appId}（已写入 ${ACCOUNT_KEY}）`)

@@ -487,6 +487,26 @@ export function setDurable(store, key, value) {
 }
 
 /**
+ * v0.15（T11）：`<type>:account` 凭证域的**事务内字段级合并**写（与 channel-config 端口的
+ * mergeAccount 同一语义，供扫码 onboarding 复用）。整对象 `setDurable` 写的读-改-写窗口会在
+ * 并发手工 `put` / 另一次扫码写同一键的不同字段时丢掉兄弟字段（sibling lost update）。
+ * 合并与落盘在同一事务内完成；无真实 transact 时回退单键 durable 写（不伪造原子性）。
+ * @returns {boolean} committed/durable 是否成功
+ */
+export function mergeDurable(store, key, patch) {
+  if (typeof store?.transact === 'function') {
+    const result = transactDurable(store, (draft) => {
+      const existing = draft[key]
+      const base = existing !== null && typeof existing === 'object' && !Array.isArray(existing) ? existing : {}
+      draft[key] = { ...base, ...patch }
+      return true
+    })
+    return result.committed === true
+  }
+  return setDurable(store, key, patch)
+}
+
+/**
  * v0.13：跨键 durable transaction。没有真实 transact 能力时不伪造原子成功，
  * 让需要跨域一致性的 application service 明确失败，而不是退回多次单键写。
  */
