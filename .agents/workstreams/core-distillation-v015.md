@@ -2,7 +2,7 @@
 
 - **identity**: agent `flash`, task pack `dsh-notifier-flash-complete-taskpack` (T01–T30)
 - **branch**: `codex/core-distillation-v015` (off `dev`)
-- **status**: in progress — T01–T11 done (T06 partial)
+- **status**: in progress — T01–T12 done (T06 partial)
 - **owner scope**: core authority convergence, Native/Recovery UX, local config export/import, dsh-im
   bridge, remote URL, optional CF Tunnel, Workers/Pages extension package, docs/tests/delivery.
 - **explicitly out of scope**: `main`, tags, npm publish, real cloud deploy, full encrypted secret
@@ -443,6 +443,41 @@ send evidence, and the credential field-merge (sibling preserved). T09/T10 regis
 **Count**: 2211 → **2226** (README.md / README.zh-CN.md / HANDOFF.md / package.json `dshQuality.testCount` /
 docs/memory/project-state.md synced; `docs/state-writer-registry.md` convergence updated; `verify-release` green).
 
+## T12 — 投递证据与 health 收口
+
+**Result**: the health surface now speaks the same three-bucket evidence vocabulary as delivery, is
+bounded in both size and time, and is scoped to a runtime generation.
+
+- **Three evidence buckets** (`src/control-surface/health.mjs`): `accepted` (provider took the request),
+  `delivered` (explicit receipt == `confirmed`), `unknown` (result indeterminate — timeouts etc.). A
+  legacy `delivered` record (old "send resolved" meaning) is normalized to `accepted`, **never** to
+  confirmed. `unknown` never counts as success or as a definitive failure.
+- **`unknown` not double-counted as `failed`** (`recordSend`): a failure row carrying `uncertain: true`
+  is recorded **only** in the `unknown` bucket — otherwise one indeterminate send would be both a
+  certain failure and "unknown", and the channel would be mislabeled `degraded`.
+- **Bounded, time-aware history**: a `window` cap (5–100) plus a `ttlMs` TTL (default 24h) prune stale
+  observations on snapshot, so a long-running process no longer accumulates unbounded history.
+- **Runtime epoch**: `markEpoch(type)` advances a monotonic per-type generation and discards the old
+  generation's observations. `src/index.mjs` wires it to the outbound-source lifecycle event, so a
+  replaced/removed/replaced-all runtime's late observations can never pollute the new instance
+  ("断线旧 epoch 观察不污染新实例").
+- **State semantics** (`healthState` / `healthView`): configured + active but **no evidence** → `ready`
+  (never `online`/`healthy`); latest result indeterminate → `unavailable`; `restartPending` outranks
+  evidence health; `supported:false` → `unsupported` explicitly. `healthView` carries `epoch` and the
+  observation timestamps (`observedAt` / `last*At`), never fabricating a time when there is no evidence.
+- **Observer failures never change delivery**: malformed records are ignored, never thrown.
+- **End-to-end** (`src/notify.mjs`): a timeout (or `uncertain`) failure now audits `unknown:[type]` with
+  `failed[0].uncertain === true` (instead of a plain certain failure), so the health surface reports
+  `unavailable` rather than a fabricated failure/success, and the result is **never** replayed.
+
+**Tests**: `test/v015-stage-s6-delivery-evidence-health.test.mjs` (11 cases) — three-bucket separation,
+legacy-delivered→accepted, unknown vs failed separation, window cap, TTL eviction, epoch advance + drain,
+healthView epoch/timestamps, `ready`/`unavailable`/`unsupported`/`restart-pending`, observer robustness,
+and the end-to-end timeout → `unknown` bucket + `unavailable`.
+
+**Count**: 2226 → **2237** (README.md / README.zh-CN.md / HANDOFF.md / package.json `dshQuality.testCount` /
+docs/memory/project-state.md synced; `verify-release` green).
+
 ## Task status
 
 | Task | Status | Commit | Evidence |
@@ -457,5 +492,6 @@ docs/memory/project-state.md synced; `docs/state-writer-registry.md` convergence
 | T08 | done | `93dfc50` | desired/resolved/resources layers + apply-failure divergence + runtime revision fence; `test/v015-stage-s2-config-layers.test.mjs` → 8 pass |
 | T09 | done | `f6cc400` | stateless sender contract + Bark/Webhook pilot registry; `test/v015-stage-s3-http-sender.test.mjs` → 14 pass |
 | T10 | done | `a0af7b1` | stateful sender runtime (single-owner + epoch + bounded dispose) + QQ/WeCom migration; `test/v015-stage-s4-stateful-sender.test.mjs` → 14 pass |
-| T11 | done | (this commit) | all-28 provider contract matrix + full sender registration + credential field-merge convergence; `test/v015-stage-s5-provider-migration.test.mjs` → 15 pass |
-| T12–T30 | not started | — | — |
+| T11 | done | `c290f64` | all-28 provider contract matrix + full sender registration + credential field-merge convergence; `test/v015-stage-s5-provider-migration.test.mjs` → 15 pass |
+| T12 | done | (this commit) | accepted/delivered/unknown buckets + bounded (cap+TTL) + runtime-epoch health closure; `test/v015-stage-s6-delivery-evidence-health.test.mjs` → 11 pass |
+| T13–T30 | not started | — | — |

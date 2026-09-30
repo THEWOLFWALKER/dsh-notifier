@@ -306,6 +306,11 @@ export function apply(ctx, config = {}) {
   // with desired config changes.  Consumers still read the live manager.
   disposers.push(outboundSource.subscribe((event) => {
     surfaceRevision.touch(event?.topic === 'runtime' ? 'runtime' : 'channels')
+    // v0.15（T12）：runtime 实例世代前进（replace/remove/replaceAll）→ 旧实例的迟到健康
+    // 观察一律作废，绝不污染新实例的观察面（「断线旧 epoch 观察不污染新实例」）。
+    if (event?.topic === 'runtime' && typeof event.type === 'string' && event.type !== '') {
+      surfaceHealth.markEpoch(event.type)
+    }
   }))
 
   // v0.6 公共面装配（设计稿 §2.5）：notifier 之后创建 facade 并注册服务。public.enabled:false

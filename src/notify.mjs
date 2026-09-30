@@ -7,6 +7,7 @@ import { resolveRouting, routeTargets, retryPolicyOf, sendWithRetry, normalizeLe
 import { sendSegmented } from './inbound/segment.mjs'
 import { isConfirmedReceipt } from './delivery-evidence.mjs'
 import { senderOf } from './adapters/senders.mjs'
+import { ERROR_CODES } from './adapters/_shared.mjs'
 
 /**
  * 创建一个 notifier：内部持有「已启用渠道」列表。
@@ -127,8 +128,16 @@ export function createNotifier(ctx, channels, options = {}) {
         const publicText = error instanceof Error ? (error.publicMessage ?? error.message) : String(error)
         const internalDetail = error instanceof Error ? (error.detail ?? error.message) : String(error)
         warn(`渠道 "${type}" 推送失败: ${internalDetail}`)
+        // T12：结果不确定（超时等，请求可能已到达对端）与确定性失败分开表达——unknown 既非
+        // 成功证据也非确定性失败，健康面据此报 unavailable 而非伪造 healthy，也绝不触发重放。
+        const uncertain = error instanceof Error
+          && (error.uncertain === true || (error.noRetry === true && error.code === ERROR_CODES.TIMEOUT))
         const result = channelResult(type, 'failed', error)
-        audit(normalized, { ok: false, accepted: [], confirmed: [], delivered: [], skipped: [], failed: [{ channel: type, error: publicText }] }, { source: sendOptions?.source, channel: type })
+        audit(normalized, {
+          ok: false, accepted: [], confirmed: [], delivered: [], skipped: [],
+          unknown: uncertain ? [type] : [],
+          failed: [{ channel: type, error: publicText, ...(uncertain ? { uncertain: true } : {}) }],
+        }, { source: sendOptions?.source, channel: type })
         return result
       }
     })())
