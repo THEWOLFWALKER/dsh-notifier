@@ -34,9 +34,24 @@
 // 保留插件自有 `ask_user` fallback，绝不伪造「已桥接」。
 
 import { detectQuestionsMode, readUserQuestions } from './capability.mjs'
+import { hostQuestionFeatures } from './seam.mjs'
 import { createQuestionsControlService } from '../control-plane/questions.mjs'
 
 const isRecord = (value) => typeof value === 'object' && value !== null
+
+/**
+ * v0.15（T13 / H02）：一个答案集合是否「全未作答」（有界等待结束/跳过/终止，非明确答复）。
+ * 只有这种结果才可能与宿主的迟到答复语义相关；有任一答案就说明本侧已给出终态。
+ */
+function isUnanswered(value) {
+  const answers = Array.isArray(value?.answers) ? value.answers : null
+  if (answers === null || answers.length === 0) return true
+  return answers.every((answer) => {
+    const selected = Array.isArray(answer?.selected) ? answer.selected : []
+    const custom = typeof answer?.custom === 'string' ? answer.custom : ''
+    return selected.length === 0 && custom === ''
+  })
+}
 
 /**
  * v0.14（Stage D / P1-08）：合并 Host caller signal 与本地 GUI-race signal。
@@ -104,6 +119,19 @@ export function createNativeQuestionBridge(deps = {}) {
 
   /** deps.canDeliver：入站交互通道是否就绪（空表 = 无手机面，拦截器不截流）。 */
   const canDeliver = typeof deps.canDeliver === 'function' ? deps.canDeliver : () => true
+
+  /**
+   * v0.15（T13 / H02）：宿主是否声明「有界等待 / 迟到答复」语义（0.2 线）。
+   * 未知版本与 0.1.7 线一律 false（保守）——此时本侧有界等待结束即交回未作答终态，
+   * 不做迟到答复假设；只有宿主明确支持时，才在「本侧未作答且宿主仍 pending」时交回
+   * 宿主自身 answerer。探测绝不抛错。
+   */
+  const lateReplySupported = () => {
+    try {
+      const features = hostQuestionFeatures(ctx)
+      return features.timed === true || features.continued === true
+    } catch { return false }
+  }
 
   /**
    * 宿主经 ctx.userQuestions.ask() 调用的 provider.ask(request) 入口：
@@ -223,15 +251,26 @@ export function createNativeQuestionBridge(deps = {}) {
       // headless NO_PROVIDER）不判死提问，手机/管理台仍可作答。
       downstream.catch(() => { /* race 输家，无需处理 */ })
       let downstreamWon = false
+      let downstreamSettled = false
       return Promise.race([
         telegramAnswer,
         downstream.then(
-          (value) => { downstreamWon = true; return value },
-          () => new Promise(() => { /* 下游失败：悬置，等本侧答案 */ }),
+          (value) => { downstreamWon = true; downstreamSettled = true; return value },
+          () => { downstreamSettled = true; return new Promise(() => { /* 下游失败：悬置，等本侧答案 */ }) },
         ),
-      ]).then((winner) => {
+      ]).then(async (winner) => {
         if (downstreamWon) {
           try { controller.abort() } catch { /* 已终结则忽略 */ }
+          return winner
+        }
+        // v0.15（T13 / H02）：本侧（手机/管理台）先返回且为「全未作答」时——
+        // 若宿主声明了 timed/continued（有界等待结束、问题仍 pending，迟到答复仍可结算），
+        // caller 未取消，且下游 GUI answerer 仍未结算 → **交回宿主自身 answerer**，让迟到答复
+        // 仍可 win，绝不把「未作答」误当作终态取消宿主问题。宿主侧无 answerer/失败（下游已
+        // settle 为 reject）→ 回交未作答，有界收尾、不悬挂。
+        if (lateReplySupported() && isUnanswered(winner)
+          && request?.signal?.aborted !== true && downstreamSettled !== true) {
+          try { return await downstream } catch { return winner }
         }
         return winner
       })

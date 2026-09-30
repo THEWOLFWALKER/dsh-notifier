@@ -467,7 +467,7 @@ spec 条目，并为每条标注**旧代码 oracle**（现有 `test/` 或 `src/`
 
 ## 六、Host seam
 
-事实 owner：`src/host/**`、`src/host-events.mjs`、`src/control/entry.mjs`、`src/plugin-entry.mjs`。
+事实 owner：`src/host/**`（含 `src/host/seam.mjs` 集中接缝）、`src/host-events.mjs`、`src/control/entry.mjs`、`src/plugin-entry.mjs`。
 
 ### HST-01 · 服务缺失/晚注入/撤销 → 局部降级（H01）
 
@@ -529,6 +529,36 @@ spec 条目，并为每条标注**旧代码 oracle**（现有 `test/` 或 `src/`
 - **证据链接**：`docs/compatibility-matrix.md`（alpha.2 / rc.1 = contract/source verified）
 - **旧 test 映射**：无
 - **矩阵**：**—（外部证据缺口）**
+
+### HST-05 · Host seam 集中化与 Cordis 生命周期（H01/H03）
+
+- **分类**：MUST_PRESERVE
+- **事实 owner**：`src/host/seam.mjs`（唯一读取/调用宿主服务与 optional-dependency 生命周期的入口）
+- **适用版本**：v0.15 起
+- **输入/前置状态**：宿主服务缺失 / 晚注入（`ctx.inject` 依赖晚就绪）/ 撤销 / 重建（子插件重放）；或 cordis 代理对未 inject 服务抛错
+- **公开执行入口**：`src/index.mjs` 装配经 `createHostLifetime().inject(...)`；诊断经 `createHostSeam` / `readHostService` / `hostQuestionFeatures`
+- **结果**：读取绝不抛错、绝不 false-claim（`get(name,false)` 优先，抛错代理按无服务）；late inject 才 attach；replacement 重放时旧 listener 退出、只留一个；dispose 释放全部登记且幂等；无 `ctx.inject` 的宿主/测试桩以根 ctx 直连（局部降级，不阻断其他渠道）
+- **durable diff**：无
+- **effect trace**：缺能力时对应渠道零 effect；其余渠道与通知照常
+- **禁止动作**：不猜私有字段；不 monkey patch 宿主；生产 `src/` 不得裸调 `ctx.inject`（仅 `host/seam.mjs`）
+- **证据链接**：`test/v015-stage-s7-host-seam.test.mjs`（H01 六例 / H03 五例）
+- **旧 test 映射**：`host-seam-audit.test.mjs`、`host-capability.test.mjs`、`native-questions.test.mjs`
+- **矩阵**：**H01 / H03**
+
+### HST-06 · 宿主提问生命周期 timed/continued（H02）
+
+- **分类**：MUST_PRESERVE
+- **事实 owner**：`src/host/seam.mjs`（版本能力声明）+ `src/host/native-questions.mjs`（按能力处理迟到答复）
+- **适用版本**：v0.15 起（能力表覆盖 0.1.7 线与发布版 `0.2.0-rc.2`）
+- **输入/前置状态**：宿主问题 `ask()` 有界等待结束而宿主仍 pending；caller abort；GUI 迟到答复
+- **公开执行入口**：`user-questions/request` waterfall 拦截器
+- **结果**：本侧有界等待结束（全未作答）**绝不误取消**宿主 caller signal；宿主声明 `timed`/`continued`（0.2 线）时，未作答且下游未结算则交回宿主自身 answerer，迟到答复仍可 win；0.1.7/未知版本保守（未作答即终态）；下游无 answerer 时有界收尾、不悬挂
+- **durable diff**：无
+- **effect trace**：无（提问自身的 claim/settle 由问题账本负责）
+- **禁止动作**：不得把「未作答」误当取消；不得伪造宿主能力（版本表仅描述差异，探测结果优先）；未列版本一律保守
+- **证据链接**：`test/v015-stage-s7-host-seam.test.mjs`（H02 四例）、`test/v014-stage-d-question-lifecycle.test.mjs`
+- **旧 test 映射**：`native-questions.test.mjs`、`v014-stage-d-question-lifecycle.test.mjs`
+- **矩阵**：**H02**
 
 ---
 

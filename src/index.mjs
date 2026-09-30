@@ -23,6 +23,8 @@ import { disposeAll } from './assembly/lifecycle.mjs'
 import { registerApprovalHandler } from './approval/router.mjs'
 import { createQuestionBridge, registerAskUserTool } from './questions/router.mjs'
 import { createNativeQuestionBridge } from './host/native-questions.mjs'
+// v0.15（T13）官方 Host seam：集中 optional-dependency（late inject / replacement / dispose）。
+import { createHostLifetime } from './host/seam.mjs'
 import { registerConversationRouter } from './inbound/conversation.mjs'
 // v0.5：动作闭环（通知按钮 → 内置处置动作）
 import { createActionDispatcher } from './actions.mjs'
@@ -302,6 +304,11 @@ export function apply(ctx, config = {}) {
   const notifier = createNotifier(ctx, outboundSource, { segment: resolved.segment, routing: resolved.routing, onSend })
 
   const disposers = []
+  // v0.15（T13）：宿主可选依赖的单一生命周期入口。装配层不再裸调 ctx.inject——late inject
+  // （服务晚出现）、replacement（服务重建后子插件重放）与 dispose（插件卸载释放全部登记）
+  // 都经此收敛；无 ctx.inject 的宿主/测试桩立即以根 ctx 直连（局部降级，绝不阻断装配）。
+  const hostLifetime = createHostLifetime(ctx, { warn })
+  disposers.push(() => hostLifetime.dispose())
   // Runtime lifecycle changes are revision-visible without conflating them
   // with desired config changes.  Consumers still read the live manager.
   disposers.push(outboundSource.subscribe((event) => {
@@ -730,20 +737,11 @@ export function apply(ctx, config = {}) {
           const caps = nativeBridge.capabilities()
           warn(`宿主原生提问桥 ${caps.attached ? `已 attach（${caps.mode}）` : `未 attach（seam=${caps.seam}${caps.error !== null ? `, error=${caps.error}` : ''}，降级 unsupported）`}`)
         }
-        if (typeof ctx?.inject === 'function') {
-          try {
-            // 子插件回调第一参数 = 可选依赖子上下文：waterfall 监听器注册在它上面，
-            // 随 userQuestions 服务的 fiber 生命周期自动撤销/重放（服务替换后自动重挂）。
-            ctx.inject(['userQuestions'], (subCtx) => { nativeBridge.attach(subCtx); reportNativeBridge() })
-          } catch (error) {
-            warn(`ctx.inject 可选依赖包装失败（回落直连 attach）: ${error instanceof Error ? error.message : String(error)}`)
-            nativeBridge.attach()
-            reportNativeBridge()
-          }
-        } else {
-          nativeBridge.attach()
-          reportNativeBridge()
-        }
+        // v0.15（T13）：optional-dependency 生命周期走 hostLifetime（捕获撤销句柄、随插件
+        // dispose 释放），不再裸调 ctx.inject。子插件回调第一参数 = 可选依赖子上下文：
+        // waterfall 监听器注册在它上面，随 userQuestions 服务的 fiber 生命周期自动撤销/重放
+        // （服务替换后自动重挂）；无 ctx.inject 的宿主/测试桩由 hostLifetime 直连 attach。
+        hostLifetime.inject(['userQuestions'], (subCtx) => { nativeBridge.attach(subCtx); reportNativeBridge() }, { label: 'userQuestions' })
         warn(`远程提问已启用：ask_user 工具（限流 ${resolved.questions.rateLimitPerMinute} 次/分钟，超时 ${Math.round(resolved.questions.timeoutMs / 1000)}s 不代答）；飞书/Telegram 单选选项卡 + 全渠道编号兜底`)
       } catch (error) {
         warn(`questions 桥装配失败，已跳过（其余能力不受影响）: ${error instanceof Error ? error.message : String(error)}`)
@@ -934,8 +932,8 @@ export function apply(ctx, config = {}) {
       warn('Native Control Surface RPC 装配失败，已降级为 Standalone: ' + (error instanceof Error ? error.message : String(error)))
     }
   }
-  if (typeof ctx?.inject === 'function') ctx.inject(['connection', 'webServer'], (webCtx) => mountSurfaceRpc(webCtx))
-  else mountSurfaceRpc(ctx)
+  // v0.15（T13）：同一 hostLifetime 收敛 optional-dependency（late inject / replacement / dispose）。
+  hostLifetime.inject(['connection', 'webServer'], (webCtx) => mountSurfaceRpc(webCtx), { label: 'connection,webServer' })
   disposers.push(() => {
     surfaceRevision.dispose()
     launchTickets.dispose()
