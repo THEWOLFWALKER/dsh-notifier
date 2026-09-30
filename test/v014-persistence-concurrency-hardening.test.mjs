@@ -278,14 +278,26 @@ test('S13 late async completion: a slow channel test never regresses revision or
   const { file } = tempState({ 'channel:bark:outbound': { key: 'k' } })
   const store = createStore(file)
   const source = createOutboundSource([{ type: 'bark', config: { key: 'k' } }])
-  const outboundConfig = createOutboundConfigService({ store, yamlRows: new Map(), source, allowLegacy: false })
+  // v0.14（Stage F / P2-01）：出站保存的 revision/activity 唯一 owner 是 domain event
+  // （OutboundConfigService 的 onChange/onAudit，装配层与生产一致接线）；surface 不再重复记账。
+  const revision = createSurfaceRevision()
+  const activity = createSurfaceActivity()
+  const outboundConfig = createOutboundConfigService({
+    store, yamlRows: new Map(), source, allowLegacy: false,
+    onChange: (topic) => revision.touch(topic),
+    onAudit: (topic, detail) => activity.record('configuration', topic, {
+      channel: detail?.type,
+      saved: detail?.saved === true,
+      deleted: detail?.deleted === true,
+      hotApplied: detail?.applied === true,
+    }),
+  })
   let releaseTest
   const channelControl = createChannelControlService({
     outboundConfig,
     channelTest: () => new Promise((resolve) => { releaseTest = () => resolve({ ok: true }) }),
   })
-  const revision = createSurfaceRevision()
-  const surface = makeSurface({ revision, channelControl })
+  const surface = makeSurface({ revision, channelControl, activity })
 
   const testPromise = surface.call('channels.test', { type: 'bark' }) // 在飞行中
   const revisionAtStart = revision.current().revision

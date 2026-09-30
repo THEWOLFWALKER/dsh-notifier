@@ -171,6 +171,10 @@ export function createControlSurfaceService({
         const direction = String(payload?.direction ?? '')
         let result
         if (direction === 'outbound') {
+          // v0.14（Stage F / P2-01）：出站保存的 revision/activity 唯一 owner 是
+          // OutboundConfigService 的 domain event（onChange/onAudit，装配层已接线，Admin 与
+          // Native 共用同一实例）。一处用户动作只应推进一代 revision、只记一条 activity——
+          // 本层只做 RPC 形态映射，绝不再叠加 touch/record，避免 wait loop 被同一保存唤醒两次。
           result = control.saveOutbound(payload?.type, payload?.patch)
         } else if (direction === 'inbound') {
           const saved = await control.saveInbound(payload?.type, payload?.patch)
@@ -180,18 +184,20 @@ export function createControlSurfaceService({
             applyMode: inboundApplyMode(),
             configRevision: Number(saved?.configRevision) || 0,
           }
+          // 入站没有 domain event（inbound port 只 warn 不 emit），故该 domain event 的唯一
+          // owner 就是本 surface：入站保存由本层记账一次。
+          revision.touch('channels')
+          activity.record('configuration', 'channel-saved', {
+            channel: String(payload?.type ?? ''),
+            direction,
+            saved: result.saved === true,
+            hotApplied: result.applied === true,
+          })
         } else {
           const error = new Error('direction 必须是 outbound 或 inbound')
           error.code = 'bad-request'
           throw error
         }
-        revision.touch('channels')
-        activity.record('configuration', 'channel-saved', {
-          channel: String(payload?.type ?? ''),
-          direction,
-          saved: result.saved === true,
-          hotApplied: result.applied === true,
-        })
         return ok(result)
       }
 
