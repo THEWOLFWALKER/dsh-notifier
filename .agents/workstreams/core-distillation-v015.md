@@ -2,7 +2,7 @@
 
 - **identity**: agent `flash`, task pack `dsh-notifier-flash-complete-taskpack` (T01–T30)
 - **branch**: `codex/core-distillation-v015` (off `dev`)
-- **status**: in progress — T01–T12 done (T06 partial)
+- **status**: in progress — T01–T14 done (T06 partial)
 - **owner scope**: core authority convergence, Native/Recovery UX, local config export/import, dsh-im
   bridge, remote URL, optional CF Tunnel, Workers/Pages extension package, docs/tests/delivery.
 - **explicitly out of scope**: `main`, tags, npm publish, real cloud deploy, full encrypted secret
@@ -478,6 +478,55 @@ and the end-to-end timeout → `unknown` bucket + `unavailable`.
 **Count**: 2226 → **2237** (README.md / README.zh-CN.md / HANDOFF.md / package.json `dshQuality.testCount` /
 docs/memory/project-state.md synced; `verify-release` green).
 
+## T13 — 官方 Host seam
+
+**Result**: all host-service reads/calls and Cordis optional-dependency lifecycle are centralized on
+one seam, the declared capability matrix is explicit, and native-question handling is capability-aware.
+
+- **Seam** (`src/host/seam.mjs`, new): `HOST_QUESTION_CAPABILITY` version table (0.1.7-alpha.1 →
+  0.2.0-rc.2: `waterfall`/`provider`/`timed`/`continued`/`verified`), `readHostService(ctx,name)`
+  (defensive; `get(name,false)` first, throwing proxies treated as "no service"), `hostQuestionFeatures`
+  (runtime probe merged with the declared table), `createHostLifetime` (late `ctx.inject` / replacement
+  replay / idempotent dispose that releases every registration), and the `createHostSeam` facade.
+- **Native questions** (`src/host/native-questions.mjs`): late-reply handling is now driven by the
+  host's real `timed`/`continued` capability — an unanswered winner is only handed back to the host
+  answerer when the host supports it, and the host caller signal is **never** aborted by us.
+- **Assembly** (`src/index.mjs`): optional host injection (`userQuestions`, `connection`+`webServer`)
+  routes through `createHostLifetime().inject(...)`; the lifetime disposer is registered once.
+- **Bounds honored**: no support-matrix / peer-range widening (audit only), no dsh-im contract inferred
+  as a host contract, unsupported capabilities degrade locally.
+
+**Tests**: `test/v015-stage-s7-host-seam.test.mjs` (14 cases) — H01 missing/late/revoked service,
+H02 timed/continued late-reply semantics, H03 defensive reads + capability table.
+
+**Count**: 2237 → **2251**. Contract: `docs/behavior-contract.md` HST-05 / HST-06.
+
+## T14 — Session/Routing 收敛
+
+**Result**: `route:sessions` is now a **single transactional writer**. The session registry's lifecycle
+write reads the fresh whole-table base **inside the same `store.transact()` mutator** as the router's
+outbound/control override writer, so both serialize on the store key lock and preserve each other's
+sibling fields (route lifecycle ↔ outbound/control siblings).
+
+- **Fix** (`src/routing/session-registry.mjs`): `persist()` split into a pure `buildNextSessions(base)`
+  (tombstone delete → per-dirty-field record merge → control-overlay sanitize) plus `commitSucceeded()`;
+  the real path runs `transactDurable(store, draft => { draft[SESSIONS_KEY] = buildNextSessions(draft[SESSIONS_KEY]); return true })`,
+  eliminating the previous "read latest outside the transaction, commit the stale snapshot" TOCTOU.
+  A store without `transact` keeps the single-key read-modify-write best-effort fallback (no fabricated
+  atomicity); `committed:false` leaves the in-memory value rolled back (no ghost state).
+- **Already-satisfied (verified, not rebuilt)**: `agent-router.commitSessions` already commits inside a
+  transaction; `SessionArbiter` is constructed per-event from the durable overlay (`src/control/entry.mjs`
+  L271) and holds no long-lived second route cache; identity bindings are already cross-key atomic (T05/T06).
+- **Bounds honored**: no precedence/default/ambiguity change, no user-workspace or Host-log migration.
+
+**Tests**: `test/v015-stage-s8-routing-convergence.test.mjs` (6 cases) — in-transaction base (sibling
+outbound preserved under a simulated stale read view), registry↔router sibling coexistence, cross-session
+preservation, `committed:false` zero-write, no-transact legacy fallback, business-abort isolation.
+Cases 1 & 3 fail on the pre-fix code (verified via `git stash`), so the suite discriminates the fix.
+
+**Count**: 2251 → **2257**. Contract: `docs/behavior-contract.md` RT-05; `docs/state-writer-registry.md`
+`route:sessions` MULTI → single.
+
 ## Task status
 
 | Task | Status | Commit | Evidence |
@@ -493,5 +542,7 @@ docs/memory/project-state.md synced; `verify-release` green).
 | T09 | done | `f6cc400` | stateless sender contract + Bark/Webhook pilot registry; `test/v015-stage-s3-http-sender.test.mjs` → 14 pass |
 | T10 | done | `a0af7b1` | stateful sender runtime (single-owner + epoch + bounded dispose) + QQ/WeCom migration; `test/v015-stage-s4-stateful-sender.test.mjs` → 14 pass |
 | T11 | done | `c290f64` | all-28 provider contract matrix + full sender registration + credential field-merge convergence; `test/v015-stage-s5-provider-migration.test.mjs` → 15 pass |
-| T12 | done | (this commit) | accepted/delivered/unknown buckets + bounded (cap+TTL) + runtime-epoch health closure; `test/v015-stage-s6-delivery-evidence-health.test.mjs` → 11 pass |
-| T13–T30 | not started | — | — |
+| T12 | done | `7735d68` | accepted/delivered/unknown buckets + bounded (cap+TTL) + runtime-epoch health closure; `test/v015-stage-s6-delivery-evidence-health.test.mjs` → 11 pass |
+| T13 | done | `3bcb6c2` | centralized host seam + Cordis lifetime + capability-aware native questions; `test/v015-stage-s7-host-seam.test.mjs` → 14 pass |
+| T14 | done | (this commit) | `route:sessions` single transactional writer; `test/v015-stage-s8-routing-convergence.test.mjs` → 6 pass |
+| T15–T30 | not started | — | — |

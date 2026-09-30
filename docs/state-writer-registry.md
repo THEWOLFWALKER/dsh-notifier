@@ -31,7 +31,7 @@ to own the fact.
 | `inbound:pairing:lockout` | pairing | pairing: redeem failure recorder, `clearLockout` | **single** |
 | `route:agents` | agent-router | `setAgentBinding` (CLI/Admin/router) | **single** |
 | `route:channels` | agent-router | `setChannelDefault` | **single** |
-| `route:sessions` | ⚠️ router **and** session-registry | `agent-router.commitSessions` + `session-registry.persist` | **MULTI — T14 target** |
+| `route:sessions` | session-registry **and** agent-router (both inside one `store.transact()` draft) | `agent-router.commitSessions` + `session-registry.persist` (each reads the fresh base inside the same key transaction) | **single** (converged at T14: no writer commits a base read outside the transaction) |
 | `channel:<type>:outbound` | outbound-config | `outbound-config` `save`/`remove` (single in-transaction merge); `channel-config-migration` is a **one-shot, marker-guarded** projection | **single** (converged at T08) |
 | `channel:<type>:inbound` / `<type>:account` | channel-config | `channel-config.mergeAccount` (in-transaction) + scan onboarding `_feishu-register` / `_qq-scan` (`mergeDurable`, in-transaction field merge) | **single** (converged at T11) |
 | `aq:<id>` | questions router | `questions/router.mjs` | single |
@@ -68,7 +68,7 @@ to own the fact.
 | Item | Why deferred | Risk | Next action |
 |---|---|---|---|
 | `inbound:pairing` `mint` / `revoke` still read-modify-write via `writeCodes` (two writes; `sweep` itself nests a `writeCodes`) | inlining `sweep` into one transaction without a nested `transact` needs a non-writing `sweepInTable` variant first | concurrent admin mint/revoke can lose one code entry; redeem path is already atomic | T06 follow-up: extract `sweepInTable` (no write) and run mint/revoke under `transactOutcome` |
-| `route:sessions` multi-writer (router ↔ session-registry) | assigned to T14 | same-key lost update across the two writers | T14 |
+| `route:sessions` multi-writer (router ↔ session-registry) | assigned to T14 | same-key lost update across the two writers | **resolved at T14**: `session-registry.persist` now reads the fresh base inside the same `store.transact()` mutator as `agent-router.commitSessions`, so the two writers serialize on the store lock and preserve each other's sibling fields |
 | inbound `<type>:account` scan onboarding (`_feishu-register` / `_qq-scan`) wrote a whole object via `setDurable` while the port merged in-transaction | assigned to T11 | concurrent scan + manual `put` could drop a sibling field (feishu/qq write the same two fields today; low blast radius) | **resolved at T11**: scan commits now go through `mergeDurable` (in-transaction field merge); see the T11 row in `core-distillation-v015.md` |
 
 ## Outbound config layers (T08)
@@ -101,4 +101,9 @@ in-lock authority; last-owner enforced in-lock). Done in S2: `channel:<type>:out
 (outbound-config is the single in-transaction authority; migration is a one-shot projection).
 Done in S5 (T11): inbound `<type>:account` scan onboarding now merges in-transaction
 (`mergeDurable`), so the credential domain has one merge authority.
-Not yet converged: `route:sessions` (T14).
+Done in S3 (T14): `route:sessions` — the session-registry lifecycle write and the agent-router
+outbound/control override write both read the fresh base inside the same `store.transact()` mutator,
+so the two writers serialize on the store lock and preserve each other's sibling fields (no writer
+commits a base read taken outside the transaction).
+All registered multi-owner keys are now converged; the remaining `inbound:pairing` `mint`/`revoke`
+deferral is a pending follow-up, not a second authority.

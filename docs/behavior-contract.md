@@ -288,6 +288,21 @@ spec 条目，并为每条标注**旧代码 oracle**（现有 `test/` 或 `src/`
 - **旧 test 映射**：`routing-control-service-v014.test.mjs`
 - **矩阵**：**K01**
 
+### RT-05 · `route:sessions` 单一事务写者（生命周期 ↔ 出站/控制兄弟字段）
+
+- **分类**：MUST_PRESERVE
+- **事实 owner**：`store.transact()` 键级锁；写者 `src/routing/agent-router.mjs`（`commitSessions`，出站/控制覆盖）与 `src/routing/session-registry.mjs`（`persist`，生命周期）
+- **适用版本**：v0.15 起（T14）
+- **输入/前置状态**：同一 `route:sessions` 键上并发写——registry 生命周期写（ensureSession / touch / markDisposed / sweep）与 router 出站/控制覆盖写（setSessionOutbound / setSessionControl）
+- **公开执行入口**：`registry.ensureSession` / `router.setSessionOutbound` / `router.setSessionControl`
+- **结果**：两个写者都在**同一个 `store.transact()` mutator 内**读取最新整表 draft 再记录级/字段级合并，提交经 store 事务锁串行化；registry 不拥有 router 的兄弟字段（`outbound`/`control` 子树），提交后兄弟字段并存不丢
+- **durable diff**：仅本写者拥有的字段（registry：inherit/workspace/createdAt/lastActiveAt/disposedAt；router：outbound/control）
+- **effect trace**：无
+- **禁止动作**：不得在事务外读 latest 再提交（TOCTOU）；不得整表覆写抹掉并发兄弟字段；`committed=false` 时不得 publish 未持久化值
+- **证据链接**：`test/v015-stage-s8-routing-convergence.test.mjs`（6 例：事务内基底、同会话兄弟共存、跨会话保留、提交失败零写、无事务旧 store 回退、业务 abort 隔离）
+- **旧 test 映射**：`agent-router.test.mjs:549`（RT-01 兄弟不 clobber）、`v014-stage-b-persistence-tx.test.mjs`
+- **矩阵**：**K02**
+
 ---
 
 ## 四、交互 interaction / questions / approval / actions

@@ -17,7 +17,7 @@
 import { basename } from 'node:path'
 import { createHostEventRegistrar, normalizeAgentLifecyclePayload } from '../host-events.mjs'
 import { normalizeControlOverlay } from '../control/session-arbiter.mjs'
-import { setDurable } from '../inbound/store.mjs'
+import { setDurable, transactDurable } from '../inbound/store.mjs'
 
 /** state.json 会话表键（与既有 bind:* / *:account 同域，§2）。 */
 const SESSIONS_KEY = 'route:sessions'
@@ -193,64 +193,88 @@ export function createSessionRegistry(options = {}) {
     }
   }
   /**
+   * 从给定基底（盘上 route:sessions 最新整表）构造下一次要写回的整表：删除回收墓碑、
+   * 按脏字段并入内存态记录（未拥有的子键如 router 写的 `.control`/`.outbound` 兄弟字段原样保留）、
+   * 再对每个条目的 `.control` 做归一/丢弃。纯函数，便于在事务内以 draft 为基底调用。
+   */
+  const buildNextSessions = (baseRaw) => {
+    const base = plainObjectOf(baseRaw) ?? {}
+    const next = {}
+    for (const [id, value] of Object.entries(base)) next[id] = deepCopyPlain(value)
+    for (const id of removedIds) delete next[id]
+    for (const [id, record] of Object.entries(sessions)) {
+      const dirty = dirtyFields.get(id)
+      if (dirty === undefined || dirty.size === 0) continue
+      const merged = { ...plainObjectOf(base[id]) }
+      if (dirty.has('*')) Object.assign(merged, record)
+      else {
+        for (const field of dirty) {
+          if (Object.prototype.hasOwnProperty.call(record, field)) merged[field] = deepCopyPlain(record[field])
+          else delete merged[field]
+        }
+      }
+      next[id] = merged
+    }
+    // Sanitize every base record, including sessions unknown to this registry cache.
+    for (const [id, value] of Object.entries(next)) {
+      const record = plainObjectOf(value)
+      if (record === null) continue
+      const control = normalizeControlOverlay(record.control)
+      if (control === null) delete record.control
+      else record.control = deepCopyPlain(control)
+      next[id] = record
+    }
+    return next
+  }
+  /** 落盘成功后推进节流窗口并清脏标记/墓碑（store.set 显式返回 false 时不得调用）。 */
+  const commitSucceeded = () => {
+    // v0.12.1（P2-13）：写成功后才推进节流窗口；失败必须允许下一次 touch 重试。
+    lastWriteMs = now()
+    removedIds.clear()
+    for (const id of Object.keys(sessions)) dirtyFields.delete(id)
+  }
+  /**
    * 把注册表内存态写入 store（route:sessions 一个键）。
    *
    * v0.8.7（对抗评审 Stage-4 P1-1）：此前的实现把整个内存 `sessions` 原样覆写，而 agent-router 的
    * `setSessionControl`/`setSessionOutbound` 直写同一 `route:sessions` 键、admin 也经 router 落盘——
    * 注册表整表覆写会抹掉 router/admin 刚写入的覆盖层（registry 内存态不包含它们），也可抹掉与
-   * 本次生命周期写无关的跨会话更新。这里改为**记录级再读合并**：
-   *  1. 以盘上当前 `route:sessions` 为基底（store 读收敛 = 含 router/admin 直写的最新值）——未在
-   *     注册表内存态里的盘上记录/覆盖层（如 router 建的 `.control`）原样保留；
-   *  2. 删除回收墓碑（removedIds，由 sweep 落击杀），再把内存态逐记录并入对应盘上记录（浅合并——
-   *     注册表不拥有的子键如 `.control` 因内存态没有该键而得以保留；跨会话无关记录不受影响）；
-   *  3. 每次生命周期写都对 `.control` 子键做归一/丢弃（normalizeControlOverlay，损坏/越界/来源字段
-   *     绝不停留——也是 Stage-4 P2 的「生命周期写前规范化」）；
+   * 本次生命周期写无关的跨会话更新。这里改为**记录级再读合并**（`buildNextSessions`）：
+   *  1. 以**提交瞬间**盘上当前 `route:sessions` 为基底——未在注册表内存态里的盘上记录/覆盖层
+   *     （如 router 建的 `.control`）原样保留；跨会话无关记录不受影响；
+   *  2. 删除回收墓碑（removedIds，由 sweep 落击杀），再把内存态逐记录并入对应盘上记录（字段级
+   *     合并——注册表不拥有的子键因内存态没有该键而得以保留）；
+   *  3. 每次生命周期写都对 `.control` 子键做归一/丢弃（损坏/越界/来源字段绝不停留）；
    *  4. 仍只写一个 `route:sessions` 键，store 的跨进程锁/键级合并语义完全不变。
-   * 写盘失败（store.set 抛）按既有防御壳降级内存态继续工作，removedIds 保留下次再删。
+   *
+   * v0.15（T14）：基底改在**同一个 `store.transact()` mutator 内**从 draft 读取（`transactDurable`），
+   * 提交瞬间即最新整表——消除「事务外读 latest、提交时仍写回旧快照」的 TOCTOU。这与 agent-router 的
+   * `commitSessions` 同走 store 事务锁，两个并发写者（生命周期 vs 出站/控制覆盖）互相串行，互不覆盖
+   * 兄弟字段（route lifecycle ↔ outbound/control siblings）。无真实事务能力的旧 store 退回单键读-改-写
+   * （单进程 best-effort，不伪造原子性）。
+   * 写盘失败（store.set 抛 / 事务未提交）按既有防御壳降级内存态继续工作，removedIds 保留下次再删。
    */
   const persist = () => {
     try {
-      const base = plainObjectOf(store?.get?.(SESSIONS_KEY)) ?? {}
-      const next = {}
-      for (const [id, value] of Object.entries(base)) next[id] = deepCopyPlain(value)
-      for (const id of removedIds) delete next[id]
-      for (const [id, record] of Object.entries(sessions)) {
-        const dirty = dirtyFields.get(id)
-        if (dirty === undefined || dirty.size === 0) continue
-        const merged = { ...plainObjectOf(base[id]) }
-        if (dirty.has('*')) Object.assign(merged, record)
-        else {
-          for (const field of dirty) {
-            if (Object.prototype.hasOwnProperty.call(record, field)) merged[field] = deepCopyPlain(record[field])
-            else delete merged[field]
-          }
-        }
-        next[id] = merged
+      if (typeof store?.transact === 'function') {
+        const result = transactDurable(store, (draft) => {
+          draft[SESSIONS_KEY] = buildNextSessions(draft[SESSIONS_KEY])
+          return true
+        })
+        if (result.committed !== true) return false
+        commitSucceeded()
+        return true
       }
-      // Sanitize every base record, including sessions unknown to this registry cache.
-      for (const [id, value] of Object.entries(next)) {
-        const record = plainObjectOf(value)
-        if (record === null) continue
-        const control = normalizeControlOverlay(record.control)
-        if (control === null) delete record.control
-        else record.control = deepCopyPlain(control)
-        next[id] = record
-      }
-      const writeResult = setDurable(store, SESSIONS_KEY, next)
+      const writeResult = setDurable(store, SESSIONS_KEY, buildNextSessions(store?.get?.(SESSIONS_KEY)))
       // Stage-4 P1 收官（墓碑持久化收官）：只有持久化真到达盘上才清回收墓碑。
       // store.set 显式返回 false 是 createStore 的 durable 布尔（v0.8.7 起 save() 传播持久化成功与否，
       // 写未到达盘）；此时清掉 removedIds 会让「失败的 sweep 写 + 后续生命周期写」把过期会话从盘上
       // 基底复活——下次 persist 从 store.get 读到未删的盘上旧记录、又没了墓碑可删，过期 id 在盘上
       // 卷土重来（重启即重现）。故只在 durable 成功（返回非 false）时清；返回 undefined 的既有
       // store 保持兼容（undefined !== false 仍清）。set 抛错的路径本来就在外层 catch，不复删。
-      if (writeResult === true) {
-        // v0.12.1（P2-13）：写成功后才推进节流窗口；失败必须允许下一次 touch 重试。
-        lastWriteMs = now()
-        removedIds.clear()
-        for (const id of Object.keys(sessions)) dirtyFields.delete(id)
-        return true
-      }
-      return false
+      if (writeResult !== true) return false
+      commitSucceeded()
+      return true
     } catch { /* 写盘失败（set 抛）：内存态继续工作，removedIds 留待下次再删 */ return false }
   }
 
