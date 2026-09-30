@@ -220,11 +220,61 @@ T03（真实装配与 DOM 测试底座），依赖 T02。
 
 T04（窄事务与失败语义，依赖 T02；不受 T03 阻塞）。
 
+## T04 — 窄事务与失败语义
+
+**Result**: `src/inbound/store.mjs` gains an explicit **business-abort** sentinel plus the narrow
+helper `transactOutcome(store, mutator)`.
+
+- `transact(mutator)` unchanged for existing callers: `false`/`undefined` are still *not* aborts, and
+  every pre-existing caller still commits normally.
+- The mutator may now take `(draft, control)` and call `control.abort(reason)`. On a real store this
+  performs **zero disk write and zero memory publish** and returns
+  `{ ok:false, committed:false, durable:false, aborted:true, code:'BUSINESS_ABORT', reason }`.
+- Failure taxonomy is now separable at the call site: `BUSINESS_ABORT` (business rejection),
+  `STATE_BUSY` (lock contention), `STATE_READ_FAILED`, `STATE_CORRUPT`, `STATE_WRITE_FAILED`,
+  `TRANSACTION_UNAVAILABLE` (no real `transact`). Only `aborted:true` means "the domain said no".
+- Mutator still runs **inside** the lock on a detached draft; abort happens before any temp file is
+  created, so the lock is released by the existing `finally` with no residue.
+
+## T05 — Members 试点（identity 权威收口）
+
+**Gap**: the last-owner guard lived only in `MembersControlService` as a **lock-free** `ownerCount()`
+pre-check. Two concurrent demotions both read "2 owners" and both pass → the sole owner could be
+removed or downgraded to zero (K03 TOCTOU). `identity.removeBinding` / `identity.updateBinding` were
+also lock-free read-modify-write.
+
+**Fix** (`src/inbound/identity.mjs`):
+- New private `mutateBinding(key, apply)` runs the *whole* change (guard + write) inside one fresh
+  `transactOutcome`: the guard is evaluated against the **in-lock draft**, so a stale second caller is
+  correctly rejected. Business rejections abort (zero write) instead of performing a no-op full write.
+- `removeBinding` / `updateBinding` now enforce **owner-last in-lock**; label edits are unaffected;
+  the legacy no-`transact` path keeps a read-then-decide fallback with the guard before mutation.
+- `confirmPending`'s transaction path switched from `transactDurable` to `transactOutcome`, so a
+  business rejection (`not-found` / `already-bound` / `invalid-account`) is no longer conflated with
+  `storage-failed` (K04/K05) and no longer triggers a pointless write.
+
+**Deliberate behaviour change (recorded)**: `identity.removeBinding`/`updateBinding` now refuse to
+delete/demote the last owner. This is required by K03 ("check 与 write 同锁", authority owns the fact)
+and matches what the service and the CLI `/unpair` path already enforced. Two pre-existing tests that
+deleted a *sole* owner through `identity` directly were updated to first seed a second owner — their
+real assertions (the one-shot `inbound:migrated` no-revival guard) are unchanged. This is an
+expectation correction forced by the pack's invariant, not an adaptation to fit an implementation.
+
+**Tests**: `test/v015-stage-s1-core.test.mjs` (7 cases) — abort zero-write/zero-publish, lock-busy
+vs business-abort separability, `TRANSACTION_UNAVAILABLE`, cross-instance last-owner convergence,
+same-key sibling preservation, `storage-failed` never rewritten, pending-reject zero-write.
+
+**Count**: 2166 → **2173** (README.md / README.zh-CN.md / HANDOFF.md / docs/memory/project-state.md synced).
+
+**Validation**: `node --test test/v015-stage-s1-core.test.mjs` → 7 pass / 0 fail; `npm test` → **2173 pass / 0 fail / 0 skip**.
+
 ## Task status
 
 | Task | Status | Commit | Evidence |
 |---|---|---|---|
 | T01 | done | `027852d` | baseline table, drift table, writer inventory above |
 | T02 | done | `21bdfca` | `docs/behavior-contract.md` + 2 sanitized legacy fixtures; oracle map above |
-| T03 | done | (this commit) | isolated `test/dom/` bed: real React DOM + fake-Cordis assembly smoke; `node test/dom/run.mjs` → 8 pass / 0 fail |
-| T04–T30 | not started | — | — |
+| T03 | done | `eef0d3d` | isolated `test/dom/` bed: real React DOM + fake-Cordis assembly smoke; `node test/dom/run.mjs` → 8 pass / 0 fail |
+| T04 | done | (this commit) | narrow `transactOutcome` abort + failure taxonomy; `test/v015-stage-s1-core.test.mjs` |
+| T05 | done | (this commit) | in-lock last-owner in identity authority; K03/K04/K05 covered |
+| T06–T30 | not started | — | — |

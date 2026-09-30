@@ -10,7 +10,7 @@
 
 import { isValidTargetId } from './target-guard.mjs'
 import { INBOUND_CHANNEL_SET } from './channels-registry.mjs'
-import { setDurable, transactDurable } from './store.mjs'
+import { setDurable, transactDurable, transactOutcome } from './store.mjs'
 
 const KEY_BINDINGS = 'inbound:bindings'
 const KEY_PENDING = 'inbound:pending'
@@ -259,6 +259,44 @@ export function createIdentity(options = {}) {
     return { ok: true, record }
   }
 
+  /** owner 计数（锁内守卫用；基于传入的 draft 表，而非盘上快照）。 */
+  const countOwners = (table) => Object.values(table).filter((record) => record?.role === 'owner').length
+
+  /**
+   * v0.15（T05 / K03）：绑定表的**锁内**变更。last-owner 守卫必须与写入落在同一个 fresh
+   * 事务里判定——旧实现把守卫放在 members service 的锁外 `ownerCount()` 预检，两个并发
+   * 降级各自看到「还有 2 个 owner」而双双通过，末位 owner 被 TOCTOU 击穿。守卫现已收归
+   * authority（identity）锁内，service 预检只做快速失败，不再是唯一守卫。
+   *
+   * `apply(table, record)` 返回 `{ ok:true, ... } | { ok:false, reason }`；拒绝 = 事务 abort
+   * （真实 store 零写盘、零发布）。无事务能力的 legacy/mock store 退化为读改写，判断仍先于变更。
+   */
+  const mutateBinding = (key, apply) => {
+    if (typeof store?.transact !== 'function') {
+      const table = readBindings()
+      const record = table[key]
+      if (record === undefined) return { ok: false, reason: 'not-found' }
+      const outcome = apply(table, record)
+      if (outcome.ok !== true) return outcome
+      if (writeBindings(table) !== true) return { ok: false, reason: 'storage-failed' }
+      return outcome
+    }
+    let settled = { ok: false, reason: 'not-found' }
+    const tx = transactOutcome(store, (draft, control) => {
+      const table = normalizeBindings(draft[KEY_BINDINGS] ?? {})
+      const record = table[key]
+      if (record === undefined) { settled = { ok: false, reason: 'not-found' }; return control.abort('not-found') }
+      const outcome = apply(table, record)
+      if (outcome.ok !== true) { settled = outcome; return control.abort(outcome.reason) }
+      draft[KEY_BINDINGS] = table
+      settled = outcome
+      return true
+    })
+    if (tx.aborted === true) return settled
+    if (tx.committed !== true) return { ok: false, reason: 'storage-failed' }
+    return settled
+  }
+
   return {
     /** 复合键准入（v0.7 计划书 §3.1：准入带渠道维度，修跨渠道串扰）。 */
     allows(channel, userId, accountId = undefined) {
@@ -411,29 +449,38 @@ export function createIdentity(options = {}) {
       return result
     },
 
-    /** 移除绑定；末位 owner 不可删（守卫在调用方 admin/命令层，这里只做数据操作）。 */
+    /**
+     * 移除绑定。末位 owner 不可删——守卫在**锁内**（mutateBinding 的同一事务），
+     * 与删除动作原子，杜绝并发双删清零（K03）。
+     */
     removeBinding(channel, userId, accountId = undefined) {
-      const table = readBindings()
       const key = keyFor(channel, String(userId ?? ''), accountId)
       if (key === null) return { ok: false, reason: 'invalid-account' }
-      if (table[key] === undefined) return { ok: false, reason: 'not-found' }
-      delete table[key]
-      if (writeBindings(table) !== true) return { ok: false, reason: 'storage-failed' }
-      return { ok: true }
+      return mutateBinding(key, (table, record) => {
+        if (record.role === 'owner' && countOwners(table) <= 1) return { ok: false, reason: 'owner-last' }
+        delete table[key]
+        return { ok: true }
+      })
     },
 
-    /** 改 label/role（末位 owner 降级守卫由调用方做）。 */
+    /**
+     * 改 label/role。末位 owner 不可降级——同样在锁内判定（K03）；label 变更不受影响。
+     */
     updateBinding(channel, userId, diff = {}, accountId = undefined) {
-      const table = readBindings()
       const key = keyFor(channel, String(userId ?? ''), accountId)
       if (key === null) return { ok: false, reason: 'invalid-account' }
-      const record = table[key]
-      if (record === undefined) return { ok: false, reason: 'not-found' }
-      if (typeof diff.label === 'string') record.label = diff.label.slice(0, 64)
-      if (VALID_ROLES.has(diff.role)) record.role = diff.role
-      table[key] = record
-      if (writeBindings(table) !== true) return { ok: false, reason: 'storage-failed' }
-      return { ok: true, record }
+      return mutateBinding(key, (table, record) => {
+        const next = { ...record }
+        if (typeof diff.label === 'string') next.label = diff.label.slice(0, 64)
+        if (VALID_ROLES.has(diff.role)) {
+          if (diff.role === 'member' && record.role === 'owner' && countOwners(table) <= 1) {
+            return { ok: false, reason: 'owner-last' }
+          }
+          next.role = diff.role
+        }
+        table[key] = next
+        return { ok: true, record: next }
+      })
     },
 
     // ———————— 待确认绑定（学习键汇流，v0.7 计划书 §3.6） ————————
@@ -494,16 +541,16 @@ export function createIdentity(options = {}) {
         return added
       }
       const outcome = { ok: false, reason: 'not-found' }
-      const tx = transactDurable(store, (draft) => {
+      const tx = transactOutcome(store, (draft, control) => {
         const pending = normalizePending(draft[KEY_PENDING] ?? {}).out
         const bindings = normalizeBindings(draft[KEY_BINDINGS] ?? {})
         const key = keyFor(channel, String(userId ?? ''), accountId)
-        if (key === null) return false
+        if (key === null) { outcome.reason = 'invalid-account'; return control.abort('invalid-account') }
         const entry = pending[key]
-        if (entry === undefined) return false
+        if (entry === undefined) { outcome.reason = 'not-found'; return control.abort('not-found') }
         if (bindings[key] !== undefined) {
           outcome.reason = 'already-bound'
-          return false
+          return control.abort('already-bound')
         }
         delete pending[key]
         const added = addBindingToTable(bindings, {
@@ -514,7 +561,7 @@ export function createIdentity(options = {}) {
         })
         if (added.ok !== true) {
           outcome.reason = added.reason
-          return false
+          return control.abort(added.reason)
         }
         draft[KEY_PENDING] = pending
         draft[KEY_BINDINGS] = bindings
@@ -522,6 +569,9 @@ export function createIdentity(options = {}) {
         outcome.record = added.record
         return true
       })
+      // v0.15（T04/T05）：业务拒绝（not-found / already-bound / invalid-account）走 abort——
+      // 真实 store 零写盘零发布，且与 IO 失败区分：只有真正未提交才是 storage-failed。
+      if (tx.aborted === true) return outcome
       if (tx.committed !== true) return { ok: false, reason: 'storage-failed' }
       return outcome
     },

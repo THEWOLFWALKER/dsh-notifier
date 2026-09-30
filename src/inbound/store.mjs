@@ -18,6 +18,19 @@ import { chmodSync, closeSync, copyFileSync, existsSync, mkdirSync, openSync, re
 import { basename, dirname, join } from 'node:path'
 
 /**
+ * v0.15（T04）业务拒绝哨兵：mutator 返回它 = 「业务拒绝，勿写盘、勿发布」。
+ * 仅由 `transactOutcome` 生成，等价于一个不透明 abort 信号；既有调用者从不返回它，
+ * 故 `transact` 的既有语义（false/undefined 不是 abort）完全不变。
+ */
+const BUSINESS_ABORT = Symbol('dsh-notifier.store.business-abort')
+function businessAbort(reason) {
+  return { [BUSINESS_ABORT]: true, reason: reason === undefined ? null : reason }
+}
+function isBusinessAbort(value) {
+  return value !== null && typeof value === 'object' && value[BUSINESS_ABORT] === true
+}
+
+/**
  * 取证副本路径：.corrupt.<ts>.<pid>.<rand>。
  * 裸毫秒时间戳在快速机器上会同 ms 撞名——boot 取证与 save 自愈转存同一损坏现场时
  * 第二份覆盖第一份（CI ubuntu-latest 实测翻车，1544 中唯一红）。加随机后缀保证唯一。
@@ -319,6 +332,10 @@ export function createStore(filePath) {
       const base = disk.missing && Object.keys(state).length > 0 ? state : disk.value
       const draft = cloneState(base)
       const value = mutator(draft)
+      // v0.15（T04）：业务拒绝哨兵——不落盘、不发布，draft 丢弃；锁仍在 finally 释放。
+      if (isBusinessAbort(value)) {
+        return { ok: false, committed: false, durable: false, aborted: true, code: 'BUSINESS_ABORT', reason: value.reason }
+      }
       tmp = `${filePath}.${process.pid}.${Math.random().toString(36).slice(2, 8)}.tmp`
       writeFileSync(tmp, JSON.stringify(draft), { encoding: 'utf8', mode: 0o600 })
       try { chmodSync(tmp, 0o600) } catch { /* Windows/受限环境无 chmod：尽力而为 */ }
@@ -487,6 +504,66 @@ export function transactDurable(store, mutator) {
     }
   } catch (error) {
     return { ok: false, committed: false, durable: false, code: 'STATE_WRITE_FAILED', error }
+  }
+}
+
+/**
+ * v0.15（T04）窄事务 helper：显式区分「业务拒绝 / 锁忙 / 读失败 / IO 失败」。
+ *
+ * 与 `transactDurable` 的差别是**显式 abort**：mutator 拿到 `(draft, control)`，
+ * 调用 `control.abort(reason)`（或在返回前调用）即表示「业务拒绝」——
+ * 真实 store 不写盘、不发布，且结果带 `code:'BUSINESS_ABORT'` 与 `reason`；
+ * 从而业务拒绝（如末位 owner）不再触发一次无意义（甚至有害）的全量写盘。
+ *
+ * 返回契约（全部字段恒在）：
+ *   `{ ok, committed, durable, aborted, code, reason, value, error }`
+ *   - 提交成功：ok/committed/durable = true，code='COMMITTED'；
+ *   - 业务拒绝：ok/committed/durable = false，aborted=true，code='BUSINESS_ABORT'，reason=mutator 传入值；
+ *   - 锁忙：code='STATE_BUSY'；读失败：'STATE_READ_FAILED'；损坏：'STATE_CORRUPT'；
+ *     IO/rename 失败：'STATE_WRITE_FAILED'；无事务能力：'TRANSACTION_UNAVAILABLE'。
+ *   业务拒绝与 IO 失败因此可被调用方区分（K05）。
+ *
+ * 只在真实 store 上保证「零写盘」；对不支持哨兵的 mock/legacy store，abort 仍会返回
+ * aborted=true 且 mutator 应「先判定后变更 draft」——此时草稿未被改动，等价零净变化。
+ * 证据：`test/v015-stage-s1-core.test.mjs`。
+ */
+export function transactOutcome(store, mutator) {
+  const fail = (code, extra = {}) => ({ ok: false, committed: false, durable: false, aborted: false, code, reason: null, value: undefined, error: undefined, ...extra })
+  if (typeof store?.transact !== 'function' || typeof mutator !== 'function') {
+    return fail('TRANSACTION_UNAVAILABLE')
+  }
+  const control = {
+    aborted: false,
+    reason: null,
+    abort(reason) {
+      this.aborted = true
+      this.reason = reason === undefined ? null : reason
+      return businessAbort(this.reason)
+    },
+  }
+  let result
+  try {
+    result = store.transact((draft) => {
+      const value = mutator(draft, control)
+      if (control.aborted) return businessAbort(control.reason)
+      return value
+    })
+  } catch (error) {
+    return { ok: false, committed: false, durable: false, aborted: false, code: 'STATE_WRITE_FAILED', reason: null, value: undefined, error }
+  }
+  if (control.aborted) {
+    return { ok: false, committed: false, durable: false, aborted: true, code: 'BUSINESS_ABORT', reason: control.reason, value: undefined, error: undefined }
+  }
+  const committed = result?.committed === true
+  return {
+    ok: committed,
+    committed,
+    durable: result?.durable === true,
+    aborted: false,
+    code: result?.code ?? (committed ? 'COMMITTED' : 'STATE_WRITE_FAILED'),
+    reason: null,
+    value: result?.value,
+    error: result?.error,
   }
 }
 

@@ -77,11 +77,15 @@ test('identity：迁移只增不减——YAML 删人后 store 绑定留存', () 
 test('identity：迁移不复活管理台已删成员（一次性标记的验收面）', () => {
   const { store } = tempStore()
   const identity = createIdentity({ store, logger: quiet })
-  identity.migrate(['42'], ['telegram'])
-  identity.removeBinding('telegram', '42') // 管理台删人
+  identity.migrate(['42'], ['telegram']) // '42' 首条 = owner
+  // v0.15（T05）：末位 owner 不可删已收归 identity 权威（锁内判定，K03）。先补一位 owner 再删，
+  // 用例真正要钉的是「inbound:migrated 一次性标记 —— YAML 重播不复活已删成员」。
+  identity.addBinding({ channel: 'telegram', userId: '99' })
+  identity.updateBinding('telegram', '99', { role: 'owner' })
+  assert.equal(identity.removeBinding('telegram', '42').ok, true, '有第二位 owner 时可删')
   identity.migrate(['42'], ['telegram']) // YAML 仍在，重启
   assert.equal(identity.allows('telegram', '42'), false, '重启后不复活（R5-1-P1-1 验收）')
-  assert.equal(identity.size(), 0)
+  assert.equal(identity.size(), 1, '仅 99 留下，42 未被重播')
 })
 
 test('G-44：坏绑定键启动一次性清洗——死键移除写回 + warn 计数，合法成员保留', () => {
@@ -115,7 +119,9 @@ test('G-44 放大面：启动损坏白纸重置——绑定表全坏键清成空
   const first = createIdentity({ store, logger: quiet })
   first.migrate(['42'], ['telegram'])
   first.addBinding({ channel: 'telegram', userId: '999' })
-  first.removeBinding('telegram', '42') // 管理台删人
+  // v0.15（T05）：先补第二位 owner，才能删掉首条 owner（末位 owner 锁内守卫，K03）。
+  first.updateBinding('telegram', '999', { role: 'owner' })
+  assert.equal(first.removeBinding('telegram', '42').ok, true, '管理台删人')
   // 损坏白纸现场：绑定表全部键形状损坏（读如空白），迁移标记仍在
   const raw = store.get('inbound:bindings', {})
   for (const key of Object.keys(raw)) raw[key] = { channel: 'nope', userId: 'x' }
