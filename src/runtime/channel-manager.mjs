@@ -37,7 +37,11 @@ export function createRuntimeChannelManager({ source, initial = [] } = {}) {
   }
 
   return {
+    // v0.14（P0-01）：snapshot()/get() 是给外部观察方的冻结投影；传输路径必须走
+    // live()/liveEntries() 拿 adapter 私有运行时对象（可变，允许合法惰性缓存）。
     snapshot: () => source.snapshot(),
+    liveEntries: () => (typeof source.liveEntries === 'function' ? source.liveEntries() : source.snapshot()),
+    live: (type) => (typeof source.live === 'function' ? source.live(type) : source.get(type)),
     types: () => source.types(),
     has: (type) => stateOf(type).state === 'online' && source.has(type),
     get: (type) => source.get(type),

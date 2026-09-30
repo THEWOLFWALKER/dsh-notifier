@@ -26,8 +26,11 @@ export function createNotifier(ctx, channels, options = {}) {
   const routing = options.routing !== undefined ? resolveRouting(options.routing) : resolveRouting()
   const channelsNow = () => {
     if (channels !== null && typeof channels === 'object' && typeof channels.snapshot === 'function') {
+      // v0.14（P0-01）：传输路径必须拿 adapter 私有运行时对象（live），而非冻结投影
+      // （snapshot）。qq-bot/wecom-app/desktop 等会在 resolved 上合法惰性写运行时缓存，
+      // 冻结对象会让发送在严格模式下直接抛 TypeError。snapshot() 只服务外部观察方。
       try {
-        const value = channels.snapshot()
+        const value = typeof channels.liveEntries === 'function' ? channels.liveEntries() : channels.snapshot()
         return Array.isArray(value) ? value : []
       } catch { return [] }
     }
