@@ -1,0 +1,26 @@
+{
+  "_note": "Sanitized pre-v0.13 inbound:bindings snapshot for old-reader compatibility (spec MEM-03 / MIG-02). Every id is an obviously-fake placeholder; no real tokens, account ids, phone numbers or chat ids.",
+  "inbound:bindings": {
+    "telegram:FIXTURE_TG_OWNER": {
+      "channel": "telegram",
+      "userId": "FIXTURE_TG_OWNER",
+      "role": "owner",
+      "pairedAt": 1700000000000,
+      "origin": "paired"
+    },
+    "feishu:FIXTURE_FS_BADROLE": {
+      "channel": "feishu",
+      "userId": "FIXTURE_FS_BADROLE",
+      "role": "hacker"
+    },
+    "qq:FIXTURE_QQ_BADSHAPE": "not-an-object",
+    "??:FIXTURE_BAD_CHANNEL": {
+      "channel": "??",
+      "userId": "FIXTURE_BAD_CHANNEL"
+    }
+  },
+  "_expected_after_read": {
+    "size": 2,
+    "notes": "bad-shape and illegal-channel rows are dropped whole; illegal role falls back to member"
+  }
+}

@@ -109,9 +109,75 @@ the v0.14 fixpack.
 - Real-device/provider evidence (QQ keyboard #26, Feishu P2P, DingTalk stream, QQ gateway) stays
   `unverified`; must not be relabeled.
 
+## T02 — 行为契约与旧 oracle
+
+### 交付
+
+- `docs/behavior-contract.md`（新增）：行为契约索引。字段：ID / 分类 / 事实 owner / 适用版本 /
+  输入前置 / 公开执行入口 / 结果 / durable diff / effect trace / 禁止动作 / 证据链接 / 旧 test 映射。
+  分类词表固定为 `MUST_PRESERVE` / `BUG_FIX` / `SECURITY_FIX` / `UNKNOWN` / `OBSERVATION_ONLY`；
+  UNKNOWN 不上调。
+- fixtures（新增 2 条，脱敏）：`test/fixtures/legacy/inbound-bindings-mixed.json`、
+  `test/fixtures/legacy/channel-config-legacy.json`。仅补旧 reader/迁移缺的文件级旧形状快照；
+  其余不变式的输入在现有测试内联构造，未重复造。
+
+### 条目与必测 oracle 覆盖
+
+| 域 | 条目 | 必测矩阵 | 旧 oracle |
+|---|---|---|---|
+| 配置 | CFG-01 同 key 兄弟 patch | **K02** | `v014-stage-b-persistence-tx.test.mjs:187,233` |
+| 配置 | CFG-02 写盘失败语义 | **K01/K05** | `store.test.mjs:24,34,51` |
+| 配置 | CFG-03 冻结 resolved 经真实装配 | **C01** | `runtime-mutability-v014.test.mjs:47,90` |
+| 配置 | CFG-04 深冻结发送失败 | BUG_FIX/C01 | `runtime-mutability-v014.test.mjs:127` |
+| 配置 | CFG-05 secret patch / CFG-06 canonical 键权威 | C02 | `channel-config-migration-v013.test.mjs:22,155,173` |
+| 成员 | MEM-01 末位 owner | **K03** | `members-control-service-v014.test.mjs:156` |
+| 成员 | MEM-02 storage-failed≠not-found | K01/K05 | `v014-stage-b-persistence-tx.test.mjs:75` |
+| 成员 | MEM-03 绑定读盘防御 | **M01/M02** | `identity.test.mjs:166,87` |
+| 成员 | MEM-04 pending→binding 原子 | K04 | `identity.test.mjs:253` |
+| 路由 | RT-01 session 兄弟不 clobber | K02 | `agent-router.test.mjs:549` |
+| 路由 | RT-02 双表单事务 / RT-03 优先级 / RT-04 失败如实 | K02/K04/K01 | `routing-control-service-v014.test.mjs:82,161,183` |
+| 交互 | INT-01 迟到问题卡终态话术 | **H02** | `questions-web-first.test.mjs:227,277,301,321` |
+| 交互 | INT-02 claim 失败零 effect | **I02** | `actions.test.mjs:470` |
+| 交互 | INT-03 claim 后 kill→uncertain | **I03** | `actions.test.mjs:496`; `terminal-cleanup-v013.test.mjs:215` |
+| 交互 | INT-04 来源会话校验 / INT-05 首达 | I01/I04 | `actions.test.mjs:213,255,72` |
+| provider | PRV-01 QQ 分段 msg_seq | P02 | `adapters.test.mjs:297,317` |
+| provider | PRV-02 token single-flight/代际 | P01 | `tokens.test.mjs:27,52` |
+| provider | PRV-03 TG offset durable 游标 | P03 | `inbound.telegram.test.mjs:1010,1066` |
+| provider | PRV-04 payload golden | C01 | `adapters.test.mjs` + `fixtures/channels/*` |
+| provider | PRV-05 QQ C2C 键盘真机 | **UNKNOWN** | 无仓内 oracle（`v0.14-evidence-matrix.md`） |
+| Host | HST-01 缺/晚/撤服务降级 | H01 | `host-seam-audit.test.mjs:106,175` |
+| Host | HST-02 peer 范围/fixture | H03 | `host-seam-audit.test.mjs:58,78,85` |
+| Host | HST-03 attachments 防御 | H03 | `host-seam-audit.test.mjs:128,146,163` |
+| Host | HST-04 alpha.2/rc.1 真机走查 | **UNKNOWN** | 无（`compatibility-matrix.md`） |
+| migration | MIG-01 备份一次/幂等/损坏 fail-closed | **M01/K06** | `channel-config-migration-v013.test.mjs:22,197` |
+| migration | MIG-02 旧 reader 读新 metadata | **M02** | `actions.test.mjs:289,322`; `identity.test.mjs:166` |
+| migration | MIG-03 回退读最新 | M03 | `identity.test.mjs:69,77` |
+
+### 七个必测 oracle：找到 vs UNKNOWN
+
+- 找到（均有具体 test 文件:行 oracle）：same-key（K02）、last-owner（K03）、storage 失败（K01/K05）、
+  frozen config（C01）、claim（I02/I03）、late question（H02）、旧 reader（M01/M02）。
+- 标记 **UNKNOWN**（无仓内 oracle，未上调）：PRV-05（QQ C2C 键盘真机，issue #26）、
+  HST-04（alpha.2/rc.1 真机走查）。二者在证据矩阵中已是 `external-evidence-pending`。
+
+### 证据与校验
+
+- 引用的全部 `test` 行号已用 `sed -n Np` 逐条回读核对（命中对应 `test(...)` 标题）。
+- 2 条新 fixture 通过 `node` 的 `JSON.parse` 校验，且字段形状对齐既有测试内联构造。
+- 未改 `src/**`、未改任何 `test/*.test.mjs` 断言、未加依赖、未动 `package.json`、未跑全量 `npm test`。
+
+### reader 兼容性
+
+新增文件为 spec 与静态 fixture，不改变任何 reader/写入路径，故无 reader 兼容问题。
+
+### 下一任务
+
+T03（真实装配与 DOM 测试底座），依赖 T02。
+
 ## Task status
 
 | Task | Status | Commit | Evidence |
 |---|---|---|---|
-| T01 | done | (this commit) | baseline table, drift table, writer inventory above |
-| T02–T30 | not started | — | — |
+| T01 | done | `027852d` | baseline table, drift table, writer inventory above |
+| T02 | done | (this commit) | `docs/behavior-contract.md` + 2 sanitized legacy fixtures; oracle map above |
+| T03–T30 | not started | — | — |

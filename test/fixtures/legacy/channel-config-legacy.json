@@ -1,0 +1,15 @@
+{
+  "_note": "Sanitized pre-v0.13 channel-config state snapshot for migration (spec CFG-06 / MIG-01). Keys mirror the real migration surface (admin:channel:<type>:outbound, <type>:account, channel:<type>:outbound, state:schema-version). All values are obviously-fake placeholders; no real secrets.",
+  "admin:channel:bark:outbound": { "key": "FIXTURE_LEGACY_ADMIN_KEY" },
+  "bark:account": { "key": "FIXTURE_INBOUND_COMPAT_KEY" },
+  "feishu:account": { "appId": "cli_fixture_app", "appSecret": "FIXTURE_SECRET_NOT_REAL" },
+  "channel:bark:outbound": "malformed-legacy-row",
+  "state:schema-version": 12,
+  "_expected_after_migration": {
+    "channel:bark:outbound": { "key": "FIXTURE_LEGACY_ADMIN_KEY" },
+    "admin:channel:bark:outbound": "removed",
+    "bark:account": { "key": "FIXTURE_INBOUND_COMPAT_KEY" },
+    "channel:feishu:outbound": "never created (dual-domain inbound account)",
+    "state:schema-version": 13
+  }
+}
