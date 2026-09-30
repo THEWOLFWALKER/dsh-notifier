@@ -2,7 +2,7 @@
 
 - **identity**: agent `flash`, task pack `dsh-notifier-flash-complete-taskpack` (T01–T30)
 - **branch**: `codex/core-distillation-v015` (off `dev`)
-- **status**: in progress — T01–T14 done (T06 partial)
+- **status**: in progress — T01–T15 done (T06 partial)
 - **owner scope**: core authority convergence, Native/Recovery UX, local config export/import, dsh-im
   bridge, remote URL, optional CF Tunnel, Workers/Pages extension package, docs/tests/delivery.
 - **explicitly out of scope**: `main`, tags, npm publish, real cloud deploy, full encrypted secret
@@ -527,6 +527,37 @@ Cases 1 & 3 fail on the pre-fix code (verified via `git stash`), so the suite di
 **Count**: 2251 → **2257**. Contract: `docs/behavior-contract.md` RT-05; `docs/state-writer-registry.md`
 `route:sessions` MULTI → single.
 
+## T15 — Questions/Approval/Actions claim 收敛
+
+**Result**: the three interaction entry points (actions / approval / questions) now share one
+`authorization → durable claim → first-settlement → host effect` boundary while keeping their own
+business differences. No new state machine was introduced — the existing `interaction/ledger.mjs`
+atomic operations are the single claim authority for all three.
+
+- **Shared boundary (verified, not rebuilt)**: `actions.mjs` claims via `ledger.claim` before running an
+  irreversible handler; `approval/router.mjs` settles through `settleThroughLedger` (`finalizeApproval`
+  → `ledger.settle` → `bus.settle`) and `questions/router.mjs` through the Control Core — all three
+  order the durable claim **before** any host/provider effect, so a failed durable write cannot deliver
+  a host decision (I02: claim-failure ⇒ zero effect, caller gets non-`accepted`).
+- **Kill / terminal-write failure (I03)**: an unpersisted terminal write marks the row `uncertain`
+  (`isPending` false) — the claim is never released back to `pending`, so restart / numbered reply /
+  auto-retry never replay the effect.
+- **Multi-entry contention (I04)**: first durable settlement wins; a late settle from another entry
+  (web / mobile button / numbered reply / action click) is rejected with `already_handled` /
+  `already-resolved` and never flips the terminal state — at most one host effect.
+- **Source mismatch (I01)**: cross-chat / cross-channel / cross-account replies neither settle nor
+  consume the correct source's pending row (ownership gate stays fail-closed).
+- **Live waiter ↔ ledger (H02)**: `bus.wait` (in-memory) and the durable ledger each keep their own
+  fact; terminating one never resurrects the other, and a late settlement never revives a closed waiter
+  — a remotely-approved wait returns the same decision to the desktop (`allowed-once`), not `desktop`.
+
+**Tests**: `test/v015-stage-s9-claim-convergence.test.mjs` (12 cases) — I02 claim-failure zero-effect
+(question + control receipt), I04 question/approval/action first-wins, I01 source mismatch (cross-chat
++ cross-channel), I03 uncertain-after-claim, and H02 terminal-set late settle. Assertions driven only
+through production entries (`bus.accept` / `bridge.adminSettle` / `control.handle` / `dispatcher.dispatch`).
+
+**Count**: 2257 → **2269**. Contract: `docs/behavior-contract.md` INT-06.
+
 ## Task status
 
 | Task | Status | Commit | Evidence |
@@ -544,5 +575,6 @@ Cases 1 & 3 fail on the pre-fix code (verified via `git stash`), so the suite di
 | T11 | done | `c290f64` | all-28 provider contract matrix + full sender registration + credential field-merge convergence; `test/v015-stage-s5-provider-migration.test.mjs` → 15 pass |
 | T12 | done | `7735d68` | accepted/delivered/unknown buckets + bounded (cap+TTL) + runtime-epoch health closure; `test/v015-stage-s6-delivery-evidence-health.test.mjs` → 11 pass |
 | T13 | done | `3bcb6c2` | centralized host seam + Cordis lifetime + capability-aware native questions; `test/v015-stage-s7-host-seam.test.mjs` → 14 pass |
-| T14 | done | (this commit) | `route:sessions` single transactional writer; `test/v015-stage-s8-routing-convergence.test.mjs` → 6 pass |
-| T15–T30 | not started | — | — |
+| T14 | done | `93c6e62` | `route:sessions` single transactional writer; `test/v015-stage-s8-routing-convergence.test.mjs` → 6 pass |
+| T15 | done | (this commit) | shared claim boundary across actions/approval/questions; `test/v015-stage-s9-claim-convergence.test.mjs` → 12 pass |
+| T16–T30 | not started | — | — |

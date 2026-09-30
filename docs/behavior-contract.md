@@ -393,6 +393,25 @@ spec 条目，并为每条标注**旧代码 oracle**（现有 `test/` 或 `src/`
 - **旧 test 映射**：`actions.test.mjs`、`approval.multi.test.mjs`
 - **矩阵**：**I04**
 
+### INT-06 · 三条交互入口共用 claim 边界（T15 收敛）
+
+- **分类**：MUST_PRESERVE
+- **事实 owner**：`src/interaction/ledger.mjs`（唯一 claim authority）；入口 `src/actions.mjs`、
+  `src/approval/router.mjs`、`src/questions/router.mjs`
+- **适用版本**：v0.15 起
+- **输入/前置状态**：actions / approval / questions 任一入口的裁决；durable claim 落盘失败；
+  claim 提交后进程 kill；多入口争答；来源不匹配
+- **公开执行入口**：`dispatcher.dispatch` / `control.handle` / `bridge.adminSettle` / `bus.accept`
+- **结果**：三条入口统一遵循「授权 → durable claim → 首达结算 → host effect」；claim 前零
+  host/provider effect；首达胜出、迟到裁决被拒且不反转终态
+- **durable diff**：claim 未提交 → 零写盘、行保持 pending；终态落盘失败 → 行标 `uncertain`
+  （不退回 pending）
+- **effect trace**：最多一次；claim 失败零 effect；claim 后 kill 不自动重放
+- **禁止动作**：不得在 claim 提交前释放 live waiter / 执行特权 effect；不得让迟到 settle 翻转终态
+- **证据链接**：`test/v015-stage-s9-claim-convergence.test.mjs`（I01–I04 / H02 收敛，12 例）
+- **旧 test 映射**：`actions.test.mjs`、`questions-web-first.test.mjs`、`terminal-cleanup-v013.test.mjs`
+- **矩阵**：**I01/I02/I03/I04/H02**
+
 ---
 
 ## 五、provider adapters / inbound
