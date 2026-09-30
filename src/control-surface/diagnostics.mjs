@@ -90,9 +90,12 @@ export function summarizeChannels(rows) {
     inactive: [],
     degradedTypes: [],
     restartPending: [],
+    diverged: [],
     noEvidenceTypes: [],
     latestEvidence: 'none',
   }
+  const restartPending = new Set()
+  const diverged = new Set()
   for (const row of list) {
     const type = safeText(row.type, 40)
     const notify = row.notify !== null && typeof row.notify === 'object' ? row.notify : {}
@@ -102,11 +105,14 @@ export function summarizeChannels(rows) {
       summary.notifyConfigured += 1
       if (notify.active === true) summary.notifyActive += 1
       else if (type) summary.inactive.push(type)
+      // v0.14（Stage C）：出站 divergence 与入站 restartPending 同构，必须都进重启待办。
+      if (notify.restartPending === true && type) restartPending.add(type)
+      if (notify.diverged === true && type) diverged.add(type)
     }
     if (control.configured === true) {
       summary.controlConfigured += 1
       if (control.active === true) summary.controlActive += 1
-      if (control.restartPending === true && type) summary.restartPending.push(type)
+      if (control.restartPending === true && type) restartPending.add(type)
     }
     if (state === 'healthy') summary.healthy += 1
     else if (state === 'degraded') {
@@ -121,6 +127,8 @@ export function summarizeChannels(rows) {
     if ((evidence.delivered ?? 0) > 0) summary.latestEvidence = 'confirmed'
     else if (summary.latestEvidence !== 'confirmed' && (evidence.accepted ?? 0) > 0) summary.latestEvidence = 'accepted'
   }
+  summary.restartPending = [...restartPending]
+  summary.diverged = [...diverged]
   return summary
 }
 

@@ -78,9 +78,13 @@ export function createSurfaceHealth({ window = 20, now = Date.now } = {}) {
   }
 }
 
-export function healthState({ configured, active, health }) {
+// v0.14（Stage C）：restartPending 是运行时时序状态，与 evidence 派生健康度分层。
+// 已配置且 runtime 仍在跑、但尚未收敛到 desired（divergence）时，健康度既不是 degraded
+// （旧 runtime 其实还活着）也不是 healthy（它跑的不是 desired），必须显式表达为 restart-pending。
+export function healthState({ configured, active, health, restartPending = false }) {
   if (configured !== true) return 'unconfigured'
   if (active !== true) return 'degraded'
+  if (restartPending === true) return 'restart-pending'
   if ((health?.failed ?? 0) > 0 && (health?.lastFailureAt ?? 0) >= (health?.lastSuccessAt ?? 0)) return 'degraded'
   // v0.13（C11.5 / R4）：provider accepted 即视为操作健康（标签与证据强度在 UI 层区分，
   // 「已发送到提供方」≠「已确认送达」）；healthy 不再依赖端到端 confirmed 证据。
@@ -88,10 +92,10 @@ export function healthState({ configured, active, health }) {
   return 'ready'
 }
 
-export function healthView({ configured, active, health }) {
+export function healthView({ configured, active, health, restartPending = false }) {
   const h = health ?? blank('')
   return {
-    state: healthState({ configured, active, health: h }),
+    state: healthState({ configured, active, health: h, restartPending }),
     delivered: Number(h.delivered ?? 0),
     accepted: Number(h.accepted ?? 0),
     skipped: Number(h.skipped ?? 0),

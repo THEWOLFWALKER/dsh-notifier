@@ -57,8 +57,11 @@ export function createChannelProjection({ outboundSource, outboundConfig, inboun
         configRevision: outboundSource?.version ?? 0,
       }) : { configured: false, active: false, fields: {}, applyMode: outboundApplyMode(), configRevision: 0 }
       const evidence = notifyCapable ? (health?.snapshot?.(type) ?? {}) : null
+      // v0.14（Stage C）：outbound divergence（旧 runtime 仍在跑但 desired 未收敛）必须与
+      // inbound 一样在投影里表达 restartPending——健康度也要显式区分「等待重启」而非「健康」。
+      const notifyRestartPending = notifyCapable && desc.restartPending === true
       const h = notifyCapable
-        ? healthView({ configured: desc.configured, active: desc.active, health: evidence })
+        ? healthView({ configured: desc.configured, active: desc.active, health: evidence, restartPending: notifyRestartPending })
         : healthView({ configured: false, active: false, health: null })
       const inRow = inbound.get(inboundType)
       const inFields = inRow?.fields ?? {}
@@ -75,6 +78,10 @@ export function createChannelProjection({ outboundSource, outboundConfig, inboun
           editable: notifyCapable,
           active: desc.active === true,
           applyMode: outboundApplyMode(),
+          // v0.14（Stage C）：与 control 行同构——desired/active/restartPending 分层，diverged
+          // 显式标记「旧 runtime 仍在跑但未收敛到 desired」。
+          restartPending: notifyRestartPending,
+          diverged: notifyCapable && desc.diverged === true,
           configRevision: desc.configRevision ?? outboundSource?.version ?? 0,
           fields: fieldViews(desc.fields ?? {}, raw),
           editableValues: notifyCapable ? editableValues(desc.fields ?? {}, raw) : {},

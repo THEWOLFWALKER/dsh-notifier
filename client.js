@@ -124,6 +124,7 @@ window.__ModuleLoader__.load({
       lastFailure: '最近失败',
       reason: '原因',
       inboundRestartHint: '保存远程控制配置后，需要重启 DSH 才会重新建立连接。',
+      outboundRestartHint: '配置已保存，但运行时尚未生效（例如清除了必需凭证）。重启 DSH 后收敛到最新配置。',
       applyHot: '保存后立即生效',
       applyRestart: '保存后等待重启生效',
       setupActivationTitle: '设置通知',
@@ -290,6 +291,7 @@ window.__ModuleLoader__.load({
       lastFailure: 'Last failure',
       reason: 'Reason',
       inboundRestartHint: 'Restart DSH after saving remote-control settings to establish a new connection.',
+      outboundRestartHint: 'Saved, but the runtime has not converged yet (e.g. a required credential was cleared). Restart DSH to apply the latest config.',
       applyHot: 'Applies immediately after saving',
       applyRestart: 'Applies after restart',
       setupActivationTitle: 'Set up notification',
@@ -1320,6 +1322,7 @@ window.__ModuleLoader__.load({
                 }, state.busy[`test:${type}`] === true ? t('testing') : t('test')) : null),
           h('p', { className: 'dn-rowMeta' }, section.applyMode === 'hot' ? t('applyHot') : section.applyMode === 'restart' ? t('applyRestart') : ''),
           direction === 'inbound' && section.applyMode === 'restart' ? h('p', { className: 'dn-note' }, t('inboundRestartHint')) : null,
+          direction === 'outbound' && section.restartPending === true ? h('p', { className: 'dn-note' }, t('outboundRestartHint')) : null,
           direction === 'outbound' && testResult
             ? h('p', { className: testResult.status === 'delivered' || testResult.status === 'accepted' || testResult.delivered === true ? 'dn-successText' : 'dn-error' },
                 testResult.status === 'delivered' || testResult.delivered === true
