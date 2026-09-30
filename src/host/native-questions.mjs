@@ -39,6 +39,26 @@ import { createQuestionsControlService } from '../control-plane/questions.mjs'
 const isRecord = (value) => typeof value === 'object' && value !== null
 
 /**
+ * v0.14（Stage D / P1-08）：合并 Host caller signal 与本地 GUI-race signal。
+ * waterfall 拦截器自建 AbortController 用于「GUI 先答则取消手机侧」，但绝不能因此**替换**掉
+ * 宿主 `request.signal`——否则 caller abort 后手机侧 ask 仍在等待、可能继续开延迟卡片。
+ * 优先 AbortSignal.any（Node >=22 内置）；缺失时用监听兜底把 caller abort 联动到本地 controller。
+ */
+function mergeAbortSignals(controller, callerSignal) {
+  if (!isRecord(callerSignal)) return controller.signal
+  if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.any === 'function') {
+    try { return AbortSignal.any([controller.signal, callerSignal]) } catch { /* 退化为监听兜底 */ }
+  }
+  try {
+    if (callerSignal.aborted === true) controller.abort()
+    else if (typeof callerSignal.addEventListener === 'function') {
+      callerSignal.addEventListener('abort', () => { try { controller.abort() } catch { /* 已终结则忽略 */ } }, { once: true })
+    }
+  } catch { /* 非法 signal：保持只监听本地 race signal */ }
+  return controller.signal
+}
+
+/**
  * 把原生 AskUserQuestionOption 归一为 aq 桥的选项标签；description 拼进上下文避免丢信息。
  * @returns {{ labels: string[], detail: string }}
  */
@@ -119,7 +139,14 @@ export function createNativeQuestionBridge(deps = {}) {
     }
     let outcome
     try {
-      outcome = await questionBridge.askQuestions(payload, { agent: request?.agent, ...(execOptions ?? {}) })
+      // v0.14（Stage D）：provider 直连路径（host 直接调 provider.ask）也尊重 caller signal；
+      // waterfall 路径已把合并后的 race signal 放进 execOptions.signal，这里不覆盖它。
+      const execContext = { agent: request?.agent, ...(execOptions ?? {}) }
+      if (execContext.signal === undefined || execContext.signal === null) {
+        const callerSignal = isRecord(request) ? request.signal : undefined
+        if (callerSignal !== undefined && callerSignal !== null) execContext.signal = callerSignal
+      }
+      outcome = await questionBridge.askQuestions(payload, execContext)
     } catch (error) {
       warn(`原生提问桥问询异常（返回未作答，绝不让宿主被吞）: ${error instanceof Error ? error.message : String(error)}`)
       return { answers: normalized.map((entry) => ({ id: entry.id, selected: [] })) }
@@ -182,9 +209,12 @@ export function createNativeQuestionBridge(deps = {}) {
       const questions = Array.isArray(request?.questions) ? request.questions : []
       if (questions.length === 0 || canDeliver() !== true) return downstreamOnce()
       // 拦截器范围取消信号：GUI 先答时 abort（收尾语义全部在 askQuestions 侧落地）。
+      // v0.14（Stage D / P1-08）：与 Host caller signal 合并，caller abort 同样取消手机侧
+      // （停延迟推卡/停升级/终结账本行），绝不把宿主原始 signal 替换丢弃。
       const controller = new AbortController()
+      const raceSignal = mergeAbortSignals(controller, request?.signal)
       // hostAsk 全捕获（内部 catch → 空答案），此处再兜一层防御：绝不让 race 因本侧 reject。
-      const telegramAnswer = Promise.resolve().then(() => hostAsk(request, { signal: controller.signal }))
+      const telegramAnswer = Promise.resolve().then(() => hostAsk(request, { signal: raceSignal }))
         .catch(() => ({ answers: (Array.isArray(request?.questions) ? request.questions : [])
           .map((question) => ({ id: String(question?.id ?? ''), selected: [] })) }))
       const downstream = downstreamOnce()
