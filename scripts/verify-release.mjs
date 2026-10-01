@@ -68,7 +68,7 @@ for (const [index, v] of documentedVersions.entries()) {
 }
 
 const requiredPackageFiles = [
-  'src', 'test', 'types', 'cordis.patch.yml', 'CHANGELOG.md', 'README.md', 'README.zh-CN.md',
+  'src', 'types', 'cordis.patch.yml', 'CHANGELOG.md', 'README.md', 'README.zh-CN.md',
   'PLUGINS.md', 'PLUGINS.en.md', 'THIRD_PARTY_NOTICES.md', 'AGENTS.md',
   'docs/AI_INSTALL.md', 'docs/AI_INSTALL.en.md', 'docs/DIAGNOSTICS.md', 'docs/DIAGNOSTICS.en.md',
   'docs/OPERATIONS.md', 'docs/SUPPORT.md', 'docs/SUPPORT.en.md',
@@ -90,8 +90,47 @@ const requiredScripts = [
 const packageFiles = Array.isArray(packageJson.files) ? packageJson.files : []
 for (const file of requiredPackageFiles) check(packageFiles.includes(file), `package.json files is missing ${file}`)
 for (const script of requiredScripts) check(packageFiles.includes(script), `package.json files is missing ${script} (S-11 发布脚本须显式列举)`)
-for (const file of requiredPackageFiles.filter((entry) => !['src', 'test', 'types'].includes(entry) && !entry.endsWith('/'))) {
+for (const file of requiredPackageFiles.filter((entry) => !['src', 'types'].includes(entry) && !entry.endsWith('/'))) {
   check(existsSync(resolve(root, file)), `release documentation is missing from the tree: ${file}`)
+}
+
+// Gate 3（T-03）：真实 tar 检查。只读 package.json 抓不到「files 实际组装出什么」——
+// 例如 `test/dom/node_modules` 被目录通配吞进包，或某个必需文件其实没被打进去。
+// `npm pack --dry-run --json` 按 files 清单真实组装归档，是对发布内容的唯一真相。
+const tarballPaths = () => {
+  let raw
+  try {
+    raw = execFileSync('npm', ['pack', '--dry-run', '--json', '--ignore-scripts'], {
+      cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+    })
+  } catch (error) {
+    failures.push(`npm pack --dry-run failed: ${error instanceof Error ? error.message : String(error)}`)
+    return null
+  }
+  try {
+    const parsed = JSON.parse(raw)
+    const entry = Array.isArray(parsed) ? parsed[0] : parsed
+    const files = Array.isArray(entry?.files) ? entry.files : []
+    return files.map((file) => String(file?.path ?? '')).filter((path) => path !== '')
+  } catch {
+    failures.push('npm pack --dry-run did not return parseable JSON')
+    return null
+  }
+}
+const packedPaths = tarballPaths()
+if (packedPaths !== null) {
+  const forbidden = packedPaths.filter((path) => (
+    /(?:^|\/)node_modules\//.test(path)
+    || path.startsWith('test/')
+    || /(?:^|\/)\.env(?:\.|$)/.test(path)
+    || /(?:^|\/)\.wrangler\//.test(path)
+    || /(?:^|\/)(?:\.cache|coverage|\.DS_Store)(?:\/|$)/.test(path)
+  ))
+  check(forbidden.length === 0, `tarball contains forbidden paths: ${forbidden.slice(0, 5).join(', ')}${forbidden.length > 5 ? ` (+${forbidden.length - 5} more)` : ''}`)
+  for (const required of ['src/index.mjs', 'src/plugin-entry.mjs', 'client.js', 'types/index.d.ts', 'cordis.patch.yml', 'extensions/cloudflare-tunnel']) {
+    const present = packedPaths.some((path) => path === required || path.startsWith(`${required}/`))
+    check(present, `tarball is missing required release artifact: ${required}`)
+  }
 }
 
 // Commit15/16 公共子路径门：exports 子路径必须指向真实存在的目标文件，且该文件被 files 覆盖

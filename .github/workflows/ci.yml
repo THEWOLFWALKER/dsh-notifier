@@ -30,6 +30,14 @@ jobs:
       # （node --test 自 v21 起原生支持 glob 模式，Windows 上不经 shell 展开也能匹配）
       - name: Run tests
         run: npm test
+      # Gate 3（T-03）：DOM workspace 是独立的真实-React 测试环境（jsdom/react 只在
+      # test/dom 安装，绝不进核心零依赖 runner）。根 runner 显式排除 test/dom，因此这里
+      # 必须单独安装并执行，否则 DOM 套件会在 CI 中静默缺失。
+      - name: Run DOM workspace tests
+        run: |
+          cd test/dom
+          npm ci
+          npm test
       - name: Verify zero mandatory runtime dependencies
         shell: bash # if [ -f ... ] 是 bash 语法，Windows runner 默认 pwsh 需显式指定
         run: |
