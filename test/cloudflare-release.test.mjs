@@ -13,6 +13,8 @@ import { createTelegramWorker } from '../src/cloudflare/templates/telegram/worke
 import { telegramRequest } from '../src/cloudflare/telegram-transport.mjs'
 import { deploymentFromOutput, createWranglerRunner } from '../src/cloudflare/wrangler-runner.mjs'
 import { EventEmitter } from 'node:events'
+import { createNativeTunnelService } from '../src/cloudflare/tunnel.mjs'
+import { writeFileSync } from 'node:fs'
 const ACCOUNT = 'a'.repeat(32)
 const BOT = '123456:fixture_token_abcdef'
 const KEY = BOT
@@ -189,4 +191,42 @@ test('CF refuses local activation if deployment readback identifies a different 
     assert.throws(() => r.service.link({ type: 'telegram' }))
     assert.equal(r.source.has('telegram'), false)
   } finally { r.cleanup() }
+})
+
+test('Native tunnel remains inert until an explicit start and uses only the supplied binary and credential file', async () => {
+  const r = rig(); let child, invocation
+  const binary = join(r.root, 'cloudflared'), credentialsSource = join(r.root, 'tunnel.json')
+  writeFileSync(binary, 'fixture'); writeFileSync(credentialsSource, '{}')
+  const tunnel = createNativeTunnelService({ store: r.store, spawnImpl: (command, args, options) => {
+    invocation = { command, args, options }; child = new EventEmitter(); child.pid = 123
+    child.stdout = new EventEmitter(); child.stderr = new EventEmitter(); child.kill = () => { queueMicrotask(() => child.emit('exit', 0)); return true }
+    queueMicrotask(() => child.emit('spawn')); return child
+  } })
+  try {
+    assert.equal(invocation, undefined)
+    await tunnel.start({ name: 'private', binary, credentialsSource, enabled: true, access: { applicationId: 'app-id' } })
+    assert.equal(tunnel.status().running, true)
+    assert.equal(invocation.command, binary); assert.equal(invocation.options.shell, false)
+    assert.deepEqual(invocation.args, ['tunnel', '--no-autoupdate', '--credentials-file', credentialsSource, 'run', 'private'])
+    await tunnel.stop(); assert.equal(tunnel.status().running, false)
+    assert.ok(r.store.get('cloudflare:tunnel'))
+  } finally { tunnel.dispose(); r.cleanup() }
+})
+test('Native tunnel refuses missing access protection and does not retain an unsaved configuration', () => {
+  const r = rig(); const tunnel = createNativeTunnelService({ store: r.store })
+  try {
+    assert.throws(() => tunnel.configure({ name: 'private', binary: join(r.root, 'cloudflared'), credentialsSource: join(r.root, 'creds.json'), enabled: true }), /访问保护/)
+    assert.equal(r.store.get('cloudflare:tunnel'), undefined)
+    assert.equal(tunnel.status().configured, false)
+  } finally { tunnel.dispose(); r.cleanup() }
+})
+
+test('Native tunnel failed save does not alter the controller or enable a new process', () => {
+  const r = rig(), failing = { get: k => r.store.get(k), transact: () => ({ committed: false }) }
+  const tunnel = createNativeTunnelService({ store: failing, spawnImpl: () => { throw Error('must not execute') } })
+  try {
+    assert.throws(() => tunnel.configure({ name: 'private', binary: join(r.root, 'cloudflared'), credentialsSource: join(r.root, 'creds.json'), enabled: true, access: { applicationId: 'app-id' } }), /未保存/)
+    assert.equal(tunnel.status().configured, false)
+    assert.equal(r.store.get('cloudflare:tunnel'), undefined)
+  } finally { tunnel.dispose(); r.cleanup() }
 })

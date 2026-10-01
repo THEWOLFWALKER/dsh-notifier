@@ -67,13 +67,13 @@ window.__ModuleLoader__.load({
       testCommittedConfig: '测试的是已保存的配置。',
       unsavedChangesHint: '有未保存的修改，请先保存再测试。',
       testUnconfirmed: '无法确认结果',
-      testConfirmedHint: '已确认送达，不再推断是否已读。',
-      testAcceptedDetail: '平台已接收，尚未确认终端送达。',
+      testConfirmedHint: '已送达',
+      testAcceptedDetail: '已发送，请检查设备',
       testReasonAuth: '凭证或权限被拒绝',
       testReasonTimeout: '请求超时',
       testReasonNetwork: '网络不可达',
-      testReasonProvider: '提供方返回错误',
-      unknownNoRetry: '结果无法确认，不会自动重发特权操作。',
+      testReasonProvider: '平台返回错误',
+      unknownNoRetry: '发送结果未知',
       noAccountNote: '无需账号即可保存，测试完全可选。',
       unavailableList: '当前能力不可用',
       staleUpdatedAt: '数据可能已过期',
@@ -186,7 +186,7 @@ window.__ModuleLoader__.load({
       approvalMembersCountLabel: '审批成员数',
       saveControl: '保存控制策略',
       controlSaved: '控制策略已保存',
-      rawIdentifiersNote: '原始标识默认脱敏显示，展开后可查看完整值。',
+      rawIdentifiersNote: '显示完整标识',
       noTasks: '暂无任务',
       noActivity: '暂无最近活动',
       reject: '拒绝',
@@ -206,7 +206,7 @@ window.__ModuleLoader__.load({
       lastFailure: '最近失败',
       reason: '原因',
       inboundRestartHint: '保存远程控制配置后，需要重启 DSH 才会重新建立连接。',
-      outboundRestartHint: '配置已保存，但运行时尚未生效（例如清除了必需凭证）。重启 DSH 后收敛到最新配置。',
+      outboundRestartHint: '已保存，重启 DSH 后生效',
       applyHot: '保存后立即生效',
       applyRestart: '保存后等待重启生效',
       setupActivationTitle: '设置通知',
@@ -258,8 +258,8 @@ window.__ModuleLoader__.load({
       yes: '是',
       no: '否',
       supportReport: '支持报告',
-      reportIntro: '生成一份脱敏、可直接粘贴到 issue 的诊断报告。',
-      reportNotBackup: '报告是脱敏只读诊断，不含密钥，也不是可恢复的配置备份；恢复环境请另行使用配置导出/导入。',
+      reportIntro: '生成诊断报告',
+      reportNotBackup: '诊断报告不包含密钥。',
       generateReport: '生成支持报告',
       copyReport: '复制',
       downloadReport: '下载',
@@ -273,11 +273,11 @@ window.__ModuleLoader__.load({
       controlTitle: '控制面',
       // v0.15（T24）：远程入口（手机访问）。
       remoteEntry: '远程入口',
-      remoteIntro: '填写一个受保护的 HTTPS 链接，在手机上打开通知与控制入口。仅本地校验地址，不会在后台探测可达性。',
+      remoteIntro: '填写 HTTPS 地址，在手机上打开通知与控制。',
       remoteUrlLabel: '访问链接',
       remoteUrlPlaceholder: 'https://example.com/…',
       remoteGenerate: '生成入口',
-      remoteValid: '入口可用',
+      remoteValid: '链接格式正确',
       remoteOpen: '打开链接',
       remoteCopy: '复制链接',
       remoteCopied: '链接已复制',
@@ -325,13 +325,13 @@ window.__ModuleLoader__.load({
       testCommittedConfig: 'Tests the saved configuration.',
       unsavedChangesHint: 'You have unsaved changes — save before testing.',
       testUnconfirmed: 'Could not confirm delivery',
-      testConfirmedHint: 'Delivery confirmed — read state is not inferred.',
-      testAcceptedDetail: 'Accepted by the provider — delivery not confirmed yet.',
+      testConfirmedHint: 'Delivered',
+      testAcceptedDetail: 'Sent. Check your device.',
       testReasonAuth: 'Credential or permission rejected',
       testReasonTimeout: 'Request timed out',
       testReasonNetwork: 'Network unreachable',
       testReasonProvider: 'Provider returned an error',
-      unknownNoRetry: 'Result cannot be confirmed; privileged actions are not auto-resent.',
+      unknownNoRetry: 'Send result unknown',
       noAccountNote: 'No account needed to save — testing is entirely optional.',
       unavailableList: 'This capability is unavailable',
       staleUpdatedAt: 'Data may be out of date',
@@ -516,8 +516,8 @@ window.__ModuleLoader__.load({
       yes: 'Yes',
       no: 'No',
       supportReport: 'Support report',
-      reportIntro: 'Generate a redacted diagnostics report you can paste straight into an issue.',
-      reportNotBackup: 'The report is redacted, read-only diagnostics. It contains no secrets and is not a restorable configuration backup; use configuration export/import to restore an environment.',
+      reportIntro: 'Generate a diagnostic report.',
+      reportNotBackup: 'The report contains no credentials.',
       generateReport: 'Generate support report',
       copyReport: 'Copy',
       downloadReport: 'Download',
@@ -531,11 +531,11 @@ window.__ModuleLoader__.load({
       controlTitle: 'Control plane',
       // v0.15 (T24): remote entry (phone access).
       remoteEntry: 'Remote entry',
-      remoteIntro: 'Enter a protected HTTPS link to open the notify & control entry on your phone. The link is validated locally and never probed in the background.',
+      remoteIntro: 'Enter an HTTPS address to open Notify & Control on your phone.',
       remoteUrlLabel: 'Access link',
       remoteUrlPlaceholder: 'https://example.com/…',
       remoteGenerate: 'Build entry',
-      remoteValid: 'Entry ready',
+      remoteValid: 'Link format valid',
       remoteOpen: 'Open link',
       remoteCopy: 'Copy link',
       remoteCopied: 'Link copied',
@@ -2819,6 +2819,27 @@ window.__ModuleLoader__.load({
             h(Button, { disabled: busy, onClick: () => controller.navigate({ kind: 'channel', type: r.type === 'qq' ? 'qqbot' : r.type === 'wechat' ? 'weixin' : r.type, importDirection: r.direction, importDraft: r.config }) }, t('importConfigure')))) : h('p', { className: 'dn-note' }, t('importEmpty'))))
     }
 
+    function TunnelSettings({ ctx, controller, data, disabled, onRead }) {
+      const [values, setValues] = useState({ name: '', binary: '', credentialsSource: '', applicationId: '' })
+      const [error, setError] = useState(null)
+      const [busy, setBusy] = useState(false)
+      const words = (zh, en) => String(ctx?.locale?.current ?? 'zh').startsWith('en') ? en : zh
+      const call = async method => {
+        setBusy(true); setError(null)
+        try {
+          await controller.cloudCall(method, method === 'tunnelStart' ? { ...values, enabled: true, protected: true, access: { applicationId: values.applicationId } } : {})
+          await onRead()
+        } catch (e) { setError(e) } finally { setBusy(false) }
+      }
+      return h('details', { className: 'dn-detail' },
+        h('summary', null, words('高级设置：连接已有隧道', 'Advanced: connect an existing tunnel')),
+        h('p', { className: 'dn-note' }, words('使用已安装的 cloudflared 和已有命名隧道。先在 Cloudflare 设置访问保护。', 'Use your installed cloudflared and an existing named tunnel. Configure Cloudflare Access first.')),
+        ...[['name', words('隧道名称', 'Tunnel name')], ['binary', words('cloudflared 完整路径', 'cloudflared full path')], ['credentialsSource', words('凭据文件完整路径', 'Credentials file full path')], ['applicationId', words('Access 应用 ID', 'Access application ID')]].map(([key, label]) => h('label', { key, className: 'dn-field' }, label, h('input', { 'aria-label': label, value: values[key], disabled: busy || disabled, onChange: e => setValues(current => ({ ...current, [key]: e.target.value })) }))),
+        h('p', { role: 'status' }, data?.running ? words('已启动', 'Running') : words('未启动', 'Stopped')),
+        error ? h('p', { role: 'alert', className: 'dn-error' }, error.message) : null,
+        h('div', { className: 'dn-formActions' }, h(Button, { disabled: busy || disabled || data?.running, onClick: () => call('tunnelStart') }, words('保存并启动', 'Save and start')), h(Button, { disabled: busy, onClick: () => call('tunnelStop') }, words('停止', 'Stop'))))
+    }
+
     function CloudflareView({ ctx, controller, state, t }) {
       const [data, setData] = useState(null)
       const [error, setError] = useState(null)
@@ -2881,6 +2902,7 @@ window.__ModuleLoader__.load({
           h('label', { className: 'dn-field dn-field--check' }, h('input', { type: 'checkbox', checked: activate, disabled, onChange: e => setActivate(e.target.checked) }), words('部署后自动填写并保存 TG 配置', 'Automatically fill and save Telegram settings')),
           h('label', { className: 'dn-field dn-field--check' }, h('input', { type: 'checkbox', checked: inbound, disabled, onChange: e => setInbound(e.target.checked) }), words('也用于接收消息（完成后重启 DSH）', 'Also receive messages (restart DSH afterwards)'))) : null,
         h(Button, { kind: 'primary', disabled: disabled || !account, onClick: () => call('deploy', { type, accountId: account, botToken, enrollment, activate: type === 'telegram' && activate, chatId, inbound }) }, type === 'telegram' ? words('一键开启', 'Enable gateway') : words('部署 / 重试', 'Deploy / retry')),
+        h(TunnelSettings, { ctx, controller, data: data?.tunnel, disabled, onRead: read }),
         receipt ? h('p', { role: 'status', className: 'dn-successText' }, receipt.unbound ? words('已解除本地绑定，云资源保留。', 'Local binding removed. Cloud resources retained.') : receipt.results?.some(r => r.applied === false) ? t('restartPending') : t('savedOk')) : null,
         ...(data?.deployments ?? []).map(r => h(Section, { key: r.type, title: r.type === 'telegram' ? 'Telegram Gateway' : 'Bark' },
           h('p', { className: 'dn-note' }, r.endpoint || words('尚未完成部署', 'Deployment pending')),

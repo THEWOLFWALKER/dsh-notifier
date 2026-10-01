@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { createStore } from '../../src/inbound/store.mjs'
@@ -8,6 +8,8 @@ import { createOutboundSource } from '../../src/runtime/outbound-source.mjs'
 import { createOutboundConfigService } from '../../src/control-surface/outbound-config.mjs'
 import { createInboundChannelConfigPort } from '../../src/inbound/channel-config.mjs'
 import { createConfigPortabilityService } from '../../src/control-plane/config-portability.mjs'
+import { EventEmitter } from 'node:events'
+import { createNativeTunnelService } from '../../src/cloudflare/tunnel.mjs'
 import { createCloudflareDeploymentService } from '../../src/cloudflare/deployment.mjs'
 import { act, actAsync, buttonByText, click, createContext, flush, installDomEnvironment, loadClient, mount, React, typeInput } from './harness.mjs'
 const { mod } = loadClient()
@@ -19,7 +21,13 @@ function rig() {
   const inbound = createInboundChannelConfigPort({ store })
   const portability = createConfigPortabilityService({ store, outboundConfig: outbound, inboundConfig: inbound })
   const account = 'a'.repeat(32)
-  const cloud = createCloudflareDeploymentService({ store, root, outboundConfig: outbound, inboundConfig: inbound, runner: {
+  const tunnelService = createNativeTunnelService({ store, spawnImpl: () => {
+    const child = new EventEmitter(); child.pid = 123
+    child.stdout = new EventEmitter(); child.stderr = new EventEmitter()
+    child.kill = () => { queueMicrotask(() => child.emit('exit', 0)); return true }
+    queueMicrotask(() => child.emit('spawn')); return child
+  } })
+  const cloud = createCloudflareDeploymentService({ store, root, tunnelService, outboundConfig: outbound, inboundConfig: inbound, runner: {
     prepare: async () => {}, whoami: async () => ({ accounts: [{ id: account, name: 'Account' }] }),
     loginDevice: async () => {}, deployWorker: async ({ name }) => ({ endpoint: `https://${name}.user.workers.dev`, versionId: 'v1' }), readDeployment: async () => [{ created_on: '2026-10-01', versions: [{ version_id: 'v1', percentage: 100 }] }], dispose() {},
   }, fetchImpl: async () => Response.json({ template: 'notifier-telegram-v1' }) })
@@ -162,5 +170,23 @@ test('Native Telegram custom address remains editable and saves with the existin
     assert.equal(r.outbound.raw('telegram').botToken, '123:secret')
     click(buttonByText(v.container, 'Enable gateway'))
     assert.equal(calls[0].kind, 'cloudflare')
+  } finally { r.close(v) }
+})
+
+test('Native advanced tunnel saves, starts and stops through the real tunnel authority', async () => {
+  const r = rig(), binary = join(r.root, 'cloudflared'), credentials = join(r.root, 'creds.json')
+  writeFileSync(binary, 'fixture'); writeFileSync(credentials, '{}')
+  const v = mount(React.createElement(mod.__test.CloudflareView, { ctx: r.ctx, controller: r.controller, t: k => k })); await flush()
+  try {
+    typeInput(v.container.querySelector('input[aria-label="Tunnel name"]'), 'private')
+    typeInput(v.container.querySelector('input[aria-label="cloudflared full path"]'), binary)
+    typeInput(v.container.querySelector('input[aria-label="Credentials file full path"]'), credentials)
+    typeInput(v.container.querySelector('input[aria-label="Access application ID"]'), 'protected-app')
+    click(buttonByText(v.container, 'Save and start')); await flush()
+    assert.equal(r.cloud.status().tunnel.running, true)
+    assert.ok(r.store.get('cloudflare:tunnel'))
+    click(buttonByText(v.container, 'Stop')); await flush()
+    assert.equal(r.cloud.status().tunnel.running, false)
+    assert.equal(r.calls.some(c => c.endpoint === 'cloudflare.tunnelStart'), true)
   } finally { r.close(v) }
 })

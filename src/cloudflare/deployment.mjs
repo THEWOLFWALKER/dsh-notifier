@@ -1,3 +1,4 @@
+import { createNativeTunnelService } from './tunnel.mjs'
 // One deployment authority, one job per process. Cloud success and local binding are separate facts.
 import { mkdirSync, cpSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -8,7 +9,8 @@ import { createWranglerRunner, WRANGLER_VERSION } from './wrangler-runner.mjs'
 const PREFIX = 'cloudflare:deployment:'
 const error = (message, code = 'bad-request') => Object.assign(new Error(message), { code })
 const templates = fileURLToPath(new URL('./templates/', import.meta.url))
-export function createCloudflareDeploymentService({ store, root, outboundConfig, inboundConfig, runner = null, fetchImpl = globalThis.fetch } = {}) {
+export function createCloudflareDeploymentService({ store, root, outboundConfig, inboundConfig, runner = null, tunnelService = null, fetchImpl = globalThis.fetch } = {}) {
+  const tunnel = tunnelService ?? createNativeTunnelService({ store })
   const cli = runner ?? createWranglerRunner({ root })
   let job = null, sequence = 0, disposed = false
   let accounts = [], login = null, lastError = null
@@ -21,7 +23,7 @@ export function createCloudflareDeploymentService({ store, root, outboundConfig,
   const raw = type => store.get(keyOf(type)) ?? null
   const publicRow = r => r && ({ type: r.type, accountId: r.accountId, name: r.name, endpoint: r.endpoint ?? null, versionId: r.versionId ?? null, state: r.endpoint ? (r.bound ? 'bound' : 'unbound') : 'pending', linkedDirections: r.linkedDirections ?? [], enrollment: r.enrollment === true, health: r.health ?? 'unknown' })
   function status() {
-    return { wranglerVersion: WRANGLER_VERSION, accounts, login, job: job ? { id: job.id, kind: job.kind, step: job.step } : null, error: lastError, deployments: ['bark', 'telegram'].map(raw).filter(Boolean).map(publicRow) }
+    return { tunnel: tunnel.status(), wranglerVersion: WRANGLER_VERSION, accounts, login, job: job ? { id: job.id, kind: job.kind, step: job.step } : null, error: lastError, deployments: ['bark', 'telegram'].map(raw).filter(Boolean).map(publicRow) }
   }
   function start(kind, action) {
     if (disposed) throw error('Cloudflare 已关闭', 'host-unavailable')
@@ -158,7 +160,10 @@ export function createCloudflareDeploymentService({ store, root, outboundConfig,
     return { unbound: true, resourcesRetained: true, results }
   }
   return { status, loginDevice, refresh, deploy, link, unbind,
+    tunnelConfigure: payload => tunnel.configure(payload),
+    tunnelStart: payload => tunnel.start(payload),
+    tunnelStop: () => tunnel.stop(),
     cancel() { job?.controller.abort(); return status() },
-    dispose() { disposed = true; job?.controller.abort(); cli.dispose() },
+    dispose() { disposed = true; job?.controller.abort(); cli.dispose(); tunnel.dispose() },
   }
 }

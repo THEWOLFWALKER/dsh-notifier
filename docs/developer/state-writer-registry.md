@@ -114,6 +114,7 @@ removed. `src/inbound/store.mjs` is the only module allowed to call the raw `sto
 | `src/channels/wechat-ilink/index.mjs` | wechat-ilink legacy-core composition |
 | `src/channels/wechat-ilink/legacy-core.mjs` | `wechat:sync_buf` / ctx token |
 | `src/control-surface/channel-config-migration.mjs` | `channel:<type>:outbound` (one-shot migration), `state:schema-version` |
+| `src/cloudflare/tunnel.mjs` | `cloudflare:tunnel` (explicit configuration only; startup never starts the process) |
 | `src/cloudflare/deployment.mjs` | `cloudflare:deployment:<type>`; channel writes through canonical plan merge in the same durable transaction |
 | `src/control-plane/config-portability.mjs` | `portability:staged:<direction>:<type>` (import staging, inert/disabled) |
 | `src/control-surface/outbound-config.mjs` | `channel:<type>:outbound` |

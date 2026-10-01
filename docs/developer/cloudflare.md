@@ -70,3 +70,12 @@ upstream, and run Telegram forwarding with deterministic upstream responses.
 These are local runtime/protocol checks. Production Cloudflare account deployment,
 Apple receipt on a physical device, and Telegram delivery in a live chat require
 account/device evidence; they are not implied by the fixture results.
+
+## Named tunnel advanced entry
+
+The Native Cloudflare view connects configure/start/stop/status to the isolated
+Tunnel controller. A user supplies an installed executable and credential file;
+there is no automatic binary download or startup launch. The named tunnel requires
+an explicit Access application reference and retains Host/Origin checks. Spawn uses
+shell:false and file-path arguments, never credential content. Only the owned child
+is stopped. Saving configuration precedes changing the controller configuration.

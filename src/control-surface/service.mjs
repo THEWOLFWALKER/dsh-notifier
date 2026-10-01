@@ -371,7 +371,7 @@ export function createControlSurfaceService({
       // fail-closed（501 语义 = not-supported），绝不返回空文档冒充「无配置」。
       if (method.startsWith('cloudflare.')) {
         const action = method.slice('cloudflare.'.length)
-        const allowed = new Set(['status', 'loginDevice', 'refresh', 'deploy', 'link', 'unbind', 'cancel'])
+        const allowed = new Set(['status', 'loginDevice', 'refresh', 'deploy', 'link', 'unbind', 'cancel', 'tunnelConfigure', 'tunnelStart', 'tunnelStop'])
         if (!allowed.has(action) || cloudflare === null) throw Object.assign(new Error('Cloudflare 部署不可用'), { code: 'not-supported' })
         return ok({ ...revisionView(), ...await cloudflare[action](payload) })
       }
