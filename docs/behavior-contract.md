@@ -676,6 +676,56 @@ spec 条目，并为每条标注**旧代码 oracle**（现有 `test/` 或 `src/`
 
 ---
 
+## 八、Native 控制面（T18：保存/测试/加载状态）
+
+Native 视图（`client.js`）是**表现层**：它不持有第二写者，只把共享 authority 的 receipt 与查询结果
+映射成用户能正确理解的状态。这一节固定 U01–U04/U08/U09/U12 的行为，oracle 是**真实 React DOM**
+（`test/dom/`，独立于 `npm test` 的零依赖 glob）。
+
+### UX-01 · 保存 receipt 与详情刷新分离（U01）
+
+- **分类**：MUST_PRESERVE
+- **事实 owner**：`client.js` controller `saveChannel`；durable 事实在 `src/control-surface`
+- **输入/前置状态**：commit 成立，但随后的 `channels.get` 刷新失败
+- **公开执行入口**：Native 保存按钮
+- **结果**：仍显示「已保存」；刷新失败只降级为提示，**绝不**改写为「保存失败」
+- **durable diff**：只有 `channels.save` 的既有落盘；刷新不写盘
+- **effect trace**：一次保存 RPC + 一次读 RPC
+- **禁止动作**：不得把已提交的保存报成失败；不得因刷新失败丢弃草稿或阻止完成向导
+- **证据链接**：`test/dom/ui-dom-t18.test.mjs`（T18/U01）；`ui-dom.test.mjs:181`（同类，Members）
+- **矩阵**：**U01**
+
+### UX-02 · 保存与测试解耦、测试只针对已保存配置（U03/U12）
+
+- **分类**：MUST_PRESERVE
+- **事实 owner**：`client.js` `SetupFlow` / `ChannelDetailView`
+- **输入/前置状态**：表单有未保存修改 / 无账号、离线
+- **结果**：保存成立即可「完成」；测试完全可选；有未保存修改时测试禁用并说明原因，**绝不静默 save+send**
+- **禁止动作**：不得把保存按钮做成「保存并测试」；不得在测试前隐式提交
+- **证据链接**：`test/dom/ui-dom-t18.test.mjs`（T18/U03）；`ui-dom.test.mjs:63`（U12 可完成）
+- **矩阵**：**U03**、**U12**
+
+### UX-03 · 列表三态：loading / error / empty（+stale 标注）（U04）
+
+- **分类**：MUST_PRESERVE
+- **事实 owner**：`client.js` `listBody`
+- **输入/前置状态**：查询在途 / 查询失败或能力缺失 / 查询返回空 / 数据为 stale
+- **结果**：在途显示 loading（不伪装「暂无」）；失败显示不可用（不伪装成空）；stale 保留但标注更新时间
+- **禁止动作**：不得把「尚无响应」或「服务失败」渲染成空态；不得伪装实时
+- **证据链接**：`test/dom/ui-dom-t18.test.mjs`（T18/U04）；`ui-dom.test.mjs:224`（失败不空）
+- **矩阵**：**U04**
+
+### UX-04 · 投递证据分级：accepted / delivered / unknown（U08/U09）
+
+- **分类**：MUST_PRESERVE
+- **事实 owner**：`client.js` `testOutcome`（证据来自 `src/delivery-evidence.mjs`）
+- **结果**：accepted 显示「已接收，未确认送达」（绝不是「已送达」）；unknown 显示「无法确认」（绝不是「失败可重发」）
+- **禁止动作**：不得把 accepted 显示成成功送达；不得给 unknown 默认重发的暗示
+- **证据链接**：`test/dom/ui-dom-t18.test.mjs`（T18/U08、T18/U09）
+- **矩阵**：**U08**、**U09**
+
+---
+
 ## 必测矩阵 → spec / oracle 覆盖
 
 | 矩阵 ID | spec 条目 | 旧 oracle（文件:行） |

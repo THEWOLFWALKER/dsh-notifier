@@ -60,7 +60,7 @@ const WEBHOOK_CHANNEL = {
   notify: { editable: true, fields: { url: { label: { en: 'URL' } } } },
 }
 
-test('channel setup/save flow mounts and completes in a real React DOM', async () => {
+test('channel setup/save flow mounts, saves, and completes with no test sent', async () => {
   const calls = []
   const { ctx } = createContext({
     rpcCall: routed((endpoint) => {
@@ -73,7 +73,7 @@ test('channel setup/save flow mounts and completes in a real React DOM', async (
   })
   const controller = mod.__test.createController(ctx)
   const view = mount(React.createElement(mod.__test.SetupFlow, {
-    ctx, controller, channels: [WEBHOOK_CHANNEL], t: (key) => key, onDone: () => {},
+    ctx, controller, state: controller.getSnapshot(), channels: [WEBHOOK_CHANNEL], t: (key) => key, onDone: () => {},
   }))
   own(controller, view)
 
@@ -87,19 +87,27 @@ test('channel setup/save flow mounts and completes in a real React DOM', async (
   assert.ok(input, 'setup form renders the channel field')
   assert.equal(input.getAttribute('type'), 'text')
 
-  // 3) fill the draft, then save + test through the fake RPC.
+  // 3) fill the draft, then save. T18/U03: the form action is a plain save — it
+  // never silently sends a test message.
   typeInput(input, 'https://example.test/hook')
-  const save = buttonByText(view.container, 'saveAndTest')
+  const save = buttonByText(view.container, 'save')
+  assert.ok(save, 'the form exposes a save action (no implicit save+send)')
   assert.equal(save.disabled, false, 'save enables once the draft is non-empty')
   await actAsync(async () => { click(save) })
   await flush()
 
-  // channels.save lands first, then the refresh query, then the live test. The
-  // refresh query runs again after the test (loadChannel), so assert on the
-  // ordered distinct sequence rather than exact multiplicity.
-  assert.deepEqual([...new Set(calls)], ['channels.save', 'channels.get', 'channels.test'])
+  // U01/U12: save commits and refreshes; nothing is tested yet and the flow is
+  // already completable (no account/network needed to finish the wizard).
+  assert.deepEqual([...new Set(calls)], ['channels.save', 'channels.get'])
+  assert.ok(!calls.includes('channels.test'), 'no test is sent implicitly (U03)')
+  assert.match(textOf(view.container), /savedOk/, 'the committed receipt is reported')
+  assert.ok(buttonByText(view.container, 'complete'), 'the flow can complete right after save (U12)')
+
+  // 4) the optional test targets the saved configuration and grades its evidence.
+  await actAsync(async () => { click(buttonByText(view.container, 'test')) })
+  await flush()
+  assert.ok(calls.includes('channels.test'), 'the explicit test reaches the provider')
   assert.match(textOf(view.container), /testAccepted/, 'accepted delivery is reported in the DOM')
-  assert.ok(buttonByText(view.container, 'complete'), 'the flow reaches its done state')
 })
 
 test('U05 — a controlled input keeps its DOM node and focus across a state update', async () => {
@@ -252,14 +260,14 @@ test('U01/U02 — a delayed, failing save surfaces an error in the DOM and keeps
   })
   const controller = mod.__test.createController(ctx)
   const view = mount(React.createElement(mod.__test.SetupFlow, {
-    ctx, controller, channels: [WEBHOOK_CHANNEL], t: (key) => key, onDone: () => {},
+    ctx, controller, state: controller.getSnapshot(), channels: [WEBHOOK_CHANNEL], t: (key) => key, onDone: () => {},
   }))
   own(controller, view)
   click(buttonByText(view.container, 'Webhook'))
   const input = view.container.querySelector('input')
   typeInput(input, 'https://example.test/hook')
 
-  click(buttonByText(view.container, 'saveAndTest'))
+  click(buttonByText(view.container, 'save'))
   await flush()
   // The RPC is still in flight (controllable delay): nothing has failed yet.
   assert.equal(view.container.querySelector('[role=alert]'), null, 'no premature error while the save is pending')

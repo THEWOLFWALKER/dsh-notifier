@@ -2,7 +2,7 @@
 
 - **identity**: agent `flash`, task pack `dsh-notifier-flash-complete-taskpack` (T01–T30)
 - **branch**: `codex/core-distillation-v015` (off `dev`)
-- **status**: in progress — T01–T15 done (T06 partial)
+- **status**: in progress — T01–T18 done (T06 partial)
 - **owner scope**: core authority convergence, Native/Recovery UX, local config export/import, dsh-im
   bridge, remote URL, optional CF Tunnel, Workers/Pages extension package, docs/tests/delivery.
 - **explicitly out of scope**: `main`, tags, npm publish, real cloud deploy, full encrypted secret
@@ -622,7 +622,35 @@ file is not treated as debt by name alone.
 
 **Tests**: `test/v015-stage-s11-writer-fitness.test.mjs` (5 cases).
 
-**Count**: 2278 → **2283**. 
+**Count**: 2278 → **2283**.
+
+## T18 — Native 保存/测试/加载状态
+
+**Result**: the Native control surface now tells the truth about *which step* the user is at. Saving
+and testing are separate operations with separate receipts, list reads distinguish "still loading" from
+"failed" from "genuinely empty", and delivery evidence is graded so an accepted request is never shown
+as delivery and an unconfirmable result is never shown as a hard failure.
+
+- **Receipt vs refresh** (`client.js` controller `saveChannel`): the durable receipt is the commit
+  result itself; the follow-up `channels.get` is a *separate* read whose failure is returned as
+  `refreshed:false` and rendered as "saved, details refresh failed" — never rewritten as a save
+  failure. `saveChannel`/`testChannel` are non-reentrant while busy (U02).
+- **Save/test decoupling** (`SetupFlow`, `ChannelDetailView`): the form action is a plain **save**; the
+  wizard can be completed with no test sent (U12). Testing is opt-in, targets only the *committed*
+  config, and is disabled with an explicit reason while the form is dirty — no silent save+send (U03).
+- **List tri-state** (`listBody`): `loading` (no response yet) / `error` (service or network failure) /
+  `empty` (answered, nothing there); stale data is kept but timestamped. Applied to channels, tasks,
+  questions, members, pending, pairing, sessions, bindings and activity (U04).
+- **Evidence grading** (`testOutcome`): `confirmed` → delivered; `accepted` → "accepted, not confirmed";
+  anything else → "could not confirm" with a concrete reason and an explicit no-auto-retry note
+  (U08/U09). Dead `saveAndTest`/`testFailed`/`testAcceptedHint`/`testLater` strings removed.
+
+**Tests**: `node test/dom/run.mjs` → **14 pass / 0 fail** (6 new T18 acceptance cases in
+`test/dom/ui-dom-t18.test.mjs` + the two setup-flow cases updated for the save/test split). The DOM bed
+stays out of the shipped `npm test` glob; `npm test` is unchanged at **2283**.
+Contract: `docs/behavior-contract.md` UX-01…UX-04.
+
+**Count**: unchanged at **2283** (DOM suite is a separate workspace, by design).
 
 ## Task status
 
@@ -644,5 +672,6 @@ file is not treated as debt by name alone.
 | T14 | done | `93c6e62` | `route:sessions` single transactional writer; `test/v015-stage-s8-routing-convergence.test.mjs` → 6 pass |
 | T15 | done | `66d9b77` | shared claim boundary across actions/approval/questions; `test/v015-stage-s9-claim-convergence.test.mjs` → 12 pass |
 | T16 | done | `97d5f7c` | every entry shares one authority; storage-failure never rewritten as not-found; query fails closed; `test/v015-stage-s10-entry-parity.test.mjs` → 9 pass |
-| T17 | done | (this commit) | caller-less write seam removed; writer inventory is a machine-checked fitness guard; `test/v015-stage-s11-writer-fitness.test.mjs` → 5 pass |
-| T18–T30 | not started | — | — |
+| T17 | done | `dc9410a` | caller-less write seam removed; writer inventory is a machine-checked fitness guard; `test/v015-stage-s11-writer-fitness.test.mjs` → 5 pass |
+| T18 | done | (this commit) | save receipt ≠ refresh; save/test split (no implicit send); list tri-state; evidence grading; `node test/dom/run.mjs` → 14 pass |
+| T19–T30 | not started | — | — |

@@ -37,15 +37,30 @@ window.__ModuleLoader__.load({
       noChannelsHint: '配置一个渠道后，DSH 的重要事件可以直接送到你的设备。',
       setupChannel: '设置通知渠道',
       setupFirst: '设置第一个通知渠道',
-      setupIntro: '选择你已经在使用的渠道，保存后发送一条真实测试通知。',
-      saveAndTest: '保存并测试',
+      setupIntro: '选择你已经在使用的渠道并保存；测试是可选的，稍后也可以。',
       save: '保存',
       test: '发送测试通知',
       testing: '正在发送测试通知…',
       testDelivered: '测试通知已送达',
       testAccepted: '测试消息已发送',
-      testAcceptedHint: '已发送到提供方，请到客户端确认收到。',
-      testFailed: '未能送达',
+      // v0.15（T18 / U01–U12）：保存回执与刷新分离；测试证据分级；列表三态。
+      saving: '正在保存…',
+      savedOk: '配置已保存',
+      savedRefreshFailed: '已保存，但详情刷新失败。重试只会重新读取。',
+      savedPendingTest: '配置已保存。可立即发送测试通知，或稍后再试。',
+      testCommittedConfig: '测试的是已保存的配置。',
+      unsavedChangesHint: '有未保存的修改，请先保存再测试。',
+      testUnconfirmed: '无法确认结果',
+      testConfirmedHint: '已确认送达，不再推断是否已读。',
+      testAcceptedDetail: '平台已接收，尚未确认终端送达。',
+      testReasonAuth: '凭证或权限被拒绝',
+      testReasonTimeout: '请求超时',
+      testReasonNetwork: '网络不可达',
+      testReasonProvider: '提供方返回错误',
+      unknownNoRetry: '结果无法确认，不会自动重发特权操作。',
+      noAccountNote: '无需账号即可保存，测试完全可选。',
+      unavailableList: '当前能力不可用',
+      staleUpdatedAt: '数据可能已过期',
       complete: '完成',
       retry: '重试',
       back: '返回',
@@ -234,15 +249,30 @@ window.__ModuleLoader__.load({
       noChannelsHint: 'Configure a channel to deliver important DSH events to your device.',
       setupChannel: 'Set up notification',
       setupFirst: 'Set up first channel',
-      setupIntro: 'Choose a channel you already use, save it, then send a real test notification.',
-      saveAndTest: 'Save and test',
+      setupIntro: 'Choose a channel you already use and save it; testing is optional and can wait.',
       save: 'Save',
       test: 'Send test notification',
       testing: 'Sending test notification…',
       testDelivered: 'Test notification delivered',
       testAccepted: 'Test message sent',
-      testAcceptedHint: 'Sent to the provider — confirm receipt on your device.',
-      testFailed: 'Delivery failed',
+      // v0.15 (T18 / U01–U12): save receipt vs refresh; delivery evidence levels; list tri-state.
+      saving: 'Saving…',
+      savedOk: 'Configuration saved',
+      savedRefreshFailed: 'Saved, but refreshing details failed. Retry only re-reads.',
+      savedPendingTest: 'Saved. Send a test notification now, or do it later.',
+      testCommittedConfig: 'Tests the saved configuration.',
+      unsavedChangesHint: 'You have unsaved changes — save before testing.',
+      testUnconfirmed: 'Could not confirm delivery',
+      testConfirmedHint: 'Delivery confirmed — read state is not inferred.',
+      testAcceptedDetail: 'Accepted by the provider — delivery not confirmed yet.',
+      testReasonAuth: 'Credential or permission rejected',
+      testReasonTimeout: 'Request timed out',
+      testReasonNetwork: 'Network unreachable',
+      testReasonProvider: 'Provider returned an error',
+      unknownNoRetry: 'Result cannot be confirmed; privileged actions are not auto-resent.',
+      noAccountNote: 'No account needed to save — testing is entirely optional.',
+      unavailableList: 'This capability is unavailable',
+      staleUpdatedAt: 'Data may be out of date',
       complete: 'Done',
       retry: 'Retry',
       back: 'Back',
@@ -719,18 +749,24 @@ window.__ModuleLoader__.load({
       }
       async function saveChannel(type, direction, patch) {
         const key = `save:${type}:${direction}`
+        // v0.15（T18 / U02）：busy 期间同一业务提交不再重入（RPC 慢时连点不产生第二次提交）。
+        if (snapshot.busy[key] === true) return { saved: false, duplicate: true, refreshed: false }
         setBusy(key, true)
         try {
           const value = await rpc.call('channels.save', { type, direction, patch })
           setError(null)
-          await loadChannel(type)
-          return value
+          // v0.15（T18 / U01）：durable receipt 就是落盘结果本身；刷新详情是**另一件事**——
+          // 刷新失败绝不能上报成「保存失败」（旧实现把 loadChannel 的异常直接冒泡，导致
+          // 已落盘的保存被当成失败、草稿不清理）。这里分开，仅回传 refreshed 供视图区分提示。
+          const refreshed = await loadChannel(type).then(() => true).catch(() => false)
+          return { ...(value && typeof value === 'object' ? value : {}), refreshed }
         } finally {
           setBusy(key, false)
         }
       }
       async function testChannel(type) {
         const key = `test:${type}`
+        if (snapshot.busy[key] === true) return null
         setBusy(key, true)
         try {
           const value = await rpc.call('channels.test', { type })
@@ -1062,6 +1098,52 @@ window.__ModuleLoader__.load({
         onRetry ? h(Button, { onClick: onRetry }, t('retry')) : null)
     }
 
+    // v0.15（T18 / U08–U09）：投递证据分级——confirmed（显式回执）/ accepted（仅平台接收）/
+    // unknown（无法确认）。accepted 绝不显示成「送达」，unknown 绝不显示成「失败可重发」。
+    function testReasonText(code, t) {
+      return code === 'auth-failed' ? t('testReasonAuth')
+        : code === 'timeout' ? t('testReasonTimeout')
+          : code === 'network-error' ? t('testReasonNetwork')
+            : t('testReasonProvider')
+    }
+
+    function testOutcome(ctx, result, t) {
+      const confirmed = result?.confirmed === true || result?.status === 'delivered' || result?.delivered === true
+      if (confirmed) return { ok: true, title: t('testDelivered'), note: t('testConfirmedHint') }
+      const accepted = result?.accepted === true || result?.status === 'accepted'
+      if (accepted) {
+        return {
+          ok: true,
+          title: t('testAccepted'),
+          note: `${t('testAcceptedDetail')}${result?.providerDetail ? ` · ${resolveText(ctx, result.providerDetail)}` : ''}`,
+        }
+      }
+      const detail = result?.detail ? resolveText(ctx, result.detail) : ''
+      return {
+        ok: false,
+        title: t('testUnconfirmed'),
+        note: `${testReasonText(result?.reasonCode, t)}${detail ? ` · ${detail}` : ''} · ${t('unknownNoRetry')}`,
+      }
+    }
+
+    // v0.15（T18 / U04）：列表三态——loading（尚无响应，不伪装「暂无」）/ error（服务或网络失败，
+    // 不伪装成空）/ empty（已回但为空）；stale 数据保留但标注更新时间，不伪装实时。
+    function listBody({ data, error, connectionState, staleAt, t, rows, emptyKey, render }) {
+      if (data === null || data === undefined) {
+        if (error) {
+          return [h('p', { className: 'dn-empty', role: 'alert', key: 'nodata' }, `${t('unavailableList')} · ${error?.message || t('unknownError')}`)]
+        }
+        return [h('p', { className: 'dn-inlineStatus', key: 'loading' }, h(StateDot, { state: 'ongoing' }), t('loading'))]
+      }
+      if (!rows.length) return [h('p', { className: 'dn-empty', key: 'empty' }, t(emptyKey))]
+      return [
+        connectionState === 'stale' && staleAt
+          ? h('p', { className: 'dn-rowMeta dn-stale', role: 'status', key: 'stale' }, `${t('staleUpdatedAt')} · ${new Date(staleAt).toLocaleTimeString()}`)
+          : null,
+        ...rows.map(render),
+      ]
+    }
+
     function PageHead({ title, intro, actions }) {
       return h('header', { className: 'dn-pageHead' },
         h('div', null, h('h1', { className: 'dn-pageTitle' }, title),
@@ -1246,6 +1328,9 @@ window.__ModuleLoader__.load({
           : state.connectionState === 'disconnected'
             ? h('p', { className: 'dn-error', role: 'alert' }, t('connectionLost'))
           : null,
+        home === null && state.error
+          ? h(ErrorNotice, { error: state.error, t, onRetry: () => void controller.loadHome().catch(error => controller.reportError(error)) })
+          : null,
         (home?.questions?.length ?? 0) > 0
           ? h(Section, {
               title: `${t('needsAttention')}  ${home.questions.length}`,
@@ -1260,53 +1345,67 @@ window.__ModuleLoader__.load({
         h(Section, {
           title: t('running'),
           action: h('button', { className: 'dn-link', onClick: () => controller.navigate({ kind: 'tasks' }) }, `${t('viewAll')} →`),
-        }, ...(home?.tasks?.length ? home.tasks.slice(0, 5).map(task => h(TaskRow, { key: task.taskRef, ctx, task })) : [h('p', { className: 'dn-empty', key: 'empty' }, t('noTasks'))])),
+        }, ...(home?.tasks?.length ? home.tasks.slice(0, 5).map(task => h(TaskRow, { key: task.taskRef, ctx, task })) : home === null ? [h('p', { className: 'dn-inlineStatus', key: 'loading' }, h(StateDot, { state: 'ongoing' }), t('loading'))] : [h('p', { className: 'dn-empty', key: 'empty' }, t('noTasks'))])),
         h(Section, {
           title: t('channels'),
           action: h('button', { className: 'dn-link', onClick: () => controller.navigate({ kind: 'channels' }) }, `${t('manageChannels')} →`),
         }, ...(home?.channels?.length ? home.channels.slice(0, 5).map(channel =>
           h(ChannelRow, { key: channel.type, ctx, channel, t, onOpen: () => controller.navigate({ kind: 'channel', type: channel.type }) }))
-          : [h('div', { className: 'dn-emptyState', key: 'empty' },
+          : home === null ? [h('p', { className: 'dn-inlineStatus', key: 'loading' }, h(StateDot, { state: 'ongoing' }), t('loading'))]
+            : [h('div', { className: 'dn-emptyState', key: 'empty' },
               h('strong', null, t('noChannels')),
               h('span', null, t('noChannelsHint')),
               h(Button, { kind: 'primary', onClick: () => controller.navigate({ kind: 'channels', setup: true }) }, t('setupChannel')))])),
         h(Section, {
           title: t('activity'),
           action: h('button', { className: 'dn-link', onClick: () => controller.navigate({ kind: 'activity' }) }, `${t('viewAll')} →`),
-        }, ...(home?.activity?.length ? home.activity.slice(0, 5).map(item => h(ActivityRow, { key: item.id, ctx, item })) : [h('p', { className: 'dn-empty', key: 'empty' }, t('noActivity'))])))
+        }, ...(home?.activity?.length ? home.activity.slice(0, 5).map(item => h(ActivityRow, { key: item.id, ctx, item })) : home === null ? [h('p', { className: 'dn-inlineStatus', key: 'loading' }, h(StateDot, { state: 'ongoing' }), t('loading'))] : [h('p', { className: 'dn-empty', key: 'empty' }, t('noActivity'))])))
     }
 
-    function SetupFlow({ ctx, controller, channels, onDone, t }) {
+    // v0.15（T18 / U03 / U12）：保存与测试解耦——保存成立后即可「完成」，测试完全可选；
+    // 测试只针对**已保存**的配置（绝不静默 save+send）；测试失败/无法确认不会困住用户。
+    function SetupFlow({ ctx, controller, state, channels, onDone, t }) {
       const [type, setType] = useState(null)
       const [draft, setDraft] = useState({})
-      const [phase, setPhase] = useState('choose')
+      const [phase, setPhase] = useState('choose') // choose | form | saved | testing | done
+      const [saved, setSaved] = useState(null)
       const [testResult, setTestResult] = useState(null)
       const [error, setError] = useState(null)
       const candidates = (channels ?? []).filter(channel => channel?.notify?.editable !== false)
       const selected = candidates.find(channel => channel.type === type)
       const fields = selected?.notify?.fields ?? {}
       const setField = (key, value) => setDraft(current => ({ ...current, [key]: value }))
-      const saveAndTest = async () => {
+      const saveBusy = type !== null && state?.busy?.[`save:${type}:outbound`] === true
+      const testBusy = type !== null && state?.busy?.[`test:${type}`] === true
+      const save = async () => {
         setError(null)
         setTestResult(null)
         try {
-          await controller.saveChannel(type, 'outbound', draft)
+          const receipt = await controller.saveChannel(type, 'outbound', draft)
+          // Secret 明文只写：保存成立后立即从 React state 驱逐（刷新投影只带 configured）。
           setDraft(current => Object.fromEntries(
             Object.entries(current).filter(([key]) => fields[key]?.secret !== true),
           ))
-          setPhase('testing')
-          const result = await controller.testChannel(type)
-          setTestResult(result)
-          if (result?.status === 'delivered' || result?.status === 'accepted' || result?.delivered === true) {
-            setPhase('done')
-          } else if (result?.status === 'unknown' || result?.status === 'failed' || result?.delivered === false) {
-            setPhase('form')
-          } else {
-            throw new Error('channels.test returned an invalid delivery result')
-          }
+          setSaved(receipt ?? null)
+          setPhase('saved')
         } catch (err) {
           setError(err)
           setPhase('form')
+        }
+      }
+      const test = async () => {
+        setError(null)
+        setTestResult(null)
+        setPhase('testing')
+        try {
+          const result = await controller.testChannel(type)
+          setTestResult(result)
+          const good = result?.confirmed === true || result?.accepted === true
+            || result?.status === 'delivered' || result?.status === 'accepted' || result?.delivered === true
+          setPhase(good ? 'done' : 'saved')
+        } catch (err) {
+          setError(err)
+          setPhase('saved')
         }
       }
       if (phase === 'choose') {
@@ -1320,35 +1419,56 @@ window.__ModuleLoader__.load({
                 onClick: () => { setType(channel.type); setDraft({}); setPhase('form') },
               }, resolveText(ctx, channel.label) || channel.type, h('span', null, '›')))))
       }
+      const outcome = testResult ? testOutcome(ctx, testResult, t) : null
+      const body = phase === 'form'
+        ? [
+            ...Object.entries(fields).map(([key, meta]) => {
+              const secret = meta?.secret === true
+              return h('label', { className: 'dn-field', key },
+                h('span', null, resolveText(ctx, meta?.label) || key),
+                h('input', {
+                  type: secret ? 'password' : 'text',
+                  value: draft[key] ?? '',
+                  placeholder: secret && meta?.configured === true ? t('configured') : '',
+                  onChange: event => setField(key, event.target.value),
+                }),
+                meta?.description ? h('small', null, resolveText(ctx, meta.description)) : null)
+            }),
+            error ? h('p', { className: 'dn-error', role: 'alert', key: 'err' }, error?.message || t('unknownError')) : null,
+            h('p', { className: 'dn-note', key: 'note' }, t('noAccountNote')),
+            h('div', { className: 'dn-formActions', key: 'actions' },
+              h(Button, {
+                kind: 'primary',
+                disabled: saveBusy || Object.keys(draft).length === 0,
+                onClick: () => void save(),
+              }, saveBusy ? t('saving') : t('save'))),
+          ]
+        : [
+            h('p', { className: 'dn-successText', key: 'saved' }, t('savedOk')),
+            saved?.restartPending === true || saved?.applyMode === 'restart-pending'
+              ? h('p', { className: 'dn-note', key: 'restart' }, t('outboundRestartHint')) : null,
+            h('p', { className: 'dn-note', key: 'pendingTest' }, t('savedPendingTest')),
+            outcome
+              ? h('p', {
+                  className: outcome.ok ? 'dn-successText' : 'dn-error',
+                  role: outcome.ok ? undefined : 'alert',
+                  key: 'outcome',
+                }, `${outcome.title} · ${outcome.note}`)
+              : null,
+            error ? h('p', { className: 'dn-error', role: 'alert', key: 'err' }, error?.message || t('unknownError')) : null,
+            phase === 'testing' ? h('p', { className: 'dn-inlineStatus', key: 'testing' }, h(StateDot, { state: 'ongoing' }), t('testing')) : null,
+            h('div', { className: 'dn-formActions', key: 'actions' },
+              h(Button, {
+                disabled: testBusy || phase === 'testing',
+                onClick: () => void test(),
+              }, testBusy || phase === 'testing' ? t('testing') : t('test')),
+              h(Button, { kind: 'primary', onClick: onDone }, t('complete'))),
+          ]
       return h('div', { className: 'dn-setupCard' },
         h('div', { className: 'dn-detailBack' },
           h('button', { className: 'dn-link', onClick: () => { setPhase('choose'); setType(null) } }, `← ${t('back')}`)),
         h('h2', null, resolveText(ctx, selected?.label) || type),
-        ...Object.entries(fields).map(([key, meta]) => {
-          const secret = meta?.secret === true
-          return h('label', { className: 'dn-field', key },
-            h('span', null, resolveText(ctx, meta?.label) || key),
-            h('input', {
-              type: secret ? 'password' : 'text',
-              value: draft[key] ?? '',
-              placeholder: secret && meta?.configured === true ? t('configured') : '',
-              onChange: event => setField(key, event.target.value),
-            }),
-            meta?.description ? h('small', null, resolveText(ctx, meta.description)) : null)
-        }),
-        error ? h('p', { className: 'dn-error', role: 'alert' }, error?.message || t('unknownError')) : null,
-        (testResult?.status === 'unknown' || testResult?.status === 'failed' || testResult?.delivered === false)
-          ? h('p', { className: 'dn-error', role: 'alert' },
-          `${t('testFailed')}${testResult?.detail ? ` · ${resolveText(ctx, testResult.detail)}` : ''}`) : null,
-        phase === 'testing' ? h('p', { className: 'dn-inlineStatus' }, h(StateDot, { state: 'ongoing' }), t('testing')) : null,
-        phase === 'done'
-          ? h('div', { className: 'dn-success' },
-              h('strong', null, testResult?.status === 'delivered' ? t('testDelivered') : t('testAccepted')),
-              testResult?.status !== 'delivered'
-                ? h('p', { className: 'dn-note' }, resolveText(ctx, testResult?.providerDetail) || t('testAcceptedHint'))
-                : null,
-              h(Button, { kind: 'primary', onClick: onDone }, t('complete')))
-          : h(Button, { kind: 'primary', disabled: phase === 'testing' || Object.keys(draft).length === 0, onClick: () => void saveAndTest() }, t('saveAndTest')))
+        ...body)
     }
 
     function ChannelsView({ ctx, controller, state, t }) {
@@ -1358,17 +1478,22 @@ window.__ModuleLoader__.load({
       const channels = data?.channels ?? []
       if (setup) return h('div', { className: 'dn-page' },
         h(PageHead, { title: t('setupChannel') }),
-        h(SetupFlow, { ctx, controller, channels, t, onDone: () => { setSetup(false); void controller.loadChannels().catch(error => controller.reportError(error)) } }))
+        h(SetupFlow, { ctx, controller, state, channels, t, onDone: () => { setSetup(false); void controller.loadChannels().catch(error => controller.reportError(error)) } }))
       return h('div', { className: 'dn-page' },
         h(PageHead, {
           title: t('channels'),
           actions: h(Button, { kind: 'primary', onClick: () => setSetup(true) }, t('addChannel')),
         }),
+        h(ErrorNotice, { error: state.error, t, onRetry: () => void controller.loadChannels().catch(error => controller.reportError(error)) }),
         h('div', { className: 'dn-list' },
-          ...channels.map(channel => h(ChannelRow, {
-            key: channel.type, ctx, channel, t,
-            onOpen: () => controller.navigate({ kind: 'channel', type: channel.type }),
-          }))))
+          ...listBody({
+            data, error: state.error, connectionState: state.connectionState, staleAt: state.staleAt, t,
+            rows: channels, emptyKey: 'noChannels',
+            render: channel => h(ChannelRow, {
+              key: channel.type, ctx, channel, t,
+              onOpen: () => controller.navigate({ kind: 'channel', type: channel.type }),
+            }),
+          })))
     }
 
     function ChannelDetailView({ ctx, controller, state, t }) {
@@ -1379,6 +1504,8 @@ window.__ModuleLoader__.load({
       const dirtyRef = useRef(dirty)
       const revisions = useRef({ outbound: null, inbound: null })
       const [testResult, setTestResult] = useState(null)
+      // v0.15（T18 / U01）：保存回执（每个方向独立），与详情刷新结果分开显示。
+      const [saveNotice, setSaveNotice] = useState({ outbound: null, inbound: null })
       useEffect(() => { void controller.loadChannel(type).catch(error => controller.reportError(error)) }, [type])
       useEffect(() => {
         const channel = data?.channel
@@ -1399,7 +1526,17 @@ window.__ModuleLoader__.load({
       }, [data?.channel?.notify?.configRevision, data?.channel?.control?.configRevision])
 
       const channel = data?.channel
-      if (!channel) return h('div', { className: 'dn-page' }, h(PageHead, { title: type }), h('p', null, t('loading')))
+      if (!channel) {
+        // v0.15（T18 / U04）：读取中与读取失败必须可区分——服务缺失/失败不能显示成「正在读取」。
+        return h('div', { className: 'dn-page' },
+          h('div', { className: 'dn-detailBack' },
+            h('button', { className: 'dn-link', onClick: () => controller.navigate({ kind: 'channels' }) }, `← ${t('back')}`)),
+          h(PageHead, { title: type }),
+          h(ErrorNotice, { error: state.error, t, onRetry: () => void controller.loadChannel(type).catch(error => controller.reportError(error)) }),
+          state.error
+            ? null
+            : h('p', { className: 'dn-inlineStatus' }, h(StateDot, { state: 'ongoing' }), t('loading')))
+      }
 
       function Direction({ direction, section }) {
         if (!section) return null
@@ -1418,26 +1555,51 @@ window.__ModuleLoader__.load({
           const payload = {}
           for (const key of dirty[direction]) payload[key] = patch[key]
           if (Object.keys(payload).length === 0) return
+          setSaveNotice(current => ({ ...current, [direction]: null }))
           try {
-            await controller.saveChannel(type, direction, payload)
-            // Secret values are write-only. A successful save must evict the submitted
-            // plaintext from React state; the refreshed projection only carries
-            // configured=true and must never rehydrate an old secret.
-            setDrafts(current => {
-              const nextDirection = { ...current[direction] }
-              for (const key of Object.keys(payload)) {
-                if (fields[key]?.secret === true) delete nextDirection[key]
-              }
-              return { ...current, [direction]: nextDirection }
-            })
-            setDirty(current => {
-              const next = { ...current, [direction]: new Set() }
-              dirtyRef.current = next
-              return next
-            })
+            const receipt = await controller.saveChannel(type, direction, payload)
+            if (receipt?.duplicate === true) return
+            // v0.15（T18 / U01 / U02）：durable receipt 成立（saved!==false）就清 dirty 并驱逐
+            // secret 明文——刷新详情是否成功是另一件事，不改变「已保存」这一事实。
+            if (receipt?.saved !== false) {
+              setDrafts(current => {
+                const nextDirection = { ...current[direction] }
+                for (const key of Object.keys(payload)) {
+                  if (fields[key]?.secret === true) delete nextDirection[key]
+                }
+                return { ...current, [direction]: nextDirection }
+              })
+              setDirty(current => {
+                const next = { ...current, [direction]: new Set() }
+                dirtyRef.current = next
+                return next
+              })
+              setSaveNotice(current => ({
+                ...current,
+                [direction]: receipt?.refreshed === false
+                  ? { kind: 'warn', text: t('savedRefreshFailed') }
+                  : { kind: 'ok', text: t('savedOk') },
+              }))
+            }
           } catch (error) {
+            // 落盘/校验失败：草稿保留（U02），错误经统一出口展示。
             controller.reportError(error)
           }
+        }
+        const saveBusy = state.busy[`save:${type}:${direction}`] === true
+        const testBusy = state.busy[`test:${type}`] === true
+        const hasDirty = dirty[direction].size > 0
+        const notice = saveNotice[direction]
+        const outcome = testResult ? testOutcome(ctx, testResult, t) : null
+        const runTest = () => {
+          void controller.testChannel(type).then(setTestResult).catch(error => {
+            // channels.test 的失败也走证据分级：unknown（无法确认），而不是「失败可重发」。
+            if (error?.code === 'dsh-notifier/not-supported' || error?.code === 'not-supported') {
+              controller.reportError(error)
+              return
+            }
+            setTestResult({ status: 'unknown', reasonCode: 'provider-error', detail: { en: String(error?.message ?? ''), zh: String(error?.message ?? '') } })
+          })
         }
         return h(Section, { title: direction === 'outbound' ? t('notify') : t('control') },
           ...Object.entries(fields).map(([key, meta]) =>
@@ -1451,25 +1613,24 @@ window.__ModuleLoader__.load({
               }),
               meta?.description ? h('small', null, resolveText(ctx, meta.description)) : null)),
           h('div', { className: 'dn-formActions' },
-            h(Button, { kind: 'primary', disabled: dirty[direction].size === 0, onClick: () => void save() }, t('save')),
+            h(Button, { kind: 'primary', disabled: saveBusy || !hasDirty, onClick: () => void save() }, saveBusy ? t('saving') : t('save')),
             direction === 'outbound'
               ? h(Button, {
-                  disabled: state.busy[`test:${type}`] === true,
-                  onClick: () => void controller.testChannel(type).then(setTestResult).catch(error => {
-                    controller.reportError(error)
-                    setTestResult({ delivered: false, detail: { en: String(error?.message ?? ''), zh: String(error?.message ?? '') } })
-                  }),
-                }, state.busy[`test:${type}`] === true ? t('testing') : t('test')) : null),
+                  // v0.15（T18 / U03）：只测已保存配置；有未保存修改时先保存，绝不静默 save+send。
+                  disabled: testBusy || hasDirty,
+                  title: hasDirty ? t('unsavedChangesHint') : t('testCommittedConfig'),
+                  onClick: runTest,
+                }, testBusy ? t('testing') : t('test')) : null),
+          notice
+            ? h('p', { className: notice.kind === 'ok' ? 'dn-successText' : 'dn-error', role: notice.kind === 'ok' ? 'status' : 'alert' }, notice.text)
+            : null,
+          direction === 'outbound' && hasDirty ? h('p', { className: 'dn-note' }, t('unsavedChangesHint')) : null,
           h('p', { className: 'dn-rowMeta' }, section.applyMode === 'hot' ? t('applyHot') : section.applyMode === 'restart' ? t('applyRestart') : ''),
           direction === 'inbound' && section.applyMode === 'restart' ? h('p', { className: 'dn-note' }, t('inboundRestartHint')) : null,
           direction === 'outbound' && section.restartPending === true ? h('p', { className: 'dn-note' }, t('outboundRestartHint')) : null,
-          direction === 'outbound' && testResult
-            ? h('p', { className: testResult.status === 'delivered' || testResult.status === 'accepted' || testResult.delivered === true ? 'dn-successText' : 'dn-error' },
-                testResult.status === 'delivered' || testResult.delivered === true
-                  ? t('testDelivered')
-                  : testResult.status === 'accepted'
-                    ? `${t('testAccepted')}${testResult.providerDetail ? ` · ${resolveText(ctx, testResult.providerDetail)}` : ''}`
-                    : `${t('testFailed')}${testResult.detail ? ` · ${resolveText(ctx, testResult.detail)}` : ''}`)
+          direction === 'outbound' && outcome
+            ? h('p', { className: outcome.ok ? 'dn-successText' : 'dn-error', role: outcome.ok ? 'status' : 'alert' },
+                `${outcome.title} · ${outcome.note}`)
             : null)
       }
 
@@ -1496,8 +1657,13 @@ window.__ModuleLoader__.load({
       return h('div', { className: 'dn-page' },
         h('div', { className: 'dn-detailBack' }, h('button', { className: 'dn-link', onClick: () => controller.navigate({ kind: 'home' }) }, `← ${t('back')}`)),
         h(PageHead, { title: t('tasks') }),
+        h(ErrorNotice, { error: state.error, t, onRetry: () => void controller.loadTasks().catch(error => controller.reportError(error)) }),
         h('div', { className: 'dn-list' },
-          ...(state.tasks?.tasks?.length ? state.tasks.tasks.map(task => h(TaskRow, { key: task.taskRef, ctx, task })) : [h('p', { className: 'dn-empty', key: 'empty' }, t('noTasks'))])))
+          ...listBody({
+            data: state.tasks, error: state.error, connectionState: state.connectionState, staleAt: state.staleAt, t,
+            rows: state.tasks?.tasks ?? [], emptyKey: 'noTasks',
+            render: task => h(TaskRow, { key: task.taskRef, ctx, task }),
+          })))
     }
 
     function QuestionsView({ ctx, controller, state, t }) {
@@ -1508,12 +1674,14 @@ window.__ModuleLoader__.load({
         h(PageHead, { title: t('questions') }),
         h(ErrorNotice, { error: state.error, t, onRetry: () => void controller.loadQuestions().catch(error => controller.reportError(error)) }),
         h('div', { className: 'dn-list' },
-          ...(rows.length
-            ? rows.map(question => h(QuestionCard, {
-                key: question.ref, ctx, question, controller, t,
-                busy: state.busy[`question:${question.ref}`] === true,
-              }))
-            : [h('p', { className: 'dn-empty', key: 'empty' }, t('noQuestions'))])))
+          ...listBody({
+            data: state.questions, error: state.error, connectionState: state.connectionState, staleAt: state.staleAt, t,
+            rows, emptyKey: 'noQuestions',
+            render: question => h(QuestionCard, {
+              key: question.ref, ctx, question, controller, t,
+              busy: state.busy[`question:${question.ref}`] === true,
+            }),
+          })))
     }
 
     function MemberRow({ ctx, member, controller, t, busy, canUpdate, canRemove }) {
@@ -1553,12 +1721,14 @@ window.__ModuleLoader__.load({
         h(PageHead, { title: t('members') }),
         h(ErrorNotice, { error: state.error, t, onRetry: () => void controller.loadMembers().catch(error => controller.reportError(error)) }),
         h('div', { className: 'dn-list' },
-          ...(rows.length
-            ? rows.map(member => h(MemberRow, {
-                key: member.key, ctx, member, controller, t,
-                busy: state.busy[`member:${member.key}`] === true, canUpdate, canRemove,
-              }))
-            : [h('p', { className: 'dn-empty', key: 'empty' }, t('noMembers'))])))
+          ...listBody({
+            data: state.members, error: state.error, connectionState: state.connectionState, staleAt: state.staleAt, t,
+            rows, emptyKey: 'noMembers',
+            render: member => h(MemberRow, {
+              key: member.key, ctx, member, controller, t,
+              busy: state.busy[`member:${member.key}`] === true, canUpdate, canRemove,
+            }),
+          })))
     }
 
     function PendingRow({ member, controller, t, busy, canApprove, canDismiss }) {
@@ -1593,12 +1763,14 @@ window.__ModuleLoader__.load({
         h(PageHead, { title: t('pendingIdentities') }),
         h(ErrorNotice, { error: state.error, t, onRetry: () => void controller.loadPending().catch(error => controller.reportError(error)) }),
         h('div', { className: 'dn-list' },
-          ...(rows.length
-            ? rows.map(member => h(PendingRow, {
-                key: member.key, ctx, member, controller, t,
-                busy: state.busy[`pending:${member.key}`] === true, canApprove, canDismiss,
-              }))
-            : [h('p', { className: 'dn-empty', key: 'empty' }, t('noPending'))])))
+          ...listBody({
+            data: state.pending, error: state.error, connectionState: state.connectionState, staleAt: state.staleAt, t,
+            rows, emptyKey: 'noPending',
+            render: member => h(PendingRow, {
+              key: member.key, member, controller, t,
+              busy: state.busy[`pending:${member.key}`] === true, canApprove, canDismiss,
+            }),
+          })))
     }
 
     function PairingCodeRow({ code, controller, t, busy, canRevoke }) {
@@ -1654,12 +1826,14 @@ window.__ModuleLoader__.load({
               h('button', { className: 'dn-link', onClick: () => setMinted(null) }, t('clearCode')))
           : null,
         h('div', { className: 'dn-list' },
-          ...(rows.length
-            ? rows.map(code => h(PairingCodeRow, {
-                key: code.id, ctx, code, controller, t,
-                busy: state.busy[`pairing:${code.id}`] === true, canRevoke,
-              }))
-            : [h('p', { className: 'dn-empty', key: 'empty' }, t('noCodes'))])))
+          ...listBody({
+            data: state.pairing, error: state.error, connectionState: state.connectionState, staleAt: state.staleAt, t,
+            rows, emptyKey: 'noCodes',
+            render: code => h(PairingCodeRow, {
+              key: code.id, ctx, code, controller, t,
+              busy: state.busy[`pairing:${code.id}`] === true, canRevoke,
+            }),
+          })))
     }
 
     function SessionRow({ ctx, controller, t, row, busy, canPatch }) {
@@ -1789,12 +1963,14 @@ window.__ModuleLoader__.load({
         h('div', { className: 'dn-detailBack' }, h('button', { className: 'dn-link', onClick: () => controller.navigate({ kind: 'bindings' }) }, t('advancedBindings'))),
         h(ErrorNotice, { error: state.error, t, onRetry: () => void controller.loadSessions().catch(error => controller.reportError(error)) }),
         h('div', { className: 'dn-list' },
-          ...(rows.length
-            ? rows.map(row => h(SessionRow, {
-                key: row.id, ctx, controller, t, row,
-                busy: state.busy[`session:${row.id}`] === true, canPatch,
-              }))
-            : [h('p', { className: 'dn-empty', key: 'empty' }, t('noSessions'))])))
+          ...listBody({
+            data: state.sessions, error: state.error, connectionState: state.connectionState, staleAt: state.staleAt, t,
+            rows, emptyKey: 'noSessions',
+            render: row => h(SessionRow, {
+              key: row.id, ctx, controller, t, row,
+              busy: state.busy[`session:${row.id}`] === true, canPatch,
+            }),
+          })))
     }
 
     function BindingAgentRow({ ctx, controller, t, table, name, entry, canEdit, busy }) {
@@ -1880,18 +2056,18 @@ window.__ModuleLoader__.load({
         h(ErrorNotice, { error: state.error, t, onRetry: () => void controller.loadBindings().catch(error => controller.reportError(error)) }),
         h('h3', { className: 'dn-subhead' }, t('agentBindings')),
         h('div', { className: 'dn-list' },
-          ...(agentNames.length
-            ? agentNames.map(name => h(BindingAgentRow, {
-                key: name, ctx, controller, t, table: agents, name, entry: agents[name], canEdit, busy,
-              }))
-            : [h('p', { className: 'dn-empty', key: 'empty' }, t('noBindings'))])),
+          ...listBody({
+            data: state.bindings, error: state.error, connectionState: state.connectionState, staleAt: state.staleAt, t,
+            rows: agentNames, emptyKey: 'noBindings',
+            render: name => h(BindingAgentRow, { key: name, ctx, controller, t, table: agents, name, entry: agents[name], canEdit, busy }),
+          })),
         h('h3', { className: 'dn-subhead' }, t('channelBindings')),
         h('div', { className: 'dn-list' },
-          ...(channelNames.length
-            ? channelNames.map(name => h(BindingChannelRow, {
-                key: name, ctx, controller, t, table: channels, name, entry: channels[name], canEdit, busy,
-              }))
-            : [h('p', { className: 'dn-empty', key: 'empty' }, t('noBindings'))])),
+          ...(state.bindings === null ? [] : listBody({
+            data: state.bindings, error: state.error, connectionState: state.connectionState, staleAt: state.staleAt, t,
+            rows: channelNames, emptyKey: 'noBindings',
+            render: name => h(BindingChannelRow, { key: name, ctx, controller, t, table: channels, name, entry: channels[name], canEdit, busy }),
+          }))),
         // v0.14（Stage E / P1-10）：原始标识默认折叠 + 脱敏（展开也只显示打码值）。
         h(RawIdentifiers, { t, value: { agents, channels } }))
     }
@@ -1901,8 +2077,13 @@ window.__ModuleLoader__.load({
       return h('div', { className: 'dn-page' },
         h('div', { className: 'dn-detailBack' }, h('button', { className: 'dn-link', onClick: () => controller.navigate({ kind: 'home' }) }, `← ${t('back')}`)),
         h(PageHead, { title: t('activity') }),
+        h(ErrorNotice, { error: state.error, t, onRetry: () => void controller.loadActivity().catch(error => controller.reportError(error)) }),
         h('div', { className: 'dn-list' },
-          ...(state.activity?.items?.length ? state.activity.items.map(item => h(ActivityRow, { key: item.id, ctx, item })) : [h('p', { className: 'dn-empty', key: 'empty' }, t('noActivity'))])))
+          ...listBody({
+            data: state.activity, error: state.error, connectionState: state.connectionState, staleAt: state.staleAt, t,
+            rows: state.activity?.items ?? [], emptyKey: 'noActivity',
+            render: item => h(ActivityRow, { key: item.id, ctx, item }),
+          })))
     }
 
     function evidenceText(t, value) {
