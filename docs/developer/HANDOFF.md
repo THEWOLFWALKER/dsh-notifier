@@ -16,7 +16,7 @@
 |---|---|
 | 测试 | `npm test` **2465 tests**（2465 pass，0 fail，0 skip） |
 | 配置和 Worker | 核心部署 / 转发检查与真实 React 操作检查 33 项通过；本地 workerd 执行 D1 迁移和签名请求通过 |
-| 打包与发布 | 文档、宿主兼容、渠道矩阵与打包检查通过；已推 dev 并通过 Ubuntu/macOS CI；最新隧道收尾待 dev CI 确认 |
+| 打包与发布 | 文档、宿主兼容、渠道矩阵与打包检查通过；已推 dev 并通过 Ubuntu/macOS CI；最新隧道收尾已推 dev，最终 CI 状态需查看该提交的 Actions |
 
 ## 支持范围
 
@@ -26,7 +26,9 @@
 公网 Cloudflare 账号部署和真实 Telegram / APNs 设备回执尚无本次新增证据。
 本地 workerd 与协议检查的范围见 [cloudflare.md](cloudflare.md)，长期缺口见 [memory/risks.md](memory/risks.md)。
 
-## 继续
+## 后续检查
+
+用户已接手 review；冒烟与截图交给另一个 agent，本次停止打包和发布操作。代码与文档已同步 dev。
 
 按用户最新要求，只同步 dev，main 不动。包版本保持 0.13.1；正式 0.15.0 发布留到另一次明确发布操作。GitHub PAT 只用于指定仓库的 git 推送，不用于 API 或其他服务。
 本次不执行 tag、GitHub Release 或 npm 发布。
