@@ -27,10 +27,17 @@ const tempState = (initial) => {
   return { dir, file }
 }
 
-/** 最小 mock store：只有 get + 指定 transact 结果（用于钉死 IO 失败语义，不碰真盘）。 */
+/**
+ * 最小 mock store：读自内存表，`transact` 会**真实跑 mutator**（以便锁内业务 abort 生效——
+ * 与真 store 一致：守卫先于变更判定，abort 零写盘），但提交结果恒为传入的失败值。
+ * 用于钉死「业务拒绝（owner-last）与 IO 失败（storage-failed）互不改写」，不碰真盘。
+ */
 const mockStore = (initial, txResult) => ({
   get: (key, fallback) => (key in initial ? initial[key] : fallback),
-  transact: () => txResult,
+  transact: (mutator) => {
+    mutator({ ...initial })
+    return txResult
+  },
 })
 
 // ————————————————————— T04：窄事务 abort / 失败分类 —————————————————————

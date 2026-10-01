@@ -92,11 +92,6 @@ function pendingView(entry) {
   }
 }
 
-/** 末位 owner 守卫：ownerCount 读取失败按 1（保守，宁可拒绝也不误删/误降）。 */
-function ownerCountSafe(identity) {
-  try { return identity.ownerCount() } catch { return 1 }
-}
-
 /**
  * @param {object} deps
  * @param {object} [deps.identity] - createIdentity() instance (member identity authority)
@@ -140,7 +135,9 @@ export function createMembersControlService({ identity = null, pairing = null } 
   }
 
   /**
-   * 改成员 label/role。末位 owner 不可降级（业务守卫在本服务，identity 只做数据操作）。
+   * 改成员 label/role。末位 owner 不可降级——守卫在**权威内**（identity.mutateBinding 的同一
+   * 事务，K03）；本服务只做键解析与输入映射，绝不再自持一份锁外预检（那会与写入形成 TOCTOU，
+   * 且是重复规则，T16 收敛）。identity 返回的 `owner-last` 原样透传。
    * @param {string} key - 复合键
    * @param {{ label?: string, role?: string }} diff - 已由 adapter 归一的表现层形状
    * @returns {{ ok: true, key: string, record: object } | { ok: false, reason: string, key?: string }}
@@ -151,9 +148,6 @@ export function createMembersControlService({ identity = null, pairing = null } 
     if (parsed === null) return { ok: false, reason: 'invalid-key' }
     const current = resolveMember(parsed)
     if (current === undefined) return { ok: false, reason: 'not-found', key: parsed.raw }
-    if (diff.role === 'member' && current.role === 'owner' && ownerCountSafe(identity) <= 1) {
-      return { ok: false, reason: 'owner-last', key: parsed.raw }
-    }
     const result = identity.updateBinding(current.channel, current.userId, diff, current.accountId)
     // v0.14（P1-01）：透传底层 reason——storage-failed 绝不能被改写成 not-found，否则一次
     // durable 写失败会被报成「成员不存在」，调用方据此误判并放弃重试。只有底层明确
@@ -163,8 +157,8 @@ export function createMembersControlService({ identity = null, pairing = null } 
   }
 
   /**
-   * 移除成员。末位 owner 不可删（守卫在本服务）。返回值携带被删者 role 供 adapter 审计
-   * （不透传进 HTTP 响应——adapter 只渲染 { key, deleted: true }）。
+   * 移除成员。末位 owner 不可删——守卫同样在 identity 权威的锁内（K03），本服务不再预检。
+   * 返回值携带被删者 role 供 adapter 审计（不透传进 HTTP 响应——adapter 只渲染 { key, deleted: true }）。
    * @returns {{ ok: true, key: string, role: string } | { ok: false, reason: string, key?: string }}
    */
   const removeMember = (key) => {
@@ -173,9 +167,6 @@ export function createMembersControlService({ identity = null, pairing = null } 
     if (parsed === null) return { ok: false, reason: 'invalid-key' }
     const current = resolveMember(parsed)
     if (current === undefined) return { ok: false, reason: 'not-found', key: parsed.raw }
-    if (current.role === 'owner' && ownerCountSafe(identity) <= 1) {
-      return { ok: false, reason: 'owner-last', key: parsed.raw }
-    }
     const result = identity.removeBinding(current.channel, current.userId, current.accountId)
     // v0.14（P1-01）：同 updateMember——透传底层 reason，storage-failed 不得伪装成 not-found。
     if (result.ok !== true) return { ok: false, reason: result.reason ?? 'storage-failed', key: parsed.raw }

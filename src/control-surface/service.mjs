@@ -25,6 +25,17 @@ function failure(error) {
 }
 const ok = (value) => ({ ok: true, value })
 
+/**
+ * v0.15（T16）：查询在「能力不可用」时 fail-closed，绝不返回 `ok:true` 的空表——否则客户端
+ * 会把「服务缺失」误当成「暂无数据」（U04「错/缺service不当空」）。能力标志由投影层给出。
+ */
+function requireRead(available, message) {
+  if (available === true) return
+  const error = new Error(String(message ?? '该查询当前不可用'))
+  error.code = 'not-supported'
+  throw error
+}
+
 function summaryOf(channelRows, questionRows, storageStatus = {}) {
   if (isStorageUntrusted(storageStatus)) return {
     status: 'attention',
@@ -238,6 +249,7 @@ export function createControlSurfaceService({
       // v0.14（S06）：Native 成员面。读取 / 校验 / 末位 owner 守卫都在共享
       // MembersControlService（S02）；本层只做 RPC 形态映射与 revision/activity 记账。
       if (members && method === 'members.list') {
+        requireRead(members.canList, '成员数据当前不可用（身份绑定层未装配）')
         return ok({ ...revisionView(), members: members.list(), canUpdate: members.canUpdate === true, canRemove: members.canRemove === true })
       }
 
@@ -257,6 +269,7 @@ export function createControlSurfaceService({
 
       // v0.14（S07）：Native 待确认身份 + 配对码面。同为共享 MembersControlService（S02）。
       if (members && method === 'members.pending') {
+        requireRead(members.canList, '待确认身份当前不可用（身份绑定层未装配）')
         return ok({
           ...revisionView(),
           pending: members.listPending(),
@@ -280,6 +293,7 @@ export function createControlSurfaceService({
       }
 
       if (members && method === 'pairing.list') {
+        requireRead(members.canList, '配对码列表当前不可用（身份绑定层未装配）')
         return ok({
           ...revisionView(),
           codes: members.listCodes(),
@@ -305,6 +319,7 @@ export function createControlSurfaceService({
 
       // v0.14（S08）：Native 会话面。读取 / 校验 / 写入编排都在共享 RoutingControlService（S03）。
       if (sessions && method === 'sessions.list') {
+        requireRead(sessions.canList, '会话数据当前不可用（路由层未装配）')
         return ok({ ...revisionView(), sessions: sessions.list(), canPatch: sessions.canPatch === true, canControl: sessions.canControl === true })
       }
 
@@ -330,6 +345,7 @@ export function createControlSurfaceService({
 
       // v0.14（S09）：Native 高级绑定面。写权威在 agent-router，经共享 RoutingControlService（S03）。
       if (bindings && method === 'bindings.get') {
+        requireRead(bindings.canRead, '高级绑定当前不可用（路由层未装配）')
         return ok({ ...revisionView(), ...bindings.get(), canEdit: bindings.canEdit === true })
       }
 

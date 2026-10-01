@@ -218,12 +218,36 @@ spec 条目，并为每条标注**旧代码 oracle**（现有 `test/` 或 `src/`
 - **旧 test 映射**：`identity.test.mjs`
 - **矩阵**：**K04**
 
+### ENT-01 · 应用入口同权威（Native / Recovery / CLI 单一 writer）
+
+- **分类**：MUST_PRESERVE
+- **事实 owner**：identity（成员）/ agent-router + session-registry（路由）/ outbound-config +
+  inbound channel-config（渠道）——由共享 control-plane service 编排，入口只鉴权/输入映射/表现映射
+- **适用版本**：v0.15 起
+- **输入/前置状态**：同一操作经 Native RPC / Advanced Console（Recovery HTTP）/ CLI 发起；
+  落盘失败；查询时 backing service 缺失
+- **公开执行入口**：`createControlSurfaceService().call()`、`createAdminApi()`、
+  `createMembersControlService()` / `createRoutingControlService()`（共享单例）
+- **结果**：同操作多入口落到**同一权威键**、durable diff 逐字一致（字段级合并、兄弟字段不丢）；
+  IO 失败一律上报 `storage-failed`（Native RPC `storage-failed`、Admin HTTP 500），绝不伪装成
+  `not-found`；查询在能力缺失时 fail-closed（`not-supported`），绝不返回 `ok:true` 的空表
+- **durable diff**：与单入口一致；失败零写盘
+- **effect trace**：每次用户动作最多推进一代 revision、最多记一条 activity（revision/activity
+  唯一 owner）
+- **禁止动作**：不得在入口自持第二 writer 或重复业务规则（如锁外 last-owner 预检）；不得把缺
+  service 当空数据；不得把 storage 失败降级成 not-found
+- **证据链接**：`test/v015-stage-s10-entry-parity.test.mjs`（多入口同权威 / 失败语义可分 / 查询
+  fail-closed / 末位守卫单一权威，9 例）
+- **旧 test 映射**：`members-control-service-v014.test.mjs`、`sessions-projection-v014.test.mjs`、
+  `bindings-projection-v014.test.mjs`、`admin-members.test.mjs`
+- **矩阵**：**I1 / I2 / I9 / I16 / U04**
+
 ---
 
 ## 三、路由 routing
 
 事实 owner：`src/routing/agent-router.mjs`（commitSessions）+ `src/routing/session-registry.mjs`。
-**`route:sessions` 为已知双写者**（T01 inventory；T14 收敛目标）。
+**`route:sessions` 已收敛为单一事务写者**（T01 inventory 曾记为 MULTI；T14 收敛，见 RT-05）。
 
 ### RT-01 · session 覆盖层字段级 diff 不 clobber 兄弟字段
 

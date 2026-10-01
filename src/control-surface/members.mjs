@@ -28,6 +28,11 @@ function reasonError(reason, message) {
   return error
 }
 
+/** 服务 reason → 面向用户的消息（绝不让 storage-failed 伪装成「不存在」，I2/I16）。 */
+function reasonMessage(reason, fallback) {
+  return reason === 'storage-failed' ? '写入未落盘，已保留当前状态' : fallback
+}
+
 /** 表现层 { label?, role? } 形状校验（与 admin putMember 口径一致）。 */
 function normalizeDiff(payload = {}) {
   const diff = {}
@@ -83,9 +88,9 @@ export function createMembersProjection({ service = null } = {}) {
       if (!canUpdate) throw reasonError('not-supported', '身份绑定层未装配')
       const diff = normalizeDiff(payload)
       const result = service.updateMember(String(payload?.key ?? ''), diff)
-      if (result?.ok !== true) throw reasonError(result?.reason, result?.reason === 'owner-last'
+      if (result?.ok !== true) throw reasonError(result?.reason, reasonMessage(result?.reason, result?.reason === 'owner-last'
         ? '末位 owner 不可降级（否则实例将无人可管理）'
-        : `成员不存在：${String(payload?.key ?? '')}`)
+        : `成员不存在：${String(payload?.key ?? '')}`))
       return { key: result.key, saved: true }
     },
 
@@ -93,9 +98,9 @@ export function createMembersProjection({ service = null } = {}) {
     remove(payload = {}) {
       if (!canRemove) throw reasonError('not-supported', '身份绑定层未装配')
       const result = service.removeMember(String(payload?.key ?? ''))
-      if (result?.ok !== true) throw reasonError(result?.reason, result?.reason === 'owner-last'
+      if (result?.ok !== true) throw reasonError(result?.reason, reasonMessage(result?.reason, result?.reason === 'owner-last'
         ? '末位 owner 不可移除（否则实例将无人可管理）'
-        : `成员不存在：${String(payload?.key ?? '')}`)
+        : `成员不存在：${String(payload?.key ?? '')}`))
       return { key: result.key, deleted: true }
     },
 
@@ -114,7 +119,7 @@ export function createMembersProjection({ service = null } = {}) {
     approve(payload = {}) {
       if (!canApprove) throw reasonError('not-supported', '身份绑定层未装配')
       const result = service.approvePending(String(payload?.key ?? ''))
-      if (result?.ok !== true) throw reasonError(result?.reason, `待确认身份不存在：${String(payload?.key ?? '')}`)
+      if (result?.ok !== true) throw reasonError(result?.reason, reasonMessage(result?.reason, `待确认身份不存在：${String(payload?.key ?? '')}`))
       return { key: result.key, saved: true }
     },
 
@@ -122,7 +127,7 @@ export function createMembersProjection({ service = null } = {}) {
     dismiss(payload = {}) {
       if (!canDismiss) throw reasonError('not-supported', '身份绑定层未装配')
       const result = service.removePending(String(payload?.key ?? ''))
-      if (result?.ok !== true) throw reasonError(result?.reason, `待确认身份不存在：${String(payload?.key ?? '')}`)
+      if (result?.ok !== true) throw reasonError(result?.reason, reasonMessage(result?.reason, `待确认身份不存在：${String(payload?.key ?? '')}`))
       return { key: result.key, dismissed: true }
     },
 
@@ -154,7 +159,7 @@ export function createMembersProjection({ service = null } = {}) {
       const id = String(payload?.id ?? '')
       if (id === '') throw reasonError('invalid-key', 'id 不能为空')
       const result = service.revokePairingCode(id, { by: 'native' })
-      if (result?.ok !== true) throw reasonError(result?.reason, `配对码不存在：${id}`)
+      if (result?.ok !== true) throw reasonError(result?.reason, reasonMessage(result?.reason, `配对码不存在：${id}`))
       return { id, revoked: true }
     },
   }

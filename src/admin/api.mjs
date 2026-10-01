@@ -984,6 +984,8 @@ export function createAdminApi(options = {}) {
         if (result.reason === 'owner-last') {
           throw new ApiError(422, '末位 owner 不可降级（否则实例将无人可管理）；请先在成员页提升另一位 owner')
         }
+        // storage-failed 是 IO 失败，绝不伪装成 not-found（否则调用方误判并放弃重试，I2/I16）。
+        if (result.reason === 'storage-failed') throw new ApiError(500, '成员更新未落盘，已保留当前状态')
         throw new ApiError(404, `成员不存在：${parsed.raw}`)
       }
       auditGuard('putMember', { key: result.key, diff: normalized })
@@ -1006,6 +1008,7 @@ export function createAdminApi(options = {}) {
         if (result.reason === 'owner-last') {
           throw new ApiError(422, '末位 owner 不可删除（否则实例将无人可管理）；请先转移角色或添加成员')
         }
+        if (result.reason === 'storage-failed') throw new ApiError(500, '成员删除未落盘，已保留当前状态')
         throw new ApiError(404, `成员不存在：${parsed.raw}`)
       }
       auditGuard('deleteMember', { key: result.key, role: result.role })
@@ -1027,6 +1030,8 @@ export function createAdminApi(options = {}) {
       const result = membersControlService.approvePending(key)
       if (result.ok !== true) {
         if (result.reason === 'already-bound') throw new ApiError(409, `该身份已是成员：${parsed.raw}`)
+        // storage-failed 是 IO 失败，绝不伪装成 not-found（调用方据此误判并放弃重试，I2/I16）。
+        if (result.reason === 'storage-failed') throw new ApiError(500, '待确认转正未落盘，已保留当前状态')
         throw new ApiError(404, `待确认绑定不存在：${parsed.raw}`)
       }
       auditGuard('confirmPending', { key: result.key })
@@ -1045,7 +1050,11 @@ export function createAdminApi(options = {}) {
       const parsed = parseMemberKey(key)
       if (parsed === null) throw new ApiError(422, MEMBER_KEY_HINT)
       const result = membersControlService.removePending(key)
-      if (result.ok !== true) throw new ApiError(404, `待确认绑定不存在：${parsed.raw}`)
+      if (result.ok !== true) {
+        // storage-failed 是 IO 失败，绝不伪装成 not-found（I2/I16）。
+        if (result.reason === 'storage-failed') throw new ApiError(500, '待确认忽略未落盘，已保留当前状态')
+        throw new ApiError(404, `待确认绑定不存在：${parsed.raw}`)
+      }
       auditGuard('dismissPending', { key: result.key })
       return { key: result.key, dismissed: true }
     },
@@ -1089,6 +1098,8 @@ export function createAdminApi(options = {}) {
       if (normalized === '' || normalized.length > 32) throw new ApiError(422, '配对码 id 非法')
       const result = membersControlService.revokePairingCode(normalized, { by: 'admin:web' })
       if (result.ok !== true) {
+        // storage-failed 是 IO 失败，绝不伪装成 404（调用方据此误判并放弃重试，I2/I16）。
+        if (result.reason === 'storage-failed') throw new ApiError(500, '配对码撤销未落盘，已保留当前状态')
         throw new ApiError(404, `配对码不存在或已终态（${String(result.reason ?? 'not-found')}）`)
       }
       return { id: normalized, revoked: true }
