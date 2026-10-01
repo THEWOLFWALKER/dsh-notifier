@@ -592,7 +592,7 @@ test('getChannels：fields 字段表（手写渠道 FIELD_HINTS / spec 渠道声
   // 手写出站渠道：telegram 两字段（required + desc），空配置通道也返回 fields（零 YAML 建单的数据源）
   const telegram = byType('telegram', 'outbound')
   assert.equal(telegram.configured, false)
-  assert.deepEqual(Object.keys(telegram.fields).sort(), ['botToken', 'chatId'])
+  assert.deepEqual(Object.keys(telegram.fields).sort(), ['apiBase', 'botToken', 'chatId', 'gatewayKey'])
   assert.equal(telegram.fields.botToken.required, true)
   assert.equal(typeof telegram.fields.botToken.desc, 'string')
   // spec 渠道：slack 的 webhook 字段来自声明表（含 desc，单一事实源）

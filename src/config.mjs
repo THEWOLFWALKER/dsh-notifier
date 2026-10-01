@@ -55,7 +55,7 @@ export const REMOTE_LOG_DEFAULT_LINES = 20
 
 /** 每渠道的 secret 键：这些字段在日志/诊断里必须脱敏。spec 渠道由声明表自动登记。 */
 const SECRET_FIELDS = {
-  telegram: ['botToken'],
+  telegram: ['botToken', 'gatewayKey'],
   dingtalk: ['webhook', 'secret'],
   feishu: ['webhook', 'secret'],
   wxpusher: ['appToken', 'uids', 'topicIds'],
@@ -80,6 +80,8 @@ export function secretFieldsOf(type) {
  */
 const FIELD_HINTS = {
   telegram: {
+    apiBase: { required: false, secret: false, exposure: 'public', desc: '网关地址（直连留空）' },
+    gatewayKey: { required: false, secret: true, desc: '网关验证凭证（自建网关复用 Bot Token）' },
     botToken: { required: true, secret: true, desc: 'Telegram Bot Token（@BotFather 获取）' },
     chatId: { required: true, secret: false, exposure: 'public', desc: '接收者的 chat id（可向 @userinfobot 查询）' },
   },

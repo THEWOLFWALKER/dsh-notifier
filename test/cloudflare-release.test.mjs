@@ -1,0 +1,192 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { createStore } from '../src/inbound/store.mjs'
+import { createOutboundSource } from '../src/runtime/outbound-source.mjs'
+import { createOutboundConfigService } from '../src/control-surface/outbound-config.mjs'
+import { createInboundChannelConfigPort } from '../src/inbound/channel-config.mjs'
+import { createConfigPortabilityService } from '../src/control-plane/config-portability.mjs'
+import { createCloudflareDeploymentService } from '../src/cloudflare/deployment.mjs'
+import { createTelegramWorker } from '../src/cloudflare/templates/telegram/worker.mjs'
+import { telegramRequest } from '../src/cloudflare/telegram-transport.mjs'
+import { deploymentFromOutput, createWranglerRunner } from '../src/cloudflare/wrangler-runner.mjs'
+import { EventEmitter } from 'node:events'
+const ACCOUNT = 'a'.repeat(32)
+const BOT = '123456:fixture_token_abcdef'
+const KEY = BOT
+const req = (path, init = {}) => new Request(`https://worker.example${path}`, { headers: { 'x-notifier-gateway-key': KEY }, ...init })
+const env = { BOT_TOKEN: BOT }
+
+test('CF gateway rejects absent credentials, query keys, arbitrary upstream and tokens before fetch', async () => {
+  let calls = 0
+  const w = createTelegramWorker(() => { calls++; throw Error('must not send') })
+  for (const [request, secrets, expected] of [
+    [req('/api/getMe'), {}, 503], [new Request('https://worker.example/api/getMe'), env, 401],
+    [req('/api/getMe?key=secret'), env, 403], [req('/api/getMe?api_base=https://internal'), env, 403],
+    [req('/bot999:other/sendMessage'), env, 404], [req('/file/%2e%2e/private'), env, 404],
+  ]) assert.equal((await w.fetch(request, secrets)).status, expected)
+  assert.equal(calls, 0)
+})
+test('CF gateway preserves multipart bytes, fixed identity, 429 and Retry-After without forwarding auth', async () => {
+  const body = '--fixture\r\nContent-Disposition: form-data; name="photo"\r\n\r\nraw\x00bytes\r\n--fixture--'
+  let captured
+  const w = createTelegramWorker(async request => {
+    captured = request
+    assert.equal(await request.text(), body)
+    return new Response('{"ok":false,"parameters":{"retry_after":7}}', { status: 429, headers: { 'retry-after': '7', 'content-type': 'application/json' } })
+  })
+  const response = await w.fetch(req('/api/sendPhoto', { method: 'POST', body, headers: { 'x-notifier-gateway-key': KEY, 'content-type': 'multipart/form-data; boundary=fixture', authorization: 'secret' } }), env)
+  assert.equal(captured.url, `https://api.telegram.org/bot${BOT}/sendPhoto`)
+  assert.equal(captured.headers.get('x-notifier-gateway-key'), null)
+  assert.equal(captured.headers.get('authorization'), null)
+  assert.equal(response.status, 429); assert.equal(response.headers.get('retry-after'), '7')
+})
+test('CF gateway passes file streams and propagates abort without error details', async () => {
+  const c = new AbortController()
+  const worker = createTelegramWorker(async request => {
+    assert.equal(request.url, `https://api.telegram.org/file/bot${BOT}/photos/file.jpg`)
+    assert.equal(request.signal.aborted, true)
+    throw Error(`private: ${BOT}`)
+  })
+  c.abort()
+  const result = await worker.fetch(req('/file/photos/file.jpg', { signal: c.signal }), env)
+  assert.equal(result.status, 502); assert.doesNotMatch(await result.text(), /private|fixture_token/)
+})
+test('CF transport omits token from gateway URLs; direct URL stays compatible', () => {
+  assert.deepEqual(telegramRequest({ botToken: BOT, gatewayKey: KEY, apiBase: 'https://gateway.example' }, 'answerCallbackQuery'), { url: 'https://gateway.example/api/answerCallbackQuery', headers: { 'x-notifier-gateway-key': KEY } })
+  assert.equal(telegramRequest({ botToken: BOT }, 'getUpdates').url, `https://api.telegram.org/bot${BOT}/getUpdates`)
+  assert.throws(() => telegramRequest({ botToken: BOT, gatewayKey: KEY }, 'getMe'))
+})
+test('CF deployment parses structured output only and refuses ambiguous cloud success', () => {
+  const row = { type: 'deploy', worker_name: 'dn-test', version_id: 'version1', targets: ['https://dn-test.user.workers.dev'] }
+  assert.equal(deploymentFromOutput(JSON.stringify(row), 'dn-test').versionId, 'version1')
+  assert.throws(() => deploymentFromOutput(`${JSON.stringify(row)}\n${JSON.stringify(row)}`, 'dn-test'))
+  assert.throws(() => deploymentFromOutput('Deployed dn-test https://dn-test.user.workers.dev', 'dn-test'))
+})
+function rig({ failDeploy = false, failReadback = false } = {}) {
+  const root = mkdtempSync(join(tmpdir(), 'dn-cf-'))
+  const store = createStore(join(root, 'state.json'))
+  const source = createOutboundSource([])
+  const outboundConfig = createOutboundConfigService({ store, source, yamlRows: new Map(), allowLegacy: false })
+  const inboundConfig = createInboundChannelConfigPort({ store })
+  let created = 0, deployed = 0, databases = []
+  const runner = {
+    prepare: async () => {}, whoami: async () => ({ accounts: [{ id: ACCOUNT, name: 'Fixture account' }] }),
+    loginDevice: async ({ onOutput }) => onOutput('To authorize, please visit:\nhttps://dash.cloudflare.com/oauth2/device\nand enter the code:\nABCD-EFGH'),
+    d1List: async () => databases,
+    d1Create: async ({ name }) => { created++; databases = [{ name, uuid: 'db-id' }]; return { id: 'db-id' } },
+    d1Migrate: async () => {},
+    deployWorker: async ({ name }) => { deployed++; if (failDeploy) { failDeploy = false; throw Error('failure') } return { endpoint: `https://${name}.account.workers.dev`, versionId: `v${deployed}` } },
+    readDeployment: async () => { if (failReadback) throw Error('failure'); return [{ created_on: '2026-10-01T00:00:00Z', versions: [{ version_id: `v${deployed}`, percentage: 100 }] }] }, dispose() {},
+  }
+  const service = createCloudflareDeploymentService({ store, root: join(root, 'cloudflare'), outboundConfig, inboundConfig, runner, fetchImpl: async url => Response.json({ template: url.includes('dn-bark') ? 'notifier-bark-v1' : 'notifier-telegram-v1' }) })
+  return { root, store, source, service, outboundConfig, inboundConfig, runner, counts: () => ({ created, deployed }), cleanup() { service.dispose(); rmSync(root, { recursive: true, force: true }) } }
+}
+async function idle(service) { for (let i = 0; i < 200; i++) { if (!service.status().job) return; await new Promise(r => setImmediate(r)) }; throw Error('job did not settle') }
+async function logged(service) { service.refresh(); await idle(service) }
+
+test('CF absent account is inert: no CLI or cloud IO on construction/status', () => {
+  const r = rig(); try { assert.deepEqual(r.counts(), { created: 0, deployed: 0 }); assert.equal(r.service.status().accounts.length, 0); assert.throws(() => r.service.deploy({ type: 'bark', accountId: ACCOUNT })); assert.equal(r.store.keys('cloudflare:').length, 0) } finally { r.cleanup() }
+})
+test('CF Bark DB is reused after deploy failure; credentials and ownership never enter public export', async () => {
+  const r = rig({ failDeploy: true })
+  try {
+    await logged(r.service); r.service.deploy({ type: 'bark', accountId: ACCOUNT }); await idle(r.service)
+    assert.equal(r.counts().created, 1)
+    r.service.deploy({ type: 'bark', accountId: ACCOUNT }); await idle(r.service)
+    assert.equal(r.counts().created, 1); assert.equal(r.service.status().deployments[0].state, 'unbound')
+    const p = createConfigPortabilityService({ store: r.store, outboundConfig: r.outboundConfig, inboundConfig: r.inboundConfig })
+    assert.doesNotMatch(JSON.stringify(p.exportConfig()), /databaseId|databaseName|gatewayKey|cloudflare:deployment/)
+    assert.doesNotMatch(JSON.stringify(r.service.status()), /gatewayKey|botToken/)
+  } finally { r.cleanup() }
+})
+test('CF cloud success survives readback failure and is truthfully unbound', async () => {
+  const r = rig({ failReadback: true })
+  try { await logged(r.service); r.service.deploy({ type: 'telegram', accountId: ACCOUNT, botToken: BOT }); await idle(r.service); assert.equal(r.service.status().deployments[0].state, 'unbound'); assert.throws(() => r.service.link({ type: 'telegram' })); assert.equal(r.source.has('telegram'), false) } finally { r.cleanup() }
+})
+test('CF link writes outbound + inbound atomically; unbind restores transport while retaining owned resources', async () => {
+  const r = rig()
+  try {
+    r.outboundConfig.save('telegram', { botToken: BOT, chatId: '42', apiBase: 'https://old.example' })
+    await logged(r.service); r.service.deploy({ type: 'telegram', accountId: ACCOUNT }); await idle(r.service)
+    r.service.link({ type: 'telegram', directions: ['outbound', 'inbound'] })
+    const outbound = r.store.get('channel:telegram:outbound'), inbound = r.store.get('telegram:account')
+    assert.equal(outbound.apiBase, inbound.apiBase); assert.equal(outbound.gatewayKey, inbound.gatewayKey)
+    assert.equal(r.service.status().deployments[0].state, 'bound')
+    const value = r.service.unbind({ type: 'telegram' }); assert.equal(value.resourcesRetained, true)
+    assert.equal(r.outboundConfig.raw('telegram').apiBase, 'https://old.example')
+    assert.ok(r.store.get('cloudflare:deployment:telegram').endpoint)
+  } finally { r.cleanup() }
+})
+test('CF failing local link commit preserves old channel and deployed/unbound metadata', async () => {
+  const r = rig()
+  try {
+    r.outboundConfig.save('telegram', { botToken: BOT, chatId: '42', apiBase: 'https://old.example' })
+    await logged(r.service); r.service.deploy({ type: 'telegram', accountId: ACCOUNT }); await idle(r.service)
+    const original = r.store.transact; r.store.transact = () => ({ committed: false })
+    assert.throws(() => r.service.link({ type: 'telegram' }), e => e.code === 'storage-failed')
+    r.store.transact = original
+    assert.equal(r.outboundConfig.raw('telegram').apiBase, 'https://old.example'); assert.equal(r.service.status().deployments[0].state, 'unbound')
+  } finally { r.cleanup() }
+})
+test('CF unbind preserves manually changed endpoint', async () => {
+  const r = rig()
+  try {
+    await logged(r.service); r.service.deploy({ type: 'telegram', accountId: ACCOUNT, botToken: BOT }); await idle(r.service)
+    r.service.link({ type: 'telegram', chatId: '42' })
+    r.outboundConfig.save('telegram', { apiBase: 'https://manual.example' })
+    r.service.unbind({ type: 'telegram' }); assert.equal(r.outboundConfig.raw('telegram').apiBase, 'https://manual.example')
+  } finally { r.cleanup() }
+})
+test('Wrangler runner uses shell:false, bounded output and abort settles even if child ignores SIGTERM', async () => {
+  let options, child
+  const runner = createWranglerRunner({ root: mkdtempSync(join(tmpdir(), 'dn-runner-')), cliPath: '/fixture/cli.js', spawnImpl: (_cmd, _args, opts) => {
+    options = opts; child = new EventEmitter(); child.stdout = new EventEmitter(); child.stderr = new EventEmitter(); child.stdin = { end() {} }; child.kill = () => {}; return child
+  } })
+  const abort = new AbortController(); const pending = runner.whoami({ signal: abort.signal }); abort.abort()
+  await assert.rejects(pending); assert.equal(options.shell, false); runner.dispose()
+})
+
+ test('CF one-click deploy reads the address and atomically fills both directions using the bot token', async () => {
+  const r = rig()
+  try {
+    r.outboundConfig.save('telegram', { botToken: BOT, chatId: '42' })
+    await logged(r.service)
+    r.service.deploy({ type: 'telegram', accountId: ACCOUNT, activate: true, inbound: true })
+    await idle(r.service)
+    const deployment = r.service.status().deployments[0]
+    assert.equal(deployment.state, 'bound')
+    const outbound = r.store.get('channel:telegram:outbound'), inbound = r.store.get('telegram:account')
+    assert.equal(outbound.apiBase, deployment.endpoint)
+    assert.equal(inbound.apiBase, deployment.endpoint)
+    assert.equal(outbound.gatewayKey, BOT); assert.equal(inbound.gatewayKey, BOT)
+    assert.equal(outbound.chatId, '42')
+  } finally { r.cleanup() }
+})
+test('CF custom gateway address needs only the existing Bot API token', async () => {
+  let captured
+  const worker = createTelegramWorker(async request => { captured = request.url; return Response.json({ ok: true }) })
+  const transport = telegramRequest({ botToken: BOT, apiBase: 'https://worker.example' }, 'getMe')
+  assert.equal((await worker.fetch(new Request(transport.url), env)).status, 200)
+  assert.equal(captured, `https://api.telegram.org/bot${BOT}/getMe`)
+  assert.equal((await worker.fetch(new Request('https://worker.example/bot999:foreign/getMe'), env)).status, 401)
+})
+
+test('CF token rotation refuses stale gateway credentials rather than using another bot', () => {
+  assert.throws(() => telegramRequest({ botToken: '999:new', gatewayKey: BOT, apiBase: 'https://gateway.example' }, 'sendMessage'), /重新开启/)
+})
+
+test('CF refuses local activation if deployment readback identifies a different active version', async () => {
+  const r = rig()
+  try {
+    await logged(r.service)
+    r.runner.readDeployment = async () => [{ created_on: '2026-10-01', versions: [{ version_id: 'foreign', percentage: 100 }] }]
+    r.service.deploy({ type: 'telegram', accountId: ACCOUNT, botToken: BOT })
+    await idle(r.service)
+    assert.equal(r.service.status().deployments[0].health, 'unknown')
+    assert.throws(() => r.service.link({ type: 'telegram' }))
+    assert.equal(r.source.has('telegram'), false)
+  } finally { r.cleanup() }
+})

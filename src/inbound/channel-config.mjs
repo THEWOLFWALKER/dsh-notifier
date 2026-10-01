@@ -10,7 +10,7 @@ import { inboundApplyMode, isHotApplied } from '../control-surface/apply-mode.mj
 
 /** 入站通道的凭证字段表（与 Admin 既有表一致；wechat 为扫码产物，不手填）。 */
 export const INBOUND_FIELDS = Object.freeze({
-  telegram: { botToken: { required: true, desc: 'Telegram Bot Token（与出站同域）' } },
+  telegram: { botToken: { required: true, desc: 'Telegram Bot Token（与出站同域）' }, apiBase: { required: false, secret: false, exposure: 'public', desc: 'Telegram API / 网关地址' }, gatewayKey: { required: false, secret: true, desc: 'Cloudflare 网关密钥' } },
   feishu: {
     appId: { required: true, desc: '飞书自建应用 App ID（扫码授权自动写入）' },
     appSecret: { required: true, desc: '飞书自建应用 App Secret（扫码授权自动写入）' },
@@ -190,6 +190,7 @@ export function createInboundChannelConfigPort({ store, warn = () => {}, audit =
         const next = { ...existing, ...clone(obj) }
         for (const field of clear) delete next[field]
         draft[key] = next
+        delete draft[`portability:staged:inbound:${normalized}`]
         return true
       })
       okSaved = result.committed === true
@@ -282,6 +283,7 @@ export function createInboundChannelConfigPort({ store, warn = () => {}, audit =
         const next = { ...existing, ...clone(obj) }
         for (const field of clear) delete next[field]
         draft[key] = next
+        delete draft[`portability:staged:inbound:${normalized}`]
         return next
       },
     }

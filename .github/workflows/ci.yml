@@ -36,7 +36,7 @@ jobs:
       - name: Run DOM workspace tests
         run: |
           cd test/dom
-          npm ci
+          npm install --ignore-scripts --no-package-lock
           npm test
       - name: Verify zero mandatory runtime dependencies
         shell: bash # if [ -f ... ] 是 bash 语法，Windows runner 默认 pwsh 需显式指定

@@ -6,6 +6,8 @@ import { postJson, responseJson, str, num, NotifyError, ERROR_CODES } from './_s
 
 export const type = 'telegram'
 
+import { telegramRequest } from '../cloudflare/telegram-transport.mjs'
+
 const DEFAULT_API_BASE = 'https://api.telegram.org'
 
 /** 校验并归一化配置；缺失抛中文指引。 */
@@ -19,19 +21,21 @@ export function resolve(cfg = {}) {
     throw new NotifyError(`telegram 未配置：${missing.join('、')} 未填写`, ERROR_CODES.NOT_CONFIGURED)
   }
   const apiBase = (str(cfg.apiBase) || DEFAULT_API_BASE).replace(/\/+$/, '')
-  return { botToken, chatId, apiBase, timeoutMs: num(cfg.timeoutMs, 10000, 1000, 60000) }
+  const gatewayKey = str(cfg.gatewayKey)
+  telegramRequest({ apiBase, botToken, gatewayKey }, 'getMe')
+  return { botToken, chatId, apiBase, ...(gatewayKey ? { gatewayKey } : {}), timeoutMs: num(cfg.timeoutMs, 10000, 1000, 60000) }
 }
 
 /** 发送一条通知到指定 chat。msg.silent（路由覆盖）映射为原生 disable_notification：静默送达不响铃。 */
 export async function send(resolved, msg) {
-  const url = `${resolved.apiBase}/bot${resolved.botToken}/sendMessage`
+  const { url, headers } = telegramRequest(resolved, 'sendMessage')
   const body = {
     chat_id: resolved.chatId,
     text: msg.title.length > 0 ? `${msg.title}\n\n${msg.content}` : msg.content,
     disable_web_page_preview: true,
     ...(msg.silent === true ? { disable_notification: true } : {}),
   }
-  const response = await postJson(url, body, { timeoutMs: resolved.timeoutMs, channel: 'telegram' })
+  const response = await postJson(url, body, { timeoutMs: resolved.timeoutMs, channel: 'telegram', headers })
   const payload = await responseJson(response, 'telegram', { requireKey: 'ok', successValue: true })
   if (payload?.result === undefined) {
     throw new NotifyError('telegram 返回格式异常：缺少 result', ERROR_CODES.API_ERROR)

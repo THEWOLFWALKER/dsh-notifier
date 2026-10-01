@@ -34,7 +34,7 @@ const REGISTRATION_MARKER =
 const TEST_EXPORTS = [
   'createController', 'MainPanel', 'SetupFlow', 'ChannelsView', 'ChannelDetailView',
   'MembersView', 'MemberRow', 'QuestionsView', 'HomeView', 'Button', 'StateDot',
-  'ErrorNotice', 'ErrorBoundary', 'buildSupportReport', 'PairingCodesView',
+  'PortabilityView', 'CloudflareView', 'ChannelDirectionSection', 'ErrorNotice', 'ErrorBoundary', 'buildSupportReport', 'PairingCodesView',
 ]
 
 /**

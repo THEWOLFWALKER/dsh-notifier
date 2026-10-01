@@ -1,7 +1,7 @@
 // v0.13: diagnostics must never echo configured secret values.
 import { maskSecrets } from '../redact.mjs'
 
-const SECRET_KEY = /(?:token|secret|password|credential|authorization|cookie|webhook|appkey|appsecret|sendkey|sctkey|accesskey|privatekey|api[-_]?key|chatid|userid|accountid|headers?|^key$)/i
+const SECRET_KEY = /(?:token|secret|password|credential|authorization|cookie|webhook|appkey|appsecret|sendkey|sctkey|accesskey|privatekey|gatewaykey|api[-_]?key|chatid|userid|accountid|headers?|^key$)/i
 
 function stringsOf(value, output = []) {
   if (typeof value === 'string') output.push(value)

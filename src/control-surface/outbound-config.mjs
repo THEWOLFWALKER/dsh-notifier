@@ -299,6 +299,7 @@ export function createOutboundConfigService({
         const next = { ...base, ...clone(actualPatch) }
         for (const field of clear) delete next[field]
         draft[canonicalKeyOf] = next
+        delete draft[`portability:staged:outbound:${key}`]
         return next
       }
       if (typeof store?.transact === 'function') {

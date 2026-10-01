@@ -1,3 +1,4 @@
+import { telegramRequest, gatewayAuthFailed } from '../cloudflare/telegram-transport.mjs'
 // dsh-notifier inbound/telegram-bot.mjs
 // Telegram 入站：getUpdates 长轮询（无公网要求，首选回传通道）。
 //  - callback_query 按钮：callback_data 携带一次性 token，点击即裁决（首达采纳）
@@ -97,12 +98,14 @@ export function createTelegramInbound({ config, bus, vault, store = null, logger
     const long = method === 'getUpdates'
     const timer = setTimeout(() => controller.abort(), long ? POLL_ABORT_MS : 15000)
     try {
-      const response = await doFetch(`${apiBase}/bot${botToken}/${method}`, {
+      const transport = telegramRequest({ apiBase, botToken, gatewayKey: config.gatewayKey }, method)
+      const response = await doFetch(transport.url, {
         method: 'POST',
-        headers: { 'content-type': 'application/json; charset=utf-8' },
+        headers: { 'content-type': 'application/json; charset=utf-8', ...transport.headers },
         body: JSON.stringify(body),
         signal: controller.signal,
       })
+      if (gatewayAuthFailed(response)) throw Object.assign(new Error('Telegram 网关认证失败'), { code: 'gateway-auth' })
       const payload = await response.json().catch(() => null)
       if (payload?.ok !== true) {
         const error = new Error(`telegram ${method} 失败: HTTP ${response.status} ${payload?.description ?? ''}`.trim())

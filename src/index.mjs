@@ -1,3 +1,4 @@
+import { createCloudflareDeploymentService } from './cloudflare/deployment.mjs'
 // dsh-notifier index.mjs
 // cordis 插件入口：组装配置解析、adapter 注册表、两条触发线（事件自动推送 + notify 工具）。
 // 空配置绝不弄崩启动：任何渠道解析问题只 warn + 跳过（学 dsh-email）。
@@ -895,7 +896,10 @@ export function apply(ctx, config = {}) {
     portability: surfacePortability,
     outboundConfig: outboundConfigService,
   })
+  const surfaceCloudflare = createCloudflareDeploymentService({ store, root: `${stateDir}/cloudflare`, outboundConfig: outboundConfigService, inboundConfig: inboundConfigPort })
+  disposers.push(() => surfaceCloudflare.dispose())
   const surfaceService = createControlSurfaceService({
+    cloudflare: surfaceCloudflare,
     revision: surfaceRevision,
     channels: surfaceChannels,
     outboundConfig: outboundConfigService,

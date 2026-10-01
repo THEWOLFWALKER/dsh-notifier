@@ -77,3 +77,23 @@ copies or substantial portions of the Software.
 
 从上述来源移植协议逻辑的文件，须在文件头以注释标注来源仓库与参考 commit：
 `// 端点/body/成功判定语义移植自 <repo>（<path>），改写为零依赖 fetch。`
+
+## Cloudflare deployment templates
+
+`src/cloudflare/templates/bark/upstream.mjs`, its D1 migrations and the adjacent
+LICENSE are derived from [cwxiaos/bark-worker](https://github.com/cwxiaos/bark-worker)
+at `a243fe59b68bfc5c5ce4b7386a674b9d76aaf0e8`, licensed under GPL-3.0.
+This separately deployed Worker retains that license and its source. Local changes
+allow APNs overrides and use URL-safe JWT encoding; the wrapper restricts registration
+and administrative endpoints. The bundled default APNs signing configuration is the
+one intentionally published by Bark for self-hosting:
+https://day.app/2018/06/bark-server-document/ .
+
+`src/cloudflare/templates/telegram/` retains the MIT license from
+[runawayvalley/telegram-cf-proxy](https://github.com/runawayvalley/telegram-cf-proxy)
+at `ca3d33578e329a90cea452ea0eb75b5a9582860a`. The replacement forwarding logic
+restricts the destination and bot, checks credentials, streams request/response bodies,
+and removes authorization and hop-by-hop headers before forwarding.
+
+The notifier and these cloud templates are separate programs. The repository's MIT
+license does not replace the Bark template's GPL-3.0 license.

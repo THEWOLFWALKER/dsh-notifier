@@ -100,6 +100,7 @@ export function createInboundChannelRegistry(deps = {}) {
       config: {
         botToken: inboundBotToken,
         apiBase: tgRaw.apiBase,
+        gatewayKey: tgRaw.gatewayKey,
         notifyChatIds,
         accountId: tgRaw.accountId,
       },

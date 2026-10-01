@@ -107,6 +107,11 @@ export async function readTextCapped(response, cap = 65536) {
  * 永不可达。engine 现在会捕获 HTTP_ERROR 并拿现场调 spec.fail 合成指引。
  */
 function httpError(channel, response, text) {
+  if (channel === 'telegram' && response.headers?.get?.('x-notifier-gateway-error') === 'auth') {
+    const error = new NotifyError('Telegram 网关认证失败，请检查网关密钥', ERROR_CODES.HTTP_ERROR)
+    error.status = response.status; error.gatewayAuth = true; error.noRetry = true
+    return error
+  }
   // G-53 分层：公开文案只保留渠道中文名 + HTTP 状态码（排障必需且无内部信息）；
   // 响应体片段（可能含网关内部地址、HTML 错误页原文）只进 detail（日志专用）。
   const name = channelNameOf(channel)

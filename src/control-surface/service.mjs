@@ -1,6 +1,6 @@
 const PUBLIC_ERROR_CODES = new Set([
   'bad-request', 'not-found', 'not-configured', 'not-supported',
-  'storage-failed', 'conflict', 'host-unavailable', 'internal',
+  'storage-failed', 'stale-preview', 'conflict', 'host-unavailable', 'internal',
 ])
 import { inboundApplyMode, isHotApplied } from './apply-mode.mjs'
 import { createChannelControlService } from '../control-plane/channels.mjs'
@@ -122,6 +122,7 @@ export function createControlSurfaceService({
   sessions = null,
   bindings = null,
   diagnostics = null,
+  cloudflare = null,
   portability = null,
   dshIm = null,
   dshImImport = null,
@@ -368,6 +369,13 @@ export function createControlSurfaceService({
 
       // v0.15（T21）：配置导出 / 导入。装配层注入共享 ConfigPortabilityService；未装配时
       // fail-closed（501 语义 = not-supported），绝不返回空文档冒充「无配置」。
+      if (method.startsWith('cloudflare.')) {
+        const action = method.slice('cloudflare.'.length)
+        const allowed = new Set(['status', 'loginDevice', 'refresh', 'deploy', 'link', 'unbind', 'cancel'])
+        if (!allowed.has(action) || cloudflare === null) throw Object.assign(new Error('Cloudflare 部署不可用'), { code: 'not-supported' })
+        return ok({ ...revisionView(), ...await cloudflare[action](payload) })
+      }
+
       if (method === 'portability.export' || method === 'portability.preview'
         || method === 'portability.cancel' || method === 'portability.readBack'
         || method === 'portability.commit') {

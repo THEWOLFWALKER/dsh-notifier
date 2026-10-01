@@ -25,11 +25,21 @@ window.__ModuleLoader__.load({
       ['diagnostics', 'diagnosticsCenter'],
       // v0.15（T24）：远程入口（手机访问）。属管理组，日常一步可达项不受影响。
       ['remote', 'remoteEntry'],
+      ['portability', 'configTransfer'],
+      ['cloudflare', 'cloudflare'],
     ])
     const RPC_CHANNEL = '/dsh-notifier'
     const NS = 'dsh-notifier.native'
 
     const zh = Object.freeze({
+      configTransfer: '导入与导出',
+      transferIntro: '导出不含密钥。新渠道导入后需补充凭证并保存。',
+      exportConfig: '导出配置', importConfig: '选择配置文件', previewImport: '预览导入',
+      confirmImport: '确认导入', importDone: '导入已完成', importStaged: '待配置',
+      importAdd: '新增（暂不启用）', importPatch: '补充字段', importConflict: '覆盖已有字段',
+      importSkip: '配置相同', importUnsupported: '不支持', importMissing: '需补充',
+      importFields: '变更字段', importConfigure: '补充配置', importEmpty: '暂无待配置渠道',
+      exportFailed: '下载失败，请复制下方内容。', cloudflare: 'Cloudflare 部署',
       title: '通知与控制',
       intro: 'DSH 的通知、远程响应与运行状态',
       needsAttention: '需要你处理',
@@ -280,6 +290,14 @@ window.__ModuleLoader__.load({
     })
 
     const en = Object.freeze({
+      configTransfer: 'Import & export',
+      transferIntro: 'Exports omit credentials. Complete new channels before saving.',
+      exportConfig: 'Export config', importConfig: 'Choose config file', previewImport: 'Preview import',
+      confirmImport: 'Confirm import', importDone: 'Import complete', importStaged: 'Pending setup',
+      importAdd: 'New (inactive)', importPatch: 'Add fields', importConflict: 'Replace existing fields',
+      importSkip: 'No changes', importUnsupported: 'Unsupported', importMissing: 'Required',
+      importFields: 'Changed fields', importConfigure: 'Complete setup', importEmpty: 'No pending channels',
+      exportFailed: 'Download failed. Copy the content below.', cloudflare: 'Cloudflare deploy',
       title: 'Notify & Control',
       intro: 'Notifications, remote responses, and runtime state for DSH',
       needsAttention: 'Needs your attention',
@@ -1109,6 +1127,12 @@ window.__ModuleLoader__.load({
         subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener) },
         loadHome, loadChannels, loadChannel, loadTasks, loadQuestions, loadMembers, loadPending, loadPairingCodes, loadSessions, loadSession, loadBindings, loadActivity, loadDiagnostics,
         refreshCurrent, saveChannel, testChannel, settleQuestion, createStandaloneLaunch, validateRemoteUrl,
+        exportConfig: () => rpc.call('portability.export'),
+        previewImport: text => rpc.call('portability.preview', { text }),
+        commitImport: (token, selections) => rpc.call('portability.commit', { token, selections }),
+        cancelImport: token => rpc.call('portability.cancel', { token }),
+        readImported: () => rpc.call('portability.readBack'),
+        cloudCall: (method, payload = {}) => rpc.call(`cloudflare.${method}`, payload),
         updateMember, removeMember, approvePending, dismissPending, mintPairingCode, revokePairingCode, patchSessionOutbound, patchSessionControl, putBindings, generateSupportReport,
         navigate, startWait, setActive, dispose,
         // v0.12.1（P1-09）：视图必须能把业务失败写入统一错误出口。
@@ -1384,7 +1408,22 @@ window.__ModuleLoader__.load({
     // 旧实现把它定义在 ChannelDetailView 内部，每次父轮询/状态更新都会产生新的组件类型，
     // React 因此整棵子树 remount：输入框 DOM 被替换，focus 与 caret 丢失（U05）。
     // 现在类型身份稳定，输入节点原地更新，连续输入不丢焦点。
-    function ChannelDirectionSection({ ctx, controller, state, t, type, direction, section, onDirtyChange }) {
+    function TelegramConnection({ ctx, controller, value, onChange, onDirect, hasGatewayKey, disabled, enableDisabled = disabled }) {
+      const words = (zh, en) => String(ctx?.locale?.current ?? 'zh').startsWith('en') ? en : zh
+      const [custom, setCustom] = useState(!!value && value !== 'https://api.telegram.org')
+      useEffect(() => { if (value && value !== 'https://api.telegram.org') setCustom(true) }, [value])
+      return h('div', { className: 'dn-field' },
+        h('label', null, words('连接方式', 'Connection'), h('select', {
+          'aria-label': 'Telegram connection', value: custom ? 'custom' : 'direct', disabled,
+          onChange: e => { const next = e.target.value === 'custom'; setCustom(next); if (!next) onDirect() },
+        }, h('option', { value: 'direct' }, words('直连', 'Direct')), h('option', { value: 'custom' }, words('自定义网关地址', 'Custom gateway address')))),
+        custom ? h('label', null, words('网关地址', 'Gateway address'), h('input', { type: 'url', 'aria-label': 'Telegram gateway address', value: value ?? '', placeholder: 'https://…', disabled, onChange: e => onChange(e.target.value) })) : null,
+        custom && hasGatewayKey ? h('p', { className: 'dn-note' }, words('已使用自建网关。更换机器人凭证后，请重新开启网关。', 'Using a private gateway. Enable it again after changing the bot token.')) : null,
+        h(Button, { disabled: enableDisabled, onClick: () => controller.navigate({ kind: 'cloudflare', type: 'telegram', activate: true }) }, words('一键开启网关', 'Enable gateway')),
+        enableDisabled ? h('p', { className: 'dn-note' }, words('先保存当前修改，再开启网关。', 'Save your changes before enabling the gateway.')) : null)
+    }
+
+    function ChannelDirectionSection({ ctx, controller, state, t, type, direction, section, onDirtyChange, importDraft }) {
       const fields = section?.fields ?? {}
       const [patch, setPatch] = useState({})
       const [dirty, setDirty] = useState(new Set())
@@ -1410,7 +1449,7 @@ window.__ModuleLoader__.load({
 
       // 挂载时恢复本方向非 secret 短时草稿（secret 从不落盘）。
       useEffect(() => {
-        const restored = loadDraft(direction, type, fields)
+        const restored = importDraft ?? loadDraft(direction, type, fields)
         if (restored === null) return
         setPatch(current => ({ ...current, ...restored }))
         const set = new Set(Object.keys(restored))
@@ -1499,7 +1538,8 @@ window.__ModuleLoader__.load({
       }
       if (!section) return null
       return h(Section, { title: direction === 'outbound' ? t('notify') : t('control') },
-        ...Object.entries(fields).map(([key, meta]) => h(SchemaField, {
+        type === 'telegram' ? h(TelegramConnection, { ctx, controller, value: patch.apiBase, onChange: value => setField('apiBase', value), onDirect: () => { setField('apiBase', ''); setSecretMode('gatewayKey', 'clear') }, hasGatewayKey: fields.gatewayKey?.configured === true, disabled: saveBusy, enableDisabled: saveBusy || hasDirty }) : null,
+        ...Object.entries(fields).filter(([key]) => type !== 'telegram' || !['apiBase', 'gatewayKey'].includes(key)).map(([key, meta]) => h(SchemaField, {
           key, ctx, name: key, meta,
           value: patch[key],
           onChange: value => setField(key, value),
@@ -1831,7 +1871,8 @@ window.__ModuleLoader__.load({
       const outcome = testResult ? testOutcome(ctx, testResult, t) : null
       const body = phase === 'form'
         ? [
-            ...Object.entries(fields).map(([key, meta]) => h(SchemaField, {
+            type === 'telegram' ? h(TelegramConnection, { key: 'connection', ctx, controller, value: draft.apiBase, onChange: value => setField('apiBase', value), onDirect: () => setField('apiBase', ''), disabled: saveBusy, enableDisabled: true }) : null,
+            ...Object.entries(fields).filter(([key]) => type !== 'telegram' || !['apiBase', 'gatewayKey'].includes(key)).map(([key, meta]) => h(SchemaField, {
               key, ctx, name: key, meta,
               value: draft[key],
               onChange: value => setField(key, value),
@@ -1907,7 +1948,10 @@ window.__ModuleLoader__.load({
       return h('div', { className: 'dn-page' },
         h(PageHead, {
           title: t('channels'),
-          actions: h(Button, { kind: 'primary', onClick: () => setSetup(true) }, t('addChannel')),
+          actions: h('div', { className: 'dn-formActions' },
+            h(Button, { onClick: () => controller.navigate({ kind: 'portability' }) }, t('configTransfer')),
+            h(Button, { onClick: () => controller.navigate({ kind: 'cloudflare' }) }, t('cloudflare')),
+            h(Button, { kind: 'primary', onClick: () => setSetup(true) }, t('addChannel'))),
         }),
         h(ErrorNotice, { error: state.error, t, onRetry: () => void controller.loadChannels().catch(error => controller.reportError(error)) }),
         h('div', { className: 'dn-list' },
@@ -1972,8 +2016,8 @@ window.__ModuleLoader__.load({
                 }, t('leaveDiscard'))))
           : null,
         // U05：模块级稳定组件——父级轮询/状态更新不会让它 remount，输入焦点与 caret 保留。
-        h(ChannelDirectionSection, { ctx, controller, state, t, type, direction: 'outbound', section: channel.notify, onDirtyChange }),
-        h(ChannelDirectionSection, { ctx, controller, state, t, type, direction: 'inbound', section: channel.control, onDirtyChange }),
+        h(ChannelDirectionSection, { ctx, controller, state, t, type, direction: 'outbound', section: channel.notify, onDirtyChange, importDraft: state.view.importDirection === 'outbound' ? state.view.importDraft : null }),
+        h(ChannelDirectionSection, { ctx, controller, state, t, type, direction: 'inbound', section: channel.control, onDirtyChange, importDraft: state.view.importDirection === 'inbound' ? state.view.importDraft : null }),
         h(Section, { title: t('recent20') },
           h('div', { className: 'dn-healthGrid' },
             h('span', null, `${Number(health.delivered ?? 0)} ${t('delivered')}`),
@@ -2592,6 +2636,8 @@ window.__ModuleLoader__.load({
       if (state.view.kind === 'activity') return h(ActivityView, { ctx, controller, state, t })
       if (state.view.kind === 'diagnostics') return h(DiagnosticsView, { ctx, controller, state, t })
       if (state.view.kind === 'remote') return h(RemoteView, { ctx, controller, state, t })
+      if (state.view.kind === 'portability') return h(PortabilityView, { ctx, controller, state, t })
+      if (state.view.kind === 'cloudflare') return h(CloudflareView, { ctx, controller, state, t })
       return h(HomeView, { ctx, controller, state, t })
     }
 
@@ -2670,6 +2716,181 @@ window.__ModuleLoader__.load({
               ? h('p', { className: 'dn-note' }, t('remoteQrEquivalent'))
               : h('p', { className: 'dn-note' }, t('remoteQrUnavailable')))) : null,
         h('p', { className: 'dn-note' }, t('remoteHint')))
+    }
+
+    function PortabilityView({ ctx, controller, t }) {
+      const [text, setText] = useState('')
+      const [preview, setPreview] = useState(null)
+      const [selected, setSelected] = useState({})
+      const [readback, setReadback] = useState(null)
+      const [result, setResult] = useState(null)
+      const [error, setError] = useState(null)
+      const [busy, setBusy] = useState(false)
+      const [fallback, setFallback] = useState(null)
+      const token = useRef(null)
+      const alive = useRef(true)
+      useEffect(() => {
+        alive.current = true
+        void controller.readImported().then(v => { if (alive.current) setReadback(v) }).catch(setError)
+        return () => {
+          alive.current = false
+          if (token.current) void controller.cancelImport(token.current).catch(() => {})
+        }
+      }, [])
+      const run = async action => {
+        setBusy(true); setError(null)
+        try { await action() } catch (e) { if (alive.current) setError(e) }
+        finally { if (alive.current) setBusy(false) }
+      }
+      const cancel = async () => {
+        if (token.current) await controller.cancelImport(token.current)
+        token.current = null; setPreview(null); setSelected({})
+      }
+      const previewFile = () => run(async () => {
+        await cancel()
+        setResult(null)
+        const v = await controller.previewImport(text)
+        if (!alive.current) { await controller.cancelImport(v.token); return }
+        token.current = v.token; setPreview(v)
+        setSelected(Object.fromEntries(v.entries.map(e => [`${e.direction}:${e.type}`, e.selectedDefault === true])))
+      })
+      const commit = () => run(async () => {
+        const selections = preview.entries.map(e => ({
+          direction: e.direction, type: e.type,
+          action: selected[`${e.direction}:${e.type}`] === true ? 'apply' : 'skip',
+          fields: [...(e.changes?.added ?? []), ...(e.changes?.changed ?? [])],
+        }))
+        const v = await controller.commitImport(token.current, selections)
+        token.current = null
+        setResult(v); setPreview(null); setText('')
+        // A committed import stays successful even if the read-back fails.
+        try { setReadback(await controller.readImported()) } catch (e) { setError(e) }
+      })
+      const exportFile = () => run(async () => {
+        const v = await controller.exportConfig()
+        const content = JSON.stringify(v.document, null, 2)
+        let url
+        try {
+          url = URL.createObjectURL(new Blob([content], { type: 'application/json' }))
+          const a = document.createElement('a')
+          a.href = url; a.download = v.filename
+          document.body.appendChild(a); a.click(); a.remove()
+          setFallback(null)
+        } catch { setFallback(content) }
+        finally { if (url) URL.revokeObjectURL(url) }
+      })
+      const chooseFile = event => {
+        const file = event.target.files?.[0]
+        if (!file) return
+        void run(async () => {
+          await cancel()
+          if (file.size > 1024 * 1024) throw new Error('Max 1 MiB')
+          const value = await file.text()
+          if (alive.current) { setText(value); setResult(null) }
+        })
+      }
+      const decisionKeys = { add: 'importAdd', patch: 'importPatch', conflict: 'importConflict', skip: 'importSkip', unsupported: 'importUnsupported' }
+      return h('div', { className: 'dn-page' },
+        h('button', { className: 'dn-link', disabled: busy, onClick: () => controller.navigate({ kind: 'channels' }) }, `← ${t('back')}`),
+        h(PageHead, { title: t('configTransfer'), intro: t('transferIntro'), actions: h(Button, { disabled: busy, onClick: exportFile }, t('exportConfig')) }),
+        h('label', { className: 'dn-field' }, t('importConfig'), h('input', { type: 'file', accept: '.json,application/json', disabled: busy, onChange: chooseFile })),
+        h('label', { className: 'dn-field' }, 'JSON', h('textarea', {
+          rows: 6, value: text, disabled: busy || preview !== null, 'aria-label': 'JSON',
+          onChange: e => { setText(e.target.value); setResult(null) },
+        })),
+        preview === null ? h(Button, { kind: 'primary', disabled: busy || !text.trim(), onClick: previewFile }, t('previewImport')) : null,
+        error ? h('p', { role: 'alert', className: 'dn-error' }, error.message) : null,
+        fallback !== null ? h('div', null, h('p', { role: 'status', className: 'dn-note' }, t('exportFailed')), h('textarea', { readOnly: true, rows: 8, value: fallback, 'aria-label': t('exportConfig') })) : null,
+        preview ? h(Section, { title: t('previewImport') },
+          ...preview.entries.map(e => {
+            const id = `${e.direction}:${e.type}`
+            return h('div', { className: 'dn-code', key: id },
+              h('label', null, h('input', { type: 'checkbox', checked: selected[id] === true, disabled: busy || e.decision === 'unsupported' || e.decision === 'skip', 'aria-label': id, onChange: v => setSelected(s => ({ ...s, [id]: v.target.checked })) }), ` ${e.type} · ${t(e.direction === 'outbound' ? 'notify' : 'control')} · ${t(decisionKeys[e.decision])}`),
+              h('span', { className: 'dn-note' }, `${t('importFields')}: ${[...(e.changes?.added ?? []), ...(e.changes?.changed ?? [])].join(', ') || '—'}`),
+              e.missingCredentials?.length ? h('span', { className: 'dn-note' }, `${t('importMissing')}: ${e.missingCredentials.join(', ')}`) : null,
+              ...[...(e.warnings ?? []), ...(e.machineSpecific ?? []).map(r => `${r.field}: ${r.name}`)].map((w, i) => h('span', { className: 'dn-note', key: i }, resolveText(ctx, w))))
+          }),
+          h('div', { className: 'dn-formActions' }, h(Button, { kind: 'primary', disabled: busy, onClick: commit }, t('confirmImport')), h(Button, { disabled: busy, onClick: () => run(cancel) }, t('cancelAction')))) : null,
+        result ? h('div', { role: 'status', className: 'dn-code' }, h('strong', null, t('importDone')),
+          ...result.results.map(r => h('span', { key: `${r.direction}:${r.type}` }, `${r.type} · ${r.action === 'staged' ? t('importStaged') : r.applied === false ? t('restartPending') : r.action === 'skipped' ? t('skipped') : t('savedOk')}`))) : null,
+        h(Section, { title: t('importStaged') },
+          readback === null ? h('p', { className: 'dn-note' }, t('loading')) : readback.staged?.length ? readback.staged.map(r => h('div', { className: 'dn-row', key: `${r.direction}:${r.type}` },
+            h('span', { className: 'dn-rowMain' }, `${r.type} · ${t(r.direction === 'outbound' ? 'notify' : 'control')}`),
+            h(Button, { disabled: busy, onClick: () => controller.navigate({ kind: 'channel', type: r.type === 'qq' ? 'qqbot' : r.type === 'wechat' ? 'weixin' : r.type, importDirection: r.direction, importDraft: r.config }) }, t('importConfigure')))) : h('p', { className: 'dn-note' }, t('importEmpty'))))
+    }
+
+    function CloudflareView({ ctx, controller, state, t }) {
+      const [data, setData] = useState(null)
+      const [error, setError] = useState(null)
+      const [busy, setBusy] = useState(false)
+      const [account, setAccount] = useState('')
+      const [type, setType] = useState(state?.view?.type ?? 'telegram')
+      const [botToken, setBotToken] = useState('')
+      const [barkKey, setBarkKey] = useState('')
+      const [chatId, setChatId] = useState('')
+      const [activate, setActivate] = useState(true)
+      const [inbound, setInbound] = useState(false)
+      const [enrollment, setEnrollment] = useState(false)
+      const [receipt, setReceipt] = useState(null)
+      const alive = useRef(true)
+      const generation = useRef(0)
+      const words = (zhText, enText) => String(ctx?.locale?.current ?? 'zh').startsWith('en') ? enText : zhText
+      const read = async () => {
+        const seq = ++generation.current
+        try {
+          const value = await controller.cloudCall('status')
+          if (alive.current && generation.current === seq) {
+            setData(value)
+            setAccount(current => current || (value.accounts?.length === 1 ? value.accounts[0].id : ''))
+          }
+        } catch (e) { if (alive.current && generation.current === seq) setError(e) }
+      }
+      useEffect(() => {
+        alive.current = true; void read()
+        const timer = setInterval(() => { if (document.visibilityState !== 'hidden') void read() }, 1500)
+        return () => { alive.current = false; clearInterval(timer); generation.current += 1 }
+      }, [])
+      const call = async (method, payload) => {
+        setBusy(true); setError(null); setReceipt(null)
+        try {
+          const value = await controller.cloudCall(method, payload)
+          if (!alive.current) return
+          if (method === 'link' || method === 'unbind') setReceipt(value)
+          if (method === 'deploy') setBotToken('')
+          await read()
+        } catch (e) { if (alive.current) setError(e) }
+        finally { if (alive.current) setBusy(false) }
+      }
+      const disabled = busy || !!data?.job
+      const steps = { preparing: words('准备工具', 'Preparing tools'), login: words('等待登录', 'Awaiting login'), database: words('准备 Bark 服务', 'Preparing Bark'), migration: words('配置 Bark 服务', 'Configuring Bark'), deploy: words('部署服务', 'Deploying service'), verify: words('检查服务', 'Checking service') }
+      return h('div', { className: 'dn-page' },
+        h('button', { className: 'dn-link', onClick: () => controller.navigate({ kind: 'channels' }) }, `← ${t('back')}`),
+        h(PageHead, { title: t('cloudflare'), intro: words('把 Bark 或 Telegram 网关部署到你的 Cloudflare 账号。', 'Deploy Bark or a Telegram gateway to your Cloudflare account.') }),
+        h('div', { className: 'dn-formActions' },
+          h(Button, { disabled, onClick: () => call('loginDevice') }, words('登录 Cloudflare', 'Log in to Cloudflare')),
+          h(Button, { disabled, onClick: () => call('refresh') }, t('refresh')),
+          data?.job ? h(Button, { disabled: busy, onClick: () => call('cancel') }, t('cancelAction')) : null),
+        data?.login ? h('div', { className: 'dn-code' }, h('a', { href: data.login.url, target: '_blank', rel: 'noopener noreferrer' }, words('打开授权页面', 'Open authorization page')), data.login.code ? h('strong', null, data.login.code) : null) : null,
+        data?.job ? h('p', { role: 'status', className: 'dn-note' }, steps[data.job.step] || t('loading')) : null,
+        error || data?.error ? h('p', { role: 'alert', className: 'dn-error' }, error?.message || data.error) : null,
+        h('label', { className: 'dn-field' }, words('账号', 'Account'), h('select', { 'aria-label': 'Cloudflare account', value: account, disabled, onChange: e => setAccount(e.target.value) }, h('option', { value: '' }, '—'), ...(data?.accounts ?? []).map(a => h('option', { key: a.id, value: a.id }, a.name)))),
+        h('label', { className: 'dn-field' }, words('服务', 'Service'), h('select', { 'aria-label': 'Cloudflare service', value: type, disabled, onChange: e => setType(e.target.value) }, h('option', { value: 'telegram' }, 'Telegram Gateway'), h('option', { value: 'bark' }, 'Bark'))),
+        type === 'telegram' ? h('label', { className: 'dn-field' }, 'Bot Token', h('input', { type: 'password', autoComplete: 'off', 'aria-label': 'Bot Token', value: botToken, disabled, placeholder: words('已配置可留空', 'Leave blank to reuse configured token'), onChange: e => setBotToken(e.target.value) })) : h('label', { className: 'dn-field dn-field--check' }, h('input', { type: 'checkbox', checked: enrollment, disabled, onChange: e => setEnrollment(e.target.checked) }), words('允许 Bark App 注册设备（添加设备后取消并重新部署）', 'Allow Bark App registration (turn off and redeploy after enrollment)')),
+        type === 'telegram' ? h('div', null,
+          h('label', { className: 'dn-field' }, words('接收者（已配置可留空）', 'Recipient (leave blank to reuse)'), h('input', { 'aria-label': 'Gateway recipient', value: chatId, disabled, onChange: e => setChatId(e.target.value) })),
+          h('label', { className: 'dn-field dn-field--check' }, h('input', { type: 'checkbox', checked: activate, disabled, onChange: e => setActivate(e.target.checked) }), words('部署后自动填写并保存 TG 配置', 'Automatically fill and save Telegram settings')),
+          h('label', { className: 'dn-field dn-field--check' }, h('input', { type: 'checkbox', checked: inbound, disabled, onChange: e => setInbound(e.target.checked) }), words('也用于接收消息（完成后重启 DSH）', 'Also receive messages (restart DSH afterwards)'))) : null,
+        h(Button, { kind: 'primary', disabled: disabled || !account, onClick: () => call('deploy', { type, accountId: account, botToken, enrollment, activate: type === 'telegram' && activate, chatId, inbound }) }, type === 'telegram' ? words('一键开启', 'Enable gateway') : words('部署 / 重试', 'Deploy / retry')),
+        receipt ? h('p', { role: 'status', className: 'dn-successText' }, receipt.unbound ? words('已解除本地绑定，云资源保留。', 'Local binding removed. Cloud resources retained.') : receipt.results?.some(r => r.applied === false) ? t('restartPending') : t('savedOk')) : null,
+        ...(data?.deployments ?? []).map(r => h(Section, { key: r.type, title: r.type === 'telegram' ? 'Telegram Gateway' : 'Bark' },
+          h('p', { className: 'dn-note' }, r.endpoint || words('尚未完成部署', 'Deployment pending')),
+          h('p', { className: 'dn-note' }, r.state === 'bound' ? words('已绑定', 'Linked') : words('未绑定', 'Not linked')),
+          r.type === 'telegram' ? h('div', null,
+            h('label', { className: 'dn-field' }, 'Chat ID', h('input', { 'aria-label': 'Chat ID', value: chatId, disabled, onChange: e => setChatId(e.target.value) })),
+            h('label', { className: 'dn-field dn-field--check' }, h('input', { type: 'checkbox', checked: inbound, disabled, onChange: e => setInbound(e.target.checked) }), words('同时用于入站控制（保存后重启 DSH）', 'Also use for inbound control (restart DSH after saving)'))) : h('label', { className: 'dn-field' }, 'Bark Key', h('input', { type: 'password', autoComplete: 'off', 'aria-label': 'Bark Key', value: barkKey, disabled, placeholder: words('在 Bark App 添加服务器后取得', 'Available after adding the server in Bark App'), onChange: e => setBarkKey(e.target.value) })),
+          h('div', { className: 'dn-formActions' },
+            h(Button, { disabled: disabled || r.health !== 'ready', onClick: () => call('link', { type: r.type, chatId, barkKey, directions: r.type === 'telegram' && inbound ? ['outbound', 'inbound'] : ['outbound'] }) }, words('绑定渠道', 'Link channel')),
+            r.state === 'bound' ? h(Button, { disabled, onClick: () => call('unbind', { type: r.type }) }, words('解除绑定', 'Unbind')) : null))))
     }
 
     function SidebarIcon({ size = 18, active = false }) {

@@ -7,3 +7,5 @@ package-lock.json
 # stateDir 的装配会回落写入 ./state，属运行产物；按仓库纪律（永不提交 state 文件）
 # 一律忽略，避免污染 worktree。
 /state/
+
+.wrangler/

@@ -27,7 +27,7 @@ const result = spawnSync(
   process.execPath,
   // --test-force-exit: a leaked controller interval (e.g. a failing UI test that
   // never reached its teardown) must fail the suite, not hang the runner.
-  ['--test', '--test-force-exit', '--test-timeout=30000', '--test-reporter=spec', ...files],
+  ['--test', '--test-concurrency=1', '--test-force-exit', '--test-timeout=30000', '--test-reporter=spec', ...files],
   { stdio: 'inherit', cwd: here },
 )
 

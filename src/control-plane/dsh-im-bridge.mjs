@@ -1,3 +1,4 @@
+// EXPERIMENTAL: simulated service/export contract, not verified against current dsh-im.
 // dsh-notifier v0.15 (T22) — optional dsh-im delivery bridge.
 //
 // The host MAY expose an optional `ctx.dshIm` service (send / listBots / listTargets).

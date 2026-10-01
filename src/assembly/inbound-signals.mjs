@@ -123,7 +123,7 @@ export function resolveInboundSignals({ inboundRaw, approvalRaw, resolved, store
 
   return {
     allowUsers, // 空 = 整栈不启动，默认全拒
-    tgRaw, // 入站 telegram 原始行（装载块 config.apiBase 晚用）
+    tgRaw: { ...tgOutbound?.config, ...tgAccount, ...tgRaw }, // 入站 telegram 原始行（装载块 config.apiBase 晚用）
     inboundBotToken,
     notifyChatIds,
     approvalWanted, // approvalRaw.mode ∈ answer/observe

@@ -1,3 +1,4 @@
+// EXPERIMENTAL: simulated service/export contract, not verified against current dsh-im.
 // dsh-notifier v0.15 (T23) — dsh-im known-format migration importer.
 //
 // Reads a user-provided dsh-im bot export in one of the *locked* known formats
