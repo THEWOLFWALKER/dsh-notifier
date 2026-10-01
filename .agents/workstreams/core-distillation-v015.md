@@ -783,5 +783,5 @@ Contract: `docs/behavior-contract.md` PT-01…PT-03.
 | T18 | done | `4ea06ea` | save receipt ≠ refresh; save/test split (no implicit send); list tri-state; evidence grading; `node test/dom/run.mjs` → 14 pass |
 | T19 | done | `843fd12` | module-level stable form sections (no focus loss); schema-driven controls + secret keep/replace/clear; leave-draft confirm; pairing copy w/ manual fallback; nav layering; destructive-impact confirm; `node test/dom/run.mjs` → 21 pass |
 | T20 | done | `6d51a60` | Recovery reads the shared canonical diagnostics snapshot (no second collector); read-only; 501 unassembled / 503 read-error; `GET /api/diagnostics` behind localhost auth; report ≠ backup; `test/v015-stage-s12-recovery-diagnostics.test.mjs` → 6 pass |
-| T21 | done | `_pending_` | config export/import single authority; public-only export (no secret / URL token / ENV ref inlined); strict parse + dry-run + staged-disabled import; one-transaction commit; cancel/fail zero-write; `test/v015-stage-s13-config-portability.test.mjs` → 12 pass |
+| T21 | done | `39f042f` | config export/import single authority; public-only export (no secret / URL token / ENV ref inlined); strict parse + dry-run + staged-disabled import; one-transaction commit; cancel/fail zero-write; `test/v015-stage-s13-config-portability.test.mjs` → 12 pass |
 | T22–T30 | not started | — | — |
