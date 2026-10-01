@@ -749,4 +749,5 @@ Contract: `docs/behavior-contract.md` RC-01…RC-04.
 | T17 | done | `dc9410a` | caller-less write seam removed; writer inventory is a machine-checked fitness guard; `test/v015-stage-s11-writer-fitness.test.mjs` → 5 pass |
 | T18 | done | `4ea06ea` | save receipt ≠ refresh; save/test split (no implicit send); list tri-state; evidence grading; `node test/dom/run.mjs` → 14 pass |
 | T19 | done | `843fd12` | module-level stable form sections (no focus loss); schema-driven controls + secret keep/replace/clear; leave-draft confirm; pairing copy w/ manual fallback; nav layering; destructive-impact confirm; `node test/dom/run.mjs` → 21 pass |
-| T20–T30 | not started | — | — |
+| T20 | done | `6d51a60` | Recovery reads the shared canonical diagnostics snapshot (no second collector); read-only; 501 unassembled / 503 read-error; `GET /api/diagnostics` behind localhost auth; report ≠ backup; `test/v015-stage-s12-recovery-diagnostics.test.mjs` → 6 pass |
+| T21–T30 | not started | — | — |
