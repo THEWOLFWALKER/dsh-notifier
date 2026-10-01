@@ -48,6 +48,7 @@ to own the fact.
 | `wxpusher:bind:<uid>` | wxpusher-callback | `inbound/wxpusher-callback.mjs` | single |
 | `admin:token-hash` | assembly | `assembly/admin-token.mjs` | single |
 | `state:schema-version` | channel-config-migration | `channel-config-migration.mjs` | single |
+| `portability:staged:<direction>:<type>` | config-portability | `config-portability.mjs` `commitImport` (new channels only, in one transaction) | **single** (inert: assembly never reads this key domain; a staged entry is never active) |
 
 ### Hidden / secondary writers (registered, not a separate authority)
 
@@ -115,6 +116,7 @@ removed. `src/inbound/store.mjs` is the only module allowed to call the raw `sto
 | `src/channels/wechat-ilink/index.mjs` | wechat-ilink legacy-core composition |
 | `src/channels/wechat-ilink/legacy-core.mjs` | `wechat:sync_buf` / ctx token |
 | `src/control-surface/channel-config-migration.mjs` | `channel:<type>:outbound` (one-shot migration), `state:schema-version` |
+| `src/control-plane/config-portability.mjs` | `portability:staged:<direction>:<type>` (import staging, inert/disabled) |
 | `src/control-surface/outbound-config.mjs` | `channel:<type>:outbound` |
 | `src/inbound/_feishu-register.mjs` | `feishu:account` scan onboarding (`mergeDurable`) |
 | `src/inbound/_qq-scan.mjs` | `qq:account` scan onboarding (`mergeDurable`) |

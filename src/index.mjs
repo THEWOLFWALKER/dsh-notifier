@@ -65,6 +65,7 @@ import { createLaunchTickets } from './control-surface/launch-ticket.mjs'
 import { createAdminSessions } from './control-surface/admin-session.mjs'
 import { createControlSurfaceService } from './control-surface/service.mjs'
 import { createChannelControlService } from './control-plane/channels.mjs'
+import { createConfigPortabilityService } from './control-plane/config-portability.mjs'
 import { createMembersControlService } from './control-plane/members.mjs'
 import { createRoutingControlService } from './control-plane/sessions.mjs'
 import { createQuestionsControlService } from './control-plane/questions.mjs'
@@ -873,6 +874,14 @@ export function apply(ctx, config = {}) {
     activity: surfaceActivity,
     advancedConsole: () => (adminListenInfo?.port ? 'available' : 'unavailable'),
   })
+  // v0.15（T21）：本地配置导出 / 导入。导入走 canonical 权威（outboundConfig / inboundConfigPort），
+  // 新渠道只落 disabled 暂存（装配永不读取该键域），绝不自动启用或发测试。
+  const surfacePortability = createConfigPortabilityService({
+    store,
+    outboundConfig: outboundConfigService,
+    inboundConfig: inboundConfigPort,
+    version: pluginVersion,
+  })
   const surfaceService = createControlSurfaceService({
     revision: surfaceRevision,
     channels: surfaceChannels,
@@ -893,6 +902,7 @@ export function apply(ctx, config = {}) {
     sessions: surfaceSessions,
     bindings: surfaceBindings,
     diagnostics: surfaceDiagnostics,
+    portability: surfacePortability,
     activity: surfaceActivity,
     health: surfaceHealth,
     storageStatus: () => {

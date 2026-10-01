@@ -726,6 +726,39 @@ Contract: `docs/behavior-contract.md` RC-01…RC-04.
 
 **Count**: **2283 → 2289** (`npm test`, full suite green).
 
+## T21 — 本地配置导出与导入
+
+**Result**: configuration export/import is a single orchestration authority (`src/control-plane/config-portability.mjs`)
+that moves **committed** channel configuration between environments without ever touching a secret. Native consumes it
+via `portability.*` RPC; when the service is unassembled the surface fails closed (`501`, never an empty document
+posing as "no config").
+
+- **Export is public-only** (`exportConfig`): the document is a whitelisted, versioned
+  `dsh-notifier-config`/`v1` JSON. Secret fields are omitted, token-bearing URLs have userinfo and secret-shaped
+  query params stripped, and inline `ENV` references are not inlined — they are reported as `externalReferences`
+  (kind `env`) with a `credentialDescriptors` entry marked `reference` instead of `supply`. A masked string can never
+  round-trip as a value.
+- **Import is strict + dry-run + staged** (`previewImport`/`commitImport`): a wrong document type/version, a reserved
+  key (`__proto__`/`constructor`/`prototype`), oversized payload, or non-JSON content is rejected at parse time
+  (zero write, zero fetch). The dry-run emits an add/patch/conflict/skip/unsupported plan; only explicitly selected
+  rows are applied. New channels are staged **disabled** under an inert key domain the assembly never reads —
+  import never activates a channel or sends a test; existing channels keep their enable state, and existing secrets
+  are kept by default (explicit clear/replace follows the old contract).
+- **Commit is one transaction** (`transactDurable`): cancel writes nothing; a failed staging write is reported
+  honestly and leaves the original config intact; previews are bounded (TTL + cap) and evicted.
+- **Single-entry accounting**: `portability.commit` advances `revision` once and records one activity per import,
+  never once per channel (single-owner rule from T16).
+
+**Boundaries held**: no `state.json`/claims/cursors export; no auto-enable/auto-test; no plaintext secret; no remote
+fetch (a rejected file fetches nothing); import only writes the public fields present in the document.
+
+**Tests**: `node --test test/v015-stage-s13-config-portability.test.mjs` → **12 pass / 0 fail** (E01 export-no-secret
++ env-reference separation, E02 round-trip except secrets/refs/disable rule, E03 reject bad type/version/proto-pollution
+/oversize, E04 cancel-zero-write + idempotent re-import, E05 staging-write-failure preserves original, T21 readBack).
+Contract: `docs/behavior-contract.md` PT-01…PT-03.
+
+**Count**: **2289 → 2301** (`npm test`, full suite green: 2301 pass / 0 fail).
+
 ## Task status
 
 | Task | Status | Commit | Evidence |
@@ -750,4 +783,5 @@ Contract: `docs/behavior-contract.md` RC-01…RC-04.
 | T18 | done | `4ea06ea` | save receipt ≠ refresh; save/test split (no implicit send); list tri-state; evidence grading; `node test/dom/run.mjs` → 14 pass |
 | T19 | done | `843fd12` | module-level stable form sections (no focus loss); schema-driven controls + secret keep/replace/clear; leave-draft confirm; pairing copy w/ manual fallback; nav layering; destructive-impact confirm; `node test/dom/run.mjs` → 21 pass |
 | T20 | done | `6d51a60` | Recovery reads the shared canonical diagnostics snapshot (no second collector); read-only; 501 unassembled / 503 read-error; `GET /api/diagnostics` behind localhost auth; report ≠ backup; `test/v015-stage-s12-recovery-diagnostics.test.mjs` → 6 pass |
-| T21–T30 | not started | — | — |
+| T21 | done | `_pending_` | config export/import single authority; public-only export (no secret / URL token / ENV ref inlined); strict parse + dry-run + staged-disabled import; one-transaction commit; cancel/fail zero-write; `test/v015-stage-s13-config-portability.test.mjs` → 12 pass |
+| T22–T30 | not started | — | — |

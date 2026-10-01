@@ -121,6 +121,7 @@ export function createControlSurfaceService({
   sessions = null,
   bindings = null,
   diagnostics = null,
+  portability = null,
   activity,
   health,
   storageStatus,
@@ -360,6 +361,59 @@ export function createControlSurfaceService({
       // 不写状态、不自动修复，故不 touch revision、不记 activity。
       if (diagnostics && method === 'diagnostics.snapshot') {
         return ok({ ...revisionView(), ...diagnostics.snapshot() })
+      }
+
+      // v0.15（T21）：配置导出 / 导入。装配层注入共享 ConfigPortabilityService；未装配时
+      // fail-closed（501 语义 = not-supported），绝不返回空文档冒充「无配置」。
+      if (method === 'portability.export' || method === 'portability.preview'
+        || method === 'portability.cancel' || method === 'portability.readBack'
+        || method === 'portability.commit') {
+        if (portability === null || typeof portability.exportConfig !== 'function') {
+          const error = new Error('配置导出/导入当前不可用（本进程未装配 portability 服务）')
+          error.code = 'not-supported'
+          throw error
+        }
+      }
+
+      if (method === 'portability.export') {
+        // 只读：只序列化已提交的 canonical 配置（不含 secret），不 touch revision。
+        const value = portability.exportConfig(payload)
+        return ok({ ...revisionView(), ...value, documentType: portability.documentType, formatVersion: portability.formatVersion })
+      }
+
+      if (method === 'portability.preview') {
+        // 只读 dry-run：严格校验 + 生成计划；零写、零网络、不 touch revision。
+        return ok({ ...revisionView(), ...portability.previewImport(payload) })
+      }
+
+      if (method === 'portability.cancel') {
+        return ok(portability.cancelImport(payload))
+      }
+
+      if (method === 'portability.readBack') {
+        return ok({ ...revisionView(), ...portability.readBack() })
+      }
+
+      if (method === 'portability.commit') {
+        const value = portability.commitImport(payload)
+        const applied = value.results.filter((row) => row.action === 'patched')
+        const staged = value.results.filter((row) => row.action === 'staged')
+        // 唯一 owner 记账：一次提交推进一代 revision、记一条 activity（绝不逐渠道重复）。
+        revision.touch('channels')
+        activity.record('configuration', 'config-imported', {
+          applied: applied.length,
+          staged: staged.length,
+          skipped: value.results.filter((row) => row.action === 'skipped').length,
+          status: 'ok',
+        })
+        for (const row of applied) {
+          activity.record('configuration', 'channel-saved', {
+            channel: `${row.direction}:${row.type}`,
+            saved: true,
+            hotApplied: row.applied === true,
+          })
+        }
+        return ok({ ...revisionView(), ...value })
       }
 
       if (method === 'activity.list') {

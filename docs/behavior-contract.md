@@ -833,6 +833,49 @@ oracle 是真实 Admin API + 真实 HTTP server（`test/v015-stage-s12-recovery-
 
 ---
 
+## 十一、本地配置导出与导入（T21）
+
+本地配置导出/导入（`src/control-plane/config-portability.mjs`）是把**已提交**渠道配置在环境间搬运的唯一编排入口，
+由 Native 控制面经 `portability.*` RPC 消费。本节固定 PT-01…PT-03，oracle 是
+`test/v015-stage-s13-config-portability.test.mjs`（E01–E06）。
+
+### PT-01 · 导出不含 secret，凭据与外部引用分离
+
+- **分类**：MUST_PRESERVE
+- **事实 owner**：`src/control-plane/config-portability.mjs` `exportConfig`；`src/security/exposure.mjs`（public 字段判定）
+- **输入/前置状态**：渠道持有 secret（botToken/appSecret/URL token/inline ENV 引用）
+- **结果**：导出文档只含 `isPublicExposure` 认可的公共字段；secret 字段省略；token 型 URL 的 userinfo 与
+  secret-shaped query 剥离；ENV 引用不内联为值，改记入 `externalReferences`（kind=env），对应
+  `credentialDescriptors` 标 `reference`；掩码串绝不作为值导出
+- **禁止动作**：不得导出明文 secret、不得导出解析后的环境变量值、不得把「已配置」事实渲染成掩码值回写
+- **证据链接**：`test/v015-stage-s13-config-portability.test.mjs`（E01）
+- **矩阵**：**PT-01**
+
+### PT-02 · 导入严格校验 + 新渠道默认停用 + 事务化 patch
+
+- **分类**：MUST_PRESERVE
+- **事实 owner**：`src/control-plane/config-portability.mjs` `previewImport` / `commitImport`
+- **输入/前置状态**：坏文档（类型/版本错误、保留键、超限）、新渠道、已存在渠道
+- **结果**：错误文件在解析阶段 reject（零写、零网络）；dry-run 生成 add/patch/conflict/skip/unsupported 计划；
+  新渠道一律落 `portability:staged:<direction>:<type>` 停用暂存（装配永不读取该键域）；已存在渠道仅按**显式选择**
+  应用公共字段 patch，现有 secret 默认 keep，显式 clear/replace 沿旧契约；提交在单一事务内完成
+- **禁止动作**：不得自动启用新渠道或发测试、不得把 import 值写成 masked 回写、不得静默扩权（只导入文档内公共字段）
+- **证据链接**：`test/v015-stage-s13-config-portability.test.mjs`（E02/E03/E04）
+- **矩阵**：**PT-02**
+
+### PT-03 · 取消/失败零写，IO 失败原配置不变
+
+- **分类**：MUST_PRESERVE
+- **事实 owner**：`src/control-plane/config-portability.mjs` `cancelImport` / `transactDurable`
+- **输入/前置状态**：预览后取消、转储未 commit、或 store 写盘失败
+- **结果**：cancel 不 touch 任何 live 键；重复导入幂等（一次预览一次提交）；store 写失败如实报告、
+  不激活任何内容、现有凭据保留；preview 有界（TTL + 上限），过期/超限自动淘汰
+- **禁止动作**：不得在失败后留下半写入、不得把 storage-failed 渲染成「无配置」
+- **证据链接**：`test/v015-stage-s13-config-portability.test.mjs`（E04/E05）
+- **矩阵**：**PT-03**
+
+---
+
 ## 必测矩阵 → spec / oracle 覆盖
 
 | 矩阵 ID | spec 条目 | 旧 oracle（文件:行） |
@@ -862,6 +905,9 @@ oracle 是真实 Admin API + 真实 HTTP server（`test/v015-stage-s12-recovery-
 | RC-02 | — | `v015-stage-s12-recovery-diagnostics.test.mjs`（501 / 503） |
 | RC-03 | — | `v015-stage-s12-recovery-diagnostics.test.mjs`；`diagnostics-v014.test.mjs` |
 | RC-04 | — | `v015-stage-s12-recovery-diagnostics.test.mjs`（HTTP 鉴权 + 透传） |
+| PT-01 | CFG-05 | `v015-stage-s13-config-portability.test.mjs`（E01 零 secret / 引用分离） |
+| PT-02 | CFG-01, CFG-06 | `v015-stage-s13-config-portability.test.mjs`（E02/E03/E04） |
+| PT-03 | CFG-02 | `v015-stage-s13-config-portability.test.mjs`（E04/E05 取消失败零写 / IO 失败） |
 
 ### 未覆盖 / UNKNOWN（不得上调）
 
