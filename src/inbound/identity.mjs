@@ -140,6 +140,26 @@ export function createIdentity(options = {}) {
     return setDurable(store, KEY_BINDINGS, table)
   }
 
+  /** 纯规划器：坏绑定键清洗（不改盘，供事务内 fresh draft 与 legacy 回退共用）。 */
+  const planCleanup = (raw) => {
+    if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return null
+    const badKeys = []
+    const cleaned = {}
+    for (const [key, value] of Object.entries(raw)) {
+      const record = normalizeBinding(value, key)
+      if (record === null) { badKeys.push(key); continue }
+      const canonical = keyFor(record.channel, record.userId, record.accountId)
+      if (canonical !== key) { badKeys.push(key); continue }
+      cleaned[key] = record
+    }
+    return { cleaned, badKeys }
+  }
+
+  const reportBadKeys = (badKeys) => {
+    const preview = badKeys.slice(0, 3).map((k) => String(k).slice(0, 32)).join('、')
+    warn(`坏绑定键启动清洗：${badKeys.length} 条移除（${preview}${badKeys.length > 3 ? '…' : ''}），绑定表与业务视图对齐`)
+  }
+
   // G-44（W12）：启动时一次性清洗坏绑定键 + 写回 + warn 计数。
   // 坏键 = 存储键与业务视图无法往返的键：normalizeBinding 判坏形状（整条丢弃），或
   // 键与归一复合键不一致——bindingKey 收敛空白/大小写后对不上（如 ' telegram:42'、
@@ -151,34 +171,39 @@ export function createIdentity(options = {}) {
   // YAML 静默复活（删减权收归管理台的契约被推翻），这是本条的放大面，测试必含。
   const startupCleanup = () => {
     if (store === null) return
-    let raw
-    try {
-      raw = store.get(KEY_BINDINGS, {})
-    } catch (error) {
-      warn(`坏绑定键启动清洗读表失败（跳过，不阻塞）: ${error instanceof Error ? error.message : String(error)}`)
-      return
-    }
-    if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return
-    const badKeys = []
-    const cleaned = {}
-    for (const [key, value] of Object.entries(raw)) {
-      const record = normalizeBinding(value, key)
-      if (record === null) { badKeys.push(key); continue }
-      const canonical = keyFor(record.channel, record.userId, record.accountId)
-      if (canonical !== key) { badKeys.push(key); continue }
-      cleaned[key] = record
-    }
-    if (badKeys.length === 0) return // 无死键：零写放大
-    try {
-      if (setDurable(store, KEY_BINDINGS, cleaned) !== true) {
-        warn('坏绑定键清洗写回未落盘（不致命）')
+    // v0.15（Gate 2D）：清洗进事务——启动时读到的表可能已被并发写者更新（host 与 CLI
+    // 共享同一 state 文件），锁外读再整表写回会覆盖这些更新（清理是「读-改-写」，同样是
+    // TOCTOU）。无事务能力的 legacy/mock store 保留原读改写路径。
+    if (typeof store.transact !== 'function') {
+      let raw
+      try {
+        raw = store.get(KEY_BINDINGS, {})
+      } catch (error) {
+        warn(`坏绑定键启动清洗读表失败（跳过，不阻塞）: ${error instanceof Error ? error.message : String(error)}`)
         return
       }
-      const preview = badKeys.slice(0, 3).map((k) => String(k).slice(0, 32)).join('、')
-      warn(`坏绑定键启动清洗：${badKeys.length} 条移除（${preview}${badKeys.length > 3 ? '…' : ''}），绑定表与业务视图对齐`)
-    } catch (error) {
-      warn(`坏绑定键清洗写回失败（不致命）: ${error instanceof Error ? error.message : String(error)}`)
+      const plan = planCleanup(raw)
+      if (plan === null || plan.badKeys.length === 0) return // 无死键：零写放大
+      try {
+        if (setDurable(store, KEY_BINDINGS, plan.cleaned) !== true) {
+          warn('坏绑定键清洗写回未落盘（不致命）')
+          return
+        }
+        reportBadKeys(plan.badKeys)
+      } catch (error) {
+        warn(`坏绑定键清洗写回失败（不致命）: ${error instanceof Error ? error.message : String(error)}`)
+      }
+      return
     }
+    const outcome = { badKeys: [] }
+    const tx = transactOutcome(store, (draft, control) => {
+      const plan = planCleanup(draft[KEY_BINDINGS] ?? {})
+      if (plan === null || plan.badKeys.length === 0) return control.abort('clean')
+      draft[KEY_BINDINGS] = plan.cleaned
+      outcome.badKeys = plan.badKeys
+      return true
+    })
+    if (tx.committed === true) reportBadKeys(outcome.badKeys)
   }
   startupCleanup()
 
@@ -298,6 +323,35 @@ export function createIdentity(options = {}) {
   }
 
   /**
+   * v0.15（Gate 2D）：lastSeenAt 的**锁内 fresh 行 patch**。旧实现把整张读到的表
+   * `{ ...table, [key]: record }` 写回——标称「只 patch timestamp」实际是整表覆写，
+   * 并发 addBinding/updateBinding 在读到之后、写回之前落地的变更会被这张旧表吃掉。
+   * 现在事务内只改这一行的 lastSeenAt，其余键取提交瞬间的 fresh draft。
+   * 无事务能力的 legacy/mock store 保留单键读改写（不伪造原子性）。
+   * @returns {boolean} 是否落盘（真 store 下节流内 / 行缺失 abort，零写放大）
+   */
+  const touchLastSeen = (key) => {
+    const now = Date.now()
+    if (typeof store?.transact !== 'function') {
+      const table = readBindings()
+      const record = table[key]
+      if (record === undefined || now - record.lastSeenAt <= LAST_SEEN_THROTTLE_MS) return false
+      record.lastSeenAt = now
+      return writeBindings({ ...table, [key]: record }) === true
+    }
+    const tx = transactOutcome(store, (draft, control) => {
+      const table = normalizeBindings(draft[KEY_BINDINGS] ?? {})
+      const record = table[key]
+      if (record === undefined) return control.abort('not-found')
+      if (now - record.lastSeenAt <= LAST_SEEN_THROTTLE_MS) return control.abort('throttled')
+      record.lastSeenAt = now
+      draft[KEY_BINDINGS] = table
+      return true
+    })
+    return tx.committed === true
+  }
+
+  /**
    * v0.15（T06）：待确认新增的纯规划器——往 draft 的 pending 表写入（含容量裁剪）。
    * 抽出来是为了让真 store 的锁内路径与 legacy 无事务回退路径共用同一份判定，避免两处漂移。
    */
@@ -328,11 +382,10 @@ export function createIdentity(options = {}) {
       const table = readBindings()
       const record = table[key]
       if (record === undefined) return false
-      // lastSeenAt 节流更新（内存判定 + 稀疏落盘，不放大写放大）
+      // lastSeenAt 节流更新（外层快速短路 + 锁内只 patch 该行 timestamp，绝不整表覆写）
       if (Date.now() - record.lastSeenAt > LAST_SEEN_THROTTLE_MS) {
         try {
-          record.lastSeenAt = Date.now()
-          writeBindings({ ...table, [key]: record })
+          touchLastSeen(key)
         } catch (error) {
           warn(`lastSeenAt 更新失败（不致命）: ${error instanceof Error ? error.message : String(error)}`)
         }
@@ -445,11 +498,32 @@ export function createIdentity(options = {}) {
      * @returns {{ ok: boolean, record?: object, reason?: string }}
      */
     addBinding({ channel, accountId = DEFAULT_ACCOUNT_ID, userId, label = '', origin = 'paired' }) {
-      const table = readBindings()
-      const result = addBindingToTable(table, { channel, accountId, userId, label, origin })
-      if (result.ok !== true) return result
-      if (writeBindings(table) !== true) return { ok: false, reason: 'storage-failed' }
-      return result
+      // v0.15（Gate 2D）：真 store 锁内 fresh 读改写——首 owner 判定（`Object.keys(table).length === 0`）
+      // 与写入同一事务，两个并发「首绑」不再各自看到空表而双双被铸成 owner。
+      // 无事务能力的 legacy/mock store 保留读改写兼容路径。
+      if (typeof store?.transact !== 'function') {
+        const table = readBindings()
+        const result = addBindingToTable(table, { channel, accountId, userId, label, origin })
+        if (result.ok !== true) return result
+        if (writeBindings(table) !== true) return { ok: false, reason: 'storage-failed' }
+        return result
+      }
+      const settled = { ok: false, reason: 'invalid-channel' }
+      const tx = transactOutcome(store, (draft, control) => {
+        const table = normalizeBindings(draft[KEY_BINDINGS] ?? {})
+        const result = addBindingToTable(table, { channel, accountId, userId, label, origin })
+        if (result.ok !== true) {
+          settled.reason = result.reason
+          return control.abort(result.reason)
+        }
+        draft[KEY_BINDINGS] = table
+        settled.ok = true
+        settled.record = result.record
+        return true
+      })
+      if (tx.aborted === true) return settled
+      if (tx.committed !== true) return { ok: false, reason: 'storage-failed' }
+      return settled
     },
 
     /**

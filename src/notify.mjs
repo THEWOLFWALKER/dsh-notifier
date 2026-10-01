@@ -42,11 +42,27 @@ export function createNotifier(ctx, channels, options = {}) {
     ? options.segment
     : { enabled: true, maxCodepoints: 1200 }
 
+  // v0.15（Gate 2C）：发送开始时捕获 runtime 世代——绝不在发送结束时查询「当前 epoch」，
+  // 否则换实例后旧发送的迟到结果会污染新实例的健康。无 epoch 能力的源（数组/测试桩）返回 null。
+  const epochOf = (type) => {
+    try { return typeof channels?.epochOf === 'function' ? channels.epochOf(type) : null } catch { return null }
+  }
+  const epochsFor = (types) => {
+    const out = {}
+    for (const type of types) {
+      const epoch = epochOf(type)
+      if (Number.isFinite(epoch)) out[type] = epoch
+    }
+    return out
+  }
+
   const audit = (message, outcome, extra = {}) => {
     if (typeof options.onSend !== 'function') return
     const record = { time: extra.time ?? new Date().toISOString(), message, ...outcome }
     if (extra.source !== null && typeof extra.source === 'object') record.source = extra.source
     if (typeof extra.channel === 'string' && extra.channel !== '') record.channel = extra.channel
+    if (extra.channelEpochs !== null && typeof extra.channelEpochs === 'object'
+      && Object.keys(extra.channelEpochs).length > 0) record.channelEpochs = extra.channelEpochs
     try { options.onSend(record) } catch { /* audit failure never affects delivery */ }
   }
 
@@ -104,9 +120,11 @@ export function createNotifier(ctx, channels, options = {}) {
     if (entry === undefined) {
       warn(`渠道 "${type || '(空)'}" 未配置，已跳过推送（可用类型：${Object.keys(ADAPTERS).join('/')}）`)
       const result = channelResult(type || '(空)', 'skipped')
-      audit(normalized, { ok: false, accepted: [], confirmed: [], delivered: [], skipped: [`(${result.channel})`], failed: [] }, { source: sendOptions?.source, channel: result.channel })
+      audit(normalized, { ok: false, accepted: [], confirmed: [], delivered: [], skipped: [`(${result.channel})`], failed: [] }, { source: sendOptions?.source, channel: result.channel, channelEpochs: epochsFor([type]) })
       return result
     }
+    // Gate 2C：在发送开始（await 之前）捕获世代，不在结束时查询。
+    const startEpochs = epochsFor([type])
     return track((async () => {
       try {
         const sent = await sendOne(type, entry.config, normalized)
@@ -120,7 +138,7 @@ export function createNotifier(ctx, channels, options = {}) {
           delivered: [type],
           skipped: [],
           failed: [],
-        }, { source: sendOptions?.source, channel: type })
+        }, { source: sendOptions?.source, channel: type, channelEpochs: startEpochs })
         return result
       } catch (error) {
         // G-53 分层：failed[].error / audit 记公开文案（无响应体/网络原文）；
@@ -137,7 +155,7 @@ export function createNotifier(ctx, channels, options = {}) {
           ok: false, accepted: [], confirmed: [], delivered: [], skipped: [],
           unknown: uncertain ? [type] : [],
           failed: [{ channel: type, error: publicText, ...(uncertain ? { uncertain: true } : {}) }],
-        }, { source: sendOptions?.source, channel: type })
+        }, { source: sendOptions?.source, channel: type, channelEpochs: startEpochs })
         return result
       }
     })())
@@ -194,6 +212,8 @@ export function createNotifier(ctx, channels, options = {}) {
     const retry = routing.configured
       ? retryPolicyOf(normalizeLevel(normalized.level), options.retry)
       : { attempts: 1, backoffMs: 0 }
+    // Gate 2C：整批目标在发送开始前一次性捕获世代。
+    const startEpochs = epochsFor(targets.map((target) => target.type))
     const batch = targets.map(async (target) => {
       try {
         const sent = await sendWithRetry(
@@ -229,7 +249,7 @@ export function createNotifier(ctx, channels, options = {}) {
       skipped,
       failed,
     }
-    audit(normalized, outcome, { source: sourceExtra.source })
+    audit(normalized, outcome, { source: sourceExtra.source, channelEpochs: startEpochs })
     return outcome
   }
 

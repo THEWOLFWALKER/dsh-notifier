@@ -15,7 +15,7 @@
 
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 import { bindingKey, principalKey } from './identity.mjs'
-import { setDurable, transactDurable } from './store.mjs'
+import { setDurable, transactDurable, transactOutcome } from './store.mjs'
 
 const KEY_CODES = 'inbound:pairing'
 const KEY_LOCKOUT = 'inbound:pairing:lockout'
@@ -118,8 +118,8 @@ export function createPairing(options = {}) {
     return out
   }
 
-  /** 写回（顺手清扫超过保留期的终态条目，防 state.json 无限膨胀）。 */
-  function writeCodes(table, now = Date.now()) {
+  /** 纯修剪（不改盘）：剔除超过保留期的终态条目，防 state.json 无限膨胀。 */
+  function pruneCodes(table, now = Date.now()) {
     const pruned = {}
     let prunedCount = 0
     for (const [hash, entry] of Object.entries(table)) {
@@ -131,10 +131,46 @@ export function createPairing(options = {}) {
       }
       pruned[hash] = entry
     }
-    if (prunedCount > 0) warn(`清扫 ${prunedCount} 条过期配对码终态记录`)
-    if (store !== null) return setDurable(store, KEY_CODES, pruned)
-    memoryCodes = pruned
-    return true
+    return { table: prunedCount > 0 ? pruned : table, prunedCount }
+  }
+
+  /**
+   * v0.15（Gate 2F）：码表的**事务内 fresh 读改写**。`mutate(table, now)` 在提交瞬间的
+   * fresh 表副本上执行，返回 `{ changed:boolean, ... }`：`changed !== true` → 业务无变更，
+   * abort（零写盘）；`true` → 修剪后写回。真实 store 下读取与写回同一事务，杜绝
+   * 「锁外读旧表 → 整表写回」覆盖并发 mint/revoke/lock/sweep（TOCTOU）。
+   * store=null（内存态）与 legacy 无事务 store 退化为读改写（单进程 best-effort）。
+   *
+   * v0.15（Gate 2F 收口）：返回形状显式区分「提交成功 / 业务无变更（abort）/ 事务未提交
+   * （锁忙、IO 失败）」。旧实现只回 `ok`，把「事务根本没跑到（inner=null）」也叫 `ok:true`，
+   * 于是调用方（setCodeTerminal）把 IO 失败误报成 `not-found`——T16 用例正是钉这一点。
+   * @returns {{ ok: boolean, committed: boolean, aborted: boolean, changed: boolean, result: object|null }}
+   */
+  const commitCodes = (mutate, now = Date.now()) => {
+    if (store === null || typeof store.transact !== 'function') {
+      const table = readCodes()
+      const result = mutate(table, now) ?? null
+      if (result?.changed !== true) return { ok: true, committed: false, aborted: true, changed: false, result }
+      const { table: pruned, prunedCount } = pruneCodes(table, now)
+      if (prunedCount > 0) warn(`清扫 ${prunedCount} 条过期配对码终态记录`)
+      if (store === null) { memoryCodes = pruned; return { ok: true, committed: true, aborted: false, changed: true, result } }
+      if (setDurable(store, KEY_CODES, pruned) !== true) return { ok: false, committed: false, aborted: false, changed: false, result }
+      return { ok: true, committed: true, aborted: false, changed: true, result }
+    }
+    let inner = null
+    const tx = transactOutcome(store, (draft, control) => {
+      const table = normalizeCodes(draft[KEY_CODES] ?? {})
+      inner = mutate(table, now) ?? null
+      if (inner?.changed !== true) return control.abort('no-change')
+      const { table: pruned, prunedCount } = pruneCodes(table, now)
+      if (prunedCount > 0) warn(`清扫 ${prunedCount} 条过期配对码终态记录`)
+      draft[KEY_CODES] = pruned
+      return true
+    })
+    if (tx.aborted === true) return { ok: true, committed: false, aborted: true, changed: false, result: inner }
+    if (tx.committed === true) return { ok: true, committed: true, aborted: false, changed: true, result: inner }
+    // 锁忙 / 读失败 / IO 失败：mutator 可能根本没跑到（inner=null），绝不当「业务无变更」。
+    return { ok: false, committed: false, aborted: false, changed: false, result: inner }
   }
 
   function readLockout() {
@@ -156,9 +192,8 @@ export function createPairing(options = {}) {
     return out
   }
 
-  function writeLockout(table, now = Date.now()) {
-    // 顺手剔除完全过期的条目（R5 审查 R5-3-P3-6：fails 全部滑出窗口且锁出已过——
-    // 陌生人刷码面只增不减，长期运行 state.json 无限膨胀；有变更才写回，零写放大）
+  /** 纯修剪（不改盘）：剔除完全过期的锁出条目（fails 全滑出窗口且锁出已过）。 */
+  function pruneLockout(table, now = Date.now()) {
     const bounded = {}
     let pruned = false
     for (const [key, entry] of Object.entries(table)) {
@@ -167,17 +202,58 @@ export function createPairing(options = {}) {
       if (failsLive.length === 0 && !lockLive) { pruned = true; continue }
       bounded[key] = { fails: failsLive, lockedUntil: lockLive ? entry.lockedUntil : 0 }
     }
-    const next = pruned ? bounded : table
-    if (store !== null) return setDurable(store, KEY_LOCKOUT, next)
-    memoryLockout = next
-    return true
+    return { table: pruned ? bounded : table, pruned }
   }
 
-  /** 惰性过期：读取路径顺手把超时未核销的 minted/active/minted-active 转终态（免定时器）。
-   * 翻转即落盘 + 落盘后才发审计（R5 审查 R5-1-P3-1：原实现部分调用路径改内存不落盘，
-   * 同批超时条目每次读取重复 audit 刷屏、盘上长期停留 active）。
+  /**
+   * v0.15（Gate 2F）**跨两键**（codes + lockout）的事务内 fresh 读改写——`redeem` 专用。
+   * 失败记账（lockout）与码终态（codes）必须原子：旧实现先 `recordFailure()` 写 lockout、
+   * 再单独写 codes，两次写既各自基于锁外旧表（并发 redeem 互相覆盖失败计数/核销终态），
+   * 又在中途崩溃时留下「记了失败但没核销」的半提交。真实 store 下两键的读取与写回都在
+   * 同一个 `store.transact()` 内；legacy/memory 退化为本地副本上的读改写。
+   *
+   * `mutate(draft, control)` 直接改 draft 的两键：返回 `true` = 提交；`control.abort(reason)`
+   * = 业务拒绝（零写盘）。返回形状与 `transactOutcome` 一致。
+   * @param {(draft: object, control: object) => boolean} mutate
+   * @returns {{ ok: boolean, committed: boolean, durable: boolean, aborted: boolean, code: string, reason: string|null }}
+   */
+  const commitPairing = (mutate, now = Date.now()) => {
+    const fail = (code) => ({ ok: false, committed: false, durable: false, aborted: false, code, reason: null })
+    if (store !== null && typeof store.transact === 'function') {
+      return transactOutcome(store, (draft, control) => mutate(draft, control))
+    }
+    const draft = { [KEY_CODES]: readCodes(), [KEY_LOCKOUT]: readLockout() }
+    const control = {
+      aborted: false,
+      reason: null,
+      abort(reason) { this.aborted = true; this.reason = reason === undefined ? null : reason; return false },
+    }
+    let result
+    try {
+      result = mutate(draft, control)
+    } catch (error) {
+      return { ...fail('STATE_WRITE_FAILED'), error }
+    }
+    if (control.aborted === true) {
+      return { ok: false, committed: false, durable: false, aborted: true, code: 'BUSINESS_ABORT', reason: control.reason }
+    }
+    if (result !== true) return fail('STATE_WRITE_FAILED')
+    const pruned = pruneCodes(draft[KEY_CODES] ?? {}, now)
+    if (pruned.prunedCount > 0) warn(`清扫 ${pruned.prunedCount} 条过期配对码终态记录`)
+    const prunedLockout = pruneLockout(draft[KEY_LOCKOUT] ?? {}, now).table
+    if (store === null) {
+      memoryCodes = pruned.table
+      memoryLockout = prunedLockout
+      return { ok: true, committed: true, durable: true, aborted: false, code: 'COMMITTED', reason: null }
+    }
+    if (setDurable(store, KEY_CODES, pruned.table) !== true) return fail('STATE_WRITE_FAILED')
+    if (setDurable(store, KEY_LOCKOUT, prunedLockout) !== true) return fail('STATE_WRITE_FAILED')
+    return { ok: true, committed: true, durable: true, aborted: false, code: 'COMMITTED', reason: null }
+  }
+
+  /** 纯惰性过期（不改盘）：把超时未核销的 minted/active/minted-active 就地转 expired。
    * G-20（W12）：minted-active（单次原子落盘态）与 minted/active 同等可过期。 */
-  function sweep(table, now = Date.now()) {
+  function sweepInTable(table, now = Date.now()) {
     const expired = []
     for (const entry of Object.values(table)) {
       if ((entry.state === 'minted' || entry.state === 'active' || entry.state === 'minted-active')
@@ -186,12 +262,55 @@ export function createPairing(options = {}) {
         expired.push(entry)
       }
     }
-    if (expired.length > 0) {
-      if (writeCodes(table, now) === true) {
-        for (const entry of expired) audit('expire', { id: entry.id, origin: entry.origin })
-      }
+    return expired
+  }
+
+  /**
+   * v0.15（Gate 2F）：惰性过期的**事务内 fresh 表**版本（listActive / mint / revoke / lock
+   * 共用）。翻转在提交瞬间的表上完成并原子落盘，写成功后才发 expire 审计——绝不「读旧表
+   * 翻转后整表写回」覆盖并发 mint/revoke。写失败不谎报已过期（返回空）。
+   */
+  const sweepCodes = (now = Date.now()) => {
+    const expired = []
+    const outcome = commitCodes((table, at) => {
+      const list = sweepInTable(table, at)
+      if (list.length === 0) return { changed: false }
+      expired.push(...list)
+      return { changed: true }
+    }, now)
+    if (outcome.committed !== true) return []
+    for (const entry of expired) audit('expire', { id: entry.id, origin: entry.origin })
+    return expired
+  }
+
+  /**
+   * v0.15（Gate 2F）：在铸码置终态（revoke/lock 共用）的**事务内 fresh 表**判定与翻转。
+   * 只在在铸条目中找（R5 审查 R5-1-P3-4：8 位前缀撞车时 find 可能先命中终态条目，返回
+   * already-* 让真正要处置的在铸码无法撤销）；G-20（W12）下 minted-active 与 minted/active
+   * 同等视为在铸。查找与写入同一事务，并发 mint/revoke 不会互相覆盖。
+   * @returns {{ ok: boolean, reason?: string }}
+   */
+  const setCodeTerminal = (id, state, by, now, event = state === 'revoked' ? 'revoke' : 'lock') => {
+    const target = { entry: null }
+    const expired = []
+    const outcome = commitCodes((table, at) => {
+      expired.push(...sweepInTable(table, at))
+      const entry = Object.values(table).find((item) => item.id === String(id ?? '')
+        && (item.state === 'minted' || item.state === 'active' || item.state === 'minted-active'))
+      if (entry === undefined) return { changed: false }
+      entry.state = state
+      target.entry = entry
+      return { changed: true }
+    }, now)
+    // v0.15（Gate 2F 收口）：区分「事务确已提交」「fresh 表里无此在铸码（业务无变更）」与
+    // 「事务未提交（锁忙/IO 失败）」——旧实现把后两者都当 not-found，IO 失败被伪装成 404。
+    if (outcome.committed !== true) {
+      if (outcome.aborted === true) return { ok: false, reason: 'not-found' }
+      return { ok: false, reason: 'storage-failed' }
     }
-    return expired.length > 0
+    for (const item of expired) audit('expire', { id: item.id, origin: item.origin })
+    audit(event, { id: target.entry.id, origin: target.entry.origin, by })
+    return { ok: true }
   }
 
   /** 用户锁出判定与失败记账。 */
@@ -206,20 +325,6 @@ export function createPairing(options = {}) {
       return now < fails[fails.length - 1] + LOCKOUT_MS
     }
     return false
-  }
-
-  function recordFailure(userKey, now = Date.now()) {
-    const table = readLockout()
-    const entry = table[userKey] ?? { fails: [], lockedUntil: 0 }
-    // 已在锁出期：不刷新计数（锁出判定在 redeem 前置短路，这里只兜底）
-    entry.fails = [...entry.fails.filter((ts) => now - ts < ATTEMPT_WINDOW_MS), now]
-    if (entry.fails.length >= MAX_ATTEMPTS) {
-      // 触发/刷新锁出：锁定时刻持久化，滑窗过期不再提前解锁
-      entry.lockedUntil = now + LOCKOUT_MS
-    }
-    table[userKey] = entry
-    const durable = writeLockout(table, now)
-    return { locked: now < entry.lockedUntil, durable }
   }
 
   function isLockedOutFromTable(table, userKey, now) {
@@ -238,13 +343,6 @@ export function createPairing(options = {}) {
     return { locked: now < entry.lockedUntil }
   }
 
-  function clearFailures(userKey) {
-    const table = readLockout()
-    if (table[userKey] === undefined) return
-    delete table[userKey]
-    writeLockout(table)
-  }
-
   return {
     /**
      * 铸造配对码。码面只在本次返回值中出现一次（落盘只有哈希）。
@@ -253,22 +351,11 @@ export function createPairing(options = {}) {
      */
     mint({ origin = 'admin', mintedBy = '', ttlMs: customTtl = undefined, label = '', now = Date.now() } = {}) {
       if (!VALID_ORIGINS.has(origin)) return { ok: false, reason: 'invalid-origin' }
-      const table = readCodes()
-      sweep(table, now)
-      if (origin === 'bootstrap') {
-        for (const entry of Object.values(table)) {
-          if (entry.origin === 'bootstrap' && (entry.state === 'minted' || entry.state === 'active' || entry.state === 'minted-active')) {
-            entry.state = 'revoked'
-            audit('revoke', { id: entry.id, origin: 'bootstrap', reason: 're-mint' })
-          }
-        }
-      }
       const code = generateCode()
       const hash = hashPairingCode(code)
       const expiresAt = now + (customTtl ?? ttlMs)
       // G-20（W12）：mint 即下发（管理台响应即展示、bootstrap 即打 stderr）——minted→active
       // 双写合并为单次原子写：状态字面量 'minted-active' 一次落盘（含 issuedAt），崩溃窗口消除。
-      // 审计行随后独立写：丢了只影响审计，不影响状态一致性。
       const entry = {
         id: hash.slice(0, 8),
         hash,
@@ -283,8 +370,27 @@ export function createPairing(options = {}) {
         redeemedAt: 0,
         redeemedBy: '',
       }
-      table[hash] = entry
-      if (writeCodes(table, now) !== true) return { ok: false, reason: 'storage-failed' }
+      // v0.15（Gate 2F）：惰性过期 + 「bootstrap 重铸撤销旧码」+ 插入新码，全部在**同一个
+      // 事务内**对 fresh 表完成——旧实现锁外 `readCodes` → 整表 `writeCodes`，并发 mint/revoke
+      // 之间会互相覆盖（同一把码面上 8 位 id 占位与状态双双漂移）。
+      const expired = []
+      const revoked = []
+      const outcome = commitCodes((table, at) => {
+        expired.push(...sweepInTable(table, at))
+        if (origin === 'bootstrap') {
+          for (const item of Object.values(table)) {
+            if (item.origin === 'bootstrap' && (item.state === 'minted' || item.state === 'active' || item.state === 'minted-active')) {
+              item.state = 'revoked'
+              revoked.push({ id: item.id, origin: 'bootstrap' })
+            }
+          }
+        }
+        table[hash] = entry
+        return { changed: true }
+      }, now)
+      if (outcome.committed !== true) return { ok: false, reason: 'storage-failed' }
+      for (const item of expired) audit('expire', { id: item.id, origin: item.origin })
+      for (const item of revoked) audit('revoke', { ...item, reason: 're-mint' })
       audit('mint', { id: entry.id, origin, mintedBy, expiresAt })
       return { ok: true, id: entry.id, code, expiresAt }
     },
@@ -369,88 +475,90 @@ export function createPairing(options = {}) {
      */
     redeem(code, { channel, accountId = DEFAULT_ACCOUNT_ID, userId, label = '', now = Date.now() } = {}) {
       const userKey = principalUserKey(channel, accountId, userId)
-      if (isLockedOut(userKey, now)) {
-        audit('lockout', { user: userKey, phase: 'rejected' })
-        return { ok: false, reason: 'locked-out' }
-      }
       const normalized = String(code ?? '').trim().toUpperCase()
-      if (normalized === '' || !/^[A-Z2-9]{1,64}$/.test(normalized)) {
-        const failure = recordFailure(userKey, now)
-        if (failure.durable !== true) return { ok: false, reason: 'storage-failed' }
-        if (failure.locked) audit('lockout', { user: userKey, phase: 'tripped' })
-        return { ok: false, reason: failure.locked ? 'locked-out' : 'invalid-code' }
-      }
-      const table = readCodes()
-      sweep(table, now)
-      const hash = hashPairingCode(normalized)
-      const entry = table[hash]
-      if (entry === undefined || !safeEqual(entry.hash, hash)) {
-        const failure = recordFailure(userKey, now)
-        if (failure.durable !== true) return { ok: false, reason: 'storage-failed' }
-        if (failure.locked) audit('lockout', { user: userKey, phase: 'tripped' })
-        return { ok: false, reason: failure.locked ? 'locked-out' : 'invalid-code' }
-      }
-      if (entry.state === 'redeemed') return { ok: false, reason: 'already-redeemed' }
-      if (entry.state === 'revoked') return { ok: false, reason: 'revoked' }
-      if (entry.state === 'locked') return { ok: false, reason: 'locked' }
-      if (entry.state === 'expired' || now >= entry.expiresAt) {
-        if (entry.state !== 'expired') {
-          entry.state = 'expired'
-          if (writeCodes(table, now) !== true) return { ok: false, reason: 'storage-failed' }
-          audit('expire', { id: entry.id, origin: entry.origin })
+      const settled = { ok: false, reason: 'invalid-code' }
+      const audits = []
+      // v0.15（Gate 2F）：锁出判定、失败记账、码终态、失败清零全部收进**同一个事务**的两键
+      // draft（codes + lockout）。旧实现分两次写（先 lockout 再 codes）且都基于锁外旧表——
+      // 并发 redeem 会互相覆盖失败计数（5 次阈值形同虚设）与核销终态。
+      const tx = commitPairing((draft, control) => {
+        const table = normalizeCodes(draft[KEY_CODES] ?? {})
+        const lockout = normalizeLockout(draft[KEY_LOCKOUT] ?? {})
+        if (isLockedOutFromTable(lockout, userKey, now)) {
+          settled.reason = 'locked-out'
+          audits.push({ event: 'lockout', detail: { user: userKey, phase: 'rejected' } })
+          return control.abort('locked-out')
         }
-        // G-30/G-31：过期码单独分支——不计入 5 次失败锁出，回执统一「码已过期」。
-        // 过期码不是爆破信号（能提交过期码说明曾真实持有在铸码，爆破面是非法形态/
-        // 查无此码，仍计失败）；防泵码由 commands.mjs ensureBootstrap 的 10min 重铸
-        // 节流兜住（v0.8.7 的锁出防泵是多余一层，且会把用过时码的合法用户误锁 10min）。
-        return { ok: false, reason: 'expired' }
+        // 失效的提交形态 / 查无此码 = 真爆破面：记一次失败（可能翻锁），记账必须落盘。
+        const fail = (reason) => {
+          const failure = recordFailureInTable(lockout, userKey, now)
+          // R5-3-P3-6：写路径顺手有界化——完全过期的旧条目（失败全滑出窗口且无锁出）清除，
+          // 防陌生人刷码面把 state.json 撑大；锁出中的条目绝不清除（安全语义优先）。
+          draft[KEY_LOCKOUT] = pruneLockout(lockout, now).table
+          settled.reason = failure.locked ? 'locked-out' : reason
+          if (failure.locked) audits.push({ event: 'lockout', detail: { user: userKey, phase: 'tripped' } })
+          return true
+        }
+        if (normalized === '' || !/^[A-Z2-9]{1,64}$/.test(normalized)) return fail('invalid-code')
+        const hash = hashPairingCode(normalized)
+        const entry = table[hash]
+        if (entry === undefined || !safeEqual(entry.hash, hash)) return fail('invalid-code')
+        if (entry.state === 'redeemed') { settled.reason = 'already-redeemed'; return control.abort('already-redeemed') }
+        if (entry.state === 'revoked') { settled.reason = 'revoked'; return control.abort('revoked') }
+        if (entry.state === 'locked') { settled.reason = 'locked'; return control.abort('locked') }
+        if (entry.state === 'expired' || now >= entry.expiresAt) {
+          // G-30/G-31：过期码单独分支——不计入 5 次失败锁出，回执统一「码已过期」。
+          // 过期码不是爆破信号（能提交过期码说明曾真实持有在铸码，爆破面是非法形态/
+          // 查无此码，仍计失败）；防泵码由 commands.mjs ensureBootstrap 的 10min 重铸
+          // 节流兜住（v0.8.7 的锁出防泵是多余一层，且会把用过时码的合法用户误锁 10min）。
+          entry.state = 'expired'
+          table[hash] = entry
+          draft[KEY_CODES] = table
+          settled.reason = 'expired'
+          audits.push({ event: 'expire', detail: { id: entry.id, origin: entry.origin } })
+          return true
+        }
+        // minted/minted-active 未下发也可被核销（下发通道只是展示，不是安全边界）；
+        // G-20（W12）后 mint 只落 minted-active 单态，此处兼容存量 minted 行。
+        entry.state = 'redeemed'
+        entry.redeemedAt = now
+        entry.redeemedBy = userKey
+        if (label !== '') entry.label = String(label).slice(0, 64)
+        table[hash] = entry
+        delete lockout[userKey]
+        draft[KEY_CODES] = table
+        draft[KEY_LOCKOUT] = pruneLockout(lockout, now).table
+        settled.ok = true
+        settled.entry = { ...entry, code: normalized }
+        audits.push({ event: 'redeem', detail: { id: entry.id, origin: entry.origin, user: userKey } })
+        return true
+      }, now)
+      if (tx.committed === true) {
+        for (const item of audits) audit(item.event, item.detail)
+        return settled
       }
-      // minted/minted-active 未下发也可被核销（下发通道只是展示，不是安全边界）；
-      // G-20（W12）后 mint 只落 minted-active 单态，此处兼容存量 minted 行。
-      entry.state = 'redeemed'
-      entry.redeemedAt = now
-      entry.redeemedBy = userKey
-      if (label !== '') entry.label = String(label).slice(0, 64)
-      table[hash] = entry
-      if (writeCodes(table, now) !== true) return { ok: false, reason: 'storage-failed' }
-      clearFailures(userKey)
-      audit('redeem', { id: entry.id, origin: entry.origin, user: userKey })
-      return { ok: true, entry: { ...entry, code: normalized } }
+      if (tx.aborted === true) {
+        // 业务拒绝（锁出期/终态）：零写盘；锁出期拒绝仍需审计。
+        for (const item of audits) audit(item.event, item.detail)
+        return { ok: false, reason: settled.reason }
+      }
+      return { ok: false, reason: 'storage-failed' }
     },
 
     /** 撤销在铸码（owner/管理台）。 */
     revoke(id, { by = '', now = Date.now() } = {}) {
-      const table = readCodes()
-      sweep(table, now)
-      // 只在在铸条目中找（R5 审查 R5-1-P3-4：8 位前缀撞车时 find 可能先命中终态条目，
-      // 返回 already-* 让真正要处置的在铸码无法撤销）
-      // G-20（W12）：minted-active（单次原子落盘态）与 minted/active 同等视为在铸。
-      const entry = Object.values(table).find((item) => item.id === String(id ?? '')
-        && (item.state === 'minted' || item.state === 'active' || item.state === 'minted-active'))
-      if (entry === undefined) return { ok: false, reason: 'not-found' }
-      entry.state = 'revoked'
-      if (writeCodes(table, now) !== true) return { ok: false, reason: 'storage-failed' }
-      audit('revoke', { id: entry.id, origin: entry.origin, by })
-      return { ok: true }
+      return setCodeTerminal(id, 'revoked', by, now)
     },
 
     /** 锁定在铸码（可疑活动人工处置；终态）。 */
     lock(id, { by = '', now = Date.now() } = {}) {
-      const table = readCodes()
-      sweep(table, now)
-      const entry = Object.values(table).find((item) => item.id === String(id ?? '')
-        && (item.state === 'minted' || item.state === 'active' || item.state === 'minted-active'))
-      if (entry === undefined) return { ok: false, reason: 'not-found' }
-      entry.state = 'locked'
-      if (writeCodes(table, now) !== true) return { ok: false, reason: 'storage-failed' }
-      audit('lock', { id: entry.id, origin: entry.origin, by })
-      return { ok: true }
+      return setCodeTerminal(id, 'locked', by, now)
     },
 
     /** 在铸码列表（管理台；不含码面——只有哈希与状态）。 */
     listActive(now = Date.now()) {
+      sweepCodes(now) // 惰性过期：事务内翻转 + 落盘 + 落盘后才发 expire 审计
       const table = readCodes()
-      sweep(table, now) // 翻转即落盘（sweep 内部已持久化）
       // G-20（W12）：minted-active（单次原子落盘态）与 minted/active 同等视为在铸在列。
       return Object.values(table)
         .filter((entry) => entry.state === 'minted' || entry.state === 'active' || entry.state === 'minted-active')

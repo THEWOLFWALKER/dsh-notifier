@@ -109,18 +109,28 @@ export function createSurfaceHealth({ window = 20, ttlMs = DEFAULT_HEALTH_TTL_MS
     recordSend(record = {}) {
       const parsed = Date.parse(record.time)
       const at = Number.isFinite(parsed) ? parsed : now()
+      // v0.15（Gate 2C）：观察带 **捕获于发送开始** 的 runtime 世代。换实例后，旧 epoch 的
+      // 迟到观察绝不计入当前健康（否则旧实例的结果会污染新实例的观察面）；账本与调用结果
+      // 本身仍保留（那是投递事实，不是健康证据）。未携带 epoch 的 legacy record 维持兼容。
+      const epochs = (record.channelEpochs !== null && typeof record.channelEpochs === 'object') ? record.channelEpochs : null
+      const stale = (type) => {
+        if (epochs === null) return false
+        const carried = Number(epochs[type])
+        return Number.isFinite(carried) && carried < epochOf(type)
+      }
       // v0.13（C11.5 / R4）：provider accepted / confirmed delivered 必须分开计数。
       // legacy record 只有 delivered（旧语义 = 发送 resolve），按 accepted 归类，绝不
       // 再当作「已确认送达」；只有显式 confirmed/receipt 才计 delivered。
       const { accepted, confirmed } = normalizeDeliveryEvidence(record)
-      for (const type of accepted) push(String(type), 'accepted', null, at)
-      for (const type of confirmed) push(String(type), 'delivered', null, at)
+      for (const type of accepted) if (!stale(String(type))) push(String(type), 'accepted', null, at)
+      for (const type of confirmed) if (!stale(String(type))) push(String(type), 'delivered', null, at)
       // T12：结果不确定（超时等）单独成桶——它既不是成功证据也不是确定性失败。失败行带
       // `uncertain: true` 时**只记 unknown、不记 failed**，否则一次不确定投递会被同时算作
       // 确定失败（健康度被误压成 degraded）与 unknown（自相矛盾）。
       const uncertain = new Set()
       for (const failure of Array.isArray(record.failed) ? record.failed : []) {
         const type = String(failure?.channel ?? '')
+        if (stale(type)) continue
         if (failure?.uncertain === true) {
           push(type, 'unknown', failure?.error ?? '结果未知', at)
           uncertain.add(type)
@@ -129,10 +139,10 @@ export function createSurfaceHealth({ window = 20, ttlMs = DEFAULT_HEALTH_TTL_MS
         }
       }
       for (const type of Array.isArray(record.unknown) ? record.unknown : []) {
-        if (!uncertain.has(String(type))) push(String(type), 'unknown', null, at)
+        if (!uncertain.has(String(type)) && !stale(String(type))) push(String(type), 'unknown', null, at)
       }
       for (const type of Array.isArray(record.skipped) ? record.skipped : []) {
-        if (typeof type === 'string' && !type.startsWith('(')) push(type, 'skipped', null, at)
+        if (typeof type === 'string' && !type.startsWith('(') && !stale(type)) push(type, 'skipped', null, at)
       }
     },
     recordTest(type, result) {

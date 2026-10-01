@@ -34,6 +34,11 @@ export function createRuntimeChannelManager({ source, initial = [] } = {}) {
   // 落地，会把已经生效的新配置在观察面上打回旧态。栅栏只比较 revision，不写进状态对象
   // （runtimeState 形状保持 `{state, restartPending, ...detail}` 不变）。
   const appliedRevision = new Map()
+  // v0.15（Gate 2C）：每 type 的 runtime **实例世代**。发送开始时 `capture()` 的 epoch 随
+  // audit record 交给健康面；换实例后旧 epoch 的迟到观察一律不计入当前健康（但账本/调用
+  // 结果本身保留）。与 publish 一一对应，故与 surfaceHealth 的 markEpoch 保持同步。
+  const epochs = new Map()
+  const epochOf = (type) => epochs.get(String(type ?? '').trim()) ?? 0
   const update = (type, state, detail = {}) => {
     const key = String(type ?? '').trim()
     const { revision, ...rest } = detail
@@ -44,6 +49,7 @@ export function createRuntimeChannelManager({ source, initial = [] } = {}) {
       appliedRevision.set(key, incoming)
     }
     const next = { state: STATES.has(state) ? state : 'failed', restartPending: state === 'failed', ...rest }
+    epochs.set(key, (epochs.get(key) ?? 0) + 1)
     runtime.set(key, next)
     publish({ topic: 'runtime', type: key, state: next.state, restartPending: next.restartPending })
     return next
@@ -83,6 +89,13 @@ export function createRuntimeChannelManager({ source, initial = [] } = {}) {
     },
     runtimeState(type) {
       return copy(stateOf(type))
+    },
+    /** v0.15（Gate 2C）：发送开始时捕获不可变的 runtime 世代（不在结束时查询「当前」）。 */
+    epochOf,
+    capture(type) {
+      const key = String(type ?? '').trim()
+      const entry = typeof source.live === 'function' ? source.live(key) : source.get(key)
+      return { entry, epoch: epochOf(key) }
     },
     setState(type, state, detail = {}) {
       return copy(update(type, state, detail))

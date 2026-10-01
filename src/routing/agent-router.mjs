@@ -30,7 +30,7 @@ const KEY_SESSIONS = 'route:sessions'
 
 import { normalizeControlOverlay } from '../control/session-arbiter.mjs'
 import { bindingKey } from '../inbound/identity.mjs'
-import { setDurable, transactDurable } from '../inbound/store.mjs'
+import { setDurable, transactDurable, transactOutcome } from '../inbound/store.mjs'
 
 /** 入站显式绑定键前缀（与 conversation.mjs 键格式一致：bind:<channel>:<userId>，分量经
  * identity.bindingKey 归一——G-49 单一构造点，读写两侧同键）。 */
@@ -196,6 +196,26 @@ export function createAgentRouter({ store, agentsList } = {}) {
     return writeMap(KEY_SESSIONS, mutate(readMap(KEY_SESSIONS)))
   }
 
+  /**
+   * v0.15（Gate 2E）：agents/channels 单键表的**事务内 fresh 读改写**。setter/delete 都在
+   * 提交瞬间的 draft 上基于最新整表计算，绝不把锁外读到的旧表整表写回——并发 setter 对
+   * 同表的兄弟键写入不会被旧快照覆盖（TOCTOU）。无真实事务能力的 legacy/mock store 退回
+   * 单键读改写（单进程 best-effort，不伪造原子性）。
+   * @param {string} key - `route:agents` / `route:channels`
+   * @param {(table: object) => object} mutate - 传入提交瞬间的整表，返回新整表
+   * @returns {boolean} 是否落盘成功
+   */
+  const commitMap = (key, mutate) => {
+    if (typeof store?.transact === 'function') {
+      const result = transactDurable(store, (draft) => {
+        draft[key] = mutate(plainObjectOf(draft[key]) ?? {})
+        return true
+      })
+      return result.committed === true
+    }
+    return writeMap(key, mutate(readMap(key)))
+  }
+
   // —— agentsList 防御包装：非函数 / 抛错 / 返回非数组 / 元素缺 id → 过滤为空 ——
   const listAgents = () => {
     try {
@@ -341,26 +361,28 @@ export function createAgentRouter({ store, agentsList } = {}) {
       assertNonEmptyString(key, 'setAgentBinding: key')
       const normalized = patch === undefined || patch === null ? {} : patch
       if (plainObjectOf(normalized) === null) throw new TypeError('agent-router: setAgentBinding: patch 必须是对象')
-      const agents = readMap(KEY_AGENTS)
-      const entry = { ...plainObjectOf(agents[key]) }
-      if (Object.prototype.hasOwnProperty.call(normalized, 'channels')) {
-        if (normalized.channels === undefined || normalized.channels === null) {
-          delete entry.channels
-        } else {
-          if (!Array.isArray(normalized.channels)) {
-            throw new TypeError('agent-router: setAgentBinding: channels 必须是字符串数组')
-          }
-          entry.channels = normalizeChannelTypes(normalized.channels)
+      const hasChannels = Object.prototype.hasOwnProperty.call(normalized, 'channels')
+      const hasQuiet = Object.prototype.hasOwnProperty.call(normalized, 'quiet')
+      // 入参违规在事务外同步抛 TypeError（契约层面快速失败）；字段级合并进事务内 fresh 表。
+      if (hasChannels && normalized.channels !== undefined && normalized.channels !== null && !Array.isArray(normalized.channels)) {
+        throw new TypeError('agent-router: setAgentBinding: channels 必须是字符串数组')
+      }
+      // v0.15（Gate 2E）：读最新整表 + 合并本次键，全部在事务内完成，兄弟键并发写入不被覆盖。
+      return commitMap(KEY_AGENTS, (agents) => {
+        const entry = { ...plainObjectOf(agents[key]) }
+        if (hasChannels) {
+          if (normalized.channels === undefined || normalized.channels === null) delete entry.channels
+          else entry.channels = normalizeChannelTypes(normalized.channels)
         }
-      }
-      if (Object.prototype.hasOwnProperty.call(normalized, 'quiet')) {
-        if (normalized.quiet === undefined || normalized.quiet === null) delete entry.quiet
-        else entry.quiet = normalizeQuiet(normalized.quiet)
-      }
-      const next = { ...agents }
-      if (Object.keys(entry).length > 0) next[key] = entry
-      else delete next[key] // 条目清空（或本就为空）= 不留无语义的空条目
-      return writeMap(KEY_AGENTS, next)
+        if (hasQuiet) {
+          if (normalized.quiet === undefined || normalized.quiet === null) delete entry.quiet
+          else entry.quiet = normalizeQuiet(normalized.quiet)
+        }
+        const next = { ...agents }
+        if (Object.keys(entry).length > 0) next[key] = entry
+        else delete next[key] // 条目清空（或本就为空）= 不留无语义的空条目
+        return next
+      })
     },
 
     /**
@@ -403,6 +425,20 @@ export function createAgentRouter({ store, agentsList } = {}) {
      */
     deleteAgentBinding(key) {
       assertNonEmptyString(key, 'deleteAgentBinding: key')
+      // v0.15（Gate 2E）：存在性判定与删除在同一事务（提交瞬间的 fresh 表），
+      // 并发场景下绝不因旧快照误判「存在」而写回已被他人删除/新增的整表。
+      if (typeof store?.transact === 'function') {
+        const tx = transactOutcome(store, (draft, control) => {
+          const agents = plainObjectOf(draft[KEY_AGENTS]) ?? {}
+          if (!Object.prototype.hasOwnProperty.call(agents, key)) return control.abort('not-found')
+          const next = { ...agents }
+          delete next[key]
+          draft[KEY_AGENTS] = next
+          return true
+        })
+        if (tx.aborted === true) return false
+        return tx.committed === true
+      }
       const agents = readMap(KEY_AGENTS)
       if (!Object.prototype.hasOwnProperty.call(agents, key)) return false
       const next = { ...agents }
@@ -421,10 +457,12 @@ export function createAgentRouter({ store, agentsList } = {}) {
     setChannelDefault(channel, agentKey) {
       assertNonEmptyString(channel, 'setChannelDefault: channel')
       assertNonEmptyString(agentKey, 'setChannelDefault: agentKey')
-      const channels = readMap(KEY_CHANNELS)
-      const entry = { ...plainObjectOf(channels[channel]) }
-      entry.defaultAgent = agentKey
-      return writeMap(KEY_CHANNELS, { ...channels, [channel]: entry })
+      // v0.15（Gate 2E）：事务内 fresh 表合并，兄弟通道并发写入不被旧快照覆盖。
+      return commitMap(KEY_CHANNELS, (channels) => {
+        const entry = { ...plainObjectOf(channels[channel]) }
+        entry.defaultAgent = agentKey
+        return { ...channels, [channel]: entry }
+      })
     },
 
     /**
@@ -447,6 +485,19 @@ export function createAgentRouter({ store, agentsList } = {}) {
      */
     clearChannelDefault(channel) {
       assertNonEmptyString(channel, 'clearChannelDefault: channel')
+      // v0.15（Gate 2E）：同 deleteAgentBinding——存在性判定与删除同一事务。
+      if (typeof store?.transact === 'function') {
+        const tx = transactOutcome(store, (draft, control) => {
+          const channels = plainObjectOf(draft[KEY_CHANNELS]) ?? {}
+          if (!Object.prototype.hasOwnProperty.call(channels, channel)) return control.abort('not-found')
+          const next = { ...channels }
+          delete next[channel]
+          draft[KEY_CHANNELS] = next
+          return true
+        })
+        if (tx.aborted === true) return false
+        return tx.committed === true
+      }
       const channels = readMap(KEY_CHANNELS)
       if (!Object.prototype.hasOwnProperty.call(channels, channel)) return false
       const next = { ...channels }

@@ -18,16 +18,51 @@
 //     外部改动一律抛错且不影响内部真值。
 // 这不是 QQ/WeCom 单点补丁：冻结/投影边界是全局契约，任何 adapter 的合法惰性写都成立。
 
-function clone(value) {
-  try { return JSON.parse(JSON.stringify(value)) } catch { return value }
-}
-
-function freezeDeep(value) {
+// v0.15（Gate 2E）：冻结投影的 cycle guard——同一个对象在图中二次出现时不再下钻，
+// 避免循环引用把 freezeDeep 打进无限递归（旧实现只靠 JSON clone，遇到环时根本不
+// 走到这里；现在安全投影可能保留真实对象引用，必须自带守卫）。
+function freezeDeep(value, seen = new WeakSet()) {
   if (value !== null && typeof value === 'object' && !Object.isFrozen(value)) {
-    for (const child of Object.values(value)) freezeDeep(child)
+    if (seen.has(value)) return value
+    seen.add(value)
+    for (const child of Object.values(value)) freezeDeep(child, seen)
     Object.freeze(value)
   }
   return value
+}
+
+/**
+ * v0.15（Gate 2E）**安全结构投影**：只在 JSON serialization 不可行（循环引用 / BigInt /
+ * SDK 对象等）时使用的兜底。它不是 `clone()`——`clone()` 失败会原样返回 **live 运行时
+ * 对象**，随后 `freezeDeep(live)` 会把 adapter 私有运行时对象冻死，下一次惰性缓存写入
+ * 直接 TypeError（正是 P0-01 要消灭的 bug 换了个入口）。
+ *
+ * 规则：只复制 JSON-safe 的公开字段；`_` / `__` 前缀私有运行态整支跳过；函数 / symbol /
+ * 不可序列化分支产出 `undefined`（丢弃）；环通过 `seen` 断链；**永远新建对象，绝不
+ * 返回原引用**，因此随后的 freezeDeep 只会冻结投影副本。
+ */
+function safeProjection(value, seen) {
+  if (value === null || value === undefined) return value === undefined ? undefined : null
+  const kind = typeof value
+  if (kind === 'string' || kind === 'number' || kind === 'boolean') return value
+  if (kind === 'bigint') return String(value)
+  if (kind === 'function' || kind === 'symbol') return undefined
+  if (kind !== 'object') return undefined
+  if (seen.has(value)) return undefined // 环：断链丢弃该分支
+  seen.add(value)
+  let projected
+  if (Array.isArray(value)) {
+    projected = value.map((item) => safeProjection(item, seen))
+  } else {
+    projected = {}
+    for (const [key, child] of Object.entries(value)) {
+      if (key.startsWith('_')) continue // adapter 私有运行时字段：绝不进投影
+      const childProjected = safeProjection(child, seen)
+      if (childProjected !== undefined) projected[key] = childProjected
+    }
+  }
+  seen.delete(value)
+  return projected
 }
 
 /**
@@ -37,13 +72,15 @@ function freezeDeep(value) {
  * 运行态缓存（含 token 管理器等），绝不能出现在 Support Report / resolved.channels 等
  * 外部投影里。旧实现因为冻结写不进去，这些字段恰好恒为 undefined 被 JSON 丢弃；现在
  * live 对象会真实累积它们，故投影必须显式剔除。
+ *
+ * v0.15（Gate 2E）：JSON 路径失败时**绝不** freeze live 对象——退化为安全结构投影。
  */
 function projectConfig(config) {
   try {
     const text = JSON.stringify(config, (key, value) => (key.startsWith('_') ? undefined : value))
     if (typeof text === 'string') return freezeDeep(JSON.parse(text))
-  } catch { /* 循环引用/不可序列化：退化为纯 clone */ }
-  return freezeDeep(clone(config))
+  } catch { /* 循环引用 / 不可序列化：退化为安全结构投影（不是 clone） */ }
+  return freezeDeep(safeProjection(config, new WeakSet()))
 }
 
 /**
