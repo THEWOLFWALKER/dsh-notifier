@@ -759,6 +759,41 @@ Contract: `docs/behavior-contract.md` PT-01…PT-03.
 
 **Count**: **2289 → 2301** (`npm test`, full suite green: 2301 pass / 0 fail).
 
+## T22 — dsh-im 可选投递桥
+
+**Result**: the optional dsh-im delivery is an isolated **delegating bridge** (`src/control-plane/dsh-im-bridge.mjs`) — the
+only module that touches the host's optional `ctx.dshIm` service. It holds no platform credential, makes no HTTP call,
+copies no session/permission, and never guesses a bot prefix; it only delegates a user-selected, opaque
+`(botId, targetId)` reference. Native consumes it via `dshIm.*` RPC; an unassembled bridge fails closed.
+
+- **Dynamic availability** (`observe`/`status`): every operation re-reads `ctx.dshIm` defensively (via the T13 seam)
+  instead of caching one object. Missing → `status().available:false` with `reason:'no-dsh-im'` (never a throw);
+  late appearance / withdrawal / recreation are all visible. A monotonic **epoch** guards in-flight sends: a late result
+  from a service withdrawn/recreated while a send was airborne is discarded as `unknown` (`reason:'epoch'`), never accepted
+  (D01/D02).
+- **Honest evidence** (`send`): `sent===true` → `accepted` (accept ≠ delivery; `confirmed:false`); `false`/`rejected →
+  `rejected`; timeout/cancel/ambiguous → `unknown` — the request may already have been sent, so it is **never** blindly
+  re-sent or re-routed to another provider (D04). `botId/targetId/text/options` pass through unmodified; the stable opaque
+  id is never prefix-guessed (D03).
+- **Text-only + no auto-switch** (`send`/`botOf`/`targetOf`): empty ref/body → `bad-request`; `media`/`interactive`/`card`
+  options → `not-supported`; a removed/changed target is never substituted; list projections expose only
+  `botId/label/platform` (or `targetId/label/kind`) and never leak credentials (D05).
+- **Wiring** (`src/index.mjs` + `src/control-surface/service.mjs`): the bridge is built once with the real `ctx`/`warn`
+  and injected as `dshIm`; the surface adds `dshIm.status/listBots/listTargets/send`. `send` records one activity row
+  (single-owner accounting), a truthful `accepted ≠ delivered` title, and no auto-retry.
+- **No durable key**: the opaque reference is caller/client-held desired (the bridge owns no store key); disabling the
+  bridge leaves dsh-im's own targets and the notifier's own channels untouched.
+
+**Boundaries held**: no forced dsh-im install, no unauthenticated public-HTTP path, no bot-prefix guess, no session/permission
+copy, no blind resend fallback.
+
+**Tests**: `node --test test/v015-stage-s14-dsh-im-bridge.test.mjs` → **12 pass / 0 fail** (D01 no-service, D02 late/withdrawn
+/recreated + in-flight epoch isolation, D03 args pass-through + safe projection, D04 sent/timeout/cancel/error evidence,
+D05 no auto-switch + text-only, plus surface wiring + unassembled fail-closed). Contract: `docs/behavior-contract.md`
+DI-01…DI-03.
+
+**Count**: **2301 → 2313** (`npm test`, full suite green: 2313 pass / 0 fail).
+
 ## Task status
 
 | Task | Status | Commit | Evidence |
@@ -784,4 +819,5 @@ Contract: `docs/behavior-contract.md` PT-01…PT-03.
 | T19 | done | `843fd12` | module-level stable form sections (no focus loss); schema-driven controls + secret keep/replace/clear; leave-draft confirm; pairing copy w/ manual fallback; nav layering; destructive-impact confirm; `node test/dom/run.mjs` → 21 pass |
 | T20 | done | `6d51a60` | Recovery reads the shared canonical diagnostics snapshot (no second collector); read-only; 501 unassembled / 503 read-error; `GET /api/diagnostics` behind localhost auth; report ≠ backup; `test/v015-stage-s12-recovery-diagnostics.test.mjs` → 6 pass |
 | T21 | done | `39f042f` | config export/import single authority; public-only export (no secret / URL token / ENV ref inlined); strict parse + dry-run + staged-disabled import; one-transaction commit; cancel/fail zero-write; `test/v015-stage-s13-config-portability.test.mjs` → 12 pass |
-| T22–T30 | not started | — | — |
+| T22 | done | `(see git log)` | optional dsh-im delegating bridge; dynamic availability + epoch isolation (D01/D02); honest accepted/unknown evidence (D03/D04); text-only + no auto-switch + no credential leak (D05); `test/v015-stage-s14-dsh-im-bridge.test.mjs` → 12 pass |
+| T23–T30 | not started | — | — |

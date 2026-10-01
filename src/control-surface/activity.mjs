@@ -66,6 +66,8 @@ function titleFor(row) {
     'session-control': { en: 'Session control policy saved', zh: '会话控制策略已保存' },
     // v0.14（S09）：高级绑定整表替换。
     'bindings-replaced': { en: 'Routing bindings replaced', zh: '路由绑定已整表替换' },
+    // v0.15（T22）：dsh-im 桥接投递（仅 provider 接受，无端到端回执证据）。
+    'dsh-im-send': { en: 'Sent via dsh-im (accepted is not delivered)', zh: '已通过 dsh-im 发送（接受 ≠ 送达）' },
   }
   return map[row.action] ?? { en: row.action, zh: row.action }
 }

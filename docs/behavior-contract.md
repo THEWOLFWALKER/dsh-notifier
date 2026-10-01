@@ -876,6 +876,53 @@ oracle 是真实 Admin API + 真实 HTTP server（`test/v015-stage-s12-recovery-
 
 ---
 
+## 十二、dsh-im 可选投递桥（T22）
+
+dsh-im 投递桥（`src/control-plane/dsh-im-bridge.mjs`）是**唯一**触碰宿主可选 `ctx.dshIm` 服务的模块，
+由 Native 控制面经 `dshIm.*` RPC 消费。这是一个**委托发货器**而非 provider adapter：不持有平台凭据、
+不发 HTTP、不复制会话/权限、不猜 bot 前缀；只把用户选中的不透明 `(botId,targetId)` 引用委托给宿主服务。
+本节固定 DI-01…DI-03，oracle 是 `test/v015-stage-s14-dsh-im-bridge.test.mjs`（D01–D05）。
+
+### DI-01 · 服务动态可用性（缺 / 晚注入 / 撤销 / 重建 / 旧对象不再发送）
+
+- **分类**：MUST_PRESERVE
+- **事实 owner**：`src/control-plane/dsh-im-bridge.mjs` `observe` / `status` / `send`
+- **输入/前置状态**：宿主无 dsh-im；服务晚出现；服务被撤销；服务被重建；send 在飞期间服务被替换
+- **结果**：每次操作都重新防御读取当前 `ctx.dshIm`（绝不缓存单对象跨调用）；`status` 报
+  `available:false/reason:'no-dsh-im'` 而非抛错；服务替换后代际（epoch）单调递增，在飞期间被替换的
+  迟到结果按 `unknown`（reason `epoch`）隔离，绝不记为已接受；重建后的新实例成为唯一活引用，旧对象
+  不再被调用；桥接未装配时控制面 fail-closed（`not-supported`）
+- **禁止动作**：不得只在启动时捕获一个 service 对象永久使用；不得把晚到回执当成 accepted；
+  不得在服务缺失时抛错弄崩控制面
+- **证据链接**：`test/v015-stage-s14-dsh-im-bridge.test.mjs`（D01/D02 + wiring）
+- **矩阵**：**D01/D02**
+
+### DI-02 · 参数透传与投递证据（accepted / rejected / unknown）
+
+- **分类**：MUST_PRESERVE
+- **事实 owner**：`src/control-plane/dsh-im-bridge.mjs` `send` / `looksUncertain`
+- **输入/前置状态**：真实 delivery-service + fake channel；`sent` 真值（true/false/对象）；timeout/cancel/error
+- **结果**：`botId/targetId/text/options` 原样透传（稳定不透明 ID 不靠前缀猜账号）；`sent===true` →
+  `accepted:true, confirmed:false`（接受 ≠ 送达）；`false`/`rejected` → `rejected:true`；timeout/cancel →
+  `unknown`（可能已发出，绝不盲目重发/跨 provider 重发）；无明确 sent/reject 信号 → `unknown`（ambiguous）
+- **禁止动作**：不得把「平台接受」宣称为「已送达」；不得对 timeout/ambiguous 自动重发；不得无回执伪造确认
+- **证据链接**：`test/v015-stage-s14-dsh-im-bridge.test.mjs`（D03/D04）
+- **矩阵**：**D03/D04**
+
+### DI-03 · 纯文本约束与目标不自动替换（信息不泄 / 不假能力）
+
+- **分类**：MUST_PRESERVE
+- **事实 owner**：`src/control-plane/dsh-im-bridge.mjs` `send` / `botOf` / `targetOf`
+- **输入/前置状态**：空 botId/targetId/text；options 携带 media/interactive/card；目标被删/改；非法 list 行
+- **结果**：空引用/空正文 → `bad-request`；媒体/交互卡片 → `not-supported`（文本桥不承诺媒体/卡片/身份/审批互通）；
+  目标删除/变更绝不自动换目标（仅委托调用方持有的确切引用）；list 投影只报 `botId/label/platform` 等安全字段，
+  **绝不泄露平台凭据**，非法行过滤丢弃、不伪造目标
+- **禁止动作**：不得把 listTargets 的 route 无筛选全部复制进投影；不得伪造媒体/卡片能力；不得伪造可自动切换的兜底目标
+- **证据链接**：`test/v015-stage-s14-dsh-im-bridge.test.mjs`（D03/D05）
+- **矩阵**：**D05**
+
+---
+
 ## 必测矩阵 → spec / oracle 覆盖
 
 | 矩阵 ID | spec 条目 | 旧 oracle（文件:行） |
@@ -908,6 +955,11 @@ oracle 是真实 Admin API + 真实 HTTP server（`test/v015-stage-s12-recovery-
 | PT-01 | CFG-05 | `v015-stage-s13-config-portability.test.mjs`（E01 零 secret / 引用分离） |
 | PT-02 | CFG-01, CFG-06 | `v015-stage-s13-config-portability.test.mjs`（E02/E03/E04） |
 | PT-03 | CFG-02 | `v015-stage-s13-config-portability.test.mjs`（E04/E05 取消失败零写 / IO 失败） |
+| D01 | DI-01 | `v015-stage-s14-dsh-im-bridge.test.mjs`（无服务 unavailable + 核心不受影响） |
+| D02 | DI-01 | `v015-stage-s14-dsh-im-bridge.test.mjs`（晚注入/撤销/重建 + epoch 隔离） |
+| D03 | DI-02, DI-03 | `v015-stage-s14-dsh-im-bridge.test.mjs`（参数透传 + 稳定 ID 不猜前缀） |
+| D04 | DI-02 | `v015-stage-s14-dsh-im-bridge.test.mjs`（sent/超时/cancel → accepted/unknown） |
+| D05 | DI-03 | `v015-stage-s14-dsh-im-bridge.test.mjs`（不自动换目标 + 文本 only） |
 
 ### 未覆盖 / UNKNOWN（不得上调）
 

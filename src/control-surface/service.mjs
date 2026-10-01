@@ -122,6 +122,7 @@ export function createControlSurfaceService({
   bindings = null,
   diagnostics = null,
   portability = null,
+  dshIm = null,
   activity,
   health,
   storageStatus,
@@ -414,6 +415,42 @@ export function createControlSurfaceService({
           })
         }
         return ok({ ...revisionView(), ...value })
+      }
+
+      // v0.15（T22）：可选 dsh-im 投递桥。状态只读可用性事实（服务缺失是正常态，不 fail-closed）；
+      // 枚举/发送由桥接自身在服务缺失时抛 host-unavailable / not-supported。桥接未装配 → fail-closed。
+      if (method === 'dshIm.status' || method === 'dshIm.listBots'
+        || method === 'dshIm.listTargets' || method === 'dshIm.send') {
+        if (dshIm === null) {
+          const error = new Error('dsh-im 投递桥接当前不可用（本进程未装配）')
+          error.code = 'not-supported'
+          throw error
+        }
+      }
+
+      if (method === 'dshIm.status') {
+        return ok({ ...revisionView(), ...dshIm.status() })
+      }
+
+      if (method === 'dshIm.listBots') {
+        return ok({ ...revisionView(), bots: await dshIm.listBots() })
+      }
+
+      if (method === 'dshIm.listTargets') {
+        return ok({ ...revisionView(), targets: await dshIm.listTargets(payload?.botId) })
+      }
+
+      if (method === 'dshIm.send') {
+        const value = await dshIm.send(payload)
+        // 唯一 owner 记账：一次 send 记一条 activity（绝不重试或二次 send）。
+        activity.record('notification', 'dsh-im-send', {
+          channel: 'dsh-im',
+          accepted: value.accepted === true,
+          confirmed: value.confirmed === true,
+          failed: value.unknown === true || value.rejected === true,
+          status: value.rejected === true ? 'failed' : 'ok',
+        })
+        return ok(value)
       }
 
       if (method === 'activity.list') {

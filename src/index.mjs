@@ -66,6 +66,7 @@ import { createAdminSessions } from './control-surface/admin-session.mjs'
 import { createControlSurfaceService } from './control-surface/service.mjs'
 import { createChannelControlService } from './control-plane/channels.mjs'
 import { createConfigPortabilityService } from './control-plane/config-portability.mjs'
+import { createDshImBridge } from './control-plane/dsh-im-bridge.mjs'
 import { createMembersControlService } from './control-plane/members.mjs'
 import { createRoutingControlService } from './control-plane/sessions.mjs'
 import { createQuestionsControlService } from './control-plane/questions.mjs'
@@ -882,6 +883,10 @@ export function apply(ctx, config = {}) {
     inboundConfig: inboundConfigPort,
     version: pluginVersion,
   })
+  // v0.15（T22）：可选 dsh-im 投递桥接。它是唯一触碰 ctx.dshIm 的模块，不持有任何持久键——
+  // 不透明 (botId, targetId) 引用由 Native 客户端持于其 desired；这里只把桥接注入控制面。
+  // 每次操作都重新防御读取 ctx.dshIm，故服务晚注入/撤销/重建天然可见（D01/D02）。
+  const surfaceDshIm = createDshImBridge({ ctx, warn })
   const surfaceService = createControlSurfaceService({
     revision: surfaceRevision,
     channels: surfaceChannels,
@@ -903,6 +908,7 @@ export function apply(ctx, config = {}) {
     bindings: surfaceBindings,
     diagnostics: surfaceDiagnostics,
     portability: surfacePortability,
+    dshIm: surfaceDshIm,
     activity: surfaceActivity,
     health: surfaceHealth,
     storageStatus: () => {
