@@ -1,77 +1,35 @@
 ---
-name: Bug report
-about: Report a reproducible dsh-notifier problem after first-line diagnosis
+name: 问题反馈 / Bug report
+about: 描述操作步骤与实际现象 / Describe steps and what happened
 title: "[Bug] "
 labels: ""
 assignees: ""
 ---
 
-> Before submitting: please run the AI-assisted troubleshooting flow in `docs/TROUBLESHOOTING.md` and redact secrets.\
-> 不要提交 Token / Secret / Authorization Header / 完整 state.json / 未脱敏私聊。
+## 遇到了什么 / What happened
 
-## Environment
+描述实际现象，以及你原本希望发生什么。
+Describe what happened and what you expected.
 
-- OS:
-- Node:
-- DSH/Harness:
-- DSH profile:
-- dsh-notifier:
-- Install source: registry / file: / Git / manual / unknown
-
-## Scope
-
-- Channel:
-- Direction: outbound / inbound / Native UI / Admin / Control
-- Capability:
-- First known version:
-- Reproducible: yes / no
-
-## Expected
-
-<!-- What should happen? -->
-
-## Actual
-
-<!-- What actually happens? -->
-
-## Minimal reproduction
+## 操作步骤 / Steps to reproduce
 
 1.
 2.
 3.
 
-## Evidence
+## 使用环境 / Environment
 
-- Provider accepted:
-- Confirmed receipt:
-- Runtime state / restartPending:
-- Relevant error code:
-- Sanitized log excerpt:
+- 系统 / OS:
+- DSH 版本 / DSH version:
+- 插件版本 / Plugin version:
+- 渠道 / Channel:
 
-```text
-paste only the relevant sanitized lines
-```
+## 截图或诊断摘要 / Screenshot or diagnostic summary
 
-## Checks already completed
+可从「通知与控制 → 诊断」生成摘要。
+Generate a summary from Notify & Control → Diagnostics.
 
-- [ ] I verified the actual installed package version.
-- [ ] I checked the install source (`file:` / registry / Git).
-- [ ] I confirmed the correct DSH profile.
-- [ ] I restarted DSH once after package install/upgrade.
-- [ ] I checked `restartPending` where relevant.
-- [ ] I followed `docs/TROUBLESHOOTING.md`.
-- [ ] I removed all tokens/secrets/private content.
+请遮住个人信息，不要发送机器人凭证、密码、配对码或私聊内容。
+Hide personal information. Do not share bot credentials, passwords, pairing codes or private conversations.
 
-## Local fixes attempted
-
-<!-- What did the AI/human already try? -->
-
-## AI diagnosis
-
-- Most likely failing layer:
-- Evidence:
-- Remaining uncertainty:
-
-## Attachments
-
-<!-- Sanitized screenshots/logs only. -->
+## 已尝试的办法 / What you tried

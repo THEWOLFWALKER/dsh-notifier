@@ -1,21 +1,10 @@
 # Operations Runbook
 
-## Current release baseline
+## Release and development branches
 
-Current release: **dsh-notifier v0.13.1**.
+Published package: **0.13.1**. The current v0.15 work is on `dev`; `main` is unchanged by this closeout per the owner instruction of 2026-10-01.
 
-The reviewed release head is the v0.13.1 release commit after the dev → main promotion. The existing v0.13.0 tag and GitHub Release remain immutable. Real-device/provider evidence remains explicitly open.
-
-Release evidence (2026-09-26):
-
-- `npm test`: **2011 / 2011 pass**, 0 fail, 0 skip
-- `node scripts/verify-release.mjs`: release guard green
-- `node scripts/gen-channel-matrix.mjs --check`: **28 channels**
-- `npm pack --dry-run --json`: **314 files**, `client.js` included, six viewport-sized README screenshots included, no agent-config leak
-- npm publish: `dsh-notifier@0.13.1` accepted by npm from the reviewed release head
-- v0.13.1 adds no fresh real DSH/provider run; the inherited host compatibility evidence and remaining gaps stay in `docs/developer/memory/risks.md`
-
-The `v0.13.1` tag is pinned to reviewed release commit `9e0d3b6`; `main` and `dev` contain only later documentation/topology follow-ups. Never retag or force-push an existing release.
+The current check results and remaining release steps are in [HANDOFF.md](HANDOFF.md). Historical package evidence remains in [archive/CHANGELOG.md](archive/CHANGELOG.md). Do not retag an existing release or treat a local tarball as a registry publication.
 
 ## Local checks
 

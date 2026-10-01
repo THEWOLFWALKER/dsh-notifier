@@ -1,8 +1,8 @@
-# PLUGINS.en.md — Calling dsh-notifier from your plugin
+# Plugin API
 
 > 中文: [PLUGINS.md](PLUGINS.md)
 > Since dsh-notifier v0.6 there are two surfaces: **outbound** — the injected `ctx.notifier` service (push), and **inbound** — the `dsh-notifier/sent` event (subscribe).
-> This document is for **consumer plugin authors**. Public API version: `0.7` (`ctx.notifier.version`; bumped only on a public-surface break, independent of the package version).
+Public API version: `0.7` (`ctx.notifier.version`; bumped only on a public-surface break, independent of the package version).
 
 ## 30-second quick start
 

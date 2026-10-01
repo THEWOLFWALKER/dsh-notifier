@@ -10,6 +10,6 @@ Cloudflare 部署按需安装固定 Wrangler，支持设备登录、账号选择
 
 用户文档与工程文档已分为 `docs/user/`、`docs/developer/`。dsh-im 的桥接和导入代码仅为实验实现，不代表与当前上游可互操作。
 
-本次全量核心回归通过 2462 项；真实 React / 本地 workerd 套件通过 32 项。完整检查和发布状态见 [HANDOFF.md](../HANDOFF.md)。
+本次全量核心回归通过 2465 项；真实 React / 本地 workerd 套件通过 33 项。完整检查和发布状态见 [HANDOFF.md](../HANDOFF.md)。
 
-本机没有 npm 登录凭证。正式 npm 发布需要完成登录或已有受支持的发布身份；不以本地打包代替 registry 发布。
+用户于 2026-10-01 明确要求仅推 dev，main 不动；本次不创建发布标签，也不发布 npm。

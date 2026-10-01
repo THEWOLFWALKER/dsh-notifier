@@ -18,3 +18,6 @@
 - Review: fixed deployment activation/readback separation, same-token rotation guard, subprocess abort/output ownership, staged import lifecycle, custom gateway compatibility, and docs/package relocation. dsh-im upstream does not certify experimental fixture interfaces.
 - Validation: full core 2462 pass / 0 fail / 0 skip; DOM/workerd 32 pass; host-compat, channel matrix, release guard, perf and package dry-run pass. npm identity unavailable (ENEEDAUTH); registry publish remains blocked.
 - Implementation commit: f7bae5f. Documentation relocation and release synchronization follow separately.
+
+- Latest owner direction: only push dev; main remains unchanged. No tag/GitHub Release/npm publication in this closeout. GitHub credential usage for this repo push explicitly authorized on 2026-10-01.
+- Final local validation: core 2465 pass / 0 fail / 0 skip; DOM/workerd 33 pass. Added Native named-tunnel configure/start/stop/status with real authority DOM coverage, no downloader or automatic startup.

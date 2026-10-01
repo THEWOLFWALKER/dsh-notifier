@@ -1,6 +1,6 @@
 # 当前交接
 
-更新：2026-10-01。工作分支 `codex/v015-release-closeout`，起点 dev `592ff75`。目标版本 0.15.0；当前包字段在发布门完成前仍为 0.13.1。
+更新：2026-10-01。工作分支 `codex/v015-release-closeout`，起点 dev `592ff75`。v0.15 功能收口仅同步 dev。当前稳定包版本仍为 0.13.1，本次不执行正式发布。
 
 ## 已实现
 
@@ -14,9 +14,9 @@
 
 | 检查 | 结果 |
 |---|---|
-| 测试 | `npm test` **2462 tests**（2462 pass，0 fail，0 skip） |
-| 配置和 Worker | 核心部署 / 转发检查与真实 React 操作检查通过；本地 workerd 执行 D1 迁移和签名请求通过 |
-| 打包与发布 | 文档、宿主兼容、渠道矩阵与打包检查通过；dev/main CI 和发布待完成 |
+| 测试 | `npm test` **2465 tests**（2465 pass，0 fail，0 skip） |
+| 配置和 Worker | 核心部署 / 转发检查与真实 React 操作检查 33 项通过；本地 workerd 执行 D1 迁移和签名请求通过 |
+| 打包与发布 | 文档、宿主兼容、渠道矩阵与打包检查通过；已推 dev 并通过 Ubuntu/macOS CI；最新隧道收尾待 dev CI 确认 |
 
 ## 支持范围
 
@@ -28,5 +28,5 @@
 
 ## 继续
 
-完成最后回归、打包安装和 CI，再更新 0.15.0 元数据。GitHub PAT 只用于指定仓库的 git 推送，不用于 API 或其他服务。
-本机 `npm whoami` 返回 ENEEDAUTH；npm 发布不能记为完成。
+按用户最新要求，只同步 dev，main 不动。包版本保持 0.13.1；正式 0.15.0 发布留到另一次明确发布操作。GitHub PAT 只用于指定仓库的 git 推送，不用于 API 或其他服务。
+本次不执行 tag、GitHub Release 或 npm 发布。
