@@ -6,8 +6,8 @@ import { fileURLToPath } from 'node:url'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const packageJson = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8'))
-const pluginsZh = readFileSync(resolve(root, 'PLUGINS.md'), 'utf8')
-const pluginsEn = readFileSync(resolve(root, 'PLUGINS.en.md'), 'utf8')
+const pluginsZh = readFileSync(resolve(root, 'docs/developer/PLUGINS.md'), 'utf8')
+const pluginsEn = readFileSync(resolve(root, 'docs/developer/PLUGINS.en.md'), 'utf8')
 
 test('public capability wording is evidence-bound', () => {
   const expected = packageJson.dshWorkshop?.capability?.expected ?? ''

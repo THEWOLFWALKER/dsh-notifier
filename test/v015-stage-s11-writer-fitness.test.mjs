@@ -22,7 +22,7 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join, relative, resolve, sep } from 'node:path'
 
 const SRC_DIR = fileURLToPath(new URL('../src/', import.meta.url))
-const REGISTRY_DOC = fileURLToPath(new URL('../docs/state-writer-registry.md', import.meta.url))
+const REGISTRY_DOC = fileURLToPath(new URL('../docs/developer/state-writer-registry.md', import.meta.url))
 const ALLOWLIST_OPEN = '<!-- writer-fitness:allowlist -->'
 const ALLOWLIST_CLOSE = '<!-- /writer-fitness:allowlist -->'
 

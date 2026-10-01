@@ -21,12 +21,12 @@ const readmeLinks = (file) => {
 
 test('npm allowlist covers public README documents and assets', () => {
   const required = [
-    'README.md', 'README.zh-CN.md', 'AGENTS.md', 'PLUGINS.md', 'PLUGINS.en.md',
-    'docs/guide.md', 'docs/guide.en.md', 'docs/AI_INSTALL.md', 'docs/AI_INSTALL.en.md',
-    'docs/TROUBLESHOOTING.md', 'docs/TROUBLESHOOTING.en.md',
-    'docs/DIAGNOSTICS.md', 'docs/DIAGNOSTICS.en.md', 'docs/SUPPORT.md', 'docs/SUPPORT.en.md',
-    'docs/compatibility-matrix.md', 'docs/upgrade-guide.md', 'docs/upgrade-guide.en.md',
-    'docs/architecture.md', 'docs/OPERATIONS.md', 'CHANGELOG.md',
+    'README.md', 'README.zh-CN.md', 'AGENTS.md', 'docs/developer/PLUGINS.md', 'docs/developer/PLUGINS.en.md',
+    'docs/user/guide.md', 'docs/user/guide.en.md', 'docs/user/AI_INSTALL.md', 'docs/user/AI_INSTALL.en.md',
+    'docs/user/TROUBLESHOOTING.md', 'docs/user/TROUBLESHOOTING.en.md',
+    'docs/developer/DIAGNOSTICS.md', 'docs/developer/DIAGNOSTICS.en.md', 'docs/user/SUPPORT.md', 'docs/user/SUPPORT.en.md',
+    'docs/developer/compatibility-matrix.md', 'docs/user/upgrade-guide.md', 'docs/user/upgrade-guide.en.md',
+    'docs/developer/architecture.md', 'docs/developer/OPERATIONS.md', 'CHANGELOG.md',
     'docs/assets/readme-hero.png', 'docs/assets/qq-group.png',
     'docs/screenshots/admin-gate-desktop.png', 'docs/screenshots/fresh-wizard-desktop.png',
     'docs/screenshots/fresh-wizard-step2-desktop.png', 'docs/screenshots/configured-channels-desktop.png',

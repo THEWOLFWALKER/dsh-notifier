@@ -5,8 +5,8 @@
 - Runtime truth is the tracked source under `src/` and its tests under `test/`.
 - `package.json` is the package and version authority.
 - `README.md` and `README.zh-CN.md` are user-facing entry points.
-- `HANDOFF.md` is the detailed engineering snapshot; do not copy it into this file.
-- `docs/KNOWLEDGE_BASE.md` is the documentation map. `docs/memory/` contains concise durable facts, not a second implementation spec.
+- `docs/developer/HANDOFF.md` is the detailed engineering snapshot; do not copy it into this file.
+- `docs/developer/KNOWLEDGE_BASE.md` is the documentation map. `docs/memory/` contains concise durable facts, not a second implementation spec.
 - Tracked `.agents/` workstreams and `docs/memory/` are the only collaboration-state authority; chat messages are not durable project state. Runtime truth remains `src/` and `test/`.
 - The npm package archive is an output. It never overrides the engineering tree.
 - Every task completion or milestone handoff must read and execute the project-local `.agents/skills/neat-freak/SKILL.md` checklist before the final response. Its canonical copy lives under `.agents/skills/neat-freak/`; tool-specific skill directories contain pointers only.
@@ -42,13 +42,13 @@
 - Keep the first baseline commit immutable. Group each follow-up by one logical concern.
 - Do not mix source, release metadata, and unrelated cleanup in one commit.
 - Before handoff, the working tree must be clean, the branch must identify its purpose, and the final commit list must be reported.
-- Relay handoff cadence: every agent completion must commit and push before leaving a machine, update its detailed `.agents/workstreams/<topic>.md` identity/status/tests/review/commit record, and refresh the current handoff snapshot in `HANDOFF.md`. Do not append chat transcripts; consolidate the snapshot so it stays readable.
+- Relay handoff cadence: every agent completion must commit and push before leaving a machine, update its detailed `.agents/workstreams/<topic>.md` identity/status/tests/review/commit record, and refresh the current handoff snapshot in `docs/developer/HANDOFF.md`. Do not append chat transcripts; consolidate the snapshot so it stays readable.
 - Never commit `node_modules/`, `package-lock.json`, credentials, state files, `.log` files, or generated local artifacts.
-- Release packing must never include development-tool directories: `.claude/`, `.codex/`, `.opencode/` (and any future agent config), or the npm payload would expose personal tool config. Keep these out of `package.json.files` and the npm archive. The npm payload boundary is independent of the git branch: tracked `.agents/` (project collaboration knowledge) lives in the repo but stays out of the npm archive — see `docs/VERSIONING.md`.
+- Release packing must never include development-tool directories: `.claude/`, `.codex/`, `.opencode/` (and any future agent config), or the npm payload would expose personal tool config. Keep these out of `package.json.files` and the npm archive. The npm payload boundary is independent of the git branch: tracked `.agents/` (project collaboration knowledge) lives in the repo but stays out of the npm archive — see `docs/developer/VERSIONING.md`.
 
 ## Multi-Agent Protocol
 
-- Read `docs/KNOWLEDGE_BASE.md` and `docs/memory/README.md` before editing.
+- Read `docs/developer/KNOWLEDGE_BASE.md` and `docs/developer/memory/README.md` before editing.
 - Reserve a workstream by creating one file under `.agents/workstreams/` from `TEMPLATE.md`. Each agent owns its file and must not edit another agent's reservation.
 - Agents may edit disjoint files in parallel. If two tasks touch the same file, the later task must rebase its reasoning on the current file rather than overwrite it.
 - Every workstream records scope, files, tests, and handoff notes. Mark it `done` before the agent exits; keep only durable records, not chat transcripts.
@@ -63,17 +63,17 @@ node scripts/gen-channel-matrix.mjs --check
 node --check src/index.mjs
 ```
 
-For a channel change, also run the relevant adapter contract test and `node scripts/channel-selfcheck.mjs` with safe test credentials when available. For inbound changes, use the matching `test/inbound.*.test.mjs` suite and record any real-device gap in `docs/memory/risks.md`.
+For a channel change, also run the relevant adapter contract test and `node scripts/channel-selfcheck.mjs` with safe test credentials when available. For inbound changes, use the matching `test/inbound.*.test.mjs` suite and record any real-device gap in `docs/developer/memory/risks.md`.
 
 ## Deep References
 
 | Need | Read |
 |---|---|
-| Project map and source hierarchy | `docs/KNOWLEDGE_BASE.md` |
-| Stable architecture and state flows | `docs/architecture.md` |
-| Local operation and troubleshooting | `docs/OPERATIONS.md` and `docs/guide.md` |
-| Version/release anti-split rules | `docs/VERSIONING.md` |
+| Project map and source hierarchy | `docs/developer/KNOWLEDGE_BASE.md` |
+| Stable architecture and state flows | `docs/developer/architecture.md` |
+| Local operation and troubleshooting | `docs/developer/OPERATIONS.md` and `docs/user/guide.md` |
+| Version/release anti-split rules | `docs/developer/VERSIONING.md` |
 | Durable facts and decisions | `docs/memory/` |
-| Existing detailed handoff | `HANDOFF.md` |
-| Adapter contribution contract | `ADAPTER.md` |
-| Plugin consumer contract | `PLUGINS.md` |
+| Existing detailed handoff | `docs/developer/HANDOFF.md` |
+| Adapter contribution contract | `docs/developer/ADAPTER.md` |
+| Plugin consumer contract | `docs/developer/PLUGINS.md` |

@@ -27,7 +27,7 @@ import { createAgentRouter } from '../src/routing/agent-router.mjs'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const packageJson = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8'))
-const matrixMarkdown = readFileSync(resolve(root, 'docs/compatibility-matrix.md'), 'utf8')
+const matrixMarkdown = readFileSync(resolve(root, 'docs/developer/compatibility-matrix.md'), 'utf8')
 
 /** Extract the machine-readable host-seam matrix block, or null when absent/malformed. */
 function parseSeamMatrix(markdown) {

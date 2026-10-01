@@ -610,7 +610,7 @@ test('装配 + emit：宿主无 ctx.emit → push 照常成功，仅 warn 一次
 // ---------------------------------------------------------------- 文档同步（PLUGINS.md）
 
 test('PLUGINS.md：版本字面量与 PUBLIC_API_VERSION 导出值一致（v0.4 版本号漏更教训同款防线）', () => {
-  const text = readFileSync(new URL('../PLUGINS.md', import.meta.url), 'utf8')
+  const text = readFileSync(new URL('../docs/developer/PLUGINS.md', import.meta.url), 'utf8')
   assert.ok(text.includes(`\`${PUBLIC_API_VERSION}\``), `PLUGINS.md 必须含公共面版本字面量 ${PUBLIC_API_VERSION}`)
   assert.ok(/ctx\.notifier\.version/.test(text), '版本探测说明存在')
 })
@@ -619,7 +619,7 @@ test('PLUGINS.md：代码块可被 node --check（防文档腐烂）', async () 
   const { execFile } = await import('node:child_process')
   const { promisify } = await import('node:util')
   const run = promisify(execFile)
-  const text = readFileSync(new URL('../PLUGINS.md', import.meta.url), 'utf8')
+  const text = readFileSync(new URL('../docs/developer/PLUGINS.md', import.meta.url), 'utf8')
   // CRLF 兼容：Windows checkout（core.autocrlf）会把仓库 LF 转 CRLF，```js\n 会漏匹配 ```js\r\n
   const blocks = [...text.matchAll(/```js\r?\n([\s\S]*?)```/g)].map((m) => m[1])
   assert.ok(blocks.length >= 4, '示例代码块数量合理')

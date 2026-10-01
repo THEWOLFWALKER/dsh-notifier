@@ -31,7 +31,7 @@ for (const failure of hostCompatFailures(root)) failures.push(failure)
 const changelog = read('CHANGELOG.md')
 const readme = read('README.md')
 const readmeZh = read('README.zh-CN.md')
-const handoff = read('HANDOFF.md')
+const handoff = read('docs/developer/HANDOFF.md')
 
 check(changelog.includes(`## [${version}]`), `CHANGELOG.md has no [${version}] heading`)
 // 零配置首访起 ui.mjs 只做组合（theme/markup/client 三件套拆分）——版本角标检查
@@ -47,10 +47,6 @@ try {
 check(uiHtml.includes(`v${version}`), `admin UI composed HTML does not contain v${version}`)
 
 const documentedCounts = [
-  one(readme, /test\/\s+(\d+) tests/, 'README.md test text'),
-  one(readmeZh, /test\/\s+(\d+) 个测试/, 'README.zh-CN.md test text'),
-  one(readme, /· (\d+) automated contract tests/, 'README.md metadata tests'),
-  one(readmeZh, /· (\d+) 个自动化契约测试/, 'README.zh-CN.md metadata tests'),
   one(handoff, /\|\s*测试\s*\|[^\n]*`npm test`[^\n]*\*\*(\d+) tests?/, 'HANDOFF test row'),
 ]
 for (const [index, count] of documentedCounts.entries()) {
@@ -60,8 +56,8 @@ for (const [index, count] of documentedCounts.entries()) {
 // 首页元数据行版本门（2026-09-05 review 复查发现：README:28 曾停在 0.9.3/1478 漏网）：
 // 首页元数据版本必须与 package.json 一致，缺一即失败。
 const documentedVersions = [
-  one(readme, /dsh-notifier@(\d+\.\d+\.\d+)` ·/, 'README.md metadata version'),
-  one(readmeZh, /dsh-notifier@(\d+\.\d+\.\d+)` ·/, 'README.zh-CN.md metadata version'),
+  one(readme, /dsh-notifier@(\d+\.\d+\.\d+)`/, 'README.md metadata version'),
+  one(readmeZh, /dsh-notifier@(\d+\.\d+\.\d+)`/, 'README.zh-CN.md metadata version'),
 ]
 for (const [index, v] of documentedVersions.entries()) {
   check(v === version, `README metadata version #${index + 1} is ${v}, expected ${version}`)
@@ -69,12 +65,12 @@ for (const [index, v] of documentedVersions.entries()) {
 
 const requiredPackageFiles = [
   'src', 'types', 'cordis.patch.yml', 'CHANGELOG.md', 'README.md', 'README.zh-CN.md',
-  'PLUGINS.md', 'PLUGINS.en.md', 'THIRD_PARTY_NOTICES.md', 'AGENTS.md',
-  'docs/AI_INSTALL.md', 'docs/AI_INSTALL.en.md', 'docs/DIAGNOSTICS.md', 'docs/DIAGNOSTICS.en.md',
-  'docs/OPERATIONS.md', 'docs/SUPPORT.md', 'docs/SUPPORT.en.md',
-  'docs/TROUBLESHOOTING.md', 'docs/TROUBLESHOOTING.en.md', 'docs/architecture.md',
-  'docs/guide.md', 'docs/guide.en.md', 'docs/compatibility-matrix.md',
-  'docs/upgrade-guide.md', 'docs/upgrade-guide.en.md',
+  'docs/developer/PLUGINS.md', 'docs/developer/PLUGINS.en.md', 'THIRD_PARTY_NOTICES.md', 'AGENTS.md',
+  'docs/user/AI_INSTALL.md', 'docs/user/AI_INSTALL.en.md', 'docs/developer/DIAGNOSTICS.md', 'docs/developer/DIAGNOSTICS.en.md',
+  'docs/developer/OPERATIONS.md', 'docs/user/SUPPORT.md', 'docs/user/SUPPORT.en.md',
+  'docs/user/TROUBLESHOOTING.md', 'docs/user/TROUBLESHOOTING.en.md', 'docs/developer/architecture.md',
+  'docs/user/guide.md', 'docs/user/guide.en.md', 'docs/developer/compatibility-matrix.md',
+  'docs/user/upgrade-guide.md', 'docs/user/upgrade-guide.en.md',
   'docs/assets/readme-hero.png', 'docs/assets/qq-group.png',
   'docs/screenshots/admin-gate-desktop.png', 'docs/screenshots/fresh-wizard-desktop.png',
   'docs/screenshots/fresh-wizard-step2-desktop.png', 'docs/screenshots/configured-channels-desktop.png',

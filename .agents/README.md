@@ -8,7 +8,7 @@ This directory contains the tracked authority for active collaboration metadata.
 
 ## Workstream Protocol
 
-1. Read `AGENTS.md`, `docs/KNOWLEDGE_BASE.md`, and `docs/memory/`.
+1. Read `AGENTS.md`, `docs/developer/KNOWLEDGE_BASE.md`, and `docs/memory/`.
 2. Create `.agents/workstreams/<agent>-<topic>.md` from `TEMPLATE.md` before editing.
 3. Declare owned files and validation commands. Keep ownership disjoint where possible.
 4. Update the same workstream file with tests and handoff notes.

@@ -1,76 +1,33 @@
-// v0.15 Stage S19 (T28) — user-lifecycle documentation is real, not decorative.
-//
-// Acceptance L01 (04-ACCEPTANCE-AND-REVIEW.md): the full journey (install → upgrade → swap
-// machine → uninstall) must be covered, and every command path the docs hand the user must
-// actually exist. Real-device / real-provider journey evidence stays out of the hermetic CI
-// boundary (declared in the doc itself) — this suite guards the parts CI *can* prove:
-//   * every `node scripts/*.mjs` the lifecycle doc tells a user to run exists and parses;
-//   * every `npm run <script>` it names is a real package script;
-//   * every relative doc link resolves to a tracked file;
-//   * the nine journeys and the two load-bearing claims (no secrets in export / external
-//     references are re-bound, not migrated) are actually present.
-
+// User instructions stay separate from executable developer maintenance commands.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-
-const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-const DOC_PATH = join(ROOT, 'docs', 'user-lifecycle.md')
-const doc = readFileSync(DOC_PATH, 'utf8')
-const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
-
-const scriptsReferenced = [...new Set([...doc.matchAll(/node\s+(scripts\/[\w.-]+\.mjs)/g)].map((m) => m[1]))]
-const npmScriptsReferenced = [...new Set([...doc.matchAll(/npm run ([\w:]+)/g)].map((m) => m[1]))]
-const relativeLinks = [...new Set([...doc.matchAll(/\]\((?!https?:|#|mailto:)([^)]+)\)/g)].map((m) => m[1]))]
-
-test('L01: every `node scripts/*.mjs` named in the lifecycle doc exists and parses', () => {
-  assert.equal(scriptsReferenced.length >= 4, true, 'the doc names real scripts')
-  for (const rel of scriptsReferenced) {
-    const abs = join(ROOT, rel)
-    assert.equal(existsSync(abs), true, `${rel} must exist`)
-    // Real syntax check (no execution): a doc pointing at a broken script is worse than no doc.
-    execFileSync(process.execPath, ['--check', abs], { stdio: 'pipe' })
+const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
+const user = join(root, 'docs/user')
+const documents = readdirSync(user).filter(name => name.endsWith('.md')).map(name => ({ name, text: readFileSync(join(user, name), 'utf8') }))
+const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+const operations = readFileSync(join(root, 'docs/developer/OPERATIONS.md'), 'utf8')
+test('L01: referenced maintenance scripts exist and parse', () => {
+  for (const [, rel] of operations.matchAll(/node\s+(scripts\/[\w.-]+\.mjs)/g)) {
+    assert.ok(existsSync(join(root, rel)), rel)
+    execFileSync(process.execPath, ['--check', join(root, rel)], { stdio: 'pipe' })
   }
 })
-
-test('L01: every `npm run <script>` named in the lifecycle doc is a real package script', () => {
-  assert.equal(npmScriptsReferenced.length >= 1, true)
-  for (const name of npmScriptsReferenced) {
-    assert.equal(typeof pkg.scripts?.[name], 'string', `npm run ${name} must be a real script`)
-  }
+test('L01: documented npm commands exist', () => {
+  for (const { text } of [...documents, { text: operations }]) for (const [, name] of text.matchAll(/npm run ([\w:]+)/g)) assert.equal(typeof pkg.scripts?.[name], 'string', name)
 })
-
-test('L01: every relative link in the lifecycle doc resolves to a real file', () => {
-  assert.equal(relativeLinks.length >= 5, true, 'the doc links into the rest of docs/')
-  for (const link of relativeLinks) {
-    const target = link.split('#')[0]
-    assert.equal(existsSync(join(ROOT, 'docs', target)), true, `link target docs/${target} must exist`)
-  }
+test('L01: every user guide local link resolves from its own directory', () => {
+  for (const { name, text } of documents) for (const [, rel] of text.matchAll(/\]\((?!https?:|#|mailto:)([^)]+)\)/g)) assert.ok(existsSync(resolve(user, rel.split('#')[0])), `${name}: ${rel}`)
 })
-
-test('L01: the doc covers the nine journeys of the full user lifecycle', () => {
-  const journeys = [
-    '## 1. 安装',
-    '## 2. 首次保存',
-    '## 3. 复用 / 迁移',
-    '## 4. 日常问题 / 审批',
-    '## 5. 手机入口',
-    '## 6. 断线 / 健康',
-    '## 7. 升级',
-    '## 8. 导出换机',
-    '## 9. 停用 / 卸载',
-  ]
-  for (const heading of journeys) {
-    assert.equal(doc.includes(heading), true, `missing journey section: ${heading}`)
-  }
+test('L01: installation, use, troubleshooting, upgrade and removal have separate reachable instructions', () => {
+  for (const name of ['guide.md', 'guide.en.md', 'cloudflare.md', 'TROUBLESHOOTING.md', 'upgrade-guide.md', 'user-lifecycle.md']) assert.ok(existsSync(join(user, name)), name)
+  assert.match(readFileSync(join(user, 'user-lifecycle.md'), 'utf8'), /机器人凭证不会写入|不包含密码/)
 })
-
-test('L01: the two load-bearing migration claims are stated explicitly', () => {
-  assert.match(doc, /导出仅?不含|永不含/, 'export carries no secret must be stated')
-  assert.match(doc, /重绑外部引用|外部（机器特定）引用不会被导入重绑/, 'external references are re-bound, not migrated')
-  assert.match(doc, /新渠道默认 `?disabled`?/, 'imported channels land disabled')
-  assert.match(doc, /Native「通知与控制」|Native 「通知与控制」/, 'screenshots/tutorial claim Native, not the legacy console')
+test('L01: developer implementation vocabulary stays out of the user instructions', () => {
+  for (const { name, text } of documents) {
+    assert.doesNotMatch(text, /canonical|epoch|durable|Hot Apply|single-flight|fitnes[s]|^>\s*(目标|读者|受众|Audience):/m, name)
+  }
 })

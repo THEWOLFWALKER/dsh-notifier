@@ -8,7 +8,7 @@ import { readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const MATRIX_FILE = 'docs/compatibility-matrix.md'
+const MATRIX_FILE = 'docs/developer/compatibility-matrix.md'
 const MATRIX_FENCE = /```[^\n]*dsh-host-matrix[^\n]*\n([\s\S]*?)\n```/
 const EXACT_VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/
 

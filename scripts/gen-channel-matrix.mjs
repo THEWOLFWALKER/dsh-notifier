@@ -65,7 +65,7 @@ const rows = registry.map((type) => {
 })
 const table = [header, ...rows].join('\n')
 
-const readmePath = new URL('../README.md', import.meta.url)
+const readmePath = new URL('../docs/developer/channels.md', import.meta.url)
 const readme = readFileSync(readmePath, 'utf8')
 
 const updated = readme.includes(START)

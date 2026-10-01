@@ -8,8 +8,8 @@ import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-const zh = readFileSync(resolve(root, 'PLUGINS.md'), 'utf8')
-const en = readFileSync(resolve(root, 'PLUGINS.en.md'), 'utf8')
+const zh = readFileSync(resolve(root, 'docs/developer/PLUGINS.md'), 'utf8')
+const en = readFileSync(resolve(root, 'docs/developer/PLUGINS.en.md'), 'utf8')
 
 const headings = (text, level) => [...text.matchAll(new RegExp(`^#{${level}} (.+)$`, 'gm'))].map((m) => m[1])
 const fenceCount = (text) => text.split('\n').filter((line) => line.startsWith('```')).length
