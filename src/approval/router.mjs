@@ -20,7 +20,6 @@ import { workspaceOf } from '../routing/session-registry.mjs'
 import { displayNameOf, toInboundChannelName } from '../inbound/capability-matrix.mjs'
 // S-05：审批推送 reason 脱敏（minimal 默认）
 import { maskSecrets, normalizeRedaction } from '../redact.mjs'
-import { setDurable } from '../inbound/store.mjs'
 
 const OUTCOME_ALLOWED = 'allowed-once'
 const OUTCOME_REJECTED = 'rejected'
@@ -342,8 +341,9 @@ export function registerApprovalHandler(deps, strings) {
     // 路由。现在每张卡送达立刻落账，窗口收敛到单卡发送耗时。
     const persistPushed = () => {
       try {
-        const row = ledger.get(key)
-        if (row !== undefined && setDurable(store, key, { ...row, pushedTo: [...pushedTo], hintTargets: [...hintTargets] }) !== true) {
+        // Gate 2A：白名单 metadata patch（fresh draft 内合并）——并发终态不会被回退。
+        const patched = ledger.patchMetadata(key, () => ({ pushedTo: [...pushedTo], hintTargets: [...hintTargets] }))
+        if (patched.reason === 'storage-failed') {
           warn(`审批 ${key} 增量送达证据未落盘`)
         }
       } catch { /* 增量落账失败不致命，末尾还有一次整体落账兜底 */ }
@@ -592,11 +592,10 @@ export function registerApprovalHandler(deps, strings) {
       }
       const delivery = await pushApproval(key, token, request, channelTypes, targetsByChannel)
       const pushedTo = delivery.pushedTo
-      const row = ledger.get(key)
-      if (row !== undefined && row.status === 'pending') {
-        if (setDurable(store, key, { ...row, pushedTo, hintTargets: delivery.hintTargets }) !== true) {
-          warn(`审批 ${key} 最终送达证据未落盘`)
-        }
+      // Gate 2A：最终送达证据同样走窄 patch（requirePending 保留原 pending 门控）。
+      const finalPatch = ledger.patchMetadata(key, () => ({ pushedTo, hintTargets: delivery.hintTargets }), { requirePending: true })
+      if (finalPatch.reason === 'storage-failed') {
+        warn(`审批 ${key} 最终送达证据未落盘`)
       }
       if (ledger.get(key)?.decision === 'terminated') {
         await markRemoteResolved(pushedTo, t.approval.terminatedCard)

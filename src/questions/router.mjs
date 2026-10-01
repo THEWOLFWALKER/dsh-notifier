@@ -28,7 +28,6 @@ import { createHash, randomBytes } from 'node:crypto'
 import { stringsOf } from '../strings.mjs'
 import { normalizeInbound } from '../inbound/_contract.mjs'
 import { MESSAGE_PRIORITY } from '../inbound/bus.mjs'
-import { setDurable } from '../inbound/store.mjs'
 import { guardTargets, feishuP2pEquivalent } from '../inbound/target-guard.mjs'
 import { createEscalationChain } from '../approval/escalation.mjs'
 import { createInteractionLedger } from '../interaction/ledger.mjs'
@@ -310,8 +309,9 @@ export function createQuestionBridge(deps, strings) {
     const hintedInbound = []
     const persistPushed = () => {
       try {
-        const row = ledger.get(qKey)
-        if (row !== undefined && setDurable(store, qKey, { ...row, pushedTo: [...pushedTo] }) !== true) {
+        // Gate 2A：白名单 metadata patch（fresh draft 内合并）——并发终态不会被回退。
+        const patched = ledger.patchMetadata(qKey, () => ({ pushedTo: [...pushedTo] }))
+        if (patched.reason === 'storage-failed') {
           warn(`提问 ${qKey} 增量送达证据未落盘`)
         }
       } catch { /* 增量落账失败不致命，末尾整体落账兜底 */ }
@@ -1053,8 +1053,12 @@ export function createQuestionBridge(deps, strings) {
           pushedTo = pushResult.pushedTo
           hintTargets = pushResult.hintTargets
           const rowNow = ledger.get(qKey)
-          if (rowNow !== undefined && setDurable(store, qKey, { ...rowNow, pushedTo, hintTargets }) !== true) {
-            warn(`提问 ${qKey} 最终送达证据未落盘`)
+          // Gate 2A：最终送达证据走窄 patch（无 pending 门控，保持原语义）。
+          if (rowNow !== undefined) {
+            const finalPatch = ledger.patchMetadata(qKey, () => ({ pushedTo, hintTargets }))
+            if (finalPatch.reason === 'storage-failed') {
+              warn(`提问 ${qKey} 最终送达证据未落盘`)
+            }
           }
           if (deliverySettled) {
             // 迟到成功投递与终态和解——wait 结算时这些卡还不在 pushedTo，

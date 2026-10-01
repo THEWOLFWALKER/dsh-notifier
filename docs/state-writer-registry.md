@@ -34,9 +34,9 @@ to own the fact.
 | `route:sessions` | session-registry **and** agent-router (both inside one `store.transact()` draft) | `agent-router.commitSessions` + `session-registry.persist` (each reads the fresh base inside the same key transaction) | **single** (converged at T14: no writer commits a base read outside the transaction) |
 | `channel:<type>:outbound` | outbound-config | `outbound-config` `save`/`remove` (single in-transaction merge); `channel-config-migration` is a **one-shot, marker-guarded** projection | **single** (converged at T08) |
 | `channel:<type>:inbound` / `<type>:account` | channel-config | `channel-config.mergeAccount` (in-transaction) + scan onboarding `_feishu-register` / `_qq-scan` (`mergeDurable`, in-transaction field merge) | **single** (converged at T11) |
-| `aq:<id>` | questions router | `questions/router.mjs` | single |
-| approval rows | approval router | `approval/router.mjs` | single |
-| action rows | actions | `actions.mjs` | single |
+| `aq:<id>` | questions router (business owner) | `interaction/ledger.mjs` on behalf of `questions/router.mjs` (narrow `add`/`settle`/`patchMetadata`) | single |
+| approval rows | approval router (business owner) | `interaction/ledger.mjs` on behalf of `approval/router.mjs` | single |
+| action rows | actions (business owner) | `interaction/ledger.mjs` on behalf of `actions.mjs` | single |
 | interaction ledger rows | interaction ledger | `interaction/ledger.mjs` | single |
 | inbound dedup rows | inbound bus | `inbound/bus.mjs` (fail-closed on durable failure) | single |
 | conversation bindings | inbound conversation | `inbound/conversation.mjs` | single |
@@ -109,8 +109,6 @@ removed. `src/inbound/store.mjs` is the only module allowed to call the raw `sto
 |---|---|
 | `src/inbound/store.mjs` | the store primitive itself (raw `set`/`delete`, `transact`, `sweepPrefix`) |
 | `src/index.mjs` | composition root; wires authorities, owns no key |
-| `src/actions.mjs` | action rows |
-| `src/approval/router.mjs` | approval rows |
 | `src/assembly/admin-token.mjs` | `admin:token-hash` |
 | `src/assembly/inbound-signals.mjs` | `wxpusher:webhookPath` |
 | `src/channels/wechat-ilink/index.mjs` | wechat-ilink legacy-core composition |
@@ -128,8 +126,7 @@ removed. `src/inbound/store.mjs` is the only module allowed to call the raw `sto
 | `src/inbound/pairing.mjs` | `inbound:pairing`, `inbound:pairing:lockout` |
 | `src/inbound/telegram-bot.mjs` | `tg:offset` |
 | `src/inbound/wxpusher-callback.mjs` | `wxpusher:bind:<uid>` |
-| `src/interaction/ledger.mjs` | interaction ledger rows |
-| `src/questions/router.mjs` | `aq:<id>` |
+| `src/interaction/ledger.mjs` | interaction ledger rows (all three chains write through its narrow mutations) |
 | `src/routing/agent-router.mjs` | `route:agents`, `route:channels`, `route:sessions` |
 | `src/routing/session-registry.mjs` | `route:sessions` |
 | `src/routing/task-selection.mjs` | `taskselect:*` |

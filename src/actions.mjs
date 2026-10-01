@@ -10,7 +10,6 @@
 import { randomBytes } from 'node:crypto'
 import { stringsOf } from './strings.mjs'
 import { createInteractionLedger } from './interaction/ledger.mjs'
-import { setDurable } from './inbound/store.mjs'
 
 // CRACK-001（破甲轮 P0）：缺来源元数据的动作卡的升级迁移宽限窗，上界对齐 token TTL
 // （tokens.mjs 默认 10min）——升级瞬间在途的旧卡本就只剩 ≤10min 生命期，窗外一律
@@ -122,14 +121,17 @@ export function createActionDispatcher({ vault = null, store = null, logger = nu
         if (typeof actionKey !== 'string' || actionKey === ''
           || typeof channel !== 'string' || channel === ''
           || typeof chatId !== 'string' || chatId === '') return
-        const row = store?.get(actionKey)
-        if (row === undefined || row.status !== 'pending') return
-        const srcChats = (row.srcChats !== null && typeof row.srcChats === 'object' && !Array.isArray(row.srcChats))
-          ? row.srcChats
-          : {}
-        const list = Array.isArray(srcChats[channel]) ? [...srcChats[channel]] : []
-        if (!list.includes(chatId)) list.push(chatId)
-        if (setDurable(store, actionKey, { ...row, srcChats: { ...srcChats, [channel]: list } }) !== true) {
+        // Gate 2A：metadata 走账本窄 mutation——fresh draft 内字段级合并，绝不整行覆写
+        // （并发 claim/settle 的终态不会被这次来源登记回退成 pending）。
+        const result = ledger.patchMetadata(actionKey, (meta) => {
+          const srcChats = (meta.srcChats !== null && typeof meta.srcChats === 'object' && !Array.isArray(meta.srcChats))
+            ? meta.srcChats
+            : {}
+          const list = Array.isArray(srcChats[channel]) ? [...srcChats[channel]] : []
+          if (!list.includes(chatId)) list.push(chatId)
+          return { srcChats: { ...srcChats, [channel]: list } }
+        }, { requirePending: true })
+        if (result.reason === 'storage-failed') {
           warn(`动作 ${actionKey} 来源登记未落盘`)
         }
       } catch {
@@ -145,20 +147,20 @@ export function createActionDispatcher({ vault = null, store = null, logger = nu
         if (typeof actionKey !== 'string' || actionKey === ''
           || typeof channel !== 'string' || channel === ''
           || typeof chatId !== 'string' || chatId === '') return
-        const row = store?.get(actionKey)
-        if (row === undefined || row.status !== 'pending') return
-        const srcChats = (row.srcChats !== null && typeof row.srcChats === 'object' && !Array.isArray(row.srcChats))
-          ? row.srcChats
-          : null
-        if (srcChats === null) return
-        const list = Array.isArray(srcChats[channel]) ? srcChats[channel].filter((item) => item !== chatId) : []
-        const next = { ...srcChats }
-        if (list.length === 0) delete next[channel]
-        else next[channel] = list
-        const nextRow = { ...row }
-        if (Object.keys(next).length > 0) nextRow.srcChats = next
-        else delete nextRow.srcChats
-        if (setDurable(store, actionKey, nextRow) !== true) {
+        // Gate 2A：白名单 patch——srcChats 清空时返回 null（删除该键），生命周期字段
+        // 交由账本从 fresh row 保留。
+        const result = ledger.patchMetadata(actionKey, (meta) => {
+          const srcChats = (meta.srcChats !== null && typeof meta.srcChats === 'object' && !Array.isArray(meta.srcChats))
+            ? meta.srcChats
+            : null
+          if (srcChats === null) return null
+          const list = Array.isArray(srcChats[channel]) ? srcChats[channel].filter((item) => item !== chatId) : []
+          const next = { ...srcChats }
+          if (list.length === 0) delete next[channel]
+          else next[channel] = list
+          return { srcChats: Object.keys(next).length > 0 ? next : null }
+        }, { requirePending: true })
+        if (result.reason === 'storage-failed') {
           warn(`动作 ${actionKey} 来源撤销未落盘`)
         }
       } catch {

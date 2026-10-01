@@ -18,7 +18,16 @@
 // 各链的 latestPendingFor 归属/兜底启发式留在链内——匹配语义（exact/onChannel/
 // intended/hint + liveWaiters 僵尸行过滤）差异太大，强行统一会引入行为漂移（批 4 决策）。
 
-import { setDurable, transactDurable } from '../inbound/store.mjs'
+import { setDurable, transactDurable, transactOutcome } from '../inbound/store.mjs'
+
+/**
+ * 账本行的 metadata 白名单（RC Gate 2A）。这些是**旁注字段**：它们可以从原始行
+ * 之外独立更新（送达证据、来源会话、提示目标），而绝不参与生命周期裁决。
+ * 任何白名单外的键都会被 `patchMetadata` 丢弃——status / decision / outcome /
+ * claim 字段 / 终态时间戳因此**永远**来自事务内的 fresh row，不可能被 metadata
+ * patch 回退。
+ */
+const METADATA_FIELDS = Object.freeze(['srcChats', 'pushedTo', 'hintTargets', 'deliveryEvidence'])
 
 /**
  * 创建统一交互状态账本。
@@ -36,6 +45,50 @@ export function createInteractionLedger(options = {}) {
 
   const isPending = (row) => row !== null && row !== undefined
     && typeof row === 'object' && row.status === statuses.pending
+
+  const isRowLike = (row) => row !== null && row !== undefined && typeof row === 'object' && !Array.isArray(row)
+
+  const cloneJson = (value) => {
+    if (value === null || value === undefined || typeof value !== 'object') return value
+    try { return JSON.parse(JSON.stringify(value)) } catch { return Array.isArray(value) ? [...value] : { ...value } }
+  }
+
+  /** 只读 metadata 视图：只含白名单字段，深拷贝 + 冻结——patcher 拿不到生命周期字段，
+   *  也不可能顺手改到 fresh row。 */
+  const metadataView = (row) => {
+    const view = {}
+    for (const field of METADATA_FIELDS) {
+      if (row[field] !== undefined) view[field] = cloneJson(row[field])
+    }
+    return Object.freeze(view)
+  }
+
+  /**
+   * 白名单化 patcher 的返回值。
+   * @returns {object|null} 只含白名单键的补丁对象；无任何白名单键时返回 null（零变更）。
+   *   补丁值为 null 表示**删除**该 metadata 键。
+   */
+  const sanitizePatch = (patch) => {
+    if (!isRowLike(patch)) return null
+    const out = {}
+    let hasField = false
+    for (const field of METADATA_FIELDS) {
+      if (!Object.prototype.hasOwnProperty.call(patch, field)) continue
+      hasField = true
+      out[field] = patch[field]
+    }
+    return hasField ? out : null
+  }
+
+  /** 把白名单补丁并入 fresh row：生命周期字段原样保留，null 值删除对应 metadata 键。 */
+  const applyPatch = (row, patch) => {
+    const next = { ...row }
+    for (const [field, value] of Object.entries(patch)) {
+      if (value === null) delete next[field]
+      else next[field] = cloneJson(value)
+    }
+    return next
+  }
 
   /** 终态行投影：status/resolvedAt/decisionField 恒由决议覆盖，extra 只并入旁注字段。 */
   const resolvedRowOf = (row, decision, extra = {}) => ({
@@ -87,6 +140,57 @@ export function createInteractionLedger(options = {}) {
     },
     get(key) {
       return store?.get(key)
+    },
+    /**
+     * RC Gate 2A：**窄** metadata mutation。三条交互链不再整行覆写自己的账本键
+     * （`setDurable(store, key, { ...row, ... })` 的读-改-写窗口会在并发 claim/settle
+     * 时把终态回退成 pending）。
+     *
+     * 契约：
+     *  - row 只在 `store.transact()` 的 **fresh draft** 里读取；
+     *  - `patcher(metadata)` 只拿白名单 metadata 视图（已深拷贝 + 冻结），拿不到
+     *    lifecycle writer，也无法读到 status/decision/claimedAt 等字段；
+     *  - 白名单：srcChats / pushedTo / hintTargets / deliveryEvidence；补丁值为 null
+     *    表示删除该键，其余键一律**丢弃**；
+     *  - status、decision/outcome、claim 字段、终态时间戳**永远**从 fresh row 保留。
+     * @param {string} key
+     * @param {(metadata: object) => object|null} patcher
+     * @param {object} [opts]
+     * @param {boolean} [opts.requirePending=false] - true 时仅 pending 行可改（actions 来源登记语义）
+     * @returns {{ ok: boolean, changed?: boolean, reason?: 'not-found'|'not-pending'|'storage-failed' }}
+     */
+    patchMetadata(key, patcher, opts = {}) {
+      if (typeof key !== 'string' || key === '' || typeof patcher !== 'function') {
+        return { ok: false, reason: 'not-found' }
+      }
+      const requirePending = opts.requirePending === true
+      if (typeof store?.transact === 'function') {
+        let changed = false
+        const result = transactOutcome(store, (draft, control) => {
+          const row = draft[key]
+          if (!isRowLike(row)) return control.abort('not-found')
+          if (requirePending && !isPending(row)) return control.abort('not-pending')
+          const patch = sanitizePatch(patcher(metadataView(row)))
+          if (patch === null) return control.abort('no-change')
+          draft[key] = applyPatch(row, patch)
+          changed = true
+          return true
+        })
+        if (result.aborted) {
+          const reason = String(result.reason ?? '')
+          if (reason === 'no-change') return { ok: true, changed: false }
+          return { ok: false, reason: reason === 'not-pending' ? 'not-pending' : 'not-found' }
+        }
+        if (result.committed !== true) return { ok: false, reason: 'storage-failed' }
+        return { ok: true, changed }
+      }
+      const row = store?.get(key)
+      if (!isRowLike(row)) return { ok: false, reason: 'not-found' }
+      if (requirePending && !isPending(row)) return { ok: false, reason: 'not-pending' }
+      const patch = sanitizePatch(patcher(metadataView(row)))
+      if (patch === null) return { ok: true, changed: false }
+      if (setDurable(store, key, applyPatch(row, patch)) !== true) return { ok: false, reason: 'storage-failed' }
+      return { ok: true, changed: true }
     },
     /** 待决判定：非对象/非 pending（含旧行、僵尸行）一律视为已决（fail-closed）。 */
     isPending,
