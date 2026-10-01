@@ -20,7 +20,7 @@
 
 </div>
 
-`dsh-notifier@0.13.1` · test/ 2340 个测试 · 2340 个自动化契约测试
+`dsh-notifier@0.13.1` · test/ 2380 个测试 · 2380 个自动化契约测试
 
 ## 它解决什么
 
@@ -152,6 +152,7 @@ Native UI、notifier runtime、高级管理台和测试尽量围绕同一份真�
 | 文档 | 用来干什么 |
 | --- | --- |
 | [完整指南](docs/guide.md) | 安装、首访、出站/入站、配对、日常使用 |
+| [用户周期旅程](docs/user-lifecycle.md) | 安装 → 首次保存 → 迁移 → 日常 → 换机 → 卸载，含文档命令自检 |
 | [AI 安装](docs/AI_INSTALL.md) | 一句话 / 完整提示词，让终端 Agent 安全安装 |
 | [排障指南](docs/TROUBLESHOOTING.md) | 人类 + AI 的第一轮问题定位 |
 | [定位与诊断](docs/DIAGNOSTICS.md) | 收集证据、生成 Support Report |

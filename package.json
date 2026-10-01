@@ -49,6 +49,8 @@
     "docs/compatibility-matrix.md",
     "docs/upgrade-guide.md",
     "docs/upgrade-guide.en.md",
+    "docs/user-lifecycle.md",
+    "docs/control-plane-cloud-storage.md",
     "docs/assets/readme-hero.png",
     "docs/assets/qq-group.png",
     "docs/screenshots/admin-gate-desktop.png",
@@ -64,7 +66,7 @@
     "verify:release": "node scripts/verify-release.mjs"
   },
   "dshQuality": {
-    "testCount": 2340
+    "testCount": 2380
   },
   "dsh": {
     "bundle": {

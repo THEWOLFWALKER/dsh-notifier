@@ -2,24 +2,61 @@
 
 ## [Unreleased]
 
+### v0.15 — Core Distillation（dev 线；版本号仍为 `0.13.1`，发布阶段再 bump）
+
+把"每个入口各自实现一遍业务规则"收敛为"每个领域一个权威 + 每个 host 接缝一个受审计的实现"。核心重构（T01–T17）与 Native/周边（T18–T25）已落地；T26（Cloudflare Workers/Pages 扩展包）按用户决定**不做**，留待讨论。
+
+#### 新增
+
+- **运行时分层与发送者契约**：渠道配置拆为 desired / resolved / resources 三层；无状态 sender 只有 `validate`/`send`，有状态 sender 增加 `createRuntime`/`retire` 单 owner 与 epoch 守卫；28 个出站 provider 全部迁入统一契约矩阵。
+- **投递证据三桶 + 有界健康度**：`accepted`（provider 接受）/ `delivered`（显式回执）/ `unknown`（不确定）；观察面按 cap + TTL 有界，换世代后迟到观察自动丢弃。
+- **配置可移植性（v1）**：本地导出/导入白名单 versioned JSON；导出永不含明文 secret / URL token / 内联 ENV 值；导入严格校验 → dry-run 预览 → 冲突/缺失预览 → 确认后单事务 patch；新渠道默认 `disabled`，existing secrets 默认 keep。
+- **可选 dsh-im 桥接与已知格式迁移**：可选 `ctx.dshIm.send/listBots/listTargets` 委托投递（缺服务/晚注入/撤销可见）；已知格式迁移器把飞书单 bot/v2、QQ、钉钉、Telegram 导出翻译为 portability v1 后再交给同一权威提交。
+- **远程入口校验**：用户自填 HTTPS 链接的纯本地校验（拒绝 http、内嵌凭据、含 secret 参数）；二维码内容与普通链接逐字节相同；不猜测深链、不探测可达性。
+- **可选 Cloudflare Tunnel 扩展**：独立管理自有 `cloudflared` 进程（single-flight 启动、epoch 隔离、有界重连、日志脱敏、固定版本资产 fail-closed）；默认停用，只支持 user-managed binary。
+- **云端保存窄接口（预留）**：只定义 opaque bytes + metadata 的 `put`/`get`/`delete` 契约与 memory fake；无生产云实现、无云按钮、无账户要求；加密与密钥独立性决策见 `docs/control-plane-cloud-storage.md`。
+- **全用户周期文档**：安装 → 首次保存 → 迁移 → 日常/审批 → 手机 → 断线 → 升级 → 换机 → 卸载的九段旅程，命令路径由测试校验存在。
+
+#### 修复
+
+- **交互 claim 边界收敛**：actions / approval / questions 三条入口共用同一「授权 → durable claim → 首达结算 → host effect」边界；claim 提交失败则零 effect，claim 后 kill 不重放，多入口争答最多一次 effect。
+- **`route:sessions` 单事务写者**：会话注册表与 agent-router 的并发写在同一事务内读最新整表，消除 TOCTOU。
+- **宿主提问生命周期**：Host caller signal 与本地 GUI-race signal 合并；宿主能力按声明表 + 运行时探测给出，`timed`/`continued` 差异不再靠猜。
+- **Tunnel supervisor 未处理拒绝**：`start()` 的 `promise.finally(...)` 派生 promise 无人消费会冒 `unhandledRejection`，改为 `promise.then(clear, clear)`。
+
+#### 变更
+
+- **legacy 写入口退场**：删除无调用者的旧写 seam 与重复 authority，writer inventory 变成机器校验的 fitness 守卫。
+- **可观测性唯一 owner**：一次用户动作只推进一代 revision、只记一条 activity（Native 与管理台共用同一 domain event）。
+- **Cloudflare Workers/Pages 扩展包（T26）本轮不做**：保留任务书作为将来讨论输入，工作流文档已记录该决定。
+
+#### 验证边界
+
+- `npm test`：**2380 tests，2380 pass，0 fail，0 skip**（v0.15 dev 线，T30 checkpoint；默认 hermetic network boundary）。
+- `npm run verify:release`、`node scripts/gen-channel-matrix.mjs --check`、`node scripts/verify-host-compat.mjs` 全绿。
+- `node scripts/perf-drill.mjs`（仓库内维护者 runner）：写放大恒为 1（一次用户动作 → 一次 durable 事务）。
+- v0.15 未新增真机 DSH / 真实 provider 账号 / 真实投递回执证据；真实设备与 provider 级缺口继续登记在 [`docs/memory/risks.md`](docs/memory/risks.md)。
+
+### v0.14 — Native-first Completion
+
 v0.14 **Native-first Completion** 开发线（尚未发布；版本号仍停留在 `0.13.1`，发布阶段再 bump）。把日常控制面继续收进 DSH Native，并把高级管理台收敛为 recovery。
 
-### 新增
+#### 新增
 
 - **Native 日常视图**：待处理提问、任务、成员、待确认身份、配对码、会话、通知渠道、最近活动、诊断九个视图，覆盖此前只能在高级管理台完成的成员 / 配对 / 会话管理。
 - **Native 诊断中心 + Support Report**：只读快照回答“是否需要处理、为什么、最近一次检查”，分层显示 Host / 存储 / 渠道摘要 / 能力可用性 / 最近失败，并一键生成脱敏、可直接粘贴的 support report。
 - **共享控制服务（单一写者）**：出站渠道、成员/配对、会话/路由、提问结算各自收敛为一个共享应用服务；Native 与高级管理台都经它读写，适配器不再直写 store。
 
-### 修复
+#### 修复
 
 - **会话覆盖层 TOCTOU**：字段级合并移入同一个 `store.transact()` 事务，并发写入不再被过期快照覆盖。
 - **高级管理台写路径收敛**：`putChannel` 的凭证读写走事务内 `mergeAccount`；出站保存/删除/测试只走 canonical 服务，未接线时 fail-closed 501，不再制造第二个 `admin:channel:<type>:outbound` 域。
 
-### 变更
+#### 变更
 
 - **高级管理台重新定位**为 recovery / 原始审计 / 低层存储诊断入口（仍 loopback + Bearer）；日常管理移至 Native。
 
-### 验证边界
+#### 验证边界
 
 - `npm test`：**2119 tests，2119 pass，0 fail，0 skip**（v0.14 dev 线，S15 checkpoint）。
 - `npm run verify:release`：版本、文档、测试计数、Host 兼容性门禁通过。

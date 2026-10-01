@@ -864,6 +864,114 @@ surface wiring and unassembled fail-closed).
 
 **Count**: **2327 → 2340** (`npm test`, full suite green: 2340 pass / 0 fail).
 
+## T25 — 可选 Cloudflare Tunnel 扩展
+
+**Result**: an **independent, default-disabled** extension (`extensions/cloudflare-tunnel/`) that supervises a
+**user-managed `cloudflared` binary** it spawns itself. It owns no core store key and never touches Host trust.
+
+- **Config gate** (`src/config.mjs`): named tunnel required, Quick Tunnel rejected (`quick-tunnel-stable`), a
+  host-trust violation matrix (`clearOrigin`/`rewriteLocalhost`/`disableHostCheck`/…) rejected, and an Access
+  protection claim without a configured `applicationId` rejected (`access-as-cleartrust`) — a protected flag can
+  never be asserted into existence.
+- **Supervisor** (`src/supervisor.mjs`): single-flight `start()` (concurrent calls share one spawn), a start
+  deadline that kills only *its own* process, epoch isolation so late exit/error callbacks never revive a stopped
+  instance, at most one reconnect timer with capped backoff, and stop-during-start that explicitly settles the
+  in-flight promise (no hang, no leak).
+- **Asset/redaction**: pinned-version assets fail closed while the checksum is unpinned; stdout/stderr are masked
+  (`TUNNEL_TOKEN`/JWT/hex/base64 shapes) and bounded before they reach `status().recentLog`.
+
+**Stability fix (this commit)**: `start()` used `promise.finally(...)`, whose derived promise was never consumed —
+a rejected start surfaced as `unhandledRejection`. Replaced with `promise.then(clear, clear)` so both outcomes
+settle cleanly (18/18 green).
+
+**Tests**: `node --test test/v015-stage-s17-tunnel.test.mjs` → **18 pass / 0 fail** (R01 single-flight + deadline,
+R02 epoch/no-revival/bounded reconnect/stop-during-start, R03 reject matrix, R05 assets fail-closed + redaction +
+controller not-configured/disabled; deterministic fake process + fake timers, no real subprocess, no network).
+
+**Boundaries held**: never downloads/executes an unverified binary, never auto-publishes the Host, never manages
+another plugin's process, never erases Origin to widen trust, never proxies Recovery.
+
+## T26 — Workers/Pages 通知扩展包（DEFERRED，待议）
+
+**Decision (user, 2026-10-01)**: **不做**。Cloudflare Workers/Pages 扩展包本轮不实现，保留任务书
+（`03-TASKS.md` T26 + 04 的 W01–W06 + 06 §Workers/Pages）作为将来讨论的输入，不在本 workstream 内落地任何
+Worker/Pages 源码、wrangler 配置或部署包。恢复讨论时按原依赖（T22/T24）重新评估。
+
+**不影响**：本地 CORE 与本扩展包完全独立；`extensions/cloudflare-tunnel`（T25）是本地进程监督，与本项无关，
+已交付。因此 T28–T30 的收尾不受此决定阻塞。
+
+## T27 — 云端保存窄接口（预留契约）
+
+**Result**: a **contract, not a feature**（`src/control-plane/cloud-store.mjs`）。只定义「存放已经生成好的
+bytes」的窄接口：`put(bytes, metadata)` / `get(id)` / `delete(id)` / `capabilities()`，schema
+`dsh-notifier-cloud-store/v1`，失败码稳定（`bad-bytes`/`too-large`/`bad-metadata`/`bad-id`/`not-found`/
+`storage-failed`/`cancelled`/`not-configured`）。
+
+- **不透明**：store 绝不 parse / decode / validate / interpret 业务含义（不知道什么是导出 v1）；
+  未知格式既不 recognize 也不 reject，原样搬运。字符串 payload 刻意拒绝——编码是调用方的解释决定。
+- **无业务权限**：cloud adapter 不读/不写插件 state、不持有 mutation 权限；它失败不影响本地导出与下载。
+- **两种内置实现**：`createMemoryCloudStore()`（round-trip + 错误注入 fixture，可注入 `now`/`random`/
+  `failPut`/`failGet`/`failDelete`）与 `createUnavailableCloudStore()`（未装配 provider 的诚实占位，
+  一律 `not-configured`，`capabilities().available === false`）。
+- **无生产实现**：不接 R2/D1/KV、不要求 CF 账户、**Native 无云按钮**、不新增业务 authority。
+- **未来决策已写文档**：加密属导出层、密钥与云账户互相独立、真实 adapter 只是同一契约的可替换实现、
+  加密全量备份是另一个独立格式（普通配置导出永久**不是**灾难恢复快照）。
+
+**Tests**: `node --test test/v015-stage-s18-cloud-store.test.mjs` → **10 pass / 0 fail**（G01：byte round-trip +
+导出 v1 round-trip 逐字节一致、未知 bytes 原样搬运且 store 无 interpret 面、copy-on-write、字符串/超限/
+畸形 metadata 拒绝且零写、abort 零写、注入失败不影响本地导出、无 cloud binding 仍可运行）。
+
+**Boundaries held**: 不解释业务数据、不获得 state 写权、不引入账户/同步/云按钮、不收紧旧 provider 的
+原有合法 payload 范围。
+
+## T28 — 全用户周期文档
+
+**Result**: `docs/user-lifecycle.md` 串起九段真实旅程（安装 → 首次保存 → 复用/迁移 → 日常问题与审批 →
+手机入口 → 断线/健康 → 升级 → 导出换机 → 停用/卸载），每段给出**实际存在的命令**与**可观察结果**，
+并显式声明两件承重事实：**导出不含密钥**、**外部引用（ENV / 机器特定）不会被导入迁移、需重新绑定**。
+教程与截图对应当前 Native「通知与控制」，不使用旧管理台截图冒充 Native。
+
+**Tests**: `node --test test/v015-stage-s19-lifecycle-docs.test.mjs` → **5 pass / 0 fail**（L01：文档里每条
+`node scripts/*.mjs` 都真实存在且通过 `--check`；每条 `npm run <script>` 都是真实 script；每个相对链接都
+解析到真实文件；九段旅程与两条承重声明确实存在）。
+
+**Boundaries held**: 真实手机 / 真实账号 / 真实 provider 回执证据**不**在默认 CI 范围（文档已声明，
+继续 open），文档不承诺未发布能力（能力口径以兼容性矩阵为准）。
+
+## T29 — 等价 / 回退 / 性能演练
+
+**Result**: 把「迁移等价」与「回退安全」变成可执行证据，而不是口头保证。
+
+- **等价矩阵（全 28 型）**：每个出站渠道类型的 legacy → canonical 迁移都被**分类**（`copied-from-admin`
+  / `copied-from-account` / `dual-domain-kept` / `canonical-wins`），逐型比对声明规则，**零未解释差异**；
+  旧 `admin:channel:<type>:outbound` 域一律退场；重复迁移是 byte-stable no-op。
+- **回退演练**：在切换窗口内经新权威写入的配置与成员，经过一次迁移后仍然保留；canonical 键是共享读路径，
+  重新装配的 reader 解析出同一份有效配置。
+- **不重放**：`claimed` 与 `uncertain` 行在重启/回退后都不是 live pending，`claim`/`resolve`/`terminate`
+  全部拒绝重放（零二次 effect）。
+- **写放大**：一次用户动作 = 一次 durable 事务（1:1），1/10/100 阶梯每个 bucket 放大倍数恒为 1。
+
+**Tests**: `node --test test/v015-stage-s20-equivalence-rollback.test.mjs` → **7 pass / 0 fail**。
+
+**Runner**: `node scripts/perf-drill.mjs`（仓库内维护者命令，**不进 npm 包**，`--json` / `--ladder=1,10,100,500`）。
+本机实测：`1/10/100` saves → transacts/commits = 1/10/100（amplification = 1.000），
+100 saves 60.7ms（0.607 ms/save）；首轮冷 FS 观测到 ~97 ms/save，属环境抖动，绝对毫秒只用于趋势对比。
+
+**Boundaries held**: 演练只跑本地 CPU/磁盘，零网络；差异分类全部来自声明规则，没有"看起来一样就算了"
+的未解释差异；回退不重放 claim/uncertain。
+
+## T30 — 最终全量 / 打包与交付
+
+**Result**: 全量门 + 计数收口 + 打包。
+
+- `npm test`：**2358 → 2380**（2380 pass / 0 fail / 0 skip）。
+- `npm run verify:release`、`node scripts/gen-channel-matrix.mjs --check`、
+  `node scripts/verify-host-compat.mjs`、`node --check src/index.mjs` 全绿。
+- 计数同步：`package.json` `dshQuality.testCount`、`README.md`、`README.zh-CN.md`、`HANDOFF.md`、
+  `docs/memory/project-state.md`。
+- `CHANGELOG.md` 增补 v0.15（Unreleased）条目；T26 决定记录在案。
+- 交付包：`npm pack` 产物 + 源码树（不含 secret / 账户 ID / 真实域名）。
+
 ## Task status
 
 | Task | Status | Commit | Evidence |
@@ -892,4 +1000,9 @@ surface wiring and unassembled fail-closed).
 | T22 | done | `2068af2` | optional dsh-im delegating bridge; dynamic availability + epoch isolation (D01/D02); honest accepted/unknown evidence (D03/D04); text-only + no auto-switch + no credential leak (D05); `test/v015-stage-s14-dsh-im-bridge.test.mjs` → 12 pass |
 | T23 | done | `165efd1` | dsh-im known-format migration importer (pure translator over T21 portability); locked formats + feishu-v2 bridge + unknown fail-closed (D06); secret-source masking with zero value leak (D07); live-waiter/membership keys dropped (D08); duplicate-slot alternatives + conflict + disabled staging (D09); `test/v015-stage-s15-dsh-im-import.test.mjs` → 14 pass |
 | T24 | done | `3e5a694` | remote URL / phone entry (pure local validator, zero store key / zero effect); https-only + reject matrix (R04); QR payload byte-identical to plain link; no SSRF / no deep-link guessing; `remote.validate` surface + `RemoteView` (open/copy browser-side); `test/v015-stage-s16-remote-url.test.mjs` → 13 pass |
-| T25–T30 | not started | — | — |
+| T25 | done | `acf821c` | optional pinned cloudflared supervisor (single-flight start + epoch isolation + bounded reconnect + redacted logs + fail-closed asset pin); default-off, user-managed binary only; `test/v015-stage-s17-tunnel.test.mjs` → pass |
+| T26 | deferred | — | user decision 2026-10-01: Workers/Pages extension package **not built**; task book kept as future discussion input |
+| T27 | done | (this commit) | cloud-store narrow contract (`put`/`get`/`delete`/`capabilities()`), schema `dsh-notifier-cloud-store/v1`; memory fake + unavailable placeholder; no prod impl / no cloud button; `test/v015-stage-s18-cloud-store.test.mjs` → 10 pass |
+| T28 | done | (this commit) | nine-journey user lifecycle doc; commands/links machine-checked; `test/v015-stage-s19-lifecycle-docs.test.mjs` → pass |
+| T29 | done | (this commit) | equivalence / rollback / no-replay drills + `scripts/perf-drill.mjs` (amplification = 1); `test/v015-stage-s20-equivalence-rollback.test.mjs` → pass |
+| T30 | done | (this commit) | full `npm test` 2380/2380; verify:release + matrix + host-compat + perf all green; counts synced; `npm pack` deliverable |
