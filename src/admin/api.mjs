@@ -234,6 +234,9 @@ export function createAdminApi(options = {}) {
     // 能力快照注入（全部只读；缺失一律安全降级，绝不抛）。
     ctx = null, attentionOf = null, hostSnapshot = null,
     questionsFallbackEnabled = false, webLocal = 'unknown', imageInput = 'unknown', inboundConfig = null,
+    // v0.15（T20）：共享只读诊断快照。Recovery 台与 Native 读同一实例、同一 canonical 快照，
+    // 不新增第二份采集逻辑；未装配即 fail-closed（501），绝不回空表冒充「无异常」。
+    diagnostics = null,
   } = options ?? {}
 
   const warn = (message) => {
@@ -497,6 +500,26 @@ export function createAdminApi(options = {}) {
       } catch {
         // 查询方法红线：绝不抛（宿主 ctx 可能是抛错代理/getter）。降级为全 unknown 的安全最小快照。
         return createHostCapabilitySnapshot({ ctx: {}, events: null })
+      }
+    },
+
+    /**
+     * v0.15（T20）只读诊断快照（Recovery 台 /api/diagnostics 数据源）。
+     * 与 Native `diagnostics.snapshot` 共用同一 `diagnostics` 实例，故两处读的是同一份
+     * canonical 快照（同脱敏、同 unknown != failed 语义），不存在第二套采集/修复逻辑。
+     * 只读：绝不在读取时写 store、改运行时或重放任何 interaction。
+     * 能力缺失 → ApiError(501)（fail-closed），绝不返回空快照冒充「无异常」。
+     * @returns {object} canonical diagnostics snapshot
+     */
+    getDiagnostics() {
+      if (diagnostics === null || typeof diagnostics?.snapshot !== 'function') {
+        throw new ApiError(501, '诊断快照未装配（本管理台不可用）')
+      }
+      try {
+        return diagnostics.snapshot()
+      } catch {
+        // 快照层按字段逐一降级，理论上不抛；此处是最后一道兜底（只读且不谎报健康）。
+        throw new ApiError(503, '诊断快照暂时不可读，请稍后重试')
       }
     },
 

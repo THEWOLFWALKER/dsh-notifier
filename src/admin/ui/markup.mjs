@@ -56,6 +56,7 @@ export function createAdminMarkup(t) {
   <button class="tabbtn" data-tab="channels">${m.tabChannels}</button>
   <button class="tabbtn" data-tab="members">${m.tabMembers}</button>
   <button class="tabbtn" data-tab="notify">${m.tabNotify}</button>
+  <button class="tabbtn" data-tab="diagnostics">${m.tabDiagnostics}</button>
   <button class="tabbtn advanced-tab" data-tab="bindings" hidden>${m.tabBindings}</button>
   <button class="tabbtn advanced-tab" data-tab="sessions" hidden>${m.tabSessions}</button>
   <button id="modeToggle" class="muted-btn" title="${m.modeToggleTitle}">${m.modeToggleOpen}</button>
@@ -230,6 +231,12 @@ export function createAdminMarkup(t) {
       <thead><tr><th style="width:150px">${m.thTime}</th><th style="width:70px">${m.thLevel}</th><th style="width:220px">${m.thTitle}</th><th>${m.thBody}</th><th style="width:64px">${m.thSource}</th></tr></thead>
       <tbody id="notifyLog"><tr><td colspan="5" class="empty">${m.emptyEvents}</td></tr></tbody>
     </table>
+  </section>
+
+  <section id="tab-diagnostics" class="tabsec">
+    <p class="muted small">${m.diagLead}</p>
+    <div class="row"><button id="diagRefresh">${m.diagRefresh}</button></div>
+    <div id="diagView"></div>
   </section>
 
   <section id="tab-bindings" class="tabsec">

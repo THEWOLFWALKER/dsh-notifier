@@ -181,6 +181,9 @@ export function createAdminServer({ api, verifyToken, verifyLaunchTicket = null,
     { method: 'POST', segments: ['api', 'pairing'], handler: ({ body }) => api.mintPairingCode(body) },
     { method: 'DELETE', segments: ['api', 'pairing', ':id'], handler: ({ params }) => api.revokePairingCode(params.id) },
     { method: 'GET', segments: ['api', 'audit'], handler: () => api.getAudit() },
+    // v0.15（T20）Recovery 只读诊断快照：无 Native 时仍可查看 canonical diagnostics。
+    // 只读（无副作用、不重放 interaction）；未装配由 api 层抛 501，能力语义透传。
+    { method: 'GET', segments: ['api', 'diagnostics'], handler: () => api.getDiagnostics() },
     // 路线图阶段 2A：远程提问管理台裁决（2026-08-26）。GET 只读脱敏快照；
     // POST :ref/settle 走收件人识别的受保护结算（授权在 Control Core + bearer 层）
     { method: 'GET', segments: ['api', 'questions'], handler: () => api.getPendingQuestions() },

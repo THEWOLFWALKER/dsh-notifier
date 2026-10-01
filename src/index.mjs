@@ -999,6 +999,9 @@ export function apply(ctx, config = {}) {
         questionsFallbackEnabled: questionsBridge !== null, // 插件自有 ask_user 工具已注册
         webLocal: 'available', // 管理台本机回环（此 API 自身已在本机运行）
         imageInput: conversationRouterActive ? 'available' : 'unknown', // 图片入站随会话路由装配
+        // v0.15（T20）：Recovery 只读诊断读同一 canonical 实例（无 Native 时诊断仍可用；
+        // 不复制采集逻辑、不新增写路径、不重放 interaction）。
+        diagnostics: surfaceDiagnostics,
       })
       surfaceAdminApi = adminApi
       adminApi.testOutboundChannel = async (type) => {

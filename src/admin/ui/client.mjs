@@ -378,6 +378,97 @@ function loadAll() {
 function switchTab(name) {
   $all('.tabbtn').forEach(function (b) { b.classList.toggle('active', b.getAttribute('data-tab') === name) })
   $all('.tabsec').forEach(function (s) { s.classList.toggle('active', s.id === 'tab-' + name) })
+  if (name === 'diagnostics') loadDiagnostics()
+}
+
+// ---------- 诊断：只读 canonical 快照（与 DSH Native 同源；无 Native 时 Recovery 台仍可用） ----------
+// 只读：仅 GET /api/diagnostics 并渲染，绝不写 store、不重放 interaction、不含密钥。
+// 未装配（501）与读取失败（503/网络）分别如实说明，绝不回空快照冒充「无异常」。
+var ADMIN_LANG = window.__DSH_NOTIFIER_ADMIN_LANG__ === 'en' ? 'en' : 'zh'
+function localizedDetail(detail, fallback) {
+  if (detail && typeof detail === 'object') {
+    if (typeof detail[ADMIN_LANG] === 'string' && detail[ADMIN_LANG]) return detail[ADMIN_LANG]
+    if (typeof detail.zh === 'string' && detail.zh) return detail.zh
+    if (typeof detail.en === 'string' && detail.en) return detail.en
+  }
+  return fallback
+}
+function storageStateLabel(s) {
+  return tr(s === 'ready' ? 'diagStorageReady' : s === 'corrupt' ? 'diagStorageCorrupt' : s === 'unavailable' ? 'diagStorageUnavailable' : 'diagStorageUnknown')
+}
+function diagStat(label, value) {
+  return '<div class="stat"><b>' + esc(value) + '</b><span>' + esc(label) + '</span></div>'
+}
+function diagTrim(value, fallback) {
+  var s = value === undefined || value === null || value === '' ? fallback : String(value)
+  return s.length > 160 ? s.slice(0, 160) + '…' : s
+}
+function renderDiagnostics(snap) {
+  var el = $('#diagView')
+  if (!el) return
+  var d = plain(snap)
+  var host = plain(d.host)
+  var storage = plain(d.storage)
+  var channels = plain(d.channels)
+  var caps = plain(d.capabilities)
+  var att = plain(d.attention)
+  var proc = plain(d.process)
+  var reasons = Array.isArray(att.reasons) ? att.reasons : []
+  var failures = Array.isArray(d.recentFailures) ? d.recentFailures : []
+  var reasonsText = reasons.map(function (r) {
+    var rr = plain(r)
+    return localizedDetail(rr.detail, diagTrim(rr.code, tr('diagValueUnknown')))
+  })
+  var html = '<p class="muted small">' + esc(tr('diagGenerated', { time: fmtTime(d.generatedAt) })) + '</p>'
+  html += '<div class="msg show ' + (att.required === true ? 'warn' : 'ok') + '">' +
+    esc(att.required === true ? tr('diagAttentionYes') : tr('diagAttentionNo')) +
+    (reasonsText.length > 0 ? ' — ' + esc(reasonsText.join(tr('qJoiner'))) : '') + '</div>'
+  html += '<h3>' + esc(tr('diagHost')) + '</h3><div class="stats">' +
+    diagStat(tr('diagHostVersion'), diagTrim(host.version, tr('diagValueUnknown'))) +
+    diagStat(tr('diagHostEvents'), diagTrim(host.eventsMode, tr('diagValueUnknown'))) +
+    diagStat(tr('diagHostQuestions'), diagTrim(host.questionsMode, tr('diagValueUnknown'))) +
+    diagStat(tr('diagHostImage'), diagTrim(host.mediaImageInput, tr('diagValueUnknown'))) +
+    diagStat(tr('diagEpoch'), diagTrim(proc.epoch, tr('diagValueUnknown'))) +
+    diagStat(tr('diagRevision'), String(proc.revision === undefined ? tr('diagValueUnknown') : proc.revision)) +
+    '</div>'
+  html += '<h3>' + esc(tr('diagStorage')) + '</h3><div class="stats">' +
+    diagStat(tr('diagStorage'), storageStateLabel(storage.state)) + '</div>'
+  html += '<h3>' + esc(tr('diagChannels')) + '</h3><div class="stats">' +
+    diagStat(tr('diagChHealthy'), String(channels.healthy === undefined ? tr('diagValueUnknown') : channels.healthy)) +
+    diagStat(tr('diagChNoEvidence'), String(channels.noEvidence === undefined ? tr('diagValueUnknown') : channels.noEvidence)) +
+    diagStat(tr('diagChDegraded'), String(channels.degraded === undefined ? tr('diagValueUnknown') : channels.degraded)) +
+    diagStat(tr('diagChInactive'), String(Array.isArray(channels.inactive) ? channels.inactive.length : tr('diagValueUnknown'))) +
+    '</div>'
+  html += '<h3>' + esc(tr('diagCapabilities')) + '</h3><div class="stats">' +
+    diagStat(tr('diagCapQuestions'), String(plain(caps.questions).available === true ? (plain(caps.questions).pending === undefined ? tr('diagValueAvailable') : plain(caps.questions).pending) : tr('diagValueUnavailable'))) +
+    diagStat(tr('diagCapSessions'), String(plain(caps.sessions).available === true ? (plain(caps.sessions).count === undefined ? tr('diagValueAvailable') : plain(caps.sessions).count) : tr('diagValueUnavailable'))) +
+    diagStat(tr('diagCapBindings'), plain(caps.bindings).editable === true ? tr('diagValueYes') : tr('diagValueNo')) +
+    diagStat(tr('diagCapMembers'), plain(caps.members).removable === true ? tr('diagValueYes') : tr('diagValueNo')) +
+    diagStat(tr('diagCapAdvanced'), diagTrim(caps.advancedConsole, tr('diagValueUnknown'))) +
+    '</div>'
+  html += '<h3>' + esc(tr('diagFailures')) + '</h3>'
+  if (failures.length === 0) {
+    html += '<p class="muted small">' + esc(tr('diagNone')) + '</p>'
+  } else {
+    html += '<table><thead><tr><th style="width:170px">' + esc(tr('thTime')) + '</th><th style="width:120px">' + esc(tr('thLevel')) + '</th><th>' + esc(tr('thBody')) + '</th></tr></thead><tbody>'
+    failures.forEach(function (row) {
+      var rr = plain(row)
+      html += '<tr><td>' + esc(fmtTime(rr.at)) + '</td><td>' + esc(diagTrim(rr.category, '')) + ' / ' + esc(diagTrim(rr.action, '')) + '</td><td>' + esc(localizedDetail(rr.detail, '')) + '</td></tr>'
+    })
+    html += '</tbody></table>'
+  }
+  el.innerHTML = html
+}
+function loadDiagnostics() {
+  var el = $('#diagView')
+  if (el) el.innerHTML = '<p class="muted small">' + esc(tr('loading')) + '</p>'
+  return api('/api/diagnostics').then(function (snap) {
+    renderDiagnostics(snap)
+  }).catch(function (e) {
+    var msg = errText(e)
+    if (el) el.innerHTML = '<div class="msg show err">' + esc(tr('diagLoadFailed', { error: msg })) + '</div>'
+    flash(tr('diagLoadFailed', { error: msg }), 'err')
+  })
 }
 
 // 个人模式是默认路径；高级导航仅在用户明确打开后显示。localStorage 受限时按个人模式降级。
@@ -1673,6 +1764,8 @@ function init() {
     b.addEventListener('click', function () { switchTab(b.getAttribute('data-tab')) })
   })
   $('#btnRefresh').addEventListener('click', function () { loadAll() })
+  var diagBtn = $('#diagRefresh')
+  if (diagBtn) diagBtn.addEventListener('click', function () { loadDiagnostics() })
   applyAdminMode()
   var modeToggle = $('#modeToggle')
   if (modeToggle) modeToggle.addEventListener('click', function () {

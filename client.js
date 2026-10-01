@@ -247,6 +247,7 @@ window.__ModuleLoader__.load({
       no: '否',
       supportReport: '支持报告',
       reportIntro: '生成一份脱敏、可直接粘贴到 issue 的诊断报告。',
+      reportNotBackup: '报告是脱敏只读诊断，不含密钥，也不是可恢复的配置备份；恢复环境请另行使用配置导出/导入。',
       generateReport: '生成支持报告',
       copyReport: '复制',
       downloadReport: '下载',
@@ -480,6 +481,7 @@ window.__ModuleLoader__.load({
       no: 'No',
       supportReport: 'Support report',
       reportIntro: 'Generate a redacted diagnostics report you can paste straight into an issue.',
+      reportNotBackup: 'The report is redacted, read-only diagnostics. It contains no secrets and is not a restorable configuration backup; use configuration export/import to restore an environment.',
       generateReport: 'Generate support report',
       copyReport: 'Copy',
       downloadReport: 'Download',
@@ -2521,6 +2523,7 @@ window.__ModuleLoader__.load({
             : h('p', { className: 'dn-empty' }, t('noFailures'))),
         h(Section, { title: t('supportReport') },
           h('p', { className: 'dn-note' }, t('reportIntro')),
+          h('p', { className: 'dn-note' }, t('reportNotBackup')),
           h('div', { className: 'dn-formActions' },
             h(Button, { kind: 'primary', disabled: busy, onClick: onGenerate }, t('generateReport'))),
           report

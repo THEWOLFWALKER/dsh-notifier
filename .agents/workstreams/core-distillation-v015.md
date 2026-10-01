@@ -2,7 +2,7 @@
 
 - **identity**: agent `flash`, task pack `dsh-notifier-flash-complete-taskpack` (T01–T30)
 - **branch**: `codex/core-distillation-v015` (off `dev`)
-- **status**: in progress — T01–T19 done (T06 partial)
+- **status**: in progress — T01–T20 done (T06 partial)
 - **owner scope**: core authority convergence, Native/Recovery UX, local config export/import, dsh-im
   bridge, remote URL, optional CF Tunnel, Workers/Pages extension package, docs/tests/delivery.
 - **explicitly out of scope**: `main`, tags, npm publish, real cloud deploy, full encrypted secret
@@ -691,6 +691,40 @@ secret-eviction shape (same property). DOM bed stays out of the shipped `npm tes
 Contract: `docs/behavior-contract.md` UX-05…UX-10.
 
 **Count**: unchanged at **2283** (DOM suite is a separate workspace, by design).
+
+## T20 — Recovery 纯恢复与诊断
+
+**Result**: the Advanced Console is now a *recovery* surface with a first-class, read-only diagnostics view
+that works **even when Native is not loaded**. It renders the same canonical snapshot Native uses — no second
+collection path, no second authority, no repair-on-read — and every failure mode is stated honestly
+(`501` when diagnostics is not assembled, `503` when the snapshot cannot be read; never an empty snapshot
+posing as "all clear").
+
+- **Shared diagnostics instance** (`src/index.mjs`): the Admin API is constructed with
+  `diagnostics: surfaceDiagnostics` — the **very same** `createDiagnosticsService` instance the Native
+  surface exposes. Recovery and Native therefore read one canonical snapshot (same redaction, same
+  `unknown != failed` semantics); there is no duplicate collector and no duplicate fixer.
+- **Read-only API** (`src/admin/api.mjs` `getDiagnostics`): returns `diagnostics.snapshot()` verbatim. It
+  touches **no** store, opens **no** transaction, changes **no** runtime and replays **no** interaction. A
+  missing capability throws `ApiError(501)` (fail-closed); a throwing snapshot throws `ApiError(503)`
+  (never a false "healthy").
+- **Route** (`src/admin/server.mjs`): `GET /api/diagnostics` behind the existing localhost Bearer gate —
+  the Recovery console can read diagnostics with no Native in the process.
+- **Recovery UI** (`src/admin/ui/markup.mjs` + `client.mjs` + `strings.mjs`): a "诊断" tab fetches the
+  snapshot on open and renders attention/storage/host/channels/capabilities/recent-failures as read-only
+  presentation. Client strings are `tr()`-sourced (zh/en same shape); no Chinese literal in `client.mjs`.
+- **Report ≠ backup**: the Native support-report panel now says so explicitly
+  (`reportNotBackup`) and points at configuration export/import for restoring an environment — a redacted
+  read-only report must never be mistaken for a restorable backup.
+
+**Boundaries held**: no `0.0.0.0` bind, no ticket in long-lived URLs, no direct remote exposure of the
+Recovery console, no second authorization implementation, and no interaction replay during recovery.
+
+**Tests**: `node --test test/v015-stage-s12-recovery-diagnostics.test.mjs` → **6 pass / 0 fail** (shared
+canonical snapshot + read-only, zero-secret, `501` fail-closed, `503` on read error, HTTP route + auth).
+Contract: `docs/behavior-contract.md` RC-01…RC-04.
+
+**Count**: **2283 → 2289** (`npm test`, full suite green).
 
 ## Task status
 

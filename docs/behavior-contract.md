@@ -785,6 +785,54 @@ Native 视图（`client.js`）是**表现层**：它不持有第二写者，只�
 
 ---
 
+## 十、Recovery 纯恢复与诊断（T20）
+
+Recovery 台（`src/admin/`）定位为**恢复、原始审计与低层存储诊断**——日常配置与诊断优先走 Native。
+本节固定 RC-01…RC-04：Recovery 读的是与 Native **同一** canonical 诊断快照，只读、fail-closed、零 secret。
+oracle 是真实 Admin API + 真实 HTTP server（`test/v015-stage-s12-recovery-diagnostics.test.mjs`）。
+
+### RC-01 · Recovery 与 Native 读同一 canonical 快照（无 Native 亦可读）
+
+- **分类**：MUST_PRESERVE
+- **事实 owner**：`src/index.mjs`（注入 `diagnostics: surfaceDiagnostics`）；`src/control-surface/diagnostics.mjs`（唯一采集者）
+- **输入/前置状态**：Admin API 装配了共享诊断实例、未装配、或实例抛错
+- **结果**：已装配 → `getDiagnostics()` 原样返回该实例的 canonical 快照（同一实例、无第二份采集/修复）；无 Native 时 Recovery 台仍可读；未装配 → 501，实例抛错 → 503
+- **禁止动作**：不得新增第二套采集/修复逻辑；不得在读取时写 store、开事务、改运行时或重放 interaction
+- **证据链接**：`test/v015-stage-s12-recovery-diagnostics.test.mjs`（T20 共享快照/只读；501/503）
+- **矩阵**：**RC-01**
+
+### RC-02 · 诊断能力 fail-closed（不谎报健康）
+
+- **分类**：MUST_PRESERVE
+- **事实 owner**：`src/admin/api.mjs` `getDiagnostics`
+- **输入/前置状态**：诊断未装配 / 快照读取抛错
+- **结果**：501（未装配）/ 503（读取失败），HTTP 层透传同一 status 与 message
+- **禁止动作**：绝不返回空快照冒充「无异常」；绝不把读取失败渲染成健康
+- **证据链接**：`test/v015-stage-s12-recovery-diagnostics.test.mjs`
+- **矩阵**：**RC-02**
+
+### RC-03 · 报告/快照零 secret，报告不是备份
+
+- **分类**：MUST_PRESERVE
+- **事实 owner**：`src/control-surface/diagnostics.mjs`（脱敏）；`client.js` `reportNotBackup` 文案
+- **输入/前置状态**：宿主/渠道持有 secret（token/appSecret 等）
+- **结果**：canonical 快照与 Native 支持报告均不含 secret；报告面板明示「报告是只读诊断，不是可恢复备份」，恢复环境走配置导出/导入
+- **禁止动作**：不得把 secret 写进快照/报告/日志/Web 存储
+- **证据链接**：`test/v015-stage-s12-recovery-diagnostics.test.mjs`（零 secret）；`test/diagnostics-v014.test.mjs`
+- **矩阵**：**RC-03**
+
+### RC-04 · Recovery 台保持 localhost 鉴权（不直曝）
+
+- **分类**：MUST_PRESERVE
+- **事实 owner**：`src/admin/server.mjs`（Bearer + Origin/Host 校验）
+- **输入/前置状态**：匿名 / 带 Bearer 的 `GET /api/diagnostics`
+- **结果**：匿名 → 401；带 token → 200 + 同一 canonical 快照；不绑 0.0.0.0、ticket 不进长期 URL
+- **禁止动作**：不得为远程可达而暴露 Recovery 台或新增第二授权实现
+- **证据链接**：`test/v015-stage-s12-recovery-diagnostics.test.mjs`（HTTP 鉴权 + 透传）
+- **矩阵**：**RC-04**
+
+---
+
 ## 必测矩阵 → spec / oracle 覆盖
 
 | 矩阵 ID | spec 条目 | 旧 oracle（文件:行） |
@@ -810,6 +858,10 @@ Native 视图（`client.js`）是**表现层**：它不持有第二写者，只�
 | P01 | PRV-02 | `tokens.test.mjs:27,52` |
 | P02 | PRV-01 | `adapters.test.mjs:297,317` |
 | P03 | PRV-03 | `inbound.telegram.test.mjs:682,1010,1066` |
+| RC-01 | — | `v015-stage-s12-recovery-diagnostics.test.mjs`（共享 canonical 快照 + 只读） |
+| RC-02 | — | `v015-stage-s12-recovery-diagnostics.test.mjs`（501 / 503） |
+| RC-03 | — | `v015-stage-s12-recovery-diagnostics.test.mjs`；`diagnostics-v014.test.mjs` |
+| RC-04 | — | `v015-stage-s12-recovery-diagnostics.test.mjs`（HTTP 鉴权 + 透传） |
 
 ### 未覆盖 / UNKNOWN（不得上调）
 
