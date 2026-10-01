@@ -129,6 +129,32 @@ export function createHostLifetime(ctx, deps = {}) {
   const registrations = []
   let disposed = false
 
+  const registerDisposer = (registration, label) => {
+    let settled = null
+    let released = false
+    const callDispose = (handle) => {
+      if (typeof handle === 'function') { try { handle() } catch { /* non-fatal */ }; return }
+      if (handle && typeof handle.dispose === 'function') { try { handle.dispose() } catch { /* non-fatal */ } }
+    }
+    const release = () => {
+      if (released) return
+      released = true
+      if (settled !== null) callDispose(settled)
+    }
+    registrations.push(release)
+    if (typeof registration === 'function' || (registration && typeof registration.dispose === 'function')) {
+      settled = registration
+      if (released) callDispose(settled)
+      return
+    }
+    if (registration && typeof registration.then === 'function') {
+      Promise.resolve(registration).then((handle) => {
+        settled = handle ?? null
+        if (released && settled !== null) callDispose(settled)
+      }, (error) => report(`host seam disposer resolve 失败（${label}）: ${error instanceof Error ? error.message : String(error)}`))
+    }
+  }
+
   const runAttach = (attach, subCtx, label) => {
     try { attach(subCtx) } catch (error) {
       report(`host seam attach 失败（${label}）: ${error instanceof Error ? error.message : String(error)}`)
@@ -148,7 +174,7 @@ export function createHostLifetime(ctx, deps = {}) {
       // cordis：子插件回调第一参数 = 可选依赖子上下文；随依赖服务 fiber 生命周期撤销/重放。
       // 本封装只登记撤销句柄，不改变 attach 的幂等契约（由调用方保证）。
       const disposeInject = ctx.inject(list, (subCtx) => { if (!disposed) runAttach(attach, subCtx, label) })
-      if (typeof disposeInject === 'function') registrations.push(disposeInject)
+      registerDisposer(disposeInject, label)
     } catch (error) {
       report(`host seam inject 失败（${label}）: ${error instanceof Error ? error.message : String(error)}`)
       runAttach(attach, ctx, label) // fail-open：回落直连，绝不弄崩装配

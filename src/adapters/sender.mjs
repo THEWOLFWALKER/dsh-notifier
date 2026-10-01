@@ -88,6 +88,7 @@ export function defineStatefulSender({ type, validate, createRuntime, onRetire =
 
   // resolved -> slot。WeakMap：runtime 随 resolved 自然回收，绝不让配置对象成为长期根。
   const slots = new WeakMap()
+  const retired = new WeakSet()
   const stats = { created: 0, retired: 0 }
 
   const invoke = (fn) => {
@@ -96,6 +97,12 @@ export function defineStatefulSender({ type, validate, createRuntime, onRetire =
   }
 
   const acquire = (resolved) => {
+    if (retired.has(resolved)) {
+      const error = new Error(`sender "${type}" runtime 已被永久停用，旧 resolved 不得复活`)
+      error.code = 'CHANNEL_RETIRED'
+      error.noRetry = true
+      throw error
+    }
     const existing = slots.get(resolved)
     if (existing !== undefined && existing.closed !== true) return existing
     const runtime = createRuntime(resolved)
@@ -132,6 +139,7 @@ export function defineStatefulSender({ type, validate, createRuntime, onRetire =
       const slot = slots.get(resolved)
       if (slot === undefined) return false
       slots.delete(resolved)
+      retired.add(resolved)
       if (slot.closed === true) return false
       slot.closed = true
       invoke(() => slot.runtime.stop?.())

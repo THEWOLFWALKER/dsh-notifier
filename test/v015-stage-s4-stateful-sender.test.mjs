@@ -112,7 +112,7 @@ test('T10 单 consumer：同一 resolved 只建一个 runtime；并发 send 共�
   assert.ok(resolved._msgSeq >= 1, 'P02 保留：成功推送推进 msg_seq（并发下 seq 语义由 adapter 持有）')
 })
 
-test('T10 P01：retire 作废 token 缓存，重获 runtime 后重新换取', async () => {
+test('T10 P01：retire 作废 token 缓存；旧 resolved 被墓碑化不得复活，新 resolved 重新换取', async () => {
   const sender = senderOf('qq-bot')
   const resolved = sender.validate({ appId: 'A2', appSecret: 'S2', groupId: 'G2' })
 
@@ -126,9 +126,13 @@ test('T10 P01：retire 作废 token 缓存，重获 runtime 后重新换取', as
     assert.equal(tokenCalls, 1)
     assert.equal(sender.retire(resolved), true)
     assert.equal(resolved._tokenManager, undefined, 'dispose 必须断开 token 缓存引用')
-    const second = sender.createRuntime(resolved)
-    assert.notEqual(second, first, 'retire 后必须得到全新 epoch 的 runtime')
-    await sender.send(resolved, MSG)
+    // v0.15 RC：retire 后同一 resolved 被永久墓碑化——绝不悄悄重建 runtime（不复活）。
+    assert.throws(() => sender.createRuntime(resolved), (error) => error.code === 'CHANNEL_RETIRED')
+    // 只有「全新 resolved」才允许建立新 epoch 的 runtime，并重新换取 token（旧缓存不得复活）。
+    const fresh = sender.validate({ appId: 'A2', appSecret: 'S2', groupId: 'G2' })
+    const second = sender.createRuntime(fresh)
+    assert.notEqual(second, first, 'retire 后新 resolved 得到全新 epoch 的 runtime')
+    await sender.send(fresh, MSG)
   })
   assert.equal(tokenCalls, 2, '作废的缓存不得复活')
 })

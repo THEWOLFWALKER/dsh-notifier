@@ -17,7 +17,6 @@
   },
   "files": [
     "src",
-    "test",
     "types",
     "scripts/channel-login.mjs",
     "scripts/channel-selfcheck.mjs",
@@ -59,11 +58,13 @@
     "docs/screenshots/configured-channels-desktop.png",
     "docs/screenshots/fresh-wizard-mobile.png",
     "docs/screenshots/configured-channels-mobile.png",
-    "client.js"
+    "client.js",
+    "extensions/cloudflare-tunnel"
   ],
   "scripts": {
-    "test": "node --import ./test/_hermetic-network-guard.mjs --test \"test/*.test.mjs\" \"test/*.spec.mjs\"",
-    "verify:release": "node scripts/verify-release.mjs"
+    "test": "node scripts/run-tests.mjs",
+    "verify:release": "node scripts/verify-release.mjs",
+    "test:dom": "node test/dom/run.mjs"
   },
   "dshQuality": {
     "testCount": 2380

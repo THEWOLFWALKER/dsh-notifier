@@ -187,6 +187,7 @@ export function createTunnelSupervisor(options = {}) {
     if (state === 'running') return Promise.resolve({ ok: true, status: 'running', alreadyRunning: true })
     if (state === 'starting' && inflightStart) return inflightStart.promise // R01 单飞行
     lastConfig = config
+    epoch += 1
     const { promise, reject } = doStart(config)
     inflightStart = { promise, reject }
     const clearInflight = () => { if (inflightStart && inflightStart.promise === promise) inflightStart = null }
@@ -199,6 +200,7 @@ export function createTunnelSupervisor(options = {}) {
     clearStartDeadline()
     if (state === 'idle' || state === 'stopped') return Promise.resolve({ ok: true, status: 'stopped' })
     epoch += 1 // R02：立刻作废所有旧回调
+    const stopEpoch = epoch
     const current = child
     child = null
     if (state === 'starting') {
@@ -217,8 +219,8 @@ export function createTunnelSupervisor(options = {}) {
         if (done) return
         done = true
         clearDrain()
-        state = 'stopped'
-        resolve({ ok: true, status: 'stopped', forced })
+        if (epoch === stopEpoch && child === null) state = 'stopped'
+        resolve({ ok: true, status: epoch === stopEpoch && child === null ? 'stopped' : state, forced })
       }
       drainTimer = st(() => {
         drainTimer = null
@@ -240,14 +242,17 @@ export function createTunnelSupervisor(options = {}) {
   })
 
   const dispose = () => {
-    clearReconnect()
-    clearStartDeadline()
-    clearDrain()
-    epoch += 1
-    child = null
-    inflightStart = null
     lastConfig = null
-    state = 'stopped'
+    clearReconnect()
+    // dispose 是终态：即便从未启动（idle）也必须如实报 stopped，不能被 stop() 的 idle 短路留在 idle。
+    if (state === 'idle' || state === 'stopped') state = 'stopped'
+    // stop() synchronously invalidates epoch, settles an in-flight start, and SIGTERMs the owned child.
+    // The returned promise completes drain/SIGKILL; callers may await it but safety does not depend on awaiting.
+    return stop().finally(() => {
+      clearReconnect()
+      clearStartDeadline()
+      if (state === 'stopped') clearDrain()
+    })
   }
 
   return { start, stop, status, dispose }

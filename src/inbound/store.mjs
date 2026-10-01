@@ -181,34 +181,30 @@ export function createStore(filePath) {
   //    两轮 ≈480ms 仍持锁即 busy，不牺牲原子性换可用性。
   const lockPath = `${filePath}.lock`
   let warnedLockTimeout = false
-  const isStaleLock = () => {
-    try { return Date.now() - statSync(lockPath).mtimeMs > 10_000 } catch { return false }
-  }
-  // P1-3 跨进程状态压力审查（2026-08-23）：mtime>10s 的陈锁判据意味着「持锁进程崩溃
-  // （kill -9/断电/OOM）后，残留锁最长 10s 内不算陈旧」——窗口内所有进程的每次 save 都
-  // 白等两轮 ~480ms 再降级无锁写入（丢写保护失效），CLI↔宿主并发写可能静默丢键。
-  // 修复：利用 v0.6.5 属主落章的 pid:random 格式做死亡探测——锁龄超过 500ms 宽限期
-  // （防「刚创建就被读」与 pid 复用竞态）后 kill(pid,0)：ESRCH=确死，视同陈锁当场回收；
-  // 存活（含 EPERM 他用户进程）与无法解析的外来锁内容一律返回 false，维持旧行为。
-  // 方向保守：pid 被无关新进程复用只会让恢复退回 10s mtime 判据，绝不提前抢活锁。
+  // v0.15 RC: owner-aware stale recovery. A live owner is never reclaimed by age alone.
   const LOCK_PID_PROBE_MIN_AGE_MS = 500
-  const deadHolderLock = () => {
+  const LOCK_UNKNOWN_STALE_MS = 10_000
+  const recoverableLock = () => {
     try {
       const ageMs = Date.now() - statSync(lockPath).mtimeMs
       if (ageMs <= LOCK_PID_PROBE_MIN_AGE_MS) return false
-      const pid = Number(readFileSync(lockPath, 'utf8').split(':')[0])
-      if (!Number.isInteger(pid) || pid <= 0) return false // 外来/畸形锁内容：不做死亡推断
+      let raw
+      try { raw = readFileSync(lockPath, 'utf8') } catch {
+        return ageMs > LOCK_UNKNOWN_STALE_MS
+      }
+      const pid = Number(String(raw).split(':')[0])
+      if (!Number.isInteger(pid) || pid <= 0) return ageMs > LOCK_UNKNOWN_STALE_MS
       try {
         process.kill(pid, 0)
-        return false // 探测成功 = 持有者活着（慢/被调度延迟），继续等
-      } catch (probeError) {
-        return probeError.code === 'ESRCH' // 仅确死回收；EPERM 视同存活，不冒险
+        return false
+      } catch (error) {
+        if (error?.code === 'ESRCH') return true
+        return false // EPERM/unknown => conservative live owner
       }
     } catch {
-      return false // stat/read 失败（锁刚被清等）：交给正常抢占流程
+      return false
     }
   }
-  const recoverableLock = () => isStaleLock() || deadHolderLock()
 
   const acquireLock = () => {
     try { mkdirSync(dirname(filePath), { recursive: true }) } catch { /* 目录已在/不可建：后续自然失败 */ }

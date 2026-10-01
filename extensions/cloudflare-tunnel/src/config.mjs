@@ -55,6 +55,9 @@ export function validateTunnelConfig(input) {
       }
     }
     if (hostTrustFlags.untrustedOrigin === true) return bad('untrusted-origin')
+    if (hostTrustFlags.originCheck === false || hostTrustFlags.hostCheck === false) {
+      return bad('host-trust-violation')
+    }
   }
 
   // Access 保护：宣称「已受保护」必须有明确 access 配置（R03-2）；空值不得当信任

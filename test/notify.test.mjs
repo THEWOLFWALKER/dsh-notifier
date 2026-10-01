@@ -70,7 +70,7 @@ test('audit sink failure is isolated from delivery and later sinks', async () =>
     const result = await notifier.notifyAll({ title: 't', content: 'c' })
     // v0.13（R4）：accepted = provider 已接受；confirmed = 显式回执（webhook 无回执）；
     // delivered 保留为 legacy 别名（== accepted）。
-    assert.deepEqual(result, { ok: true, accepted: ['webhook'], confirmed: [], delivered: ['webhook'], skipped: [], failed: [] })
+    assert.deepEqual(result, { ok: true, accepted: ['webhook'], confirmed: [], delivered: ['webhook'], unknown: [], skipped: [], failed: [] })
     assert.equal(seen.length, 1)
   } finally {
     globalThis.fetch = originalFetch

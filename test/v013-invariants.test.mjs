@@ -10,9 +10,13 @@ import { REAL_PROVIDER_TESTS } from './_hermetic-network-guard.mjs'
 const packageJson = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
 const workflow = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8')
 const guard = readFileSync(new URL('./_hermetic-network-guard.mjs', import.meta.url), 'utf8')
+// v0.15 RC（Gate 3）：默认测试命令改为递归 runner（覆盖 nested test/spec，排除 test/dom workspace），
+// hermetic 边界由 runner 在 spawn 的 node 参数里继续安装——契约不变，落点从 package.json 移到 runner。
+const runner = readFileSync(new URL('../scripts/run-tests.mjs', import.meta.url), 'utf8')
 
 test('v0.13 invariant skeleton: default test command installs the hermetic boundary', () => {
-  assert.match(packageJson.scripts.test, /--import\s+\.\/test\/_hermetic-network-guard\.mjs/)
+  assert.match(packageJson.scripts.test, /scripts\/run-tests\.mjs/)
+  assert.match(runner, /--import',\s*'\.\/test\/_hermetic-network-guard\.mjs'/)
   assert.match(guard, /DSH_REAL_PROVIDER_TESTS === '1'/)
   assert.match(guard, /blocked external network/)
   assert.equal(REAL_PROVIDER_TESTS, process.env.DSH_REAL_PROVIDER_TESTS === '1')

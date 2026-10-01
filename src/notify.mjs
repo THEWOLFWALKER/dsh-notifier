@@ -189,6 +189,7 @@ export function createNotifier(ctx, channels, options = {}) {
     const accepted = []
     const confirmed = []
     const failed = []
+    const unknown = []
     const skipped = []
     const retry = routing.configured
       ? retryPolicyOf(normalizeLevel(normalized.level), options.retry)
@@ -206,7 +207,14 @@ export function createNotifier(ctx, channels, options = {}) {
         const publicText = error instanceof Error ? (error.publicMessage ?? error.message) : String(error)
         const internalDetail = error instanceof Error ? (error.detail ?? error.message) : String(error)
         warn(`渠道 "${target.type}" 推送失败: ${internalDetail}`)
-        failed.push({ channel: target.type, error: publicText })
+        const uncertain = error instanceof Error
+          && (error.uncertain === true || (error.noRetry === true && error.code === ERROR_CODES.TIMEOUT))
+        if (uncertain) {
+          unknown.push(target.type)
+          failed.push({ channel: target.type, error: publicText, uncertain: true })
+        } else {
+          failed.push({ channel: target.type, error: publicText })
+        }
       }
     })
     await track(Promise.all(batch))
@@ -217,6 +225,7 @@ export function createNotifier(ctx, channels, options = {}) {
       accepted,
       confirmed,
       delivered: accepted,
+      unknown,
       skipped,
       failed,
     }
