@@ -123,6 +123,7 @@ export function createControlSurfaceService({
   diagnostics = null,
   portability = null,
   dshIm = null,
+  dshImImport = null,
   activity,
   health,
   storageStatus,
@@ -451,6 +452,43 @@ export function createControlSurfaceService({
           status: value.rejected === true ? 'failed' : 'ok',
         })
         return ok(value)
+      }
+
+      // v0.15（T23）：dsh-im 已知格式迁移导入器。它把 dsh-im 导出翻译为 T21 portability v1
+      // 文档，再交由 canonical portability 权威 dry-run / 提交；导入器自身零写、零网络，
+      // 且绝不返回原始 detect 结果（那会携带源文档里的明文凭据），只暴露安全投影。
+      if (method === 'dshIm.import.preview' || method === 'dshIm.import.commit'
+        || method === 'dshIm.import.cancel') {
+        if (dshImImport === null) {
+          const error = new Error('dsh-im 迁移导入器当前不可用（本进程未装配）')
+          error.code = 'not-supported'
+          throw error
+        }
+      }
+
+      if (method === 'dshIm.import.preview') {
+        // 只读 dry-run：翻译 + 校验，零写、零网络，不 touch revision。
+        return ok({ ...revisionView(), ...dshImImport.preview(payload) })
+      }
+
+      if (method === 'dshIm.import.cancel') {
+        return ok(dshImImport.cancel(payload))
+      }
+
+      if (method === 'dshIm.import.commit') {
+        const value = dshImImport.commit(payload)
+        const applied = value.results.filter((row) => row.action === 'patched')
+        const staged = value.results.filter((row) => row.action === 'staged')
+        // 唯一 owner 记账：一次提交推进一代 revision、记一条 activity（绝不逐渠道重复）。
+        revision.touch('channels')
+        activity.record('configuration', 'config-imported', {
+          source: 'dsh-im',
+          applied: applied.length,
+          staged: staged.length,
+          skipped: value.results.filter((row) => row.action === 'skipped').length,
+          status: 'ok',
+        })
+        return ok({ ...revisionView(), ...value })
       }
 
       if (method === 'activity.list') {

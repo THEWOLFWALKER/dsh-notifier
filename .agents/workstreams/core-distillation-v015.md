@@ -2,7 +2,7 @@
 
 - **identity**: agent `flash`, task pack `dsh-notifier-flash-complete-taskpack` (T01–T30)
 - **branch**: `codex/core-distillation-v015` (off `dev`)
-- **status**: in progress — T01–T20 done (T06 partial)
+- **status**: in progress — T01–T23 done (T06 partial)
 - **owner scope**: core authority convergence, Native/Recovery UX, local config export/import, dsh-im
   bridge, remote URL, optional CF Tunnel, Workers/Pages extension package, docs/tests/delivery.
 - **explicitly out of scope**: `main`, tags, npm publish, real cloud deploy, full encrypted secret
@@ -794,6 +794,43 @@ DI-01…DI-03.
 
 **Count**: **2301 → 2313** (`npm test`, full suite green: 2313 pass / 0 fail).
 
+## T23 — dsh-im 已知格式迁移
+
+**Result**: dsh-im known-format migration is a **pure translator + planner** (`src/control-plane/dsh-im-import.mjs`)
+that reads a user-provided dsh-im bot export in one of the five locked formats and maps it onto the notifier's
+existing outbound channels. It owns **no store key** and performs **no durable write of its own** — `commit` / `cancel`
+delegate verbatim to the T21 portability authority, so the single-writer and secret-keep rules stay single-sourced.
+
+- **Locked formats** (`FORMATS`): `feishu-legacy`→`feishu`, `qq`→`qq-bot`, `dingtalk`→`dingtalk`, `telegram`→`telegram`
+  (each with a fixed `version` and `description`); `feishu-v2` (app-credential bot) has **no outbound equivalent** and is
+  reported as `skip` + `bridge` (never a bot-prefix guess). Unknown `sourceType`/`format`/`formatVersion`, non-JSON, and
+  over-size inputs fail closed with `bad-request` and **zero write** (D06).
+- **Secret-source masking, never a value** (`classifySecret`): a secret field is reported by its *source* — `inline` /
+  `env` (→ external reference with `name`, `requirement:'reference'`, `writable:true`) / `opaque` (`hs:/credential:/…`) /
+  `masked` (`••…`)/`missing` — and never by its value. The translated document and the preview projection each omit the
+  secret value, so no env ref is inlined and no plaintext/masked/opaque credential is copied (D07).
+- **Live-waiter / membership facts never migrate** (`DROPPED_ROOT` + per-bot drop): `owner`, `approvedSenders`, `session`,
+  `offset`, `loginContext`, `pendingAction`, `tempWebhook`, `idempotencyKey`, `chatRef`, `sessionId`, `platformRoute` are
+  dropped on sight — no privilege elevation, no live waiter, no consumption cursor moves (D08).
+- **No multi-account invention** (`translate` `seen` set): at most one candidate per notifier channel; extra bots for the
+  same slot become reviewable `alternatives` (`reason:'duplicate-slot'`). An existing slot with a differing public config is
+  a `patch` at the importer layer and a `conflict` (deselected by default) at the portability layer (D09).
+- **Source read-only**: `detect`/`plan` parse the source string and never mutate it (two previews return identical mapping).
+- **Wiring** (`src/index.mjs` + `src/control-surface/service.mjs`): the importer is built once over the shared `portability`
+  authority (`createDshImImportService({ portability: surfacePortability, outboundConfig })`) and injected as `dshImImport`;
+  the surface adds `dshIm.import.preview/commit/cancel`. It deliberately **never exposes the raw `detect` result** (which
+  would carry the source document's plaintext); `commit` records one activity row and advances one revision (single-owner).
+
+**Boundaries held**: no full-credential scan, no stopped-bot takeover, no auto owner, no offset/login-context migration, no
+equivalent-platform bot suddenly bridged as "migrated"; unknown future schemas fail closed.
+
+**Tests**: `node --test test/v015-stage-s15-dsh-im-import.test.mjs` → **14 pass / 0 fail** (D06 per-format locked mapping +
+feishu-v2 bridge + unknown/mutated-source fail-closed, D07 inline/env/opaque/masked source classification with zero value
+leak, D08 root + bot-level live-waiter key drop, D09 duplicate-slot alternatives + existing-slot conflict + disabled staging,
+plus surface wiring + unassembled fail-closed). Contract: `docs/behavior-contract.md` MI-01…MI-03.
+
+**Count**: **2313 → 2327** (`npm test`, full suite green: 2327 pass / 0 fail).
+
 ## Task status
 
 | Task | Status | Commit | Evidence |
@@ -819,5 +856,6 @@ DI-01…DI-03.
 | T19 | done | `843fd12` | module-level stable form sections (no focus loss); schema-driven controls + secret keep/replace/clear; leave-draft confirm; pairing copy w/ manual fallback; nav layering; destructive-impact confirm; `node test/dom/run.mjs` → 21 pass |
 | T20 | done | `6d51a60` | Recovery reads the shared canonical diagnostics snapshot (no second collector); read-only; 501 unassembled / 503 read-error; `GET /api/diagnostics` behind localhost auth; report ≠ backup; `test/v015-stage-s12-recovery-diagnostics.test.mjs` → 6 pass |
 | T21 | done | `39f042f` | config export/import single authority; public-only export (no secret / URL token / ENV ref inlined); strict parse + dry-run + staged-disabled import; one-transaction commit; cancel/fail zero-write; `test/v015-stage-s13-config-portability.test.mjs` → 12 pass |
-| T22 | done | `(see git log)` | optional dsh-im delegating bridge; dynamic availability + epoch isolation (D01/D02); honest accepted/unknown evidence (D03/D04); text-only + no auto-switch + no credential leak (D05); `test/v015-stage-s14-dsh-im-bridge.test.mjs` → 12 pass |
-| T23–T30 | not started | — | — |
+| T22 | done | `2068af2` | optional dsh-im delegating bridge; dynamic availability + epoch isolation (D01/D02); honest accepted/unknown evidence (D03/D04); text-only + no auto-switch + no credential leak (D05); `test/v015-stage-s14-dsh-im-bridge.test.mjs` → 12 pass |
+| T23 | done | (pending) | dsh-im known-format migration importer (pure translator over T21 portability); locked formats + feishu-v2 bridge + unknown fail-closed (D06); secret-source masking with zero value leak (D07); live-waiter/membership keys dropped (D08); duplicate-slot alternatives + conflict + disabled staging (D09); `test/v015-stage-s15-dsh-im-import.test.mjs` → 14 pass |
+| T24–T30 | not started | — | — |

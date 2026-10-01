@@ -921,6 +921,54 @@ dsh-im 投递桥（`src/control-plane/dsh-im-bridge.mjs`）是**唯一**触碰�
 - **证据链接**：`test/v015-stage-s14-dsh-im-bridge.test.mjs`（D03/D05）
 - **矩阵**：**D05**
 
+## 十三、dsh-im 已知格式迁移（T23）
+
+dsh-im 迁移导入器（`src/control-plane/dsh-im-import.mjs`）是纯 **translator + planner**：读取用户提供的
+dsh-im 导出，翻译成 T21 portability v1 文档，再委托 canonical portability 权威 dry-run / 提交。它自身
+**零写、零网络**，且绝不返回携带源文档明文的原始 `detect` 结果。本节固定 MI-01…MI-03，oracle 是
+`test/v015-stage-s15-dsh-im-import.test.mjs`（D06–D09）。
+
+### MI-01 · 锁定格式、未知 fail-closed、源文件只读（D06）
+
+- **分类**：MUST_PRESERVE
+- **事实 owner**：`src/control-plane/dsh-im-import.mjs` `FORMATS` / `detect`
+- **输入/前置状态**：飞书历史单 bot / v2、QQ、钉钉、Telegram 来源；未知 schema/format/version；源字符串
+- **结果**：五个锁定 format 各含固定 `source fixture`（`feishu-legacy`→`feishu`、`qq`→`qq-bot`、
+  `dingtalk`→`dingtalk`、`telegram`→`telegram`，各锁定 `formatVersion`）；`feishu-v2`（app 凭证）**无出站等价
+  渠道**，报 `skip`+`bridge`，绝不猜 bot 前缀；未知 `sourceType`/`format`/`formatVersion`、非 JSON、超限一律
+  `bad-request` 且**零写**；`detect`/`plan` 只解析不改变源字符串（两次 preview 映射一致）
+- **禁止动作**：不得对未知未来格式半解析/猜测；不得把 no-equivalent 的 bot 静默映射到不相等平台；
+  不得变更用户提供的源文件内容
+- **证据链接**：`test/v015-stage-s15-dsh-im-import.test.mjs`（D06）
+- **矩阵**：**D06**
+
+### MI-02 · secret 来源遮蔽，永不复制明文；不搬 live waiter / 成员事实（D07/D08）
+
+- **分类**：SECURITY_FIX
+- **事实 owner**：`src/control-plane/dsh-im-import.mjs` `classifySecret` / `DROPPED_ROOT`
+- **输入/前置状态**：inline/ENV 引用/opaque host 引用/掩码 secret；owner/approvedSenders/session/offset 及
+  bot 内 loginContext/pendingAction/tempWebhook 等活状态键
+- **结果**：secret 字段只报**来源**（`inline`/`env`/`opaque`/`masked`/`missing`）与需求（`supply`/`reference`），
+  **绝不报值**；`env` 引用成为 `externalReferences`（含 name，`reference`,可重绑），绝不内联为配置值；翻译文档与
+  preview 投影均不含明文/掩码/opaque 凭据；`owner`/`approvedSenders`/`session`/`offset` 与 bot 级活状态键被丢弃，
+  **不提升权限、不搬 live waiter、不争消费游标**
+- **禁止动作**：不得复制任何 secret 明文；不得把 ENV 引用解析后写入配置假生效；不得迁移
+  owner/approvedSenders/session/offset/loginContext/pendingAction/tempWebhook 等活状态/成员事实
+- **证据链接**：`test/v015-stage-s15-dsh-im-import.test.mjs`（D07/D08）
+- **矩阵**：**D07/D08**
+
+### MI-03 · 重复映射不新增，现 slot 冲突可审查、不偷偷多账号（D09）
+
+- **分类**：MUST_PRESERVE
+- **事实 owner**：`src/control-plane/dsh-im-import.mjs` `translate` `seen` / `readCurrentPublic`
+- **输入/前置状态**：多个 bot 命中同一 slot；现 slot 公共字段与导入文档不同；多 bot 模型
+- **结果**：每条 notifier 渠道至多一个候选，多余 bot 成为 `alternatives`（`reason:'duplicate-slot'`），
+  **绝不静默拼成多账号**；现 slot 公共字段不同时 importer 报 `patch`、portability 层报 `conflict` 且
+  **默认不选中**（只显式选择才 apply）；新渠道**禁用暂存**（`enabled:false`），import 绝不自动启用/发测试
+- **禁止动作**：不得为容纳多 bot 私造多账号模型；不得自动应用冲突配置；不得激活导入的禁用暂存渠道
+- **证据链接**：`test/v015-stage-s15-dsh-im-import.test.mjs`（D09）
+- **矩阵**：**D09**
+
 ---
 
 ## 必测矩阵 → spec / oracle 覆盖
@@ -960,6 +1008,10 @@ dsh-im 投递桥（`src/control-plane/dsh-im-bridge.mjs`）是**唯一**触碰�
 | D03 | DI-02, DI-03 | `v015-stage-s14-dsh-im-bridge.test.mjs`（参数透传 + 稳定 ID 不猜前缀） |
 | D04 | DI-02 | `v015-stage-s14-dsh-im-bridge.test.mjs`（sent/超时/cancel → accepted/unknown） |
 | D05 | DI-03 | `v015-stage-s14-dsh-im-bridge.test.mjs`（不自动换目标 + 文本 only） |
+| D06 | MI-01 | `v015-stage-s15-dsh-im-import.test.mjs`（每格式锁定映射 + 未知 fail-closed + 源只读） |
+| D07 | MI-02 | `v015-stage-s15-dsh-im-import.test.mjs`（secret 来源遮蔽零值 / ENV 引用分离） |
+| D08 | MI-02 | `v015-stage-s15-dsh-im-import.test.mjs`（owner/session/offset + live-waiter 键丢弃） |
+| D09 | MI-03 | `v015-stage-s15-dsh-im-import.test.mjs`（重复 slot 不新增 + 冲突可审查 + 禁用暂存） |
 
 ### 未覆盖 / UNKNOWN（不得上调）
 
