@@ -663,5 +663,5 @@ test('static safety invariants remain true', () => {
   assert.match(source, /channel\?\.health\?\.state/)
   assert.match(source, /class ErrorBoundary extends Component/)
   assert.match(source, /data-error-code/)
-  assert.match(source, /if \(fields\[key\]\?\.secret === true\) delete nextDirection\[key\]/)
+  assert.match(source, /if \(fields\[key\]\?\.secret === true\) delete next\[key\]/)
 })

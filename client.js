@@ -8,16 +8,20 @@ window.__ModuleLoader__.load({
     } = React
 
     const PANEL_ID = 'dsh-notifier'
-    // Native 主面板的导航入口（S05/S06/S07 起：提问收件箱 / 任务 / 成员 / 待确认身份 / 配对码 / 渠道 / 活动）。
-    const NAV_ITEMS = Object.freeze([
+    // v0.15（T19 / U11）：导航分层——日常一步可达（待处理提问 / 任务 / 渠道 / 活动），
+    // 其余管理能力（成员 / 待确认身份 / 配对码 / 会话 / 诊断）单独一组，仍全部在 Native 可达；
+    // 不为「减导航」把日常能力塞回 Recovery。
+    const NAV_DAILY = Object.freeze([
       ['questions', 'questions'],
       ['tasks', 'tasks'],
+      ['channels', 'channels'],
+      ['activity', 'activity'],
+    ])
+    const NAV_MANAGE = Object.freeze([
       ['members', 'members'],
       ['pending', 'pendingIdentities'],
       ['pairing', 'pairingCodes'],
       ['sessions', 'sessions'],
-      ['channels', 'channels'],
-      ['activity', 'activity'],
       ['diagnostics', 'diagnosticsCenter'],
     ])
     const RPC_CHANNEL = '/dsh-notifier'
@@ -61,6 +65,27 @@ window.__ModuleLoader__.load({
       noAccountNote: '无需账号即可保存，测试完全可选。',
       unavailableList: '当前能力不可用',
       staleUpdatedAt: '数据可能已过期',
+      // v0.15（T19 / U06–U13）：按 schema 控件、secret 保留/替换/清除、离开草稿确认、
+      // 配对码复制、导航分层、删除/降权影响确认。
+      secretConfiguredKeep: '已配置（默认保留）',
+      secretNotShown: '出于安全，不显示已保存的值',
+      secretKeep: '保留',
+      secretReplace: '替换',
+      secretClear: '清除',
+      listHint: '每行一项，也可用逗号分隔',
+      unsavedLeaveTitle: '有未保存的修改',
+      unsavedLeaveBody: '离开将丢弃这些草稿修改；已保存的配置不受影响。',
+      leaveStay: '留在本页',
+      leaveDiscard: '放弃修改并离开',
+      copyCode: '复制配对码',
+      codeCopied: '配对码已复制',
+      copyUnavailableSelect: '无法访问剪贴板，请手动选中上方配对码复制。',
+      navDaily: '常用',
+      navManage: '管理',
+      confirmDemote: '确认降权',
+      memberDemoteImpact: '降为普通成员后不再拥有所有者权限',
+      memberRemoveImpact: '将从成员名单中移除',
+      updating: '正在更新…',
       complete: '完成',
       retry: '重试',
       back: '返回',
@@ -273,6 +298,27 @@ window.__ModuleLoader__.load({
       noAccountNote: 'No account needed to save — testing is entirely optional.',
       unavailableList: 'This capability is unavailable',
       staleUpdatedAt: 'Data may be out of date',
+      // v0.15 (T19 / U06–U13): schema controls, secret keep/replace/clear, leave-draft
+      // confirmation, pairing-code copy, nav layering, destructive-impact confirmation.
+      secretConfiguredKeep: 'Configured (kept by default)',
+      secretNotShown: 'The saved value is never shown, for safety',
+      secretKeep: 'Keep',
+      secretReplace: 'Replace',
+      secretClear: 'Clear',
+      listHint: 'One item per line, or comma-separated',
+      unsavedLeaveTitle: 'You have unsaved changes',
+      unsavedLeaveBody: 'Leaving discards these draft edits; saved configuration is unaffected.',
+      leaveStay: 'Stay here',
+      leaveDiscard: 'Discard and leave',
+      copyCode: 'Copy pairing code',
+      codeCopied: 'Pairing code copied',
+      copyUnavailableSelect: 'Clipboard is unavailable — select the pairing code above and copy it manually.',
+      navDaily: 'Daily',
+      navManage: 'Manage',
+      confirmDemote: 'Confirm demote',
+      memberDemoteImpact: 'Loses owner privileges once demoted to member',
+      memberRemoveImpact: 'Will be removed from the member list',
+      updating: 'Updating…',
       complete: 'Done',
       retry: 'Retry',
       back: 'Back',
@@ -500,6 +546,21 @@ window.__ModuleLoader__.load({
         '```',
         '',
       ].join('\n')
+    }
+
+    /**
+     * v0.15（T19 / U10）：复制纯文本到剪贴板。**只做一件事**：成功返回 true，任何原因
+     * （无剪贴板能力、非安全上下文、被拒绝）都返回 false —— 由调用方给出**手动 fallback**
+     * 文案，绝不假装复制成功。绝不把被复制内容写入任何持久层（明文配对码只在内存一次）。
+     */
+    async function copyText(text) {
+      try {
+        if (typeof navigator === 'object' && navigator?.clipboard?.writeText) {
+          await navigator.clipboard.writeText(String(text))
+          return true
+        }
+      } catch {}
+      return false
     }
 
     async function deliverReport(report) {
@@ -1050,7 +1111,8 @@ window.__ModuleLoader__.load({
     // v0.14（Stage E / P1-09）：破坏性操作统一二次确认。
     // 首次点击只「武装」，必须再点确认才执行；4 秒无操作自动回落，避免误触后长期悬置。
     // last-owner 等底层约束仍由 authority 强制，UI 确认只是防手滑，不替代权威校验。
-    function ConfirmButton({ children, confirmLabel, busy, disabled, onConfirm, t, kind = 'default' }) {
+    // v0.15（T19 / U13）：`impact` 显示**具体对象与后果**（谁、会发生什么），取消则零 mutation。
+    function ConfirmButton({ children, confirmLabel, busy, disabled, onConfirm, t, kind = 'default', impact }) {
       const [armed, setArmed] = useState(false)
       useEffect(() => {
         if (!armed) return undefined
@@ -1061,12 +1123,13 @@ window.__ModuleLoader__.load({
         return h(Button, { kind, disabled, onClick: () => setArmed(true) }, children)
       }
       return h('span', { className: 'dn-confirm' },
+        impact ? h('span', { className: 'dn-confirmImpact' }, impact) : null,
         h(Button, {
           kind: 'danger',
           disabled,
           onClick: () => { setArmed(false); onConfirm() },
         }, busy ? children : (confirmLabel ?? children)),
-        h(Button, { disabled, onClick: () => setArmed(false) }, t('cancelAction')))
+        h(Button, { autoFocus: true, disabled, onClick: () => setArmed(false) }, t('cancelAction')))
     }
 
     // v0.14（Stage E / P1-10）：原始标识默认脱敏——保留首尾少量字符，中间打码。
@@ -1142,6 +1205,295 @@ window.__ModuleLoader__.load({
           : null,
         ...rows.map(render),
       ]
+    }
+
+    // v0.15（T19 / U07）：非 secret 草稿可**短时**保留（sessionStorage，随标签页关闭失效）；
+    // secret 明文绝不写入任何 Web 存储、日志或支持报告——只写进当前 React state。
+    const DRAFT_PREFIX = 'dsh-notifier:draft:'
+    function safeStorage(name) {
+      try {
+        const store = globalThis[name]
+        return store !== null && typeof store === 'object' ? store : null
+      } catch { return null }
+    }
+    function saveDraft(where, type, values, fields) {
+      const store = safeStorage('sessionStorage')
+      if (store === null) return
+      try {
+        const safe = {}
+        for (const [key, value] of Object.entries(values ?? {})) {
+          if (fields?.[key]?.secret === true) continue
+          safe[key] = value
+        }
+        const target = `${DRAFT_PREFIX}${where}:${type}`
+        if (Object.keys(safe).length === 0) store.removeItem(target)
+        else store.setItem(target, JSON.stringify(safe))
+      } catch { /* storage 不可用/配额满：草稿只在内存，功能不受影响 */ }
+    }
+    function loadDraft(where, type, fields) {
+      const store = safeStorage('sessionStorage')
+      if (store === null) return null
+      try {
+        const raw = store.getItem(`${DRAFT_PREFIX}${where}:${type}`)
+        if (!raw) return null
+        const parsed = JSON.parse(raw)
+        if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return null
+        const out = {}
+        for (const [key, value] of Object.entries(parsed)) {
+          if (fields?.[key]?.secret === true) continue
+          out[key] = value
+        }
+        return Object.keys(out).length > 0 ? out : null
+      } catch { return null }
+    }
+    function clearDraft(where, type) {
+      const store = safeStorage('sessionStorage')
+      if (store === null) return
+      try { store.removeItem(`${DRAFT_PREFIX}${where}:${type}`) } catch {}
+    }
+
+    // v0.15（T19 / U06）：按声明选择控件——bool 开关 / enum 选择 / 数字输入 / 列表输入 / 文本。
+    // 这纯粹是**表现层**映射（schema），不改任何业务规则；未声明类型一律退回文本。
+    // secret 字段显式区分 保留 / 替换 / 清除，绝不把掩码或旧值当值回填。
+    const SECRET_MODES = Object.freeze([['keep', 'secretKeep'], ['replace', 'secretReplace'], ['clear', 'secretClear']])
+    function SchemaField({ ctx, name, meta, value, onChange, secretMode, onSecretMode, t }) {
+      const secret = meta?.secret === true
+      const configured = meta?.configured === true
+      const type = meta?.type || 'string'
+      const label = resolveText(ctx, meta?.label) || name
+      const description = meta?.description ? h('small', null, resolveText(ctx, meta.description)) : null
+      if (secret && configured) {
+        const mode = secretMode ?? 'keep'
+        return h('fieldset', { className: 'dn-field dn-field--secret', key: name },
+          h('legend', { className: 'dn-fieldLabel' }, label),
+          h('span', { className: 'dn-rowMeta' }, `${t('secretConfiguredKeep')} · ${t('secretNotShown')}`),
+          h('div', { className: 'dn-secretModes' },
+            ...SECRET_MODES.map(([modeKey, labelKey]) =>
+              h('label', { key: modeKey, className: 'dn-radio' },
+                h('input', {
+                  type: 'radio',
+                  name: `dn-secret-${name}`,
+                  value: modeKey,
+                  checked: mode === modeKey,
+                  onChange: () => onSecretMode(modeKey),
+                }),
+                t(labelKey)))),
+          mode === 'replace'
+            ? h('input', {
+                type: 'password', value: value ?? '', 'aria-label': `${label} (${t('secretReplace')})`,
+                onChange: event => onChange(event.target.value),
+              })
+            : null,
+          description)
+      }
+      if (type === 'enum' && Array.isArray(meta?.options)) {
+        return h('label', { className: 'dn-field', key: name },
+          h('span', { className: 'dn-fieldLabel' }, label),
+          h('select', {
+            value: value ?? '', 'aria-label': label,
+            onChange: event => onChange(event.target.value),
+          },
+          h('option', { value: '' }, '—'),
+          ...meta.options.map(option => h('option', { key: String(option), value: String(option) }, String(option)))),
+          description)
+      }
+      if (type === 'boolean') {
+        return h('label', { className: 'dn-field dn-field--check', key: name },
+          h('input', {
+            type: 'checkbox', checked: value === true, 'aria-label': label,
+            onChange: event => onChange(event.target.checked),
+          }),
+          h('span', null, label),
+          description)
+      }
+      if (type === 'list') {
+        const text = Array.isArray(value) ? value.join('\n') : String(value ?? '')
+        return h('label', { className: 'dn-field', key: name },
+          h('span', { className: 'dn-fieldLabel' }, label),
+          h('textarea', {
+            rows: 3, value: text, 'aria-label': label, placeholder: t('listHint'),
+            onChange: event => onChange(event.target.value.split(/[\n,]/).map(item => item.trim()).filter(Boolean)),
+          }),
+          h('small', null, t('listHint')),
+          description)
+      }
+      if (type === 'number') {
+        return h('label', { className: 'dn-field', key: name },
+          h('span', { className: 'dn-fieldLabel' }, label),
+          h('input', {
+            type: 'number', value: value ?? '', 'aria-label': label,
+            // 合法数字才收窄为 number；空串保留为未填，非法输入原样保留交给 authority 校验。
+            onChange: event => {
+              const raw = event.target.value
+              onChange(raw === '' ? '' : (Number.isFinite(Number(raw)) ? Number(raw) : raw))
+            },
+          }),
+          description)
+      }
+      return h('label', { className: 'dn-field', key: name },
+        h('span', { className: 'dn-fieldLabel' }, label),
+        h('input', {
+          type: secret ? 'password' : 'text', value: value ?? '', 'aria-label': label,
+          placeholder: secret && configured ? t('configured') : '',
+          onChange: event => onChange(event.target.value),
+        }),
+        description)
+    }
+
+    // v0.15（T19 / U05）：单个方向（出站 / 入站）的表单区块——**模块级稳定组件**。
+    // 旧实现把它定义在 ChannelDetailView 内部，每次父轮询/状态更新都会产生新的组件类型，
+    // React 因此整棵子树 remount：输入框 DOM 被替换，focus 与 caret 丢失（U05）。
+    // 现在类型身份稳定，输入节点原地更新，连续输入不丢焦点。
+    function ChannelDirectionSection({ ctx, controller, state, t, type, direction, section, onDirtyChange }) {
+      const fields = section?.fields ?? {}
+      const [patch, setPatch] = useState({})
+      const [dirty, setDirty] = useState(new Set())
+      const [secretModes, setSecretModes] = useState({})
+      const [saveNotice, setSaveNotice] = useState(null)
+      const [testResult, setTestResult] = useState(null)
+      const dirtyRef = useRef(dirty)
+      const revisions = useRef(null)
+
+      // 服务端 revision 变化时，把**未编辑**字段同步到最新投影；dirty 字段保留本地草稿。
+      useEffect(() => {
+        const nextRevision = section?.configRevision ?? null
+        if (revisions.current === nextRevision) return
+        revisions.current = nextRevision
+        setPatch(current => {
+          const next = { ...current }
+          for (const [key, value] of Object.entries(section?.editableValues ?? {})) {
+            if (!dirtyRef.current.has(key)) next[key] = value
+          }
+          return next
+        })
+      }, [section?.configRevision])
+
+      // 挂载时恢复本方向非 secret 短时草稿（secret 从不落盘）。
+      useEffect(() => {
+        const restored = loadDraft(direction, type, fields)
+        if (restored === null) return
+        setPatch(current => ({ ...current, ...restored }))
+        const set = new Set(Object.keys(restored))
+        dirtyRef.current = set
+        setDirty(set)
+      }, [])
+
+      // 非 secret 短时草稿持久化；无 dirty 时清除，避免把服务端值误当草稿。
+      useEffect(() => {
+        if (dirty.size > 0) saveDraft(direction, type, patch, fields)
+      }, [patch, dirty])
+
+      useEffect(() => { onDirtyChange?.(direction, dirty.size > 0) }, [dirty, direction, onDirtyChange])
+
+      const setField = (key, value) => {
+        setDirty(current => {
+          const set = new Set(current); set.add(key)
+          dirtyRef.current = set
+          return set
+        })
+        setPatch(current => ({ ...current, [key]: value }))
+      }
+      const setSecretMode = (key, mode) => {
+        setSecretModes(current => ({ ...current, [key]: mode }))
+        setDirty(current => {
+          const set = new Set(current)
+          if (mode === 'keep') set.delete(key); else set.add(key)
+          dirtyRef.current = set
+          return set
+        })
+        if (mode !== 'replace') {
+          setPatch(current => {
+            if (!Object.prototype.hasOwnProperty.call(current, key)) return current
+            const next = { ...current }; delete next[key]; return next
+          })
+        }
+      }
+      const save = async () => {
+        const payload = {}
+        const clear = []
+        for (const key of dirty) {
+          // U06：secret 显式「清除」→ 走 patch 的 clear 列表；不把掩码当值写回。
+          if (fields[key]?.secret === true && (secretModes[key] ?? 'keep') === 'clear') { clear.push(key); continue }
+          payload[key] = patch[key]
+        }
+        if (Object.keys(payload).length === 0 && clear.length === 0) return
+        setSaveNotice(null)
+        try {
+          const receipt = await controller.saveChannel(type, direction, clear.length > 0 ? { ...payload, clear } : payload)
+          if (receipt?.duplicate === true) return
+          if (receipt?.saved !== false) {
+            setPatch(current => {
+              const next = { ...current }
+              for (const key of Object.keys(payload)) if (fields[key]?.secret === true) delete next[key]
+              for (const key of clear) delete next[key]
+              return next
+            })
+            setSecretModes({})
+            const set = new Set()
+            dirtyRef.current = set
+            setDirty(set)
+            clearDraft(direction, type)
+            setSaveNotice(receipt?.refreshed === false
+              ? { kind: 'warn', text: t('savedRefreshFailed') }
+              : { kind: 'ok', text: t('savedOk') })
+          }
+        } catch (error) {
+          // 落盘/校验失败：草稿保留（U02），错误经统一出口展示。
+          controller.reportError(error)
+        }
+      }
+
+      const saveBusy = state?.busy?.[`save:${type}:${direction}`] === true
+      const testBusy = state?.busy?.[`test:${type}`] === true
+      const hasDirty = dirty.size > 0
+      const outcome = testResult ? testOutcome(ctx, testResult, t) : null
+      const runTest = () => {
+        void controller.testChannel(type).then(setTestResult).catch(error => {
+          // channels.test 的失败也走证据分级：unknown（无法确认），而不是「失败可重发」。
+          if (error?.code === 'dsh-notifier/not-supported' || error?.code === 'not-supported') {
+            controller.reportError(error)
+            return
+          }
+          setTestResult({ status: 'unknown', reasonCode: 'provider-error', detail: { en: String(error?.message ?? ''), zh: String(error?.message ?? '') } })
+        })
+      }
+      if (!section) return null
+      return h(Section, { title: direction === 'outbound' ? t('notify') : t('control') },
+        ...Object.entries(fields).map(([key, meta]) => h(SchemaField, {
+          key, ctx, name: key, meta,
+          value: patch[key],
+          onChange: value => setField(key, value),
+          secretMode: secretModes[key],
+          onSecretMode: mode => setSecretMode(key, mode),
+          t,
+        })),
+        h('div', { className: 'dn-formActions' },
+          h(Button, { kind: 'primary', disabled: saveBusy || !hasDirty, onClick: () => void save() }, saveBusy ? t('saving') : t('save')),
+          direction === 'outbound'
+            ? h(Button, {
+                // v0.15（T18 / U03）：只测已保存配置；有未保存修改时先保存，绝不静默 save+send。
+                disabled: testBusy || hasDirty,
+                title: hasDirty ? t('unsavedChangesHint') : t('testCommittedConfig'),
+                onClick: runTest,
+              }, testBusy ? t('testing') : t('test')) : null),
+        saveNotice
+          ? h('p', {
+              className: saveNotice.kind === 'ok' ? 'dn-successText' : 'dn-error',
+              role: saveNotice.kind === 'ok' ? 'status' : 'alert',
+              'aria-live': 'polite',
+            }, saveNotice.text)
+          : null,
+        direction === 'outbound' && hasDirty ? h('p', { className: 'dn-note' }, t('unsavedChangesHint')) : null,
+        h('p', { className: 'dn-rowMeta' }, section.applyMode === 'hot' ? t('applyHot') : section.applyMode === 'restart' ? t('applyRestart') : ''),
+        direction === 'inbound' && section.applyMode === 'restart' ? h('p', { className: 'dn-note' }, t('inboundRestartHint')) : null,
+        direction === 'outbound' && section.restartPending === true ? h('p', { className: 'dn-note' }, t('outboundRestartHint')) : null,
+        direction === 'outbound' && outcome
+          ? h('p', {
+              className: outcome.ok ? 'dn-successText' : 'dn-error',
+              role: outcome.ok ? 'status' : 'alert',
+              'aria-live': 'polite',
+            }, `${outcome.title} · ${outcome.note}`)
+          : null)
     }
 
     function PageHead({ title, intro, actions }) {
@@ -1318,10 +1670,15 @@ window.__ModuleLoader__.load({
           title: t('advanced'),
         }, '···'),
       ]
+      const navRow = (items, className, labelKey) => h('nav', { className: `dn-nav ${className}`, 'aria-label': t(labelKey) },
+        ...items.map(([kind, key]) =>
+          h('button', { key: kind, type: 'button', className: 'dn-navBtn', onClick: () => controller.navigate({ kind }) }, t(key))))
       return h('div', { className: 'dn-page' },
         h(PageHead, { title: t('title'), intro: t('intro'), actions }),
-        h('div', { className: 'dn-nav' }, ...NAV_ITEMS.map(([kind, key]) =>
-          h('button', { key: kind, type: 'button', className: 'dn-navBtn', onClick: () => controller.navigate({ kind }) }, t(key)))),
+        // v0.15（T19 / U11）：日常一步可达；管理组独立但仍在 Native 内全部可达。
+        navRow(NAV_DAILY, 'dn-nav--daily', 'navDaily'),
+        h('p', { className: 'dn-navCaption' }, t('navManage')),
+        navRow(NAV_MANAGE, 'dn-nav--manage', 'navManage'),
         h(StatusRow, { ctx, summary: home?.summary, t, onRetry: () => void controller.refreshCurrent() }),
         state.connectionState === 'stale'
           ? h('p', { className: 'dn-error', role: 'status' }, t('staleData'))
@@ -1371,10 +1728,16 @@ window.__ModuleLoader__.load({
       const [saved, setSaved] = useState(null)
       const [testResult, setTestResult] = useState(null)
       const [error, setError] = useState(null)
+      // v0.15（T19 / U07）：离开未保存草稿需可取消。
+      const [leaveArmed, setLeaveArmed] = useState(false)
       const candidates = (channels ?? []).filter(channel => channel?.notify?.editable !== false)
       const selected = candidates.find(channel => channel.type === type)
       const fields = selected?.notify?.fields ?? {}
       const setField = (key, value) => setDraft(current => ({ ...current, [key]: value }))
+      // 非 secret 短时草稿保留；secret 明文永不落 Web 存储（U07）。
+      useEffect(() => {
+        if (phase === 'form' && type !== null && Object.keys(draft).length > 0) saveDraft('setup', type, draft, fields)
+      }, [draft, phase, type])
       const saveBusy = type !== null && state?.busy?.[`save:${type}:outbound`] === true
       const testBusy = type !== null && state?.busy?.[`test:${type}`] === true
       const save = async () => {
@@ -1386,6 +1749,7 @@ window.__ModuleLoader__.load({
           setDraft(current => Object.fromEntries(
             Object.entries(current).filter(([key]) => fields[key]?.secret !== true),
           ))
+          clearDraft('setup', type)
           setSaved(receipt ?? null)
           setPhase('saved')
         } catch (err) {
@@ -1416,24 +1780,23 @@ window.__ModuleLoader__.load({
             ...candidates.map(channel =>
               h('button', {
                 type: 'button', className: 'dn-pickerRow', key: channel.type,
-                onClick: () => { setType(channel.type); setDraft({}); setPhase('form') },
+                onClick: () => {
+                  setType(channel.type)
+                  // 恢复该类型此前的非 secret 短时草稿（若有）。
+                  setDraft(loadDraft('setup', channel.type, channel?.notify?.fields ?? {}) ?? {})
+                  setPhase('form')
+                },
               }, resolveText(ctx, channel.label) || channel.type, h('span', null, '›')))))
       }
       const outcome = testResult ? testOutcome(ctx, testResult, t) : null
       const body = phase === 'form'
         ? [
-            ...Object.entries(fields).map(([key, meta]) => {
-              const secret = meta?.secret === true
-              return h('label', { className: 'dn-field', key },
-                h('span', null, resolveText(ctx, meta?.label) || key),
-                h('input', {
-                  type: secret ? 'password' : 'text',
-                  value: draft[key] ?? '',
-                  placeholder: secret && meta?.configured === true ? t('configured') : '',
-                  onChange: event => setField(key, event.target.value),
-                }),
-                meta?.description ? h('small', null, resolveText(ctx, meta.description)) : null)
-            }),
+            ...Object.entries(fields).map(([key, meta]) => h(SchemaField, {
+              key, ctx, name: key, meta,
+              value: draft[key],
+              onChange: value => setField(key, value),
+              t,
+            })),
             error ? h('p', { className: 'dn-error', role: 'alert', key: 'err' }, error?.message || t('unknownError')) : null,
             h('p', { className: 'dn-note', key: 'note' }, t('noAccountNote')),
             h('div', { className: 'dn-formActions', key: 'actions' },
@@ -1464,10 +1827,32 @@ window.__ModuleLoader__.load({
               }, testBusy || phase === 'testing' ? t('testing') : t('test')),
               h(Button, { kind: 'primary', onClick: onDone }, t('complete'))),
           ]
+      const goBack = () => {
+        // U07：未保存草稿时离开需可取消；确认后才丢弃。
+        if (phase === 'form' && Object.keys(draft).length > 0) { setLeaveArmed(true); return }
+        setPhase('choose'); setType(null)
+      }
       return h('div', { className: 'dn-setupCard' },
         h('div', { className: 'dn-detailBack' },
-          h('button', { className: 'dn-link', onClick: () => { setPhase('choose'); setType(null) } }, `← ${t('back')}`)),
+          h('button', { className: 'dn-link', onClick: goBack }, `← ${t('back')}`)),
         h('h2', null, resolveText(ctx, selected?.label) || type),
+        leaveArmed
+          ? h('div', { className: 'dn-leaveGuard', role: 'alertdialog', 'aria-label': t('unsavedLeaveTitle') },
+              h('strong', null, t('unsavedLeaveTitle')),
+              h('p', { className: 'dn-note' }, t('unsavedLeaveBody')),
+              h('div', { className: 'dn-formActions' },
+                h(Button, { autoFocus: true, onClick: () => setLeaveArmed(false) }, t('leaveStay')),
+                h(Button, {
+                  kind: 'danger',
+                  onClick: () => {
+                    setLeaveArmed(false)
+                    if (type !== null) clearDraft('setup', type)
+                    setDraft({})
+                    setPhase('choose')
+                    setType(null)
+                  },
+                }, t('leaveDiscard'))))
+          : null,
         ...body)
     }
 
@@ -1497,35 +1882,26 @@ window.__ModuleLoader__.load({
     }
 
     function ChannelDetailView({ ctx, controller, state, t }) {
-      const data = state.channel
       const type = state.view.type
-      const [drafts, setDrafts] = useState({ outbound: {}, inbound: {} })
-      const [dirty, setDirty] = useState({ outbound: new Set(), inbound: new Set() })
-      const dirtyRef = useRef(dirty)
-      const revisions = useRef({ outbound: null, inbound: null })
-      const [testResult, setTestResult] = useState(null)
-      // v0.15（T18 / U01）：保存回执（每个方向独立），与详情刷新结果分开显示。
-      const [saveNotice, setSaveNotice] = useState({ outbound: null, inbound: null })
+      const backRef = useRef(null)
+      // v0.15（T19 / U07）：聚合两个方向的 dirty，用于离开确认；写权威仍在 authority。
+      const [dirtyMap, setDirtyMap] = useState({ outbound: false, inbound: false })
+      const [leaveArmed, setLeaveArmed] = useState(false)
       useEffect(() => { void controller.loadChannel(type).catch(error => controller.reportError(error)) }, [type])
-      useEffect(() => {
-        const channel = data?.channel
-        if (!channel) return
-        for (const direction of ['outbound', 'inbound']) {
-          const section = direction === 'outbound' ? channel.notify : channel.control
-          const nextRevision = section?.configRevision ?? null
-          if (revisions.current[direction] === nextRevision) continue
-          revisions.current[direction] = nextRevision
-          setDrafts(current => {
-            const next = { ...current, [direction]: { ...current[direction] } }
-            for (const [key, value] of Object.entries(section?.editableValues ?? {})) {
-              if (!dirtyRef.current[direction].has(key)) next[direction][key] = value
-            }
-            return next
-          })
-        }
-      }, [data?.channel?.notify?.configRevision, data?.channel?.control?.configRevision])
+      const onDirtyChange = useCallback((direction, isDirty) => {
+        setDirtyMap(current => current[direction] === isDirty ? current : { ...current, [direction]: isDirty })
+      }, [])
 
-      const channel = data?.channel
+      const channel = state.channel?.channel
+      const hasUnsaved = dirtyMap.outbound === true || dirtyMap.inbound === true
+      const closeLeave = () => {
+        setLeaveArmed(false)
+        try { backRef.current?.focus?.() } catch { /* 焦点回退是增强，不是必需 */ }
+      }
+      const goBack = () => {
+        if (hasUnsaved) { setLeaveArmed(true); return }
+        controller.navigate({ kind: 'channels' })
+      }
       if (!channel) {
         // v0.15（T18 / U04）：读取中与读取失败必须可区分——服务缺失/失败不能显示成「正在读取」。
         return h('div', { className: 'dn-page' },
@@ -1535,113 +1911,29 @@ window.__ModuleLoader__.load({
           h(ErrorNotice, { error: state.error, t, onRetry: () => void controller.loadChannel(type).catch(error => controller.reportError(error)) }),
           state.error
             ? null
-            : h('p', { className: 'dn-inlineStatus' }, h(StateDot, { state: 'ongoing' }), t('loading')))
-      }
-
-      function Direction({ direction, section }) {
-        if (!section) return null
-        const fields = section.fields ?? {}
-        const patch = drafts[direction] ?? {}
-        const setField = (key, value) => {
-          setDirty(current => {
-            const set = new Set(current[direction]); set.add(key)
-            const next = { ...current, [direction]: set }
-            dirtyRef.current = next
-            return next
-          })
-          setDrafts(current => ({ ...current, [direction]: { ...current[direction], [key]: value } }))
-        }
-        const save = async () => {
-          const payload = {}
-          for (const key of dirty[direction]) payload[key] = patch[key]
-          if (Object.keys(payload).length === 0) return
-          setSaveNotice(current => ({ ...current, [direction]: null }))
-          try {
-            const receipt = await controller.saveChannel(type, direction, payload)
-            if (receipt?.duplicate === true) return
-            // v0.15（T18 / U01 / U02）：durable receipt 成立（saved!==false）就清 dirty 并驱逐
-            // secret 明文——刷新详情是否成功是另一件事，不改变「已保存」这一事实。
-            if (receipt?.saved !== false) {
-              setDrafts(current => {
-                const nextDirection = { ...current[direction] }
-                for (const key of Object.keys(payload)) {
-                  if (fields[key]?.secret === true) delete nextDirection[key]
-                }
-                return { ...current, [direction]: nextDirection }
-              })
-              setDirty(current => {
-                const next = { ...current, [direction]: new Set() }
-                dirtyRef.current = next
-                return next
-              })
-              setSaveNotice(current => ({
-                ...current,
-                [direction]: receipt?.refreshed === false
-                  ? { kind: 'warn', text: t('savedRefreshFailed') }
-                  : { kind: 'ok', text: t('savedOk') },
-              }))
-            }
-          } catch (error) {
-            // 落盘/校验失败：草稿保留（U02），错误经统一出口展示。
-            controller.reportError(error)
-          }
-        }
-        const saveBusy = state.busy[`save:${type}:${direction}`] === true
-        const testBusy = state.busy[`test:${type}`] === true
-        const hasDirty = dirty[direction].size > 0
-        const notice = saveNotice[direction]
-        const outcome = testResult ? testOutcome(ctx, testResult, t) : null
-        const runTest = () => {
-          void controller.testChannel(type).then(setTestResult).catch(error => {
-            // channels.test 的失败也走证据分级：unknown（无法确认），而不是「失败可重发」。
-            if (error?.code === 'dsh-notifier/not-supported' || error?.code === 'not-supported') {
-              controller.reportError(error)
-              return
-            }
-            setTestResult({ status: 'unknown', reasonCode: 'provider-error', detail: { en: String(error?.message ?? ''), zh: String(error?.message ?? '') } })
-          })
-        }
-        return h(Section, { title: direction === 'outbound' ? t('notify') : t('control') },
-          ...Object.entries(fields).map(([key, meta]) =>
-            h('label', { className: 'dn-field', key },
-              h('span', null, resolveText(ctx, meta?.label) || key),
-              h('input', {
-                type: meta?.secret === true ? 'password' : 'text',
-                value: patch[key] ?? '',
-                placeholder: meta?.secret === true && meta?.configured === true ? t('configured') : '',
-                onChange: event => setField(key, event.target.value),
-              }),
-              meta?.description ? h('small', null, resolveText(ctx, meta.description)) : null)),
-          h('div', { className: 'dn-formActions' },
-            h(Button, { kind: 'primary', disabled: saveBusy || !hasDirty, onClick: () => void save() }, saveBusy ? t('saving') : t('save')),
-            direction === 'outbound'
-              ? h(Button, {
-                  // v0.15（T18 / U03）：只测已保存配置；有未保存修改时先保存，绝不静默 save+send。
-                  disabled: testBusy || hasDirty,
-                  title: hasDirty ? t('unsavedChangesHint') : t('testCommittedConfig'),
-                  onClick: runTest,
-                }, testBusy ? t('testing') : t('test')) : null),
-          notice
-            ? h('p', { className: notice.kind === 'ok' ? 'dn-successText' : 'dn-error', role: notice.kind === 'ok' ? 'status' : 'alert' }, notice.text)
-            : null,
-          direction === 'outbound' && hasDirty ? h('p', { className: 'dn-note' }, t('unsavedChangesHint')) : null,
-          h('p', { className: 'dn-rowMeta' }, section.applyMode === 'hot' ? t('applyHot') : section.applyMode === 'restart' ? t('applyRestart') : ''),
-          direction === 'inbound' && section.applyMode === 'restart' ? h('p', { className: 'dn-note' }, t('inboundRestartHint')) : null,
-          direction === 'outbound' && section.restartPending === true ? h('p', { className: 'dn-note' }, t('outboundRestartHint')) : null,
-          direction === 'outbound' && outcome
-            ? h('p', { className: outcome.ok ? 'dn-successText' : 'dn-error', role: outcome.ok ? 'status' : 'alert' },
-                `${outcome.title} · ${outcome.note}`)
-            : null)
+            : h('p', { className: 'dn-inlineStatus', 'aria-live': 'polite' }, h(StateDot, { state: 'ongoing' }), t('loading')))
       }
 
       const health = channel.health ?? {}
       return h('div', { className: 'dn-page' },
         h('div', { className: 'dn-detailBack' },
-          h('button', { className: 'dn-link', onClick: () => controller.navigate({ kind: 'channels' }) }, `← ${t('back')}`)),
+          h('button', { ref: backRef, className: 'dn-link', onClick: goBack }, `← ${t('back')}`)),
         h(PageHead, { title: resolveText(ctx, channel.label) || type }),
         h(ErrorNotice, { error: state.error, t, onRetry: () => void controller.loadChannel(type).catch(error => controller.reportError(error)) }),
-        h(Direction, { direction: 'outbound', section: channel.notify }),
-        h(Direction, { direction: 'inbound', section: channel.control }),
+        leaveArmed
+          ? h('div', { className: 'dn-leaveGuard', role: 'alertdialog', 'aria-label': t('unsavedLeaveTitle') },
+              h('strong', null, t('unsavedLeaveTitle')),
+              h('p', { className: 'dn-note' }, t('unsavedLeaveBody')),
+              h('div', { className: 'dn-formActions' },
+                h(Button, { autoFocus: true, onClick: closeLeave }, t('leaveStay')),
+                h(Button, {
+                  kind: 'danger',
+                  onClick: () => { setLeaveArmed(false); controller.navigate({ kind: 'channels' }) },
+                }, t('leaveDiscard'))))
+          : null,
+        // U05：模块级稳定组件——父级轮询/状态更新不会让它 remount，输入焦点与 caret 保留。
+        h(ChannelDirectionSection, { ctx, controller, state, t, type, direction: 'outbound', section: channel.notify, onDirtyChange }),
+        h(ChannelDirectionSection, { ctx, controller, state, t, type, direction: 'inbound', section: channel.control, onDirtyChange }),
         h(Section, { title: t('recent20') },
           h('div', { className: 'dn-healthGrid' },
             h('span', null, `${Number(health.delivered ?? 0)} ${t('delivered')}`),
@@ -1686,24 +1978,38 @@ window.__ModuleLoader__.load({
 
     function MemberRow({ ctx, member, controller, t, busy, canUpdate, canRemove }) {
       const isOwner = member?.role === 'owner'
+      const name = String(member?.label || member?.userId || member?.key || '')
       const meta = [member?.channel, member?.accountId, isOwner ? t('owner') : t('roleMember')].filter(Boolean).join(' · ')
       return h('div', { className: 'dn-row' },
         h(StateDot, { state: isOwner ? 'done' : 'idle' }),
         h('div', { className: 'dn-rowMain' },
-          h('strong', { className: 'dn-rowTitle' }, String(member?.label || member?.userId || '')),
+          h('strong', { className: 'dn-rowTitle' }, name),
           h('span', { className: 'dn-rowMeta' }, meta)),
         h('div', { className: 'dn-rowAside' },
+          // v0.15（T19 / U13）：降权（owner→member）是破坏性操作，需确认并说明后果；
+          // 升权不改权限边界，保持一步直达。last-owner 由 authority 在事务内拦住，UI 预检不独自保证。
           canUpdate
-            ? h(Button, {
-                disabled: busy,
-                onClick: () => void controller.updateMember(member.key, { role: isOwner ? 'member' : 'owner' }).catch(error => controller.reportError(error)),
-              }, isOwner ? t('demote') : t('promote'))
+            ? (isOwner
+                ? h(ConfirmButton, {
+                    t,
+                    kind: 'default',
+                    confirmLabel: t('confirmDemote'),
+                    impact: `${name} · ${t('memberDemoteImpact')}`,
+                    busy,
+                    disabled: busy,
+                    onConfirm: () => void controller.updateMember(member.key, { role: 'member' }).catch(error => controller.reportError(error)),
+                  }, busy ? t('updating') : t('demote'))
+                : h(Button, {
+                    disabled: busy,
+                    onClick: () => void controller.updateMember(member.key, { role: 'owner' }).catch(error => controller.reportError(error)),
+                  }, t('promote')))
             : null,
           canRemove
             ? h(ConfirmButton, {
                 t,
                 kind: 'default',
                 confirmLabel: t('confirmRemove'),
+                impact: `${name} · ${t('memberRemoveImpact')}`,
                 busy,
                 disabled: busy,
                 onConfirm: () => void controller.removeMember(member.key).catch(error => controller.reportError(error)),
@@ -1797,6 +2103,24 @@ window.__ModuleLoader__.load({
       // 码面只在本次响应出现一次：本地持有、刷新即丢（不落任何持久层）。
       const [minted, setMinted] = useState(null)
       const [label, setLabel] = useState('')
+      // v0.15（T19 / U10）：复制结果的**局部**状态（null | 'copied' | 'unavailable'）。
+      const [copyState, setCopyState] = useState(null)
+      const codeRef = useRef(null)
+      const onCopy = () => {
+        void copyText(String(minted?.code ?? '')).then(ok => {
+          setCopyState(ok ? 'copied' : 'unavailable')
+          // 无剪贴板能力时给出**手动 fallback**：选中码面，用户可直接 Ctrl/Cmd-C。
+          if (!ok && codeRef.current && typeof window?.getSelection === 'function') {
+            try {
+              const range = document.createRange()
+              range.selectNodeContents(codeRef.current)
+              const selection = window.getSelection()
+              selection.removeAllRanges()
+              selection.addRange(range)
+            } catch {}
+          }
+        })
+      }
       const rows = state.pairing?.codes ?? []
       const canMint = state.pairing?.canMint === true
       const canRevoke = state.pairing?.canRevoke === true
@@ -1804,6 +2128,7 @@ window.__ModuleLoader__.load({
       const onMint = () => {
         void controller.mintPairingCode(label).then(value => {
           setMinted(value ?? null)
+          setCopyState(null)
           setLabel('')
         }).catch(error => controller.reportError(error))
       }
@@ -1822,8 +2147,14 @@ window.__ModuleLoader__.load({
         minted
           ? h('div', { className: 'dn-code', key: 'minted' },
               h('p', { className: 'dn-note' }, t('codeShownOnce')),
-              h('code', { className: 'dn-codeValue' }, String(minted.code ?? '')),
-              h('button', { className: 'dn-link', onClick: () => setMinted(null) }, t('clearCode')))
+              h('code', { className: 'dn-codeValue', ref: codeRef, tabIndex: 0 }, String(minted.code ?? '')),
+              h('div', { className: 'dn-formActions' },
+                h(Button, { kind: 'primary', onClick: onCopy }, t('copyCode')),
+                h('button', { className: 'dn-link', onClick: () => { setMinted(null); setCopyState(null) } }, t('clearCode'))),
+              copyState
+                ? h('p', { className: 'dn-note', role: 'status', 'aria-live': 'polite' },
+                    copyState === 'copied' ? t('codeCopied') : t('copyUnavailableSelect'))
+                : null)
           : null,
         h('div', { className: 'dn-list' },
           ...listBody({
@@ -2313,6 +2644,20 @@ window.__ModuleLoader__.load({
       .dn-nav{display:flex;gap:6px;flex-wrap:wrap;margin:-12px 0 20px}
       .dn-navBtn{min-height:28px;border:.5px solid var(--dsw-alias-border-l2);border-radius:999px;background:var(--dsw-alias-bg-layer-1);color:inherit;padding:4px 12px;font:inherit;font-size:13px;cursor:pointer}
       .dn-navBtn:hover{background:var(--dsw-alias-interactive-bg-hover)}
+      .dn-navCaption{margin:0 0 6px;font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary)}
+      .dn-nav--manage{margin:0 0 20px}
+      .dn-field select,.dn-field textarea{box-sizing:border-box;width:100%;max-width:560px;border:.5px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-md);background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);padding:7px 10px;font:inherit}
+      .dn-field select{height:34px}
+      .dn-field textarea{min-height:64px;resize:vertical;line-height:20px}
+      .dn-field--check{flex-direction:row;align-items:center;gap:8px}
+      .dn-field--check input{width:auto;height:auto;max-width:none;flex:0 0 auto}
+      .dn-field--secret{display:flex;flex-direction:column;gap:6px;border:.5px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-md);padding:10px 12px;margin:12px 0}
+      .dn-secretModes{display:flex;gap:12px;flex-wrap:wrap}
+      .dn-radio{display:inline-flex;gap:6px;align-items:center;font-size:13px}
+      .dn-leaveGuard{border:.5px solid var(--dsw-alias-state-warn-primary);border-radius:var(--dsw-radius-md);background:var(--dsw-alias-bg-layer-1);padding:12px 14px;margin:12px 0}
+      .dn-leaveGuard p{margin:6px 0 10px}
+      .dn-page :focus-visible{outline:2px solid var(--dsw-alias-state-business-primary);outline-offset:2px}
+      @media(max-width:359px){.dn-page{padding:16px 12px 36px}.dn-navBtn{padding:4px 10px}}
       .dn-healthGrid{display:flex;gap:16px;flex-wrap:wrap;font-size:13px}.dn-activityTime{width:48px;color:var(--dsw-alias-label-tertiary);font-size:12px}
       .dn-pluginConfig{display:flex;flex-direction:column;gap:8px;padding:8px 0}.dn-pluginConfig>p,.dn-activation>p{margin:0;color:var(--dsw-alias-label-secondary);font-size:13px;line-height:20px}
       @keyframes dnPulse{0%,100%{opacity:.35}50%{opacity:1}}

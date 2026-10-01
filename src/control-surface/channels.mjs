@@ -14,13 +14,25 @@ const SURFACE_TYPES = Object.freeze([
     && !CHANNEL_TYPES.some((type) => toInboundChannelName(type) === channel)),
 ])
 
+// v0.15（T19 / U06）：把声明上的**控件类型**透给 Native 表单——bool 开关 / enum 选择 /
+// 数字输入 / 列表输入 / 文本。这是表现元数据（schema），不是业务规则：没声明的字段一律
+// 退回 `string`，绝不猜。
+const CONTROL_TYPES = new Set(['boolean', 'enum', 'number', 'list'])
+
 function fieldViews(fields, rawConfig = {}) {
   const out = {}
   for (const [key, meta] of Object.entries(fields ?? {})) {
+    const declared = String(meta?.type ?? '').toLowerCase()
+    const type = CONTROL_TYPES.has(declared) ? declared : 'string'
+    const options = Array.isArray(meta?.options)
+      ? meta.options.filter((option) => typeof option === 'string' || typeof option === 'number' || typeof option === 'boolean')
+      : null
     out[key] = {
       required: meta?.required === true,
       secret: exposureOf(meta) === 'secret',
       exposure: exposureOf(meta),
+      type,
+      ...(type === 'enum' && options !== null && options.length > 0 ? { options } : {}),
       configured: Object.prototype.hasOwnProperty.call(rawConfig, key) && rawConfig[key] !== '' && rawConfig[key] !== null && rawConfig[key] !== undefined,
       label: { en: key, zh: key },
       ...(meta?.desc ? { description: { en: String(meta.desc), zh: String(meta.desc) } } : {}),

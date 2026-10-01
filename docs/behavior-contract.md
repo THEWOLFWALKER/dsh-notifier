@@ -724,6 +724,65 @@ Native 视图（`client.js`）是**表现层**：它不持有第二写者，只�
 - **证据链接**：`test/dom/ui-dom-t18.test.mjs`（T18/U08、T18/U09）
 - **矩阵**：**U08**、**U09**
 
+### UX-05 · 稳定组件：连续输入不丢焦点 / caret（U05）
+
+- **分类**：MUST_PRESERVE
+- **事实 owner**：`client.js` 模块级 `ChannelDirectionSection` / `SchemaField`
+- **输入/前置状态**：用户正在输入，同时父级轮询/状态更新触发重渲染
+- **结果**：输入节点的 **DOM 身份不变**，`focus` 与 `caret` 保留；本地草稿不被投影覆盖
+- **禁止动作**：不得在父组件内部定义方向表单组件（会导致类型变化 → 整棵子树 remount）
+- **证据链接**：`test/dom/ui-dom-t19.test.mjs`（T19/U05）；`ui-dom.test.mjs`（通用受控输入）
+- **矩阵**：**U05**
+
+### UX-06 · 按声明渲染控件，secret 从不回显（U06）
+
+- **分类**：MUST_PRESERVE
+- **事实 owner**：`client.js` `SchemaField`；控件类型来自 `src/control-surface/channels.mjs` `fieldViews`
+- **输入/前置状态**：字段声明 `type`（boolean/enum/number/list）/ `secret` + `configured`
+- **结果**：bool → 开关、enum → 选择、number → 数字输入、list → 多行输入、其余 → 文本；已配置 secret 显示「保留 / 替换 / 清除」，**绝不渲染明文值**
+- **禁止动作**：不得把掩码或旧值当值回填；不得为未声明类型的字段猜测控件
+- **证据链接**：`test/dom/ui-dom-t19.test.mjs`（T19/U06）；`src/config.mjs` 字段声明
+- **矩阵**：**U06**
+
+### UX-07 · 未保存离开需显式确认，可取消（U07）
+
+- **分类**：MUST_PRESERVE
+- **事实 owner**：`client.js` `SetupFlow` / `ChannelDetailView`
+- **输入/前置状态**：表单有未保存修改时点击「返回」；非 secret 草稿存于 sessionStorage（随标签页关闭失效）
+- **结果**：弹出确认对话框；「留在本页」取消并保留草稿，「放弃修改并离开」才丢弃并导航
+- **禁止动作**：不得静默丢弃草稿；不得把 secret 明文写入任何 Web 存储 / 日志 / 支持报告
+- **证据链接**：`test/dom/ui-dom-t19.test.mjs`（T19/U07）
+- **矩阵**：**U07**
+
+### UX-08 · 复制配对码 + 手动 fallback（U10）
+
+- **分类**：MUST_PRESERVE
+- **事实 owner**：`client.js` `copyText` / `PairingCodesView`
+- **输入/前置状态**：刚生成的配对码（只在本次响应出现一次）；剪贴板可用 / 不可用
+- **结果**：可用 → 复制成功并报「已复制」；不可用 → 明确提示**手动选中复制**并选中码面，**绝不假装成功**
+- **禁止动作**：不得在没有剪贴板能力时报成功；不得把配对码写入持久层
+- **证据链接**：`test/dom/ui-dom-t19.test.mjs`（T19/U10）
+- **矩阵**：**U10**
+
+### UX-09 · 导航分层：日常一步可达，管理独立分组（U11）
+
+- **分类**：MUST_PRESERVE
+- **事实 owner**：`client.js` `HomeView`（`NAV_DAILY` / `NAV_MANAGE`）
+- **结果**：日常（提问/任务/渠道/活动）在常用组一步可达；管理（成员/待确认/配对码/会话/诊断）在独立分组，仍全部在 Native 内可达
+- **禁止动作**：不得把管理能力隐藏到 Recovery；不得在两组重复同一入口
+- **证据链接**：`test/dom/ui-dom-t19.test.mjs`（T19/U11）
+- **矩阵**：**U11**
+
+### UX-10 · 破坏性操作显示影响并二次确认（U13）
+
+- **分类**：MUST_PRESERVE
+- **事实 owner**：`client.js` `ConfirmButton`（`impact`）/ `MemberRow`
+- **输入/前置状态**：降权 / 移除成员等破坏性操作
+- **结果**：首次点击只「武装」，显示**具体对象与后果**，须再点确认才写入；取消或 4 秒无操作则回落
+- **禁止动作**：不得一次点击即执行破坏性写入；不得省略影响说明
+- **证据链接**：`test/dom/ui-dom-t19.test.mjs`（T19/U13）
+- **矩阵**：**U13**
+
 ---
 
 ## 必测矩阵 → spec / oracle 覆盖

@@ -94,8 +94,8 @@ const FIELD_HINTS = {
   wxpusher: {
     appToken: { required: true, secret: true, desc: 'WxPusher 应用 APP_TOKEN（wxpusher.zjiecode.com）' },
     accountId: { required: false, secret: false, desc: '本地账号标识（多账号/多应用时建议填写；不要填 APP_TOKEN）' },
-    uids: { required: false, secret: true, desc: '接收者 UID 数组，如 ["UID_xxx"]（与 topicIds 至少一项）' },
-    topicIds: { required: false, secret: false, desc: '主题 ID 数组（群发用）' },
+    uids: { required: false, secret: true, type: 'list', desc: '接收者 UID 数组，如 ["UID_xxx"]（与 topicIds 至少一项）' },
+    topicIds: { required: false, secret: false, type: 'list', desc: '主题 ID 数组（群发用）' },
   },
   pushplus: {
     token: { required: true, secret: true, desc: 'pushplus token（www.pushplus.plus）' },
@@ -113,18 +113,18 @@ const FIELD_HINTS = {
     headers: { required: false, secret: true, desc: '附加请求头对象，如 {"Authorization": "..."}' },
   },
   bell: {
-    count: { required: false, secret: false, desc: '响铃次数 1-5（默认 1）' },
+    count: { required: false, secret: false, type: 'number', desc: '响铃次数 1-5（默认 1）' },
   },
   desktop: {
-    sound: { required: false, secret: false, desc: '提示音：auto（默认，仅紧急级）/ always / never' },
+    sound: { required: false, secret: false, type: 'enum', options: ['auto', 'always', 'never'], desc: '提示音：auto（默认，仅紧急级）/ always / never' },
   },
   'qq-bot': {
     appId: { required: true, secret: true, desc: 'QQ 开放平台开发者 ID（q.qq.com → 机器人开发设置）' },
     appSecret: { required: true, secret: true, desc: '同页面 AppSecret' },
-    targetType: { required: false, secret: false, desc: '"user"（单聊，默认）或 "group"（群聊）' },
+    targetType: { required: false, secret: false, type: 'enum', options: ['user', 'group'], desc: '"user"（单聊，默认）或 "group"（群聊）' },
     userId: { required: false, secret: false, desc: '单聊目标用户 openid（targetType=user 时）' },
     groupId: { required: false, secret: false, desc: '群 open id（targetType=group 时）' },
-    markdown: { required: false, secret: false, desc: '默认 markdown（msg_type=2）；填 false 回退纯文本（msg_type=0）' },
+    markdown: { required: false, secret: false, type: 'boolean', desc: '默认 markdown（msg_type=2）；填 false 回退纯文本（msg_type=0）' },
   },
   'wecom-app': {
     corpid: { required: true, secret: true, desc: '企业 ID（企业微信管理后台「我的企业」）' },

@@ -2,7 +2,7 @@
 
 - **identity**: agent `flash`, task pack `dsh-notifier-flash-complete-taskpack` (T01–T30)
 - **branch**: `codex/core-distillation-v015` (off `dev`)
-- **status**: in progress — T01–T18 done (T06 partial)
+- **status**: in progress — T01–T19 done (T06 partial)
 - **owner scope**: core authority convergence, Native/Recovery UX, local config export/import, dsh-im
   bridge, remote URL, optional CF Tunnel, Workers/Pages extension package, docs/tests/delivery.
 - **explicitly out of scope**: `main`, tags, npm publish, real cloud deploy, full encrypted secret
@@ -652,6 +652,46 @@ Contract: `docs/behavior-contract.md` UX-01…UX-04.
 
 **Count**: unchanged at **2283** (DOM suite is a separate workspace, by design).
 
+## T19 — Native 布局、表单与可访问性
+
+**Result**: the Native surface is now usable with a keyboard, a screen reader and a phone. Form controls
+are chosen from the field's *declared* schema instead of always being text boxes, an accidental exit can
+be cancelled, and destructive actions state their impact before they run. Nothing here adds a second
+authority or a UI framework — it is all presentation over the same shared services.
+
+- **Stable direction sections** (`ChannelDirectionSection`, module-level): the outbound/inbound form used
+  to be defined *inside* `ChannelDetailView`, so every parent poll produced a new component type and
+  remounted the subtree — dropping focus and caret mid-typing. It is now a module-level component; the
+  input DOM node survives state updates and poll re-renders (U05).
+- **Schema-driven controls** (`SchemaField`): a field's declared `type` picks the control —
+  `boolean`→checkbox, `enum`→select (with declared options), `number`→number input, `list`→textarea,
+  else text. `src/config.mjs` now declares those types for the adapters that have them and
+  `src/control-surface/channels.mjs` `fieldViews` passes type/options through as *presentation metadata*
+  (never a business rule; undeclared types fall back to text). A configured secret is never echoed: it
+  offers keep / replace / clear and shows no saved value (U06).
+- **Leave-draft confirmation** (`SetupFlow`, `ChannelDetailView`): a dirty form arms a cancelable dialog
+  before leaving; cancelling keeps the draft, only an explicit discard navigates away. Non-secret drafts
+  live in `sessionStorage` (cleared on tab close); secret plaintext never touches any web storage (U07).
+- **Pairing-code copy + manual fallback** (`copyText`, `PairingCodesView`): a copy action reports success
+  only when it really copied; without clipboard capability it selects the one-time code and tells the user
+  to copy manually — never a false "copied" (U10).
+- **Nav layering** (`HomeView`, `NAV_DAILY`/`NAV_MANAGE`): daily work (questions/tasks/channels/activity)
+  is one step away; the management surface (members/pending/pairing/sessions/diagnostics) is its own
+  labelled, screen-reader-navigable group and stays fully reachable in Native — nothing is hidden in
+  Recovery (U11).
+- **Destructive-impact confirmation** (`ConfirmButton` `impact`, `MemberRow`): demote/remove arm first and
+  name the subject and the consequence; only a second, explicit confirm writes; 4s idle or cancel falls
+  back. Keyboard focus is visible via a scoped `:focus-visible` outline; theme tokens stay the Host's
+  `.dsw-alias-*`/`.dsw-radius-*` variables (no hard-coded concept-art colors), with 320/390/768/1280px
+  layouts covered by the responsive rules (U13).
+
+**Tests**: `node test/dom/run.mjs` → **21 pass / 0 fail** (7 new T19 acceptance cases in
+`test/dom/ui-dom-t19.test.mjs`). `test/client-module.test.mjs` static invariant updated to the refactored
+secret-eviction shape (same property). DOM bed stays out of the shipped `npm test` glob.
+Contract: `docs/behavior-contract.md` UX-05…UX-10.
+
+**Count**: unchanged at **2283** (DOM suite is a separate workspace, by design).
+
 ## Task status
 
 | Task | Status | Commit | Evidence |
@@ -673,5 +713,6 @@ Contract: `docs/behavior-contract.md` UX-01…UX-04.
 | T15 | done | `66d9b77` | shared claim boundary across actions/approval/questions; `test/v015-stage-s9-claim-convergence.test.mjs` → 12 pass |
 | T16 | done | `97d5f7c` | every entry shares one authority; storage-failure never rewritten as not-found; query fails closed; `test/v015-stage-s10-entry-parity.test.mjs` → 9 pass |
 | T17 | done | `dc9410a` | caller-less write seam removed; writer inventory is a machine-checked fitness guard; `test/v015-stage-s11-writer-fitness.test.mjs` → 5 pass |
-| T18 | done | (this commit) | save receipt ≠ refresh; save/test split (no implicit send); list tri-state; evidence grading; `node test/dom/run.mjs` → 14 pass |
-| T19–T30 | not started | — | — |
+| T18 | done | `4ea06ea` | save receipt ≠ refresh; save/test split (no implicit send); list tri-state; evidence grading; `node test/dom/run.mjs` → 14 pass |
+| T19 | done | (this commit) | module-level stable form sections (no focus loss); schema-driven controls + secret keep/replace/clear; leave-draft confirm; pairing copy w/ manual fallback; nav layering; destructive-impact confirm; `node test/dom/run.mjs` → 21 pass |
+| T20–T30 | not started | — | — |
