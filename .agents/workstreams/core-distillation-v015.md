@@ -714,5 +714,5 @@ Contract: `docs/behavior-contract.md` UX-05…UX-10.
 | T16 | done | `97d5f7c` | every entry shares one authority; storage-failure never rewritten as not-found; query fails closed; `test/v015-stage-s10-entry-parity.test.mjs` → 9 pass |
 | T17 | done | `dc9410a` | caller-less write seam removed; writer inventory is a machine-checked fitness guard; `test/v015-stage-s11-writer-fitness.test.mjs` → 5 pass |
 | T18 | done | `4ea06ea` | save receipt ≠ refresh; save/test split (no implicit send); list tri-state; evidence grading; `node test/dom/run.mjs` → 14 pass |
-| T19 | done | (this commit) | module-level stable form sections (no focus loss); schema-driven controls + secret keep/replace/clear; leave-draft confirm; pairing copy w/ manual fallback; nav layering; destructive-impact confirm; `node test/dom/run.mjs` → 21 pass |
+| T19 | done | `843fd12` | module-level stable form sections (no focus loss); schema-driven controls + secret keep/replace/clear; leave-draft confirm; pairing copy w/ manual fallback; nav layering; destructive-impact confirm; `node test/dom/run.mjs` → 21 pass |
 | T20–T30 | not started | — | — |
