@@ -461,6 +461,9 @@ export function createConfigPortabilityService({
       config: entry.config,
       dropped: entry.dropped,
       currentEnabled: current.enabled === true,
+      // Gate 2B：预览时点基线——commit 时只比较「本次 selection 涉及的字段」，
+      // 判断目标是否在预览后被并发改动（stale-preview）。绝不放进预览响应投影。
+      baseline: { config: clone(current.config), configured: current.configured === true, enabled: current.enabled === true },
       importEnabled: entry.enabled === true,
       importEnabledEffect: decision === 'add' ? false : current.enabled === true,
       changes,
@@ -564,45 +567,14 @@ export function createConfigPortabilityService({
     return { patch, clear }
   }
 
-  function applySelection(entry, selection) {
-    // Re-read fresh current config and re-validate the conflict; never overwrite
-    // with a stale preview.
-    const current = currentPublicOf(entry.direction, entry.type)
-    if (entry.decision === 'unsupported') {
-      return { direction: entry.direction, type: entry.type, action: 'skipped', reason: 'unsupported' }
-    }
-    const { patch, clear } = resolveSelection(entry, selection)
-    if (entry.decision === 'add') return stageChannel(entry, patch)
-    if (Object.keys(patch).length === 0 && clear.length === 0) {
-      return { direction: entry.direction, type: entry.type, action: 'skipped', reason: 'no-changes' }
-    }
-    const payload = clear.length > 0 ? { ...patch, clear } : patch
-    if (entry.direction === 'outbound') {
-      const result = outboundConfig.save(entry.type, payload)
-      return { direction: 'outbound', type: entry.type, action: 'patched', applied: result?.applied === true, enabled: true }
-    }
-    if (inboundConfig === null || typeof inboundConfig.put !== 'function') {
-      const error = new Error('入站配置写入能力不可用')
-      error.code = 'not-supported'
-      throw error
-    }
-    const saved = inboundConfig.put(entry.type, payload)
-    if (saved?.saved !== true) {
-      const error = new Error('入站配置写入失败：未落盘，已保留当前状态')
-      error.code = 'storage-failed'
-      throw error
-    }
-    return { direction: 'inbound', type: entry.type, action: 'patched', applied: true, enabled: current.enabled === true }
-  }
-
   /**
    * New channels are staged **disabled** and inert: the assembly never reads these
    * keys, so an imported channel can never silently start sending (E05). The user
    * still has to supply credentials and explicitly enable it in the channel screen.
    */
-  function stageChannel(entry, config = plain(entry.config) ?? {}) {
+  function stagedRecord(entry, config) {
     const secrets = secretStateOf(entry.direction, entry.type)
-    const record = {
+    return {
       direction: entry.direction,
       type: entry.type,
       enabled: false,
@@ -611,17 +583,167 @@ export function createConfigPortabilityService({
       stagedAt: isoNow(),
       source: { documentType: DOCUMENT_TYPE, formatVersion: FORMAT_VERSION },
     }
-    const key = `${STAGED_PREFIX}${entry.direction}:${entry.type}`
-    const result = transactDurable(store, (draft) => {
-      draft[key] = record
+  }
+
+  /**
+   * Stale-preview guard (Gate 2B). Re-read the current state and compare **only the
+   * fields this selection touches** against the baseline captured at preview time.
+   * A mismatch means a concurrent write changed the target since the preview; the
+   * commit is refused with zero writes and the token is kept for a fresh preview.
+   */
+  function staleFieldOf(entry, patch) {
+    const current = currentPublicOf(entry.direction, entry.type)
+    if (entry.decision === 'add') return current.configured ? 'configured' : null
+    for (const key of Object.keys(patch)) {
+      const before = entry.baseline?.config?.[key]
+      const now = current.config[key]
+      if (JSON.stringify(before) !== JSON.stringify(now)) return key
+    }
+    return null
+  }
+
+  /**
+   * Commit a preview. `selections` is `[{ direction, type, action: 'apply'|'skip', clear? }]`.
+   *
+   * Gate 2B selection semantics:
+   *   * `selections === undefined` — internal/legacy callers may fall back to the preview
+   *     defaults (`selectedDefault`); the Native UI never relies on this.
+   *   * `selections: []` — an explicit empty selection: zero business mutation.
+   *   * otherwise a full, explicit selection list is required (absent entry = deselected).
+   *
+   * Three phases — never Promise.all, never compensation writes, never a second authority:
+   *   1. plan   — pure: validate + stale check + build the per-entry writes.
+   *   2. commit — one `store.transact()` writes every canonical desired + staged row.
+   *   3. apply  — post-commit runtime reconcile, per entry; a partial apply failure is
+   *               reported (`applied:false` / `restart-pending`) without rolling desired back.
+   */
+  function commitImport({ token, selections } = {}) {
+    const record = takePreview(token)
+    const explicit = Array.isArray(selections)
+    const picked = new Map()
+    if (explicit) {
+      for (const selection of selections) {
+        const object = plain(selection)
+        if (object === null) continue
+        const direction = object.direction === 'inbound' ? 'inbound' : 'outbound'
+        picked.set(`${direction}:${String(object.type ?? '')}`, object)
+      }
+    }
+
+    // ── Phase 1: plan (pure; zero writes) ────────────────────────────────
+    const writes = [] // { entry, plan } — canonical desired
+    const staged = [] // { entry, record } — new channels, staged disabled
+    const results = []
+    for (const entry of record.entries) {
+      const selection = picked.get(`${entry.direction}:${entry.type}`)
+      const wantsApply = explicit
+        ? (selection !== undefined && selection.action === 'apply')
+        : entry.selectedDefault
+      if (!wantsApply) {
+        results.push({ direction: entry.direction, type: entry.type, action: 'skipped', reason: 'deselected' })
+        continue
+      }
+      if (entry.decision === 'unsupported') {
+        results.push({ direction: entry.direction, type: entry.type, action: 'skipped', reason: 'unsupported' })
+        continue
+      }
+      const { patch, clear } = resolveSelection(entry, selection)
+      const stale = staleFieldOf(entry, patch)
+      if (stale !== null) {
+        // Zero writes; the token stays cached so the caller can re-preview or cancel.
+        const error = new Error(`预览已过期：${entry.direction}:${entry.type} 的 "${stale}" 在预览后被改动，请重新导入`)
+        error.code = 'stale-preview'
+        error.entry = { direction: entry.direction, type: entry.type, field: stale }
+        throw error
+      }
+      if (entry.decision === 'add') {
+        staged.push({ entry, record: stagedRecord(entry, patch) })
+        continue
+      }
+      if (Object.keys(patch).length === 0 && clear.length === 0) {
+        results.push({ direction: entry.direction, type: entry.type, action: 'skipped', reason: 'no-changes' })
+        continue
+      }
+      const payload = clear.length > 0 ? { ...patch, clear } : patch
+      if (entry.direction === 'outbound') {
+        if (typeof outboundConfig?.planPatch !== 'function') throw Object.assign(new Error('出站配置写入能力不可用'), { code: 'not-supported' })
+        writes.push({ entry, plan: outboundConfig.planPatch(entry.type, payload) })
+      } else {
+        if (inboundConfig === null || typeof inboundConfig.planPut !== 'function') throw Object.assign(new Error('入站配置写入能力不可用'), { code: 'not-supported' })
+        writes.push({ entry, plan: inboundConfig.planPut(entry.type, payload) })
+      }
+    }
+
+    const stagedRows = staged.map(({ entry, record: row }) => ({ entry, key: `${STAGED_PREFIX}${entry.direction}:${entry.type}`, row }))
+    const activeWrites = writes.filter(({ plan }) => plan.unchanged !== true)
+
+    if (activeWrites.length === 0 && stagedRows.length === 0) {
+      // Explicit zero selection (or nothing to do): consume the token, write nothing.
+      previews.delete(String(token ?? ''))
+      return {
+        committed: true,
+        results,
+        staged: listStaged(),
+        externalReferences: record.parsed.externalReferences,
+        credentialDescriptors: record.parsed.credentialDescriptors,
+      }
+    }
+
+    // ── Phase 2: commit desired (one transaction) ────────────────────────
+    const committedCanonical = new Map()
+    const committed = transactDurable(store, (draft) => {
+      for (const { entry, plan } of activeWrites) {
+        committedCanonical.set(`${entry.direction}:${entry.type}`, plan.mergeInto(draft))
+      }
+      for (const { key, row } of stagedRows) draft[key] = clone(row)
       return true
     })
-    if (result.committed !== true) {
-      const error = new Error('导入暂存写入失败：未落盘，已保留当前状态')
+    if (committed.committed !== true) {
+      const error = new Error('导入提交失败：未落盘，已保留当前状态')
       error.code = 'storage-failed'
       throw error
     }
-    return { direction: entry.direction, type: entry.type, action: 'staged', enabled: false, missingCredentials: secrets.missing }
+
+    // ── Phase 3: post-commit apply (never rolls back desired) ────────────
+    for (const { entry, plan } of writes) {
+      if (plan.unchanged === true) {
+        results.push({ direction: entry.direction, type: entry.type, action: 'skipped', reason: 'no-changes' })
+        continue
+      }
+      if (entry.direction === 'outbound') {
+        const applied = outboundConfig.applyCommitted(entry.type, committedCanonical.get(`${entry.direction}:${entry.type}`))
+        results.push({
+          direction: 'outbound',
+          type: entry.type,
+          action: 'patched',
+          applied: applied?.applied === true,
+          applyMode: applied?.applyMode ?? 'unknown',
+          enabled: currentPublicOf('outbound', entry.type).enabled === true,
+        })
+      } else {
+        const applied = inboundConfig.applyCommitted(entry.type)
+        results.push({
+          direction: 'inbound',
+          type: entry.type,
+          action: 'patched',
+          applied: applied?.applied === true,
+          applyMode: applied?.applyMode ?? 'unknown',
+          enabled: currentPublicOf('inbound', entry.type).enabled === true,
+        })
+      }
+    }
+    for (const { entry, record: row } of staged) {
+      results.push({ direction: entry.direction, type: entry.type, action: 'staged', enabled: false, missingCredentials: row.missingCredentials })
+    }
+
+    previews.delete(String(token ?? ''))
+    return {
+      committed: true,
+      results,
+      staged: listStaged(),
+      externalReferences: record.parsed.externalReferences,
+      credentialDescriptors: record.parsed.credentialDescriptors,
+    }
   }
 
   function listStaged() {
@@ -634,41 +756,6 @@ export function createConfigPortabilityService({
       }
     } catch { /* 读取失败按无暂存处理：读路径不谎报暂存存在 */ }
     return out
-  }
-
-  /**
-   * Commit a preview. `selections` is `[{ direction, type, action: 'apply'|'skip', clear? }]`.
-   * Only explicitly selected entries are applied; deselecting keeps the current config.
-   */
-  function commitImport({ token, selections } = {}) {
-    const record = takePreview(token)
-    const picked = new Map()
-    for (const selection of Array.isArray(selections) ? selections : []) {
-      const object = plain(selection)
-      if (object === null) continue
-      const direction = object.direction === 'inbound' ? 'inbound' : 'outbound'
-      picked.set(`${direction}:${String(object.type ?? '')}`, object)
-    }
-    const results = []
-    for (const entry of record.entries) {
-      const selection = picked.get(`${entry.direction}:${entry.type}`)
-      const wantsApply = selection !== undefined
-        ? selection.action === 'apply'
-        : entry.selectedDefault
-      if (!wantsApply) {
-        results.push({ direction: entry.direction, type: entry.type, action: 'skipped', reason: 'deselected' })
-        continue
-      }
-      results.push(applySelection(entry, selection))
-    }
-    previews.delete(String(token ?? ''))
-    return {
-      committed: true,
-      results,
-      staged: listStaged(),
-      externalReferences: record.parsed.externalReferences,
-      credentialDescriptors: record.parsed.credentialDescriptors,
-    }
   }
 
   /** Read back the canonical public config (post-commit verification). */

@@ -75,6 +75,13 @@ function exportText(rigged) {
   return JSON.stringify(result.document)
 }
 
+/** Gate 2B：Native 契约要求显式 selections——对可申请项全部 apply。 */
+function applyAll(preview) {
+  return preview.entries
+    .filter((entry) => entry.decision !== 'unsupported')
+    .map((entry) => ({ direction: entry.direction, type: entry.type, action: 'apply' }))
+}
+
 // ————————————————————————— E01 —————————————————————————
 
 test('E01: export carries no secret field, no URL token, and no masked string', () => {
@@ -129,7 +136,7 @@ test('E02: export → clean store import is identical except secrets / refs / di
   assert.equal(preview.summary.add, 2, 'both configured channels are new (add)')
   assert.equal(preview.entries.every((e) => e.importEnabledEffect === false), true, 'new channels import disabled')
 
-  const committed = target.portability.commitImport({ token: preview.token, selections: [] })
+  const committed = target.portability.commitImport({ token: preview.token, selections: applyAll(preview) })
   const staged = committed.staged
   const tg = staged.find((s) => s.direction === 'outbound' && s.type === 'telegram')
   assert.equal(tg.enabled, false, 'a staged channel is disabled (never active)')
@@ -195,9 +202,9 @@ test('E04: importing the same document twice is idempotent (staging keys do not 
   const text = exportText(source)
   const r = rig()
   const first = r.portability.previewImport({ text })
-  r.portability.commitImport({ token: first.token, selections: [] })
+  r.portability.commitImport({ token: first.token, selections: applyAll(first) })
   const second = r.portability.previewImport({ text })
-  r.portability.commitImport({ token: second.token, selections: [] })
+  r.portability.commitImport({ token: second.token, selections: applyAll(second) })
   assert.equal(r.portability.listStaged().length, 1, 'repeat import overwrites the same staging key')
 })
 
@@ -237,7 +244,7 @@ test('E05: staging write failure surfaces honestly and never activates anything'
   const outboundConfig = createOutboundConfigService({ store, yamlRows: new Map(), source: createOutboundSource([]), allowLegacy: false })
   const portability = createConfigPortabilityService({ store, outboundConfig, inboundConfig: null, version: '0.13.1' })
   const preview = portability.previewImport({ text })
-  assert.throws(() => portability.commitImport({ token: preview.token, selections: [] }), (e) => e.code === 'storage-failed')
+  assert.throws(() => portability.commitImport({ token: preview.token, selections: applyAll(preview) }), (e) => e.code === 'storage-failed')
   assert.equal(store.snapshot()['channel:telegram:outbound'], undefined, 'no live canonical key was written')
 })
 
@@ -249,11 +256,113 @@ test('E05: staging a new channel preserves existing/shared credentials untouched
   const text = exportText(source)
 
   const preview = target.portability.previewImport({ text })
-  target.portability.commitImport({ token: preview.token, selections: [] })
+  target.portability.commitImport({ token: preview.token, selections: applyAll(preview) })
   assert.equal(target.outboundConfig.raw('telegram').botToken, 'shared-token', 'an unrelated existing credential is untouched')
   const staged = target.portability.listStaged()
   assert.equal(staged.length, 1)
   assert.equal(staged[0].enabled, false, 'the staged bark row is disabled / not active')
+})
+
+// ————————————————————————— Gate 2B —————————————————————————
+
+test('Gate2B: selections: [] is an explicit zero selection — zero business mutation', () => {
+  const source = rig()
+  source.outboundConfig.save('telegram', { botToken: SECRET, chatId: '1' })
+  const text = exportText(source)
+  const target = rig()
+  const preview = target.portability.previewImport({ text })
+  const before = JSON.stringify(target.store.keys().map((k) => [k, target.store.get(k)]))
+
+  const committed = target.portability.commitImport({ token: preview.token, selections: [] })
+  assert.equal(committed.committed, true)
+  assert.equal(committed.results.every((row) => row.action === 'skipped'), true, 'nothing was applied')
+  assert.equal(committed.staged.length, 0, 'no staging row was written')
+  const after = JSON.stringify(target.store.keys().map((k) => [k, target.store.get(k)]))
+  assert.equal(after, before, 'an explicit zero selection writes nothing')
+})
+
+test('Gate2B: a concurrent change to a selected field refuses the commit as stale-preview (zero write, token kept)', () => {
+  const target = rig()
+  target.outboundConfig.save('telegram', { botToken: 'existing-token', chatId: 'old-chat' })
+  const source = rig()
+  source.outboundConfig.save('telegram', { botToken: SECRET, chatId: 'new-chat' })
+  const text = exportText(source)
+
+  const preview = target.portability.previewImport({ text })
+  // A concurrent writer changes the very field this selection touches.
+  target.outboundConfig.save('telegram', { chatId: 'concurrent-chat' })
+
+  const before = JSON.stringify(target.store.keys().map((k) => [k, target.store.get(k)]))
+  assert.throws(
+    () => target.portability.commitImport({
+      token: preview.token,
+      selections: [{ direction: 'outbound', type: 'telegram', action: 'apply' }],
+    }),
+    (e) => e.code === 'stale-preview' && e.entry?.field === 'chatId',
+  )
+  const after = JSON.stringify(target.store.keys().map((k) => [k, target.store.get(k)]))
+  assert.equal(after, before, 'a stale commit writes nothing')
+  assert.equal(target.outboundConfig.raw('telegram').chatId, 'concurrent-chat', 'the concurrent value is untouched')
+
+  // The token was kept: restore the baseline and the SAME preview commits.
+  target.outboundConfig.save('telegram', { chatId: 'old-chat' })
+  target.portability.commitImport({
+    token: preview.token,
+    selections: [{ direction: 'outbound', type: 'telegram', action: 'apply' }],
+  })
+  assert.equal(target.outboundConfig.raw('telegram').chatId, 'new-chat', 'the retained token still commits')
+})
+
+test('Gate2B: a channel that appears after the preview is stale for an add selection (zero write)', () => {
+  const source = rig()
+  source.outboundConfig.save('bark', { key: 'bark-secret', device: 'phone' })
+  const text = exportText(source)
+  const target = rig()
+  const preview = target.portability.previewImport({ text })
+  target.outboundConfig.save('bark', { key: 'late-secret', device: 'late' })
+
+  assert.throws(
+    () => target.portability.commitImport({
+      token: preview.token,
+      selections: [{ direction: 'outbound', type: 'bark', action: 'apply' }],
+    }),
+    (e) => e.code === 'stale-preview',
+  )
+  assert.equal(target.portability.listStaged().length, 0, 'a stale add stages nothing')
+})
+
+test('Gate2B: a mixed commit (canonical desired + staged row) uses exactly one transaction', () => {
+  const base = rig()
+  let calls = 0
+  const store = new Proxy(base.store, {
+    get(target, prop, receiver) {
+      if (prop === 'transact') return (mutator) => { calls += 1; return target.transact(mutator) }
+      const value = Reflect.get(target, prop, receiver)
+      return typeof value === 'function' ? value.bind(target) : value
+    },
+  })
+  const source = createOutboundSource([])
+  const outboundConfig = createOutboundConfigService({ store, yamlRows: new Map(), source, allowLegacy: false })
+  const portability = createConfigPortabilityService({ store, outboundConfig, inboundConfig: null, version: '0.13.1', now: () => new Date('2026-10-01T00:00:00.000Z') })
+  outboundConfig.save('telegram', { botToken: 'existing-token', chatId: 'old-chat' })
+
+  const src = rig()
+  src.outboundConfig.save('telegram', { botToken: SECRET, chatId: 'new-chat' })
+  src.outboundConfig.save('bark', { key: 'bark-secret', device: 'phone' })
+  const text = exportText(src)
+
+  const preview = portability.previewImport({ text })
+  const before = calls
+  portability.commitImport({
+    token: preview.token,
+    selections: [
+      { direction: 'outbound', type: 'telegram', action: 'apply' },
+      { direction: 'outbound', type: 'bark', action: 'apply' },
+    ],
+  })
+  assert.equal(calls - before, 1, 'desired patch + staged row commit in a single transaction')
+  assert.equal(outboundConfig.raw('telegram').chatId, 'new-chat')
+  assert.equal(portability.listStaged().length, 1, 'the new channel was staged disabled')
 })
 
 // ————————————————————————— read-back —————————————————————————

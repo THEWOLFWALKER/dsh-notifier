@@ -75,6 +75,66 @@ export function describeBadChannelValue(key, value) {
   return `"${key}" 的值必须是字符串/数字/布尔/数组/对象`
 }
 
+/**
+ * v0.15（Gate 2B）：入站 put 归一化——SECRET split、空白剔除、`null` → clear、字段校验。
+ * 纯函数，`put()` 与窄 seam `planPut()` 共用，保证两条路径对同一输入得到相同字段集合。
+ */
+function normalizePutInput(type, config) {
+  const normalized = toInboundChannelName(type)
+  if (typeof type !== 'string' || !INBOUND_CHANNEL_SET.has(normalized)) {
+    throw Object.assign(new Error(`未知入站通道类型 "${String(type)}"（可用：${INBOUND_CHANNELS.join('/')}）`), { status: 422 })
+  }
+  let split
+  try {
+    split = splitSecretPatch(config)
+  } catch (error) {
+    error.status = 422
+    throw error
+  }
+  const clear = new Set(split.clear)
+  const obj = { ...(split.patch ?? {}) }
+  if (plain(config) === null || (Object.keys(obj).length === 0 && clear.size === 0)) {
+    throw Object.assign(new Error('config 必须是非空对象'), { status: 422 })
+  }
+  const allowed = inboundKeyWhitelist(normalized)
+  if (allowed.size === 0) {
+    throw Object.assign(new Error(`${normalized} 凭证由扫码登录自动写入，不支持手工配置`), { status: 422 })
+  }
+  if (Object.keys(obj).length + clear.size > MAX_CHANNEL_KEYS) {
+    throw Object.assign(new Error(`字段数超过上限（最多 ${MAX_CHANNEL_KEYS} 个）`), { status: 422 })
+  }
+  const fields = INBOUND_FIELDS[normalized] ?? {}
+  const inputKeys = Object.keys(obj)
+  const allKnownBlank = inputKeys.length > 0
+    && inputKeys.every((key) => allowed.has(key) && typeof obj[key] === 'string' && obj[key].trim() === '')
+  for (const key of inputKeys) {
+    if (allowed.has(key) && typeof obj[key] === 'string' && obj[key].trim() === '') delete obj[key]
+  }
+  for (const key of clear) {
+    if (DANGEROUS_KEYS.has(key) || !allowed.has(key)) {
+      throw Object.assign(new Error(`未知字段 "${key}"（${normalized} 可用字段：${[...allowed].join('/')}）`), { status: 422 })
+    }
+    if (isPublicExposure(fields[key])) {
+      throw Object.assign(new Error(`公共字段 "${key}" 不支持清除`), { status: 422 })
+    }
+  }
+  for (const [key, value] of Object.entries(obj)) {
+    if (DANGEROUS_KEYS.has(key)) throw Object.assign(new Error(`保留键 "${key}" 不可写入`), { status: 422 })
+    if (!allowed.has(key)) throw Object.assign(new Error(`未知字段 "${key}"（${normalized} 可用字段：${[...allowed].join('/')}）`), { status: 422 })
+    if (value === null) {
+      if (isPublicExposure(fields[key])) {
+        throw Object.assign(new Error(`公共字段 "${key}" 不支持清除`), { status: 422 })
+      }
+      clear.add(key)
+      delete obj[key]
+      continue
+    }
+    const bad = describeBadChannelValue(key, value)
+    if (bad !== null) throw Object.assign(new Error(bad), { status: 422 })
+  }
+  return { normalized, obj, clear, allKnownBlank }
+}
+
 export function createInboundChannelConfigPort({ store, warn = () => {}, audit = () => {}, runtime = null } = {}) {
   let version = 0
   const read = (key) => {
@@ -114,60 +174,9 @@ export function createInboundChannelConfigPort({ store, warn = () => {}, audit =
   }
 
   function put(type, config) {
-    const normalized = toInboundChannelName(type)
-    if (typeof type !== 'string' || !INBOUND_CHANNEL_SET.has(normalized)) {
-      throw Object.assign(new Error(`未知入站通道类型 "${String(type)}"（可用：${INBOUND_CHANNELS.join('/')}）`), { status: 422 })
-    }
-    let split
-    try {
-      split = splitSecretPatch(config)
-    } catch (error) {
-      error.status = 422
-      throw error
-    }
-    const clear = new Set(split.clear)
-    const obj = { ...(split.patch ?? {}) }
-    if (plain(config) === null || (Object.keys(obj).length === 0 && clear.size === 0)) {
-      throw Object.assign(new Error('config 必须是非空对象'), { status: 422 })
-    }
-    const allowed = inboundKeyWhitelist(normalized)
-    if (allowed.size === 0) {
-      throw Object.assign(new Error(`${normalized} 凭证由扫码登录自动写入，不支持手工配置`), { status: 422 })
-    }
-    if (Object.keys(obj).length + clear.size > MAX_CHANNEL_KEYS) {
-      throw Object.assign(new Error(`字段数超过上限（最多 ${MAX_CHANNEL_KEYS} 个）`), { status: 422 })
-    }
-    const fields = INBOUND_FIELDS[normalized] ?? {}
-    const inputKeys = Object.keys(obj)
-    const allKnownBlank = inputKeys.length > 0
-      && inputKeys.every((key) => allowed.has(key) && typeof obj[key] === 'string' && obj[key].trim() === '')
-    for (const key of inputKeys) {
-      if (allowed.has(key) && typeof obj[key] === 'string' && obj[key].trim() === '') delete obj[key]
-    }
+    const { normalized, obj, clear, allKnownBlank } = normalizePutInput(type, config)
     if (allKnownBlank && clear.size === 0) {
       return { type: normalized, saved: true, direction: 'inbound', unchanged: true, configRevision: version }
-    }
-    for (const key of clear) {
-      if (DANGEROUS_KEYS.has(key) || !allowed.has(key)) {
-        throw Object.assign(new Error(`未知字段 "${key}"（${normalized} 可用字段：${[...allowed].join('/')}）`), { status: 422 })
-      }
-      if (isPublicExposure(fields[key])) {
-        throw Object.assign(new Error(`公共字段 "${key}" 不支持清除`), { status: 422 })
-      }
-    }
-    for (const [key, value] of Object.entries(obj)) {
-      if (DANGEROUS_KEYS.has(key)) throw Object.assign(new Error(`保留键 "${key}" 不可写入`), { status: 422 })
-      if (!allowed.has(key)) throw Object.assign(new Error(`未知字段 "${key}"（${normalized} 可用字段：${[...allowed].join('/')}）`), { status: 422 })
-      if (value === null) {
-        if (isPublicExposure(fields[key])) {
-          throw Object.assign(new Error(`公共字段 "${key}" 不支持清除`), { status: 422 })
-        }
-        clear.add(key)
-        delete obj[key]
-        continue
-      }
-      const bad = describeBadChannelValue(key, value)
-      if (bad !== null) throw Object.assign(new Error(bad), { status: 422 })
     }
     const key = `${normalized}:account`
     // v0.14（P1-05）：read/merge/clear/write 全部放进一次 store.transact——并发 patch 同一
@@ -256,7 +265,49 @@ export function createInboundChannelConfigPort({ store, warn = () => {}, audit =
     return { saved: true }
   }
 
-  return { rows, put, remove, mergeAccount, get version() { return version } }
+  /**
+   * v0.15（Gate 2B）窄 seam 1/2：**只规划、不落盘**。校验 + 归一化，返回带 `key` 与
+   * `mergeInto(draft)` 的计划，供调用方在单一事务里与出站/staged 行一起原子写入。
+   */
+  function planPut(type, config) {
+    const { normalized, obj, clear, allKnownBlank } = normalizePutInput(type, config)
+    const key = `${normalized}:account`
+    if (allKnownBlank && clear.size === 0) return { type: normalized, key, unchanged: true }
+    return {
+      type: normalized,
+      key,
+      unchanged: false,
+      mergeInto(draft) {
+        const existing = plain(draft[key]) ?? {}
+        const next = { ...existing, ...clone(obj) }
+        for (const field of clear) delete next[field]
+        draft[key] = next
+        return next
+      },
+    }
+  }
+
+  /**
+   * v0.15（Gate 2B）窄 seam 2/2：desired 已提交后的 runtime reconcile。
+   * 入站默认非热生效——返回 `restart-pending`，绝不谎报已生效。
+   */
+  function applyCommitted(type) {
+    const normalized = toInboundChannelName(type)
+    version += 1
+    audit('putInboundChannel', { type: normalized })
+    const hot = isHotApplied('inbound')
+    return {
+      type: normalized,
+      saved: true,
+      direction: 'inbound',
+      applied: hot,
+      applyMode: hot ? 'hot' : 'restart-pending',
+      restartPending: !hot,
+      configRevision: version,
+    }
+  }
+
+  return { rows, put, remove, mergeAccount, planPut, applyCommitted, get version() { return version } }
 }
 
 function maskSecrets(config, allowed, type) {

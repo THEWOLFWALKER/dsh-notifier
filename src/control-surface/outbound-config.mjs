@@ -126,6 +126,35 @@ function validatePatch(type, patch, clear = []) {
   }
 }
 
+/**
+ * v0.15（Gate 2B）：patch 归一化——SECRET split、空白字段剔除、`null` → clear。
+ * 纯函数，`save()` 与窄 seam `planPatch()` 共用，保证「保存」与「导入计划」对同一输入
+ * 得到完全一致的字段集合（绝不让 portability 走第二条归一化路径）。
+ */
+function normalizePatchInput(key, patch) {
+  const split = splitSecretPatch(patch)
+  const clear = new Set(split.clear)
+  const actualPatch = { ...(split.patch ?? {}) }
+  const allowed = allowedKeys(key)
+  const inputKeys = Object.keys(actualPatch)
+  const allKnownBlank = inputKeys.length > 0
+    && inputKeys.every((field) => allowed.has(field) && typeof actualPatch[field] === 'string' && actualPatch[field].trim() === '')
+  for (const field of inputKeys) {
+    if (allowed.has(field) && typeof actualPatch[field] === 'string' && actualPatch[field].trim() === '') delete actualPatch[field]
+  }
+  const fields = channelFieldsOf(key)
+  for (const [field, value] of Object.entries(actualPatch)) {
+    if (value === null) {
+      if (isPublicExposure(fields[field])) {
+        throw Object.assign(new Error(`公共字段 "${field}" 不支持清除`), { code: 'bad-request' })
+      }
+      clear.add(field)
+      delete actualPatch[field]
+    }
+  }
+  return { actualPatch, clear, allKnownBlank, raw: { patch: split.patch, clear: split.clear } }
+}
+
 function resolveCandidate(type, raw) {
   const adapter = ADAPTERS[type]
   if (adapter === undefined) throw Object.assign(new Error(`未知出站通道类型 "${type}"`), { code: 'bad-request' })
@@ -242,28 +271,9 @@ export function createOutboundConfigService({
 
     save(type, patch) {
       const key = String(type ?? '').trim()
-      const split = splitSecretPatch(patch)
-      const clear = new Set(split.clear)
-      const actualPatch = { ...(split.patch ?? {}) }
-      const allowed = allowedKeys(key)
-      const inputKeys = Object.keys(actualPatch)
-      const allKnownBlank = inputKeys.length > 0
-        && inputKeys.every((field) => allowed.has(field) && typeof actualPatch[field] === 'string' && actualPatch[field].trim() === '')
-      for (const field of inputKeys) {
-        if (allowed.has(field) && typeof actualPatch[field] === 'string' && actualPatch[field].trim() === '') delete actualPatch[field]
-      }
-      const fields = channelFieldsOf(key)
-      for (const [field, value] of Object.entries(actualPatch)) {
-        if (value === null) {
-          if (isPublicExposure(fields[field])) {
-            throw Object.assign(new Error(`公共字段 "${field}" 不支持清除`), { code: 'bad-request' })
-          }
-          clear.add(field)
-          delete actualPatch[field]
-        }
-      }
+      const { actualPatch, clear, allKnownBlank, raw } = normalizePatchInput(key, patch)
       if (allKnownBlank && clear.size === 0) {
-        if (!OUTBOUND.has(key)) validatePatch(key, split.patch, split.clear)
+        if (!OUTBOUND.has(key)) validatePatch(key, raw.patch, raw.clear)
         const result = { type: key, saved: true, applied: true, applyMode: 'hot', unchanged: true, configRevision: source.version }
         emit('channel-saved', result)
         return result
@@ -341,6 +351,73 @@ export function createOutboundConfigService({
           error: diagnosticErrorMessage(resolveError, nextRaw),
         })
       }
+      emit('channel-saved', result)
+      return result
+    },
+
+    /**
+     * v0.15（Gate 2B）窄 seam 1/2：**只规划、不落盘、不 apply**。
+     * 校验 + 归一化 + 对 fresh canonical 预解析（不可解析的 patch 必须在提交前被拒）。
+     * 返回的计划暴露 `key` 与 `mergeInto(draft)`——调用方可在自己的单一事务里写多个渠道，
+     * 且每个渠道以 draft 最新值为基底做字段级合并（绝不整表覆写）。
+     */
+    planPatch(type, patch) {
+      const key = String(type ?? '').trim()
+      const { actualPatch, clear, allKnownBlank, raw } = normalizePatchInput(key, patch)
+      if (allKnownBlank && clear.size === 0) {
+        if (!OUTBOUND.has(key)) validatePatch(key, raw.patch, raw.clear)
+        return { type: key, key: canonicalKey(key), unchanged: true }
+      }
+      validatePatch(key, actualPatch, [...clear])
+      const canonicalKeyOf = canonicalKey(key)
+      const currentCanonical = plain(safeGet(store, canonicalKeyOf))
+      const seed = currentCanonical ?? overlayOf(key)
+      const preCanonical = { ...seed, ...clone(actualPatch) }
+      for (const field of clear) delete preCanonical[field]
+      if (clear.size === 0) resolveCandidate(key, { ...baseRawOf(key), ...preCanonical })
+      return {
+        type: key,
+        key: canonicalKeyOf,
+        unchanged: false,
+        nextCanonical: preCanonical,
+        clear: [...clear],
+        mergeInto(draft) {
+          const base = plain(draft[canonicalKeyOf]) ?? overlayOf(key)
+          const next = { ...base, ...clone(actualPatch) }
+          for (const field of clear) delete next[field]
+          draft[canonicalKeyOf] = next
+          return next
+        },
+      }
+    },
+
+    /**
+     * v0.15（Gate 2B）窄 seam 2/2：desired 已提交后的 runtime reconcile。
+     * 只 resolve + 热切换 + 标记 runtime 状态，**绝不回滚 desired**；resolve/apply 失败返回
+     * `applied:false / restart-pending`，由调用方原样上报。
+     */
+    applyCommitted(type, committedConfig = null) {
+      const key = String(type ?? '').trim()
+      if (!OUTBOUND.has(key)) throw Object.assign(new Error(`未知出站通道类型 "${key}"`), { code: 'bad-request' })
+      const canonical = plain(committedConfig) ?? plain(safeGet(store, canonicalKey(key))) ?? {}
+      const nextRaw = { ...baseRawOf(key), ...canonical }
+      const wasLive = source.has(key)
+      let resolved = null
+      let resolveError = null
+      try { resolved = resolveCandidate(key, nextRaw) } catch (error) { resolveError = error }
+      if (resolveError !== null) {
+        const stillLive = wasLive === true || source.has(key)
+        markRuntime(key, stillLive ? 'online' : 'failed', {
+          restartPending: true, revision: source.version, error: diagnosticErrorMessage(resolveError, nextRaw),
+        })
+        const result = { type: key, saved: true, applied: false, applyMode: 'restart-pending', runtimeState: stillLive ? 'online' : 'failed', configRevision: source.version }
+        emit('channel-saved', result)
+        return result
+      }
+      const applyError = applyRuntime(key, resolved, wasLive)
+      const result = applyError === null
+        ? { type: key, saved: true, applied: true, applyMode: 'hot', configRevision: source.version }
+        : { type: key, saved: true, applied: false, applyMode: 'restart-pending', runtimeState: 'failed', configRevision: source.version }
       emit('channel-saved', result)
       return result
     },

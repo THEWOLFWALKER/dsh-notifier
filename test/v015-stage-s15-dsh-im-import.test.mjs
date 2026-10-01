@@ -202,7 +202,12 @@ test('D06/D09: commit delegates to portability — staged disabled, secret never
   const r = rig()
   const text = doc('telegram', { bots: [{ name: 'TG', botToken: `123:${SECRET_MARKER}`, chatId: 'c1' }] })
   const preview = r.importer.preview({ text })
-  const committed = r.importer.commit({ token: preview.token, selections: [] })
+  const committed = r.importer.commit({
+    token: preview.token,
+    selections: preview.entries
+      .filter((entry) => entry.decision !== 'unsupported')
+      .map((entry) => ({ direction: entry.direction, type: entry.type, action: 'apply' })),
+  })
   const staged = committed.staged.find((s) => s.direction === 'outbound' && s.type === 'telegram')
   assert.equal(staged.enabled, false, 'imported channel is staged disabled')
   assert.ok(staged.missingCredentials.includes('botToken'), 'the credential is a missing supply, not an imported value')
