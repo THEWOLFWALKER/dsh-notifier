@@ -831,6 +831,39 @@ plus surface wiring + unassembled fail-closed). Contract: `docs/behavior-contrac
 
 **Count**: **2313 → 2327** (`npm test`, full suite green: 2327 pass / 0 fail).
 
+## T24 — 远程 URL 与手机入口
+
+**Result**: remote entry is a **pure local translator + validator** (`src/control-plane/remote-url.mjs`) with **zero store key
+and zero effect** — it canonicalizes a *user-supplied* HTTPS URL into an entry projection and refuses everything else, and
+it never performs any network request, reachability probe, or DNS/connection check (so there is no SSRF / background-fetch
+surface). `buildRemoteEntry` derives the QR payload from the **same** canonical string as the plain link (`qrPayload === url`),
+so a QR and its plain link can never diverge (R04).
+
+- **Reject matrix** (`validateRemoteUrl`, `reason ∈ empty | too-long | unparseable | no-tls | unsafe-scheme |
+  embedded-credentials | no-host | contains-secret`): only `https:` is accepted — plain `http:` is rejected as `no-tls`,
+  every other scheme (`javascript`/`ftp`/`file`/`data`/…) as `unsafe-scheme`, `userinfo` (embedded username/password) as
+  `embedded-credentials`, and any query key matching an obvious secret-parameter name (`ticket`/`token`/`password`/`secret`/
+  `access_token`/`api_key`/`signature`/`session`/`jwt`/…) as `contains-secret` — case-insensitive, narrow so ordinary params
+  (`?tab=settings&page=2`) are never over-rejected.
+- **QR ⇔ plain-link equivalence**: `buildRemoteEntry` returns `qrSupported:false` (the core claims no browser-side QR
+  renderer) and `qrPayload === url`; a secret-bearing URL never reaches the entry projection.
+- **No guessing**: the module deliberately never constructs a session URL / dynamic deep link; it only echoes and
+  canonicalizes the address the user typed. Connection and permission are reported as separately-checkable concerns
+  (`remoteHint`).
+- **Wiring** (`src/control-surface/service.mjs` + `client.js`): the surface adds `remote.validate` (pure local parse,
+  zero write, zero `revision.touch`); the Native `RemoteView` holds only user input + the validation result. Open/copy are
+  browser-side actions; the error map (`REMOTE_URL_REASONS`) supplies stable, user-facing messages without leaking any
+  secret.
+
+**Boundaries held**: no probe of arbitrary intranet URLs, no background fetch validation (no SSRF), no Tunnel enable, no
+change to Host trust; clearing the URL only affects this plugin's entry, never the network service.
+
+**Tests**: `node --test test/v015-stage-s16-remote-url.test.mjs` → **13 pass / 0 fail** (R04 reject matrix incl. scheme/TLS/
+credentials/secret-params/empty/over-length, QR⇔plain-link byte-equivalence, no-network + purity checks, plus `remote.validate`
+surface wiring and unassembled fail-closed).
+
+**Count**: **2327 → 2340** (`npm test`, full suite green: 2340 pass / 0 fail).
+
 ## Task status
 
 | Task | Status | Commit | Evidence |
@@ -858,4 +891,5 @@ plus surface wiring + unassembled fail-closed). Contract: `docs/behavior-contrac
 | T21 | done | `39f042f` | config export/import single authority; public-only export (no secret / URL token / ENV ref inlined); strict parse + dry-run + staged-disabled import; one-transaction commit; cancel/fail zero-write; `test/v015-stage-s13-config-portability.test.mjs` → 12 pass |
 | T22 | done | `2068af2` | optional dsh-im delegating bridge; dynamic availability + epoch isolation (D01/D02); honest accepted/unknown evidence (D03/D04); text-only + no auto-switch + no credential leak (D05); `test/v015-stage-s14-dsh-im-bridge.test.mjs` → 12 pass |
 | T23 | done | `165efd1` | dsh-im known-format migration importer (pure translator over T21 portability); locked formats + feishu-v2 bridge + unknown fail-closed (D06); secret-source masking with zero value leak (D07); live-waiter/membership keys dropped (D08); duplicate-slot alternatives + conflict + disabled staging (D09); `test/v015-stage-s15-dsh-im-import.test.mjs` → 14 pass |
-| T24–T30 | not started | — | — |
+| T24 | done | _pending_ | remote URL / phone entry (pure local validator, zero store key / zero effect); https-only + reject matrix (R04); QR payload byte-identical to plain link; no SSRF / no deep-link guessing; `remote.validate` surface + `RemoteView` (open/copy browser-side); `test/v015-stage-s16-remote-url.test.mjs` → 13 pass |
+| T25–T30 | not started | — | — |

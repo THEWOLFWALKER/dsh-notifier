@@ -7,6 +7,7 @@ import { createChannelControlService } from '../control-plane/channels.mjs'
 import { isConfirmedReceipt } from '../delivery-evidence.mjs'
 import { redactDiagnosticValue } from '../security/diagnostic.mjs'
 import { isStorageUntrusted } from '../inbound/store.mjs'
+import { buildRemoteEntry, REMOTE_URL_REASONS } from '../control-plane/remote-url.mjs'
 
 function normalizeCode(error) {
   const raw = String(error?.code ?? 'internal').replace(/^dsh-notifier\//, '')
@@ -489,6 +490,18 @@ export function createControlSurfaceService({
           status: 'ok',
         })
         return ok({ ...revisionView(), ...value })
+      }
+
+      // v0.15（T24）：远程入口 URL 校验。纯本地解析、零网络、零写、零 touch——绝不探测可达性、
+      // 绝不构造深链。普通链接与二维码（qrPayload）等价，二者都来自同一规范化字符串（R04）。
+      if (method === 'remote.validate') {
+        const entry = buildRemoteEntry(payload?.url)
+        if (entry.ok !== true) {
+          const error = new Error(REMOTE_URL_REASONS[entry.reason] ?? '链接校验未通过')
+          error.code = 'bad-request'
+          throw error
+        }
+        return ok(entry)
       }
 
       if (method === 'activity.list') {

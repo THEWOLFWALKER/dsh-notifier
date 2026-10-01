@@ -23,6 +23,8 @@ window.__ModuleLoader__.load({
       ['pairing', 'pairingCodes'],
       ['sessions', 'sessions'],
       ['diagnostics', 'diagnosticsCenter'],
+      // v0.15（T24）：远程入口（手机访问）。属管理组，日常一步可达项不受影响。
+      ['remote', 'remoteEntry'],
     ])
     const RPC_CHANNEL = '/dsh-notifier'
     const NS = 'dsh-notifier.native'
@@ -259,6 +261,22 @@ window.__ModuleLoader__.load({
       hostTitle: '宿主',
       storageTitle: '存储',
       controlTitle: '控制面',
+      // v0.15（T24）：远程入口（手机访问）。
+      remoteEntry: '远程入口',
+      remoteIntro: '填写一个受保护的 HTTPS 链接，在手机上打开通知与控制入口。仅本地校验地址，不会在后台探测可达性。',
+      remoteUrlLabel: '访问链接',
+      remoteUrlPlaceholder: 'https://example.com/…',
+      remoteGenerate: '生成入口',
+      remoteValid: '入口可用',
+      remoteOpen: '打开链接',
+      remoteCopy: '复制链接',
+      remoteCopied: '链接已复制',
+      remoteCopyUnavailable: '无法访问剪贴板，请手动长按链接复制',
+      remoteQrTitle: '二维码',
+      remoteQrUnavailable: '当前环境不支持二维码，请使用下方普通链接',
+      remoteQrEquivalent: '二维码与普通链接指向同一个地址',
+      remoteHint: '链接可以打开不代表已取得管理权限；连接与权限请分别核对。',
+      remoteNoSecret: '不要在链接里放入 ticket / token / 密码等秘密参数。',
     })
 
     const en = Object.freeze({
@@ -493,6 +511,22 @@ window.__ModuleLoader__.load({
       hostTitle: 'Host',
       storageTitle: 'Storage',
       controlTitle: 'Control plane',
+      // v0.15 (T24): remote entry (phone access).
+      remoteEntry: 'Remote entry',
+      remoteIntro: 'Enter a protected HTTPS link to open the notify & control entry on your phone. The link is validated locally and never probed in the background.',
+      remoteUrlLabel: 'Access link',
+      remoteUrlPlaceholder: 'https://example.com/…',
+      remoteGenerate: 'Build entry',
+      remoteValid: 'Entry ready',
+      remoteOpen: 'Open link',
+      remoteCopy: 'Copy link',
+      remoteCopied: 'Link copied',
+      remoteCopyUnavailable: 'Clipboard unavailable — long-press the link to copy it manually',
+      remoteQrTitle: 'QR code',
+      remoteQrUnavailable: 'QR rendering is unavailable in this environment — use the plain link below',
+      remoteQrEquivalent: 'The QR code and the plain link point to the same address',
+      remoteHint: 'A link that opens does not mean you hold management permissions; check connection and permissions separately.',
+      remoteNoSecret: 'Do not put ticket / token / password params into the link.',
     })
 
     function resolveText(ctx, value) {
@@ -860,6 +894,10 @@ window.__ModuleLoader__.load({
       async function createStandaloneLaunch() {
         return rpc.call('standalone.createLaunch')
       }
+      // v0.15（T24）：远程入口 URL 校验。纯只读 RPC（零写、零网络、不 touch revision）。
+      async function validateRemoteUrl(url) {
+        return rpc.call('remote.validate', { url })
+      }
       async function updateMember(key, diff) {
         const busyKey = `member:${key}`
         setBusy(busyKey, true)
@@ -1070,7 +1108,7 @@ window.__ModuleLoader__.load({
         getSnapshot: () => snapshot,
         subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener) },
         loadHome, loadChannels, loadChannel, loadTasks, loadQuestions, loadMembers, loadPending, loadPairingCodes, loadSessions, loadSession, loadBindings, loadActivity, loadDiagnostics,
-        refreshCurrent, saveChannel, testChannel, settleQuestion, createStandaloneLaunch,
+        refreshCurrent, saveChannel, testChannel, settleQuestion, createStandaloneLaunch, validateRemoteUrl,
         updateMember, removeMember, approvePending, dismissPending, mintPairingCode, revokePairingCode, patchSessionOutbound, patchSessionControl, putBindings, generateSupportReport,
         navigate, startWait, setActive, dispose,
         // v0.12.1（P1-09）：视图必须能把业务失败写入统一错误出口。
@@ -2553,7 +2591,85 @@ window.__ModuleLoader__.load({
       if (state.view.kind === 'bindings') return h(BindingsView, { ctx, controller, state, t })
       if (state.view.kind === 'activity') return h(ActivityView, { ctx, controller, state, t })
       if (state.view.kind === 'diagnostics') return h(DiagnosticsView, { ctx, controller, state, t })
+      if (state.view.kind === 'remote') return h(RemoteView, { ctx, controller, state, t })
       return h(HomeView, { ctx, controller, state, t })
+    }
+
+    // v0.15（T24）：远程入口视图。URL 校验在后端（remote.validate，纯本地解析、零网络）；本视图
+    // 只持有用户输入与校验结果，打开 / 复制是浏览器端动作。二维码不在此渲染——核心零强制依赖，
+    // 且宿主当前未暴露浏览器端二维码能力，故只显示「与普通链接等价 / 不可用」提示（R04「服务能力缺失」）。
+    function RemoteView({ ctx, controller, state, t }) {
+      const [input, setInput] = useState('')
+      const [entry, setEntry] = useState(null)
+      const [localError, setLocalError] = useState(null)
+      const [busy, setBusy] = useState(false)
+      const [copyState, setCopyState] = useState(null)
+
+      const onChange = (event) => {
+        setInput(event.target.value)
+        setEntry(null)
+        setLocalError(null)
+        setCopyState(null)
+      }
+      const onGenerate = async () => {
+        const text = input.trim()
+        if (text === '') { setLocalError(null); return }
+        setBusy(true)
+        setLocalError(null)
+        setEntry(null)
+        try {
+          setEntry(await controller.validateRemoteUrl(text))
+        } catch (error) {
+          setLocalError(error)
+        } finally {
+          setBusy(false)
+        }
+      }
+      const onOpen = () => {
+        if (!entry?.url) return
+        const win = window.open(entry.url, '_blank', 'noopener,noreferrer')
+        if (win) { try { win.opener = null } catch (error) { void error } }
+      }
+      const onCopy = () => {
+        if (!entry?.url) return
+        void copyText(entry.url).then(ok => setCopyState(ok ? 'copied' : 'unavailable'))
+      }
+
+      const back = h('div', { className: 'dn-detailBack' },
+        h('button', { className: 'dn-link', onClick: () => controller.navigate({ kind: 'home' }) }, `← ${t('back')}`))
+
+      return h('div', { className: 'dn-page' }, back,
+        h(PageHead, { title: t('remoteEntry'), intro: t('remoteIntro') }),
+        h('div', { className: 'dn-field' },
+          h('label', null, t('remoteUrlLabel')),
+          h('input', {
+            type: 'url',
+            value: input,
+            placeholder: t('remoteUrlPlaceholder'),
+            spellCheck: false,
+            autoCapitalize: 'none',
+            autoCorrect: 'off',
+            'aria-label': t('remoteUrlLabel'),
+            onChange,
+            onKeyDown: (event) => { if (event.key === 'Enter') void onGenerate() },
+          }),
+          h('small', null, t('remoteNoSecret'))),
+        h('div', { className: 'dn-formActions' },
+          h(Button, { kind: 'primary', disabled: busy || input.trim() === '', onClick: onGenerate }, busy ? t('saving') : t('remoteGenerate'))),
+        localError ? h('p', { className: 'dn-error', role: 'alert' }, localError.message || t('unknownError')) : null,
+        entry ? h('div', { className: 'dn-code' },
+          h('span', { className: 'dn-successText' }, t('remoteValid')),
+          h('span', { className: 'dn-codeValue' }, entry.url),
+          h('div', { className: 'dn-formActions' },
+            h(Button, { kind: 'primary', onClick: onOpen }, t('remoteOpen')),
+            h(Button, { onClick: onCopy }, t('remoteCopy'))),
+          copyState === 'copied' ? h('span', { className: 'dn-note', role: 'status' }, t('remoteCopied'))
+            : copyState === 'unavailable' ? h('span', { className: 'dn-note' }, t('remoteCopyUnavailable')) : null,
+          h(Section, { title: t('remoteQrTitle') },
+            entry.qrSupported === true
+              ? h('p', { className: 'dn-note' }, t('remoteQrEquivalent'))
+              : h('p', { className: 'dn-note' }, t('remoteQrUnavailable')))) : null,
+        h('p', { className: 'dn-note' }, t('remoteHint')))
     }
 
     function SidebarIcon({ size = 18, active = false }) {
