@@ -1,6 +1,6 @@
 // dsh-notifier src/assembly/inbound-signals.mjs
 // 入站通道 resolve/启用信号（从 src/index.mjs apply() 抽出，维护批 3 阶段 3）。
-// 纯计算 + 一处受控副作用（wxpusher 密径首铸落盘 store.set）；六个通道的「显式配置/
+// 纯计算 + 一处受控副作用（wxpusher 密径首铸落盘 `setDurable`）；六个通道的「显式配置/
 // admin 下 store 凭证即启用信号」判定集中在此，产出各通道 resolved 配置供后面的
 // guarded 装载块使用。任何解析失败只 warn + 标记 !ok，绝不弄崩装配。
 

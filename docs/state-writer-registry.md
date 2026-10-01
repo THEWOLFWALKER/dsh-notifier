@@ -94,6 +94,45 @@ discarded config through `onRetire`, which `src/index.mjs` wires to `retireSende
 hot-replace releases the channel's token cache via the adapter's `disposeRuntime(resolved)` — no second copy
 of the config, no leaked credential.
 
+## Writer fitness allowlist (T17)
+
+This block *is* the machine-checked allowlist consumed by
+`test/v015-stage-s11-writer-fitness.test.mjs`. Every module that touches the durable-store write
+surface (`setDurable` / `mergeDurable` / `transactDurable` / `deleteDurable` / `transactOutcome` /
+`store.transact` / `store.sweepPrefix`) must appear here, and no row may linger after its writer is
+removed. `src/inbound/store.mjs` is the only module allowed to call the raw `store.set` /
+`store.delete`.
+
+<!-- writer-fitness:allowlist -->
+| Module | Owns |
+|---|---|
+| `src/inbound/store.mjs` | the store primitive itself (raw `set`/`delete`, `transact`, `sweepPrefix`) |
+| `src/index.mjs` | composition root; wires authorities, owns no key |
+| `src/actions.mjs` | action rows |
+| `src/approval/router.mjs` | approval rows |
+| `src/assembly/admin-token.mjs` | `admin:token-hash` |
+| `src/assembly/inbound-signals.mjs` | `wxpusher:webhookPath` |
+| `src/channels/wechat-ilink/index.mjs` | wechat-ilink legacy-core composition |
+| `src/channels/wechat-ilink/legacy-core.mjs` | `wechat:sync_buf` / ctx token |
+| `src/control-surface/channel-config-migration.mjs` | `channel:<type>:outbound` (one-shot migration), `state:schema-version` |
+| `src/control-surface/outbound-config.mjs` | `channel:<type>:outbound` |
+| `src/inbound/_feishu-register.mjs` | `feishu:account` scan onboarding (`mergeDurable`) |
+| `src/inbound/_qq-scan.mjs` | `qq:account` scan onboarding (`mergeDurable`) |
+| `src/inbound/bus.mjs` | inbound dedup rows (fail-closed) |
+| `src/inbound/channel-config.mjs` | `channel:<type>:inbound` / `<type>:account` |
+| `src/inbound/conversation.mjs` | conversation bindings |
+| `src/inbound/dingtalk-stream.mjs` | `dingtalk:robot-code` |
+| `src/inbound/identity.mjs` | `inbound:bindings`, `inbound:pending`, `inbound:migrated` |
+| `src/inbound/pairing.mjs` | `inbound:pairing`, `inbound:pairing:lockout` |
+| `src/inbound/telegram-bot.mjs` | `tg:offset` |
+| `src/inbound/wxpusher-callback.mjs` | `wxpusher:bind:<uid>` |
+| `src/interaction/ledger.mjs` | interaction ledger rows |
+| `src/questions/router.mjs` | `aq:<id>` |
+| `src/routing/agent-router.mjs` | `route:agents`, `route:channels`, `route:sessions` |
+| `src/routing/session-registry.mjs` | `route:sessions` |
+| `src/routing/task-selection.mjs` | `taskselect:*` |
+<!-- /writer-fitness:allowlist -->
+
 ## Convergence status
 
 Done in S1: `inbound:bindings`, `inbound:pending`, `inbound:migrated` (identity is the single

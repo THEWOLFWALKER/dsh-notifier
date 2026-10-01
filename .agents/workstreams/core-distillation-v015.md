@@ -558,6 +558,72 @@ through production entries (`bus.accept` / `bridge.adminSettle` / `control.handl
 
 **Count**: 2257 → **2269**. Contract: `docs/behavior-contract.md` INT-06.
 
+## T16 — 应用入口与 Recovery/CLI 同权威
+
+**Result**: every application entry (Native RPC, Advanced Console / Recovery HTTP, CLI) now reaches the
+**same authority** per operation. The entries only authenticate, map input shape, and map presentation —
+they no longer hold a second writer or a duplicate business rule. Failure semantics stay separated:
+a durable IO failure is `storage-failed` (never rewritten as `not-found`), and a query fails **closed**
+when its service is missing instead of returning a plausible empty result.
+
+- **Members authority convergence** (`src/control-plane/members.mjs`): the last-owner guard no longer
+  keeps a lock-outside `ownerCount()` pre-check in the service — that was a **duplicate rule** that
+  raced the identity write (TOCTOU, K03) and could zero out the owners. The guard now lives only inside
+  `identity.mutateBinding`'s fresh transaction; the service just resolves the key and maps the input,
+  passing identity's `owner-last` straight through. `storage-failed`/`owner-last`/`not-found` are
+  preserved verbatim.
+- **IO failure ≠ not-found** (`src/admin/api.mjs`): `putMember`/`deleteMember`/`confirmPendingMember`/
+  `dismissPendingMember`/`revokePairingCode` now map `storage-failed` to **500** ("未落盘，已保留当前
+  状态") instead of falling through to 404 — a failed durable write had been reported as "member does
+  not exist", so the caller would misread it and stop retrying (I2/I16).
+- **Native projection messages** (`src/control-surface/members.mjs`): a shared `reasonMessage` maps the
+  service reason to a user-facing string so `storage-failed` never masquerades as "不存在"; the RPC
+  error code is still `dsh-notifier/storage-failed`.
+- **Query fail-closed** (`src/control-surface/service.mjs`): a new `requireRead` guard makes
+  `members.list`/`members.pending`/`pairing.list`/`sessions.list`/`bindings.get` return
+  `not-supported` when the backing service is absent — a missing service must not be indistinguishable
+  from "no data yet" (U04「错/缺service不当空」).
+- **Kept, not rebuilt**: the `saveInbound`/`removeInbound`/`mergeAccount` constructor fallbacks stay as
+  documented pre-v0.13 compatibility shims (production always injects the canonical port, so they add
+  no second writer); the Admin `getMembers` graceful-empty legacy contract is preserved for low-version
+  public-API compatibility; `channels.mjs`/`sessions.mjs` shared services were audited and already
+  surface `storage-failed` correctly through every entry.
+
+**Tests**: `test/v015-stage-s10-entry-parity.test.mjs` (9 cases) — member/session/binding mutations
+produce the same durable diff through the Native RPC and the Advanced Console over one shared store
+(sibling fields preserved); IO failure on member update/remove, pending approve/dismiss, pairing revoke
+and session overlay is `storage-failed` on the Native entry and HTTP 500 on the Admin entry (never
+not-found); the five list/get queries fail closed with `not-supported` when the service is missing; and
+the last-owner guard is single-sourced (Native `conflict` / Admin 422, no owner zeroing). The mock store
+in the S1 suite was corrected to actually run the transaction mutator so an in-lock business abort is
+honored even when the commit always fails.
+
+**Count**: 2269 → **2278**. Contract: `docs/behavior-contract.md` ENT-01.
+
+## T17 — legacy 退场与依赖检查
+
+**Result**: the writer inventory (`docs/state-writer-registry.md`) is now a machine-checked fitness
+function instead of a prose table, and the one remaining caller-less legacy write seam is gone. No
+LOC/file-size KPI is chased, no reader that still serves an old format is deleted, and a `compat`-named
+file is not treated as debt by name alone.
+
+- **Caller-less write seam removed** (`src/control-plane/channels.mjs`): the `removeInboundFn` /
+  `mergeAccountFn` constructor parameters had no production assembly and no test injection — the only
+  real entry is the canonical inbound port. They are deleted; a missing capability now fails closed as
+  `not-supported` instead of silently taking a second write path.
+- **Doc/JSDoc parity**: `src/assembly/admin-token.mjs` and `src/assembly/inbound-signals.mjs` comments
+  now name `setDurable` (the actual durable single-key write) instead of the raw `store.set` they had
+  stopped using.
+- **Fitness guard** (`test/v015-stage-s11-writer-fitness.test.mjs` + a new `<!-- writer-fitness:allowlist -->`
+  block in the registry doc): the generic `store.set`/`store.delete` surface is confined to
+  `src/inbound/store.mjs`; every durable-store writer must appear in the allowlist and no row may go
+  stale; layer dependencies point one way (adapters/control-plane/control-surface never reach up into
+  `admin/` or across into each other); and `src/index.mjs` is reachable only through the plugin entry.
+
+**Tests**: `test/v015-stage-s11-writer-fitness.test.mjs` (5 cases).
+
+**Count**: 2278 → **2283**. 
+
 ## Task status
 
 | Task | Status | Commit | Evidence |
@@ -576,5 +642,7 @@ through production entries (`bus.accept` / `bridge.adminSettle` / `control.handl
 | T12 | done | `7735d68` | accepted/delivered/unknown buckets + bounded (cap+TTL) + runtime-epoch health closure; `test/v015-stage-s6-delivery-evidence-health.test.mjs` → 11 pass |
 | T13 | done | `3bcb6c2` | centralized host seam + Cordis lifetime + capability-aware native questions; `test/v015-stage-s7-host-seam.test.mjs` → 14 pass |
 | T14 | done | `93c6e62` | `route:sessions` single transactional writer; `test/v015-stage-s8-routing-convergence.test.mjs` → 6 pass |
-| T15 | done | (this commit) | shared claim boundary across actions/approval/questions; `test/v015-stage-s9-claim-convergence.test.mjs` → 12 pass |
-| T16–T30 | not started | — | — |
+| T15 | done | `66d9b77` | shared claim boundary across actions/approval/questions; `test/v015-stage-s9-claim-convergence.test.mjs` → 12 pass |
+| T16 | done | `97d5f7c` | every entry shares one authority; storage-failure never rewritten as not-found; query fails closed; `test/v015-stage-s10-entry-parity.test.mjs` → 9 pass |
+| T17 | done | (this commit) | caller-less write seam removed; writer inventory is a machine-checked fitness guard; `test/v015-stage-s11-writer-fitness.test.mjs` → 5 pass |
+| T18–T30 | not started | — | — |

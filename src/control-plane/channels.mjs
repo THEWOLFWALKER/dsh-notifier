@@ -42,16 +42,12 @@ function requireOutbound(outboundConfig) {
  * @param {object} [deps.inboundConfig] - createInboundChannelConfigPort() instance (canonical inbound authority)
  * @param {(type: string, raw: object) => Promise<object>} [deps.channelTest] - provider connectivity test
  * @param {(type: string, patch: object) => Promise<object>} [deps.saveInbound] - inbound save fallback when no port
- * @param {(type: string) => object} [deps.removeInbound] - inbound remove fallback when no port
- * @param {(type: string, patch: object) => object} [deps.mergeAccount] - `<type>:account` merge fallback when no port
  */
 export function createChannelControlService({
   outboundConfig = null,
   inboundConfig = null,
   channelTest = null,
   saveInbound: saveInboundFn = null,
-  removeInbound: removeInboundFn = null,
-  mergeAccount: mergeAccountFn = null,
 } = {}) {
   const hasInboundPort = inboundConfig !== null && inboundConfig !== undefined && isFn(inboundConfig.put)
 
@@ -99,9 +95,11 @@ export function createChannelControlService({
     return saved
   }
 
+  // v0.15（T17）：删除 `removeInboundFn` / `mergeAccountFn` 两个**无 caller** 的旧写入口
+  // （无任何生产装配或测试注入；唯一真实入口是 canonical inbound 端口）。少一层转发，
+  // 也少一个能绕开端口的缝——能力缺失一律 `not-supported` fail-closed。
   const removeInbound = (type) => {
     if (hasInboundPort) return inboundConfig.remove(type)
-    if (isFn(removeInboundFn)) return removeInboundFn(type)
     const error = new Error('入站配置删除能力不可用')
     error.code = 'not-supported'
     throw error
@@ -114,7 +112,6 @@ export function createChannelControlService({
   const saveChannelAccount = (type, patch) => {
     let saved
     if (hasInboundPort && isFn(inboundConfig.mergeAccount)) saved = inboundConfig.mergeAccount(type, patch)
-    else if (isFn(mergeAccountFn)) saved = mergeAccountFn(type, patch)
     else {
       const error = new Error('通道凭证写入能力不可用')
       error.code = 'not-supported'

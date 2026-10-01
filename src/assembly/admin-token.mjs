@@ -4,7 +4,8 @@
 // base64url 随机串并打印一次——此后重启凭既有哈希校验（明文只在首启日志出现，不重发）。
 // state 只存 SHA-256 哈希（admin:token-hash 键，64 位 hex），明文绝不落盘；
 // verifyToken 先比长度再 timingSafeEqual（两串长度不等时它会抛）。
-// 纯函数：唯一副作用是 store.set('admin:token-hash', ...) 与 generated 分支的两条 info。
+// 纯函数：唯一副作用是 `setDurable(store, 'admin:token-hash', ...)`（v0.15/T17 起经 durable
+// 单键写，不再走裸 `store.set`）与 generated 分支的两条 info。
 
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 import { isStorageUntrusted, setDurable } from '../inbound/store.mjs'
