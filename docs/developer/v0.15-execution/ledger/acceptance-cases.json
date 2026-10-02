@@ -1,0 +1,344 @@
+[
+  {
+    "id": "AC-01",
+    "work_package": "WP01",
+    "title": "read引用隔离",
+    "arrange_act": "修改read返回嵌套对象",
+    "expected": "后续read和磁盘原值不变",
+    "status": "planned",
+    "execution_evidence": null
+  },
+  {
+    "id": "AC-02",
+    "work_package": "WP01",
+    "title": "rename前失败",
+    "arrange_act": "注入写入/rename异常",
+    "expected": "rejected且无副作用，无内存假提交",
+    "status": "planned",
+    "execution_evidence": null
+  },
+  {
+    "id": "AC-03",
+    "work_package": "WP01",
+    "title": "rename后失败",
+    "arrange_act": "目录sync失败",
+    "expected": "indeterminate，不声称回滚，不重复外部操作",
+    "status": "planned",
+    "execution_evidence": null
+  },
+  {
+    "id": "AC-04",
+    "work_package": "WP01",
+    "title": "跨进程竞争",
+    "arrange_act": "两个写者更新不同域",
+    "expected": "fresh事务无lost update，主线程无Atomics.wait",
+    "status": "planned",
+    "execution_evidence": null
+  },
+  {
+    "id": "AC-05",
+    "work_package": "WP01",
+    "title": "损坏与删除",
+    "arrange_act": "启动坏JSON/运行时文件消失",
+    "expected": "unavailable/STATE_MISSING，不空表不复活",
+    "status": "planned",
+    "execution_evidence": null
+  },
+  {
+    "id": "AC-06",
+    "work_package": "WP02",
+    "title": "迁移中断",
+    "arrange_act": "迁移提交前后杀进程",
+    "expected": "备份唯一、新旧schema不半混",
+    "status": "planned",
+    "execution_evidence": null
+  },
+  {
+    "id": "AC-07",
+    "work_package": "WP02",
+    "title": "账号隔离",
+    "arrange_act": "两个account相同user/event/chat",
+    "expected": "binding/pending/dedup/owner不串",
+    "status": "planned",
+    "execution_evidence": null
+  },
+  {
+    "id": "AC-08",
+    "work_package": "WP03",
+    "title": "伪造授权",
+    "arrange_act": "payload传role=owner/缺identity",
+    "expected": "拒绝，无新session或副作用",
+    "status": "planned",
+    "execution_evidence": null
+  },
+  {
+    "id": "AC-09",
+    "work_package": "WP04",
+    "title": "并发裁决",
+    "arrange_act": "两端同时claim并迟到metadata",
+    "expected": "只有一个claim，终态不翻转",
+    "status": "planned",
+    "execution_evidence": null
+  },
+  {
+    "id": "AC-10",
+    "work_package": "WP04",
+    "title": "claim后崩溃",
+    "arrange_act": "Host可能受理但无settle",
+    "expected": "uncertain，不自动重试",
+    "status": "planned",
+    "execution_evidence": null
+  },
+  {
+    "id": "AC-11",
+    "work_package": "WP04",
+    "title": "旧卡片",
+    "arrange_act": "重启/缺TTL/已结算按钮",
+    "expected": "正确拒绝，文字兜底共用授权",
+    "status": "planned",
+    "execution_evidence": null
+  },
+  {
+    "id": "AC-12",
+    "work_package": "WP05",
+    "title": "epoch",
+    "arrange_act": "同实例状态转换和实例替换",
+    "expected": "前者不换epoch，旧结果不刷绿新实例",
+    "status": "planned",
+    "execution_evidence": null
+  },
+  {
+    "id": "AC-13",
+    "work_package": "WP05",
+    "title": "清除密钥",
+    "arrange_act": "旧连接存在时clear",
+    "expected": "提交后不准入新操作，stop失败真实展示",
+    "status": "planned",
+    "execution_evidence": null
+  },
+  {
+    "id": "AC-14",
+    "work_package": "WP06",
+    "title": "发送未知",
+    "arrange_act": "请求发出后超时",
+    "expected": "unknown，无盲目重发",
+    "status": "planned",
+    "execution_evidence": null
+  },
+  {
+    "id": "AC-15",
+    "work_package": "WP06",
+    "title": "已受理后退休",
+    "arrange_act": "accepted随后retire",
+    "expected": "保留accepted及旧epoch",
+    "status": "planned",
+    "execution_evidence": null
+  },
+  {
+    "id": "AC-16",
+    "work_package": "WP06",
+    "title": "结果兼容",
+    "arrange_act": "单发/广播/fake/TS消费同输入",
+    "expected": "evidence一致，零目标非发送成功",
+    "status": "planned",
+    "execution_evidence": null
+  },
+  {
+    "id": "AC-17",
+    "work_package": "WP07",
+    "title": "群退出",
+    "arrange_act": "群事件/未知类型/群目标/Topic",
+    "expected": "无业务触发，出站拒绝，迁移停用",
+    "status": "planned",
+    "execution_evidence": null
+  },
+  {
+    "id": "AC-18",
+    "work_package": "WP13",
+    "title": "secret clear冲突",
+    "arrange_act": "preview后replace再clear",
+    "expected": "STALE_PREVIEW，最新密钥保留",
+    "status": "planned",
+    "execution_evidence": null
+  },
+  {
+    "id": "AC-19",
+    "work_package": "WP13",
+    "title": "跨域导入",
+    "arrange_act": "一个域校验失败",
+    "expected": "全批拒绝，无半提交",
+    "status": "planned",
+    "execution_evidence": null
+  },
+  {
+    "id": "AC-20",
+    "work_package": "WP08",
+    "title": "offset失败",
+    "arrange_act": "处理后写offset失败",
+    "expected": "不热循环，不重复副作用",
+    "status": "planned",
+    "execution_evidence": null
+  },
+  {
+    "id": "AC-21",
+    "work_package": "WP08",
+    "title": "poison与429",
+    "arrange_act": "坏update/限流",
+    "expected": "持久隔离或退避，不提前确认未处理消息",
+    "status": "planned",
+    "execution_evidence": null
+  },
+  {
+    "id": "AC-22",
+    "work_package": "WP09",
+    "title": "QQ选项及长文",
+    "arrange_act": "6+选项/超长/无msg_id",
+    "expected": "完整编号可达，截断明确，主动不伪造被动引用",
+    "status": "planned",
+    "execution_evidence": null
+  },
+  {
+    "id": "AC-23",
+    "work_package": "WP10",
+    "title": "飞书SDK",
+    "arrange_act": "真实安装/缺方法/旧卡片",
+    "expected": "方法契约验证，旧无来源不放行",
+    "status": "planned",
+    "execution_evidence": null
+  },
+  {
+    "id": "AC-24",
+    "work_package": "WP11",
+    "title": "钉钉微信Wx",
+    "arrange_act": "ACK解析失败/QR取消/伪UID",
+    "expected": "可诊断不静默丢业务，不可信UID不远控",
+    "status": "planned",
+    "execution_evidence": null
+  },
+  {
+    "id": "AC-25",
+    "work_package": "WP12",
+    "title": "会话与附件",
+    "arrange_act": "多附件部分失败/慢Host Promise",
+    "expected": "无占位符污染，默认暂停，明确选任务",
+    "status": "planned",
+    "execution_evidence": null
+  },
+  {
+    "id": "AC-26",
+    "work_package": "WP14",
+    "title": "部署恢复",
+    "arrange_act": "云创建后本地receipt失败",
+    "expected": "读回同资源，不重复创建",
+    "status": "planned",
+    "execution_evidence": null
+  },
+  {
+    "id": "AC-27",
+    "work_package": "WP14",
+    "title": "取消",
+    "arrange_act": "子进程暂未退出",
+    "expected": "cancel-requested，exit前不报完成",
+    "status": "planned",
+    "execution_evidence": null
+  },
+  {
+    "id": "AC-28",
+    "work_package": "WP15",
+    "title": "网关",
+    "arrange_act": "poll/send/file/URL攻击",
+    "expected": "统一transport，固定upstream，header认证",
+    "status": "planned",
+    "execution_evidence": null
+  },
+  {
+    "id": "AC-29",
+    "work_package": "WP15",
+    "title": "解绑ABA",
+    "arrange_act": "绑定后用户改字段再改回",
+    "expected": "revision冲突保留，不覆盖用户修改",
+    "status": "planned",
+    "execution_evidence": null
+  },
+  {
+    "id": "AC-30",
+    "work_package": "WP16",
+    "title": "Bark接线",
+    "arrange_act": "真实schema→sender请求",
+    "expected": "无server字段，URL/device正确，不只healthz",
+    "status": "planned",
+    "execution_evidence": null
+  },
+  {
+    "id": "AC-31",
+    "work_package": "WP17",
+    "title": "Tunnel",
+    "arrange_act": "spawn无连接/kill失败/重启",
+    "expected": "starting/stop-incomplete/配置恢复准确",
+    "status": "planned",
+    "execution_evidence": null
+  },
+  {
+    "id": "AC-32",
+    "work_package": "WP18",
+    "title": "bridge",
+    "arrange_act": "未知version/非私聊target/timeout",
+    "expected": "拒绝弱send，unknown不重发",
+    "status": "planned",
+    "execution_evidence": null
+  },
+  {
+    "id": "AC-33",
+    "work_package": "WP19",
+    "title": "保存刷新",
+    "arrange_act": "保存成功后refresh失败旧响应迟到",
+    "expected": "保存receipt保留，stale可见，无覆盖",
+    "status": "planned",
+    "execution_evidence": null
+  },
+  {
+    "id": "AC-34",
+    "work_package": "WP20",
+    "title": "Native旅程",
+    "arrange_act": "J01–J07及UX01–UX30",
+    "expected": "主路径全Native，无技术控制台绕行",
+    "status": "planned",
+    "execution_evidence": null
+  },
+  {
+    "id": "AC-35",
+    "work_package": "WP21",
+    "title": "脱敏历史",
+    "arrange_act": "查询串secret/重启历史/日志失败",
+    "expected": "不泄密、不假健康，降级可见",
+    "status": "planned",
+    "execution_evidence": null
+  },
+  {
+    "id": "AC-36",
+    "work_package": "WP22",
+    "title": "制品安装",
+    "arrange_act": "真实tgz+SDK+Host+Windows",
+    "expected": "exports/assets/模板可用，无内部私料",
+    "status": "planned",
+    "execution_evidence": null
+  },
+  {
+    "id": "AC-37",
+    "work_package": "WP23",
+    "title": "事实对齐",
+    "arrange_act": "候选SHA/文档/能力/截图",
+    "expected": "无假真机/假发布结论",
+    "status": "planned",
+    "execution_evidence": null
+  },
+  {
+    "id": "AC-38",
+    "work_package": "WP00",
+    "title": "来源覆盖",
+    "arrange_act": "四报告编号提取",
+    "expected": "546来源记录全部映射，不能当546独立bug",
+    "status": "planned",
+    "execution_evidence": null
+  }
+]
