@@ -1,3 +1,6 @@
+*我们正在进行大规模重构 近期更新可能推迟*
+
+
 <p align="center">
   <img src="docs/assets/readme-hero.png" alt="dsh-notifier — Agent ⇄ User, across every channel" width="100%">
 </p>
