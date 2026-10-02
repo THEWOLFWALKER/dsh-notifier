@@ -87,6 +87,8 @@ export function createNativeActions({
   questions = null,
   members = null,
   resolveUserId = null,
+  currentTask = null,
+  tasks = null,
 } = {}) {
   const touch = (topic) => { try { revision?.touch?.(topic) } catch { /* 记账失败不改业务结果 */ } }
   const record = (category, action, detail) => {
@@ -95,6 +97,16 @@ export function createNativeActions({
   const resolveUser = makeUserResolver(members, resolveUserId)
 
   return {
+    selectTask({ taskRef } = {}) {
+      requireFn(currentTask, 'select', '当前任务暂时无法保存')
+      const owners = (members?.list?.() ?? []).filter(row => row.role === 'owner')
+      if (owners.length !== 1) throw badRequest('请先确认使用者')
+      if (!(tasks?.list?.() ?? []).some(row => row.taskRef === taskRef)) throw badRequest('任务已结束，请重新选择')
+      const result = currentTask.select(owners[0], taskRef)
+      if (!result.ok) throw Object.assign(new Error('当前任务未保存，请重试'), { code: result.reason })
+      touch('tasks')
+      return { saved: true }
+    },
     /** 保存通知渠道（出站）。revision/activity 由 OutboundConfigService domain event 记账。 */
     saveChannel({ type, patch, clearSecrets = [] } = {}) {
       requireFn(channelControl, 'saveOutbound', '通知渠道保存当前不可用')

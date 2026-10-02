@@ -55,9 +55,9 @@ test('RuntimeChannelManager separates live state from desired source and exposes
   assert.equal(manager.has('bark'), false, 'degraded runtime is not active')
   manager.replace('bark', { key: 'new' })
   assert.deepEqual(manager.get('bark').config, { key: 'new' })
-  assert.deepEqual(manager.runtimeState('bark'), { state: 'online', restartPending: false })
+  assert.deepEqual(manager.runtimeState('bark'), { generation: 1, state: 'online', restartPending: false })
   manager.remove('bark')
-  assert.deepEqual(manager.runtimeState('bark'), { state: 'stopped', restartPending: false })
+  assert.deepEqual(manager.runtimeState('bark'), { generation: 2, state: 'stopped', restartPending: false })
 })
 
 test('inbound channel registry isolates optional failures and stops started transports', async () => {

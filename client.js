@@ -1089,6 +1089,11 @@ window.__ModuleLoader__.load({
         }
       }
       // v0.15（Stage 1 / S4）：确认本人（待确认身份 → 正式使用者）。
+      async function nativeSelectTask(taskRef) {
+        const value = await rpc.call('native.selectTask', { taskRef })
+        await loadNative()
+        return value
+      }
       async function nativeMintPairing(label = '') {
         const key = 'pairing:mint'
         if (snapshot.busy[key] === true) return null
@@ -1358,7 +1363,7 @@ window.__ModuleLoader__.load({
         // v0.15（Stage 1 / S3）：账号卡保存/测试（仍走窄动作表）。
         nativeSaveChannel, nativeTestChannel,
         // v0.15（Stage 1 / S4）：待处理结算、确认本人、关闭私聊（每个只调一个 authority）。
-        nativeSettlePending, nativeMintPairing, nativeClosePrivateChat,
+        nativeSettlePending, nativeMintPairing, nativeClosePrivateChat, nativeSelectTask,
         refreshCurrent, saveChannel, testChannel, settleQuestion, createStandaloneLaunch, validateRemoteUrl,
         exportConfig: () => rpc.call('portability.export'),
         previewImport: text => rpc.call('portability.preview', { text }),
@@ -2230,7 +2235,7 @@ window.__ModuleLoader__.load({
           .then(value => { if (value?.code) setMinted(value.code) })
           .catch(error => controller.reportError(error))
       }
-      const pickTask = (task) => { setPicked(task); setShowTry(true) }
+      const pickTask = (task) => { void controller.nativeSelectTask(task.id).then(() => { setPicked(task); setShowTry(true) }).catch(error => controller.reportError(error)) }
       const closePrivate = () => {
         if (channelType === null) return
         void Promise.resolve(controller.nativeClosePrivateChat(channelType))

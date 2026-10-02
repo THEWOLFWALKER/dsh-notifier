@@ -226,7 +226,7 @@ test('命令集：/bind 绑定后消息投给指定会话；无效 id 回执提�
   assert.equal(s2.calls.followup.length, 1)
   assert.equal(s1.calls.followup.length, 0)
   // 绑定持久化（store）
-  assert.equal(rig.store.get('bind:telegram:42'), 's2')
+  assert.equal(rig.store.get('bind:telegram:default:42'), 's2')
 
   rig.userSays('/bind nope')
   await sleep(20)
@@ -244,7 +244,7 @@ test('命令集：/unbind 清除显式绑定——R1 下不再回落最近活跃
   rig.userSays('/unbind')
   await sleep(20)
   assert.ok(rig.replies.some((r) => /已解绑/.test(r.text)))
-  assert.equal(rig.store.get('bind:telegram:42'), undefined)
+  assert.equal(rig.store.get('bind:telegram:default:42'), undefined)
   rig.userSays('默认给谁')
   await sleep(60)
   // R1：解绑后无处可投，绝不回落最近活跃
@@ -296,13 +296,13 @@ test('G-04：Control Core 装配时同样收紧——/stop 附言不再以 stop 
   const rig = makeRig({ agents: [agent], mergeWindowMs: 0, control })
   rig.fire('agent/created', agent)
   rig.userSays('/bind s1')
-  rig.bus.accept({ channel: 'telegram', accountId: 'tg-app', userId: '42', chatId: '42', messageId: 'g04-cc-1', text: '/stop 一下别急' })
+  rig.store.set('bind:telegram:tg-app:42', rig.store.get('bind:telegram:default:42')); rig.bus.accept({ channel: 'telegram', accountId: 'tg-app', userId: '42', chatId: '42', messageId: 'g04-cc-1', text: '/stop 一下别急' })
   await sleep(20)
   assert.deepEqual(agent.calls.cancel, [], '不以 stop 控制命令进 Control Core')
   assert.ok(rig.replies.some((r) => /未识别的命令 \/stop/.test(r.text)))
   assert.equal(agent.calls.inject.length, 1, '与未知命令同路径：按普通文本投递')
   // 裸 /stop 仍经 Control Core 核销后取消
-  rig.bus.accept({ channel: 'telegram', accountId: 'tg-app', userId: '42', chatId: '42', messageId: 'g04-cc-2', text: '/stop' })
+  rig.store.set('bind:telegram:tg-app:42', rig.store.get('bind:telegram:default:42')); rig.bus.accept({ channel: 'telegram', accountId: 'tg-app', userId: '42', chatId: '42', messageId: 'g04-cc-2', text: '/stop' })
   await sleep(20)
   assert.deepEqual(agent.calls.cancel, [{ kind: 'user' }])
   rig.dispose()

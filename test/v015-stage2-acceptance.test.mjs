@@ -54,8 +54,8 @@ test('A01: the conversation-bindings fact has exactly one writer authority', () 
   assert.match(currentTask, /\bdeleteDurable\s*\(/)
 
   // The key has one constructor, used by both the writer and the readers.
-  assert.equal(currentTaskKey('telegram', '42'), 'bind:telegram:42')
-  assert.equal(currentTaskKey('  TELEGRAM ', ' 42 '), 'bind:telegram:42', 'key components are normalized')
+  assert.equal(currentTaskKey('telegram', '42'), 'bind:telegram:default:42')
+  assert.equal(currentTaskKey('  TELEGRAM ', ' 42 '), 'bind:telegram:default:42', 'key components are normalized')
   assert.equal(currentTaskKey('', '42'), null, 'a missing component is not a valid principal')
 })
 

@@ -30,12 +30,12 @@ const KEY_CHANNELS = 'route:channels'
 const KEY_SESSIONS = 'route:sessions'
 
 import { normalizeControlOverlay } from '../control/session-arbiter.mjs'
-import { bindingKey } from '../inbound/identity.mjs'
+import { createCurrentTaskAuthority } from './current-task.mjs'
 import { setDurable, transactDurable, transactOutcome } from '../inbound/store.mjs'
 
 /** 入站显式绑定键前缀（与 conversation.mjs 键格式一致：bind:<channel>:<userId>，分量经
  * identity.bindingKey 归一——G-49 单一构造点，读写两侧同键）。 */
-const BIND_PREFIX = 'bind:'
+
 
 /** 取「普通对象」：null / 数组 / 标量一律视为无条目（手工编辑或损坏数据防御）。 */
 function plainObjectOf(value) {
@@ -155,7 +155,7 @@ function normalizeChannelDefaultsTable(table) {
  *   const router = createAgentRouter({ store, agentsList: () => ctx.agents.list() })
  *   const { channelTypes, quiet, source } = router.resolveOutbound(sid, workspace, enabledTypes)
  */
-export function createAgentRouter({ store, agentsList } = {}) {
+export function createAgentRouter({ store, agentsList, currentTask = createCurrentTaskAuthority({ store }) } = {}) {
   // —— store 防御包装：方法缺失 / 抛错一律按「无此数据」处理，绝不外泄 ——
   const safeGet = (key, fallback = undefined) => {
     try {
@@ -303,12 +303,13 @@ export function createAgentRouter({ store, agentsList } = {}) {
      *   ambiguous=true 时附带 candidates（该 workspace 全部活跃会话，按 lastActiveAt 降序）；
      *   sessionId=null 表示无处可投（无显式选择）。
      */
-    resolveInbound(channel, userId) {
+    resolveInbound(channel, userId, accountId = 'default') {
+      if (typeof accountId === 'object') accountId = accountId?.accountId ?? 'default'
       // L1 显式绑定：值为字符串即命中（损坏数据跳过）。
       // G-49：读键与 conversation 的写键同走 identity.bindingKey（分量 trim + channel
       // 小写）——带空白/大小写漂移的分量两侧同键，绝不裂键（休眠边界封口）。
       if (typeof channel === 'string' && typeof userId === 'string') {
-        const bound = safeGet(`${BIND_PREFIX}${bindingKey(channel, userId)}`)
+        const bound = currentTask.get({ channel, userId, accountId })
         if (typeof bound === 'string' && bound.trim() !== '') {
           return { sessionId: bound, source: 'bind', ambiguous: false }
         }

@@ -73,18 +73,23 @@ function rig({ failDeploy = false, failReadback = false } = {}) {
   const source = createOutboundSource([])
   const outboundConfig = createOutboundConfigService({ store, source, yamlRows: new Map(), allowLegacy: false })
   const inboundConfig = createInboundChannelConfigPort({ store })
-  let created = 0, deployed = 0, databases = []
+  let created = 0, deployed = 0, databases = [], remote = null
   const runner = {
     prepare: async () => {}, whoami: async () => ({ accounts: [{ id: ACCOUNT, name: 'Fixture account' }] }),
     loginDevice: async ({ onOutput }) => onOutput('To authorize, please visit:\nhttps://dash.cloudflare.com/oauth2/device\nand enter the code:\nABCD-EFGH'),
     d1List: async () => databases,
     d1Create: async ({ name }) => { created++; databases = [{ name, uuid: 'db-id' }]; return { id: 'db-id' } },
     d1Migrate: async () => {},
-    deployWorker: async ({ name }) => { deployed++; if (failDeploy) { failDeploy = false; throw Error('failure') } return { endpoint: `https://${name}.account.workers.dev`, versionId: `v${deployed}` } },
-    readDeployment: async () => { if (failReadback) throw Error('failure'); return [{ created_on: '2026-10-01T00:00:00Z', versions: [{ version_id: `v${deployed}`, percentage: 100 }] }] }, dispose() {},
+    deployWorker: async ({ name }) => { deployed++; if (failDeploy) { failDeploy = false; throw Error('failure') } remote = { endpoint: `https://${name}.account.workers.dev`, versionId: `v${deployed}` }; return remote },
+    readDeployment: async () => { if (failReadback) throw Error('failure'); return remote ? [{ endpoint: remote.endpoint, created_on: '2026-10-01T00:00:00Z', versions: [{ version_id: remote.versionId, percentage: 100 }] }] : [] }, dispose() {},
   }
   const service = createCloudflareDeploymentService({ store, root: join(root, 'cloudflare'), outboundConfig, inboundConfig, runner, fetchImpl: async url => Response.json({ template: url.includes('dn-bark') ? 'notifier-bark-v1' : 'notifier-telegram-v1' }) })
-  return { root, store, source, service, outboundConfig, inboundConfig, runner, counts: () => ({ created, deployed }), cleanup() { service.dispose(); rmSync(root, { recursive: true, force: true }) } }
+  const reopen = () => {
+    service.dispose()
+    const disk = createStore(join(root, 'state.json'))
+    return createCloudflareDeploymentService({ store: disk, root: join(root, 'cloudflare'), outboundConfig: createOutboundConfigService({ store: disk, source, yamlRows: new Map(), allowLegacy: false }), inboundConfig: createInboundChannelConfigPort({ store: disk }), runner, fetchImpl: async url => Response.json({ template: url.includes('dn-bark') ? 'notifier-bark-v1' : 'notifier-telegram-v1' }) })
+  }
+  return { root, store, source, service, outboundConfig, inboundConfig, runner, reopen, counts: () => ({ created, deployed }), cleanup() { service.dispose(); rmSync(root, { recursive: true, force: true }) } }
 }
 async function idle(service) { for (let i = 0; i < 200; i++) { if (!service.status().job) return; await new Promise(r => setImmediate(r)) }; throw Error('job did not settle') }
 async function logged(service) { service.refresh(); await idle(service) }
@@ -229,4 +234,49 @@ test('Native tunnel failed save does not alter the controller or enable a new pr
     assert.equal(tunnel.status().configured, false)
     assert.equal(r.store.get('cloudflare:tunnel'), undefined)
   } finally { tunnel.dispose(); r.cleanup() }
+})
+
+
+test('F03/F04: deployment survives verification failure and process restart without redeploy or secret copies', async () => {
+  const r = rig({ failReadback: true }); let recovered
+  try {
+    await logged(r.service)
+    r.service.deploy({ type: 'telegram', accountId: ACCOUNT, botToken: BOT, activate: true, chatId: '42' }); await idle(r.service)
+    const job = r.store.get(r.store.keys('cloud:job:')[0])
+    assert.equal(job.state, 'recovery-required'); assert.equal(job.remoteReceipt.versionId, 'v1')
+    assert.doesNotMatch(JSON.stringify(job), /fixture_token|gatewayKey|botToken/)
+    assert.doesNotMatch(JSON.stringify(r.store.get('cloudflare:deployment:telegram')), /fixture_token|gatewayKey|botToken/)
+    r.runner.readDeployment = async () => [{ versions: [{ version_id: 'v1', percentage: 100 }] }]
+    recovered = r.reopen(); await new Promise(setImmediate); await idle(recovered)
+    assert.equal(r.counts().deployed, 1)
+    assert.equal(recovered.status().deployments[0].state, 'bound')
+    assert.equal(createStore(join(r.root, 'state.json')).get(r.store.keys('cloud:job:')[0]).state, 'done')
+  } finally { recovered?.dispose(); r.cleanup() }
+})
+test('F05: cancel during verification persists cancellation and retains created resource across restart', async () => {
+  const r = rig(); let release, recovered
+  try {
+    await logged(r.service)
+    r.runner.readDeployment = () => new Promise(resolve => { release = resolve })
+    r.service.deploy({ type: 'telegram', accountId: ACCOUNT, botToken: BOT })
+    for (let i = 0; i < 200 && !release; i++) await new Promise(setImmediate)
+    r.service.cancel(); release([{ versions: [{ version_id: 'v1', percentage: 100 }] }]); await idle(r.service)
+    const job = r.store.get(r.store.keys('cloud:job:')[0])
+    assert.equal(job.cancelRequested, true)
+    assert.ok(r.store.get('cloudflare:deployment:telegram').endpoint)
+    recovered = r.reopen(); await new Promise(setImmediate)
+    assert.equal(recovered.status().job, null); assert.equal(r.counts().deployed, 1)
+  } finally { recovered?.dispose(); r.cleanup() }
+})
+test('Cloud remote creation with lost response resumes from exact resource readback, never blind create', async () => {
+  const r = rig(); let recovered, calls = 0
+  try {
+    await logged(r.service)
+    r.runner.deployWorker = async ({ name }) => { calls++; throw Error('response lost') }
+    r.service.deploy({ type: 'telegram', accountId: ACCOUNT, botToken: BOT }); await idle(r.service)
+    const record = r.store.get('cloudflare:deployment:telegram')
+    r.runner.readDeployment = async () => [{ endpoint: `https://${record.name}.account.workers.dev`, versions: [{ version_id: 'remote-v1', percentage: 100 }] }]
+    recovered = r.reopen(); await new Promise(setImmediate); await idle(recovered)
+    assert.equal(calls, 1); assert.equal(recovered.status().deployments[0].health, 'ready')
+  } finally { recovered?.dispose(); r.cleanup() }
 })

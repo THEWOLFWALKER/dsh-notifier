@@ -781,10 +781,10 @@ export function createSessionRegistry(options = {}) {
       const outcome = withDurableRecord(id, () => {
         const record = ensureRecord(id)
         const list = Array.isArray(record.inbound) ? record.inbound.filter((item) => item != null) : []
-        if (list.some((item) => item.channel === channel && item.userId === userId)) {
+        if (list.some((item) => item.channel === channel && item.userId === userId && (item.accountId ?? 'default') === (binding?.accountId ?? 'default'))) {
           return { changed: false, result: record }
         }
-        record.inbound = [...list, { channel, userId }]
+        record.inbound = [...list, { channel, userId, ...(binding?.accountId && binding.accountId !== 'default' ? { accountId: binding.accountId } : {}) }]
         markDirty(id, 'inbound')
         return { changed: true, result: record }
       })
@@ -807,7 +807,7 @@ export function createSessionRegistry(options = {}) {
         const record = recordOf(id)
         if (record === undefined) return { changed: false, result: undefined }
         const list = Array.isArray(record.inbound) ? record.inbound : []
-        const next = list.filter((item) => !(item?.channel === channel && item?.userId === userId))
+        const next = list.filter((item) => !(item?.channel === channel && item?.userId === userId && (item?.accountId ?? 'default') === (binding?.accountId ?? 'default')))
         if (next.length === list.length) return { changed: false, result: record }
         if (next.length === 0) delete record.inbound
         else record.inbound = next

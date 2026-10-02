@@ -85,6 +85,8 @@ test('Gate 2C：runtime 换实例推高 epoch；capture() 返回不可变世代�
   assert.equal(first.epoch, 0)
   assert.equal(first.entry.type, 'bark')
   manager.setState('bark', 'online')
+  assert.equal(manager.epochOf('bark'), 0, 'same instance observations do not allocate a generation')
+  manager.replace('bark', bark.resolve({ key: 'K2' }))
   assert.equal(manager.epochOf('bark'), 1)
   assert.equal(manager.capture('bark').epoch, 1)
   assert.equal(first.epoch, 0, '已捕获的世代是不可变值，不随后续更新漂移')

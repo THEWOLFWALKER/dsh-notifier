@@ -154,7 +154,7 @@ test('/agent use <workspace>：精确匹配 → 取最近活跃会话绑定并�
   rig.registry.touch(older.id) // older 反超为最近活跃
 
   rig.userSays('/agent use alpha')
-  assert.equal(rig.store.get('bind:telegram:42'), older.id)
+  assert.equal(rig.store.get('bind:telegram:default:42'), older.id)
   assert.deepEqual(rig.calls.attach, [{ sid: older.id, binding: { channel: 'telegram', userId: '42' } }])
   assert.ok(rig.calls.touch.includes(older.id), '绑定成功后刷新活跃信号')
   const reply = rig.replies.at(-1).text
@@ -175,7 +175,7 @@ test('/agent use <完整 sid>：sessionId 精确匹配直接绑定', async () =>
   rig.fire('agent/created', beta)
 
   rig.userSays(`/agent use ${BETA_1}`)
-  assert.equal(rig.store.get('bind:telegram:42'), BETA_1)
+  assert.equal(rig.store.get('bind:telegram:default:42'), BETA_1)
   assert.match(rig.replies.at(-1).text, /sessionId 精确匹配/)
   await rig.flush('你好')
   assert.equal(beta.calls.followup.length, 1)
@@ -191,7 +191,7 @@ test('/agent use <前缀>：唯一命中（≥4 位）绑定到该会话', () =>
   rig.fire('agent/created', beta)
 
   rig.userSays('/agent use eeee') // 只命中 BETA_1
-  assert.equal(rig.store.get('bind:telegram:42'), BETA_1)
+  assert.equal(rig.store.get('bind:telegram:default:42'), BETA_1)
   assert.match(rig.replies.at(-1).text, /sid 前缀唯一命中/)
   rig.dispose()
 })
@@ -207,7 +207,7 @@ test('/agent use 前缀多命中：列出候选 sid，不写绑定', () => {
   const text = rig.replies.at(-1).text
   assert.match(text, /命中 2 个活跃会话/)
   assert.ok(text.includes(ALPHA_1) && text.includes(ALPHA_2), '候选列出完整 sid')
-  assert.equal(rig.store.get('bind:telegram:42'), undefined, '歧义不落绑定')
+  assert.equal(rig.store.get('bind:telegram:default:42'), undefined, '歧义不落绑定')
   assert.equal(rig.calls.attach.length, 0)
   rig.dispose()
 })
@@ -221,7 +221,7 @@ test('/agent use 零命中：报错并提示 /agent（含 <4 位前缀不可匹�
   assert.match(rig.replies.at(-1).text, /未匹配到会话 zzzz9999.*\/agent/)
   rig.userSays('/agent use aa') // 3 位前缀不参与匹配
   assert.match(rig.replies.at(-1).text, /未匹配到会话 aa/)
-  assert.equal(rig.store.get('bind:telegram:42'), undefined)
+  assert.equal(rig.store.get('bind:telegram:default:42'), undefined)
   rig.dispose()
 })
 
@@ -236,7 +236,7 @@ test('G-33：/agent use 目标名含空格——整体作为 needle，不再截�
 
   // 旧行为：args[1] 只取 "my" → 未匹配到会话 my；新行为：剩余参数整体 join
   rig.userSays('/agent use my space')
-  assert.equal(rig.store.get('bind:telegram:42'), ALPHA_1, '含空格 workspace 名命中')
+  assert.equal(rig.store.get('bind:telegram:default:42'), ALPHA_1, '含空格 workspace 名命中')
   assert.match(rig.replies.at(-1).text, /workspace=my space/)
   await rig.flush('在吗')
   assert.equal(agent.calls.followup.length, 1, '绑定后文本投给含空格 workspace 的会话')
@@ -255,7 +255,7 @@ test('/agent back：清掉 bind 键并 detachInbound 旧挂钩', () => {
   assert.notEqual(rig.registry.getSession(ALPHA_1).inbound, undefined)
 
   rig.userSays('/agent back')
-  assert.equal(rig.store.get('bind:telegram:42'), undefined)
+  assert.equal(rig.store.get('bind:telegram:default:42'), undefined)
   assert.deepEqual(rig.calls.detach, [{ sid: ALPHA_1, binding: { channel: 'telegram', userId: '42' } }])
   assert.equal(rig.registry.getSession(ALPHA_1).inbound, undefined, '台账挂钩被摘除')
   assert.match(rig.replies.at(-1).text, /已回到通道默认/)
@@ -268,12 +268,12 @@ test('/bind 补 attachInbound + touch；/unbind 先读旧值再 detachInbound', 
   rig.fire('agent/created', alpha)
 
   rig.userSays(`/bind ${ALPHA_1}`)
-  assert.equal(rig.store.get('bind:telegram:42'), ALPHA_1)
+  assert.equal(rig.store.get('bind:telegram:default:42'), ALPHA_1)
   assert.deepEqual(rig.calls.attach, [{ sid: ALPHA_1, binding: { channel: 'telegram', userId: '42' } }])
   assert.ok(rig.calls.touch.includes(ALPHA_1))
 
   rig.userSays('/unbind')
-  assert.equal(rig.store.get('bind:telegram:42'), undefined)
+  assert.equal(rig.store.get('bind:telegram:default:42'), undefined)
   assert.deepEqual(rig.calls.detach, [{ sid: ALPHA_1, binding: { channel: 'telegram', userId: '42' } }])
   assert.equal(rig.registry.getSession(ALPHA_1).inbound, undefined)
   assert.match(rig.replies.at(-1).text, /已解绑/)
@@ -436,10 +436,10 @@ test('G-49：会话绑定键全链路一致命中——空白 userId 写读同�
   const rig = makeRig({ agents: [alpha], busBinding: '42' })
   rig.fire('agent/created', alpha)
 
-  // 写侧：信封 userId ' 42 ' → conversation 键经 identity.bindingKey 归一 → bind:telegram:42
+  // 写侧：信封 userId ' 42 ' → conversation 键经 identity.bindingKey 归一 → bind:telegram:default:42
   // （旧实现会落 'bind:telegram: 42 '，与 router 读键裂开，绑定写完即丢）
   rig.userSays(`/bind ${ALPHA_1}`, { userId: ' 42 ' })
-  assert.equal(rig.store.get('bind:telegram:42'), ALPHA_1, 'bind 键分量归一落盘')
+  assert.equal(rig.store.get('bind:telegram:default:42'), ALPHA_1, 'bind 键分量归一落盘')
   assert.deepEqual(rig.calls.attach, [{ sid: ALPHA_1, binding: { channel: 'telegram', userId: '42' } }],
     'registry 挂钩分量与 bind 键同一归一（不存带空白的 42）')
 
@@ -456,7 +456,7 @@ test('G-49：会话绑定键全链路一致命中——空白 userId 写读同�
 
   // 摘挂半链路：attach 用 ' 42 '、/agent back 用 '42' → 同一身份，挂钩摘得掉
   rig.userSays('/agent back')
-  assert.equal(rig.store.get('bind:telegram:42'), undefined)
+  assert.equal(rig.store.get('bind:telegram:default:42'), undefined)
   assert.equal(rig.registry.getSession(ALPHA_1).inbound, undefined, '跨空白形态 attach/detach 同键摘挂')
   rig.dispose()
 })
@@ -475,7 +475,7 @@ test('G-48：/bind 覆盖绑定摘旧挂钩——registry 不再一 user 双挂�
 
   // 覆盖绑定：旧实现只 attach 新 sid，旧 sid 的反查挂钩永久残留（一 user 双挂）
   rig.userSays(`/bind ${BETA_1}`)
-  assert.equal(rig.store.get('bind:telegram:42'), BETA_1, 'store 键已指向新会话')
+  assert.equal(rig.store.get('bind:telegram:default:42'), BETA_1, 'store 键已指向新会话')
   assert.equal(rig.registry.getSession(ALPHA_1).inbound, undefined, '旧会话挂钩被摘除（不再双挂）')
   assert.deepEqual(rig.registry.getSession(BETA_1).inbound, [{ channel: 'telegram', userId: '42' }], '新会话挂钩在位')
   assert.deepEqual(rig.calls.detach, [{ sid: ALPHA_1, binding: { channel: 'telegram', userId: '42' } }],
@@ -499,14 +499,14 @@ test('G-48：/agent use 覆盖绑定同样摘旧挂钩（workspace 切换不双�
   rig.userSays('/agent use alpha')
   assert.ok(rig.registry.getSession(ALPHA_1).inbound !== undefined)
   rig.userSays('/agent use beta')
-  assert.equal(rig.store.get('bind:telegram:42'), BETA_1)
+  assert.equal(rig.store.get('bind:telegram:default:42'), BETA_1)
   assert.equal(rig.registry.getSession(ALPHA_1).inbound, undefined, '旧 workspace 会话挂钩摘除')
   assert.deepEqual(rig.registry.getSession(BETA_1).inbound, [{ channel: 'telegram', userId: '42' }])
   assert.deepEqual(rig.calls.detach, [{ sid: ALPHA_1, binding: { channel: 'telegram', userId: '42' } }])
 
   // 幂等重绑同目标：不做摘挂（detach 不追加），registry attach 去重后挂钩不翻倍
   rig.userSays('/agent use beta')
-  assert.equal(rig.store.get('bind:telegram:42'), BETA_1)
+  assert.equal(rig.store.get('bind:telegram:default:42'), BETA_1)
   assert.equal(rig.calls.detach.length, 1, '重绑同目标不触发 detach')
   assert.deepEqual(rig.registry.getSession(BETA_1).inbound, [{ channel: 'telegram', userId: '42' }],
     '重复 attach 由 registry 去重，挂钩不翻倍')
@@ -666,7 +666,7 @@ test('Control Core 会话闸：personal 默认 converse 关闭 → 普通文本�
   const rig = makeRig({ agents: [agent], policy: {} }) // 默认 personal：converse 关
   rig.fire('agent/created', agent)
   rig.userSays(`/bind ${ALPHA_1}`) // R1：先显式选择任务，闸门才有目标可判
-  rig.bus.accept({ channel: 'telegram', accountId: 'tg-app', userId: '42', chatId: '42', messageId: 'm-conv-0', text: '跑一下' })
+  rig.store.set('bind:telegram:tg-app:42', rig.store.get('bind:telegram:default:42')); rig.bus.accept({ channel: 'telegram', accountId: 'tg-app', userId: '42', chatId: '42', messageId: 'm-conv-0', text: '跑一下' })
   await sleep(FLUSH_MS)
   assert.match(rig.replies.at(-1).text, /远程对话默认关闭/, '无 converse 授权应回执提示')
   assert.equal(agent.calls.followup.length + agent.calls.inject.length + agent.calls.steer.length, 0, '默认不投递')
@@ -678,12 +678,12 @@ test('Control Core 会话闸：converse 显式开启且本地 accountId 在场 �
   const rig = makeRig({ agents: [agent], policy: { capabilities: { converse: true } } })
   rig.fire('agent/created', agent)
   rig.userSays(`/bind ${ALPHA_1}`) // R1：先显式选择任务
-  rig.bus.accept({ channel: 'telegram', accountId: 'tg-app', userId: '42', chatId: '42', messageId: 'm-conv-1', text: '跑一下' })
+  rig.store.set('bind:telegram:tg-app:42', rig.store.get('bind:telegram:default:42')); rig.bus.accept({ channel: 'telegram', accountId: 'tg-app', userId: '42', chatId: '42', messageId: 'm-conv-1', text: '跑一下' })
   await sleep(FLUSH_MS)
   assert.equal(agent.calls.followup.length, 1)
   assert.equal(agent.calls.followup[0].content[0].text, '跑一下')
   // steer（! 前缀）同样受控后投递
-  rig.bus.accept({ channel: 'telegram', accountId: 'tg-app', userId: '42', chatId: '42', messageId: 'm-conv-2', text: '! 改道' })
+  rig.store.set('bind:telegram:tg-app:42', rig.store.get('bind:telegram:default:42')); rig.bus.accept({ channel: 'telegram', accountId: 'tg-app', userId: '42', chatId: '42', messageId: 'm-conv-2', text: '! 改道' })
   await sleep(FLUSH_MS)
   assert.equal(agent.calls.steer.length, 1)
   assert.equal(agent.calls.steer[0].content[0].text, '改道')

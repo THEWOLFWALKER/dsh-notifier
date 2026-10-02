@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Isolate current tasks by account and persist Native task selection.
+- Allocate runtime generations per instance and exclude late health results.
+- Persist Cloud deployment jobs, recover by readback and keep secrets in configuration.
+- Count real Node test leaves instead of suite events.
+
 ## [Unreleased]
 
 - Telegram 一键部署网关：自动获取地址并填写保存，共用机器人凭证；支持自定义网关地址。

@@ -74,7 +74,7 @@ test('C1 valid save + hot apply success：saved/applied/hot，manager 无 restar
   assert.equal(result.saved, true)
   assert.equal(result.applied, true)
   assert.equal(result.applyMode, 'hot')
-  assert.deepEqual(source.runtimeState('bark'), { state: 'online', restartPending: false })
+  assert.deepEqual(source.runtimeState('bark'), { generation: 1, state: 'online', restartPending: false })
 
   const view = service.describe('bark')
   assert.equal(view.configured, true)   // desired 落盘
@@ -121,7 +121,7 @@ test('C3 explicit secret clear -> desired invalid + old runtime remains（diverg
   assert.equal(view.restartPending, true)
   assert.equal(view.diverged, true, 'divergence：旧 runtime 在跑但未收敛到 desired')
   assert.deepEqual(source.runtimeState('bark'), {
-    state: 'online', restartPending: true, error: source.runtimeState('bark').error,
+    generation: 1, state: 'online', restartPending: true, error: source.runtimeState('bark').error,
   })
 })
 

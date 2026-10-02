@@ -105,6 +105,7 @@ export function createNativeSurfaceService({ readModel = null, actions = null } 
       signal,
     })),
 
+    'native.selectTask': payload => ok(requireActions().selectTask(payload)),
     'native.saveChannel': (payload) => ok(requireActions().saveChannel(payload)),
     'native.saveInboundChannel': async (payload) => ok(await requireActions().saveInboundChannel(payload)),
     'native.removeChannel': (payload) => ok(requireActions().removeChannel(payload)),

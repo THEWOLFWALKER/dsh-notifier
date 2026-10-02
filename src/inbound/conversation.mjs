@@ -247,6 +247,7 @@ export function registerConversationRouter(deps, strings) {
   const inboundBindingOf = (envelope) => ({
     channel: String(envelope.channel ?? '').trim().toLowerCase(),
     userId: String(envelope.userId ?? '').trim(),
+    ...(envelope.accountId && envelope.accountId !== 'default' ? { accountId: String(envelope.accountId).trim() } : {}),
   })
 
   /**
@@ -288,7 +289,7 @@ export function registerConversationRouter(deps, strings) {
   const resolveTarget = (envelope) => {
     if (router !== null) {
       try {
-        return router.resolveInbound(envelope.channel, String(envelope.userId ?? ''))
+        return router.resolveInbound(envelope.channel, String(envelope.userId ?? ''), envelope.accountId)
       } catch (error) {
         warn(`入站路由解析失败，回落显式绑定链: ${error instanceof Error ? error.message : String(error)}`)
       }
@@ -923,7 +924,7 @@ say(t.helpLines.join('\n'))
   // 键函数反查，绝不找错窗。
   const pending = new Map() // `${channel}:${userId}:${String(chatId ?? '')}` -> { parts, timer, forceSteer }
   const mergeWindowKeyOf = (envelope) =>
-    `${envelope.channel}:${envelope.userId}:${String(envelope.chatId ?? '')}`
+    `${envelope.channel}:${envelope.accountId ?? 'default'}:${envelope.userId}:${String(envelope.chatId ?? '')}`
 
   const utf8Bytes = (value) => Buffer.byteLength(String(value), 'utf8')
   const scheduleMerge = (entry) => {

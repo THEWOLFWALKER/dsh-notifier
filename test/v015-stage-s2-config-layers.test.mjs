@@ -229,7 +229,7 @@ test('T08-C03 旧 revision 的迟到 apply 不得覆盖已更新的 runtime 状�
   assert.equal(source.runtimeState('bark').state, 'degraded')
 
   // revision 只服务栅栏，不泄漏进 runtimeState 形状。
-  assert.deepEqual(Object.keys(source.runtimeState('bark')).sort(), ['restartPending', 'state'])
+  assert.deepEqual(Object.keys(source.runtimeState('bark')).sort(), ['generation', 'restartPending', 'state'])
 })
 
 test('T08-C03 端到端：保存推进 revision，栅栏随之抬升', () => {

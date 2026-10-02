@@ -329,7 +329,7 @@ export function apply(ctx, config = {}) {
     // v0.15（T12）：runtime 实例世代前进（replace/remove/replaceAll）→ 旧实例的迟到健康
     // 观察一律作废，绝不污染新实例的观察面（「断线旧 epoch 观察不污染新实例」）。
     if (event?.topic === 'runtime' && typeof event.type === 'string' && event.type !== '') {
-      surfaceHealth.markEpoch(event.type)
+      surfaceHealth.markEpoch(event.type, event.generation)
     }
   }))
 
@@ -389,6 +389,7 @@ export function apply(ctx, config = {}) {
   const registry = createSessionRegistry({ ctx, store, ttlHours: routeRaw.sessionTtlHours, logger })
   const router = createAgentRouter({
     store,
+    currentTask: currentTaskAuthority,
     agentsList: () => { try { return ctx.agents.list() } catch { return [] } },
   })
   try {
@@ -918,7 +919,7 @@ export function apply(ctx, config = {}) {
     questions: surfaceQuestions,
     tasks: surfaceTasks,
     // R1：当前任务读投影——只回显用户显式选择（owner 维度的 bind 键），绝不从投影推导。
-    selectedTaskRef: (owner) => currentTaskAuthority.get({ channel: owner?.channel, userId: owner?.userId }),
+    selectedTaskRef: (owner) => currentTaskAuthority.get(owner),
     revision: surfaceRevision,
     storageStatus: () => {
       const boot = typeof store.bootStatus === 'function' ? store.bootStatus() : { readFailed: false }
@@ -926,6 +927,8 @@ export function apply(ctx, config = {}) {
     },
   })
   const nativeActions = createNativeActions({
+    currentTask: currentTaskAuthority,
+    tasks: surfaceTasks,
     channelControl,
     health: surfaceHealth,
     revision: surfaceRevision,

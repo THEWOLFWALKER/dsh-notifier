@@ -48,10 +48,9 @@ export function createRuntimeChannelManager({ source, initial = [] } = {}) {
       if (known !== undefined && incoming < known) return copy(stateOf(key))
       appliedRevision.set(key, incoming)
     }
-    const next = { state: STATES.has(state) ? state : 'failed', restartPending: state === 'failed', ...rest }
-    epochs.set(key, (epochs.get(key) ?? 0) + 1)
+    const next = { generation: epochOf(key), state: STATES.has(state) ? state : 'failed', restartPending: state === 'failed', ...rest }
     runtime.set(key, next)
-    publish({ topic: 'runtime', type: key, state: next.state, restartPending: next.restartPending })
+    publish({ topic: 'runtime', type: key, generation: epochOf(key), state: next.state, restartPending: next.restartPending })
     return next
   }
 
@@ -65,6 +64,7 @@ export function createRuntimeChannelManager({ source, initial = [] } = {}) {
     has: (type) => stateOf(type).state === 'online' && source.has(type),
     get: (type) => source.get(type),
     replace(type, config) {
+      epochs.set(type, epochOf(type) + 1)
       update(type, 'starting', { restartPending: false })
       try {
         const value = source.replace(type, config)
@@ -77,14 +77,16 @@ export function createRuntimeChannelManager({ source, initial = [] } = {}) {
     },
     remove(type) {
       const removed = source.remove(type)
+      // Retirement invalidates in-flight results even before another instance is created.
+      epochs.set(type, epochOf(type) + 1)
       update(type, 'stopped', { restartPending: false })
       return removed
     },
     replaceAll(entries) {
       const value = source.replaceAll(entries)
       const live = new Set(value.map((entry) => entry.type))
-      for (const type of live) update(type, 'online', { restartPending: false })
-      for (const type of runtime.keys()) if (!live.has(type)) update(type, 'stopped', { restartPending: false })
+      for (const type of live) { epochs.set(type, epochOf(type) + 1); update(type, 'online', { restartPending: false }) }
+      for (const type of runtime.keys()) if (!live.has(type)) { epochs.set(type, epochOf(type) + 1); update(type, 'stopped', { restartPending: false }) }
       return value
     },
     runtimeState(type) {
