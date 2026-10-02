@@ -8,26 +8,9 @@ window.__ModuleLoader__.load({
     } = React
 
     const PANEL_ID = 'dsh-notifier'
-    // v0.15（T19 / U11）：导航分层——日常一步可达（待处理提问 / 任务 / 渠道 / 活动），
-    // 其余管理能力（成员 / 待确认身份 / 配对码 / 会话 / 诊断）单独一组，仍全部在 Native 可达；
-    // 不为「减导航」把日常能力塞回 Recovery。
-    const NAV_DAILY = Object.freeze([
-      ['questions', 'questions'],
-      ['tasks', 'tasks'],
-      ['channels', 'channels'],
-      ['activity', 'activity'],
-    ])
-    const NAV_MANAGE = Object.freeze([
-      ['members', 'members'],
-      ['pending', 'pendingIdentities'],
-      ['pairing', 'pairingCodes'],
-      ['sessions', 'sessions'],
-      ['diagnostics', 'diagnosticsCenter'],
-      // v0.15（T24）：远程入口（手机访问）。属管理组，日常一步可达项不受影响。
-      ['remote', 'remoteEntry'],
-      ['portability', 'configTransfer'],
-      ['cloudflare', 'cloudflare'],
-    ])
+    // v0.15（Stage 1 / S2）：用户信息架构重建。旧 Home 的「常用 / 管理」pill 导航已删除——
+    // Home / Channels / Tasks / Sessions / Bindings 不再作为用户 IA。唯一用户页面是
+    // 「通知与私聊」（native / native-channel），二级能力从「更多」菜单进入。
     const RPC_CHANNEL = '/dsh-notifier'
     const NS = 'dsh-notifier.native'
 
@@ -41,9 +24,82 @@ window.__ModuleLoader__.load({
       importFields: '变更字段', importConfigure: '补充配置', importEmpty: '暂无待配置渠道',
       exportFailed: '下载失败，请复制下方内容。', cloudflare: 'Cloudflare 部署',
       title: '通知与控制',
-      intro: 'DSH 的通知、远程响应与运行状态',
+      // v0.15（Stage 1 / S2）：Native v2 外壳——单一「通知与私聊」页 + 左侧已添加渠道。
+      nativeTitle: '通知与私聊',
+      nativeIntro: '把重要事件发到你的设备，也能用手机回话。',
+      more: '更多',
+      moreNotify: '通知设置',
+      moreRemote: '远程访问',
+      moreImport: '导入旧设置',
+      moreHelp: '帮助',
+      allChannels: '全部',
+      railAdd: '添加渠道',
+      overviewNotify: '通知',
+      overviewNotifyEmpty: '还没有开启通知的渠道',
+      overviewPrivate: '私聊',
+      overviewPrivateOff: '私聊还没有开启',
+      currentTask: '当前任务',
+      usersLabel: '使用者',
+      pendingBannerTitle: '有需要处理的事',
+      pendingBannerView: '查看',
+      pendingBannerHide: '收起',
+      pendingEmpty: '暂时没有需要处理的事',
+      pickerTitle: '添加渠道',
+      pickerSearch: '搜索渠道',
+      pickerCommon: '常用',
+      pickerOther: '其他通知方式',
+      pickerAdded: '已添加',
+      pickerEmpty: '没有找到这个渠道',
+      pickerClose: '关闭',
+      channelStatusLabel: '状态',
+      accountDefault: '默认账号',
+      accountMore: '更多设置',
+      addAccount: '添加账号',
+      goSetUp: '去设置',
+      goFix: '去处理',
       needsAttention: '需要你处理',
       running: '正在运行',
+      // v0.15（Stage 1 / S3）：账号卡——基础/更多两段、secret 三态、测试人话、备用连接按需出现。
+      accountBasic: '基础设置',
+      accountExpand: '展开设置',
+      accountCollapse: '收起设置',
+      accountNoFields: '这个渠道没有可填的选项，直接保存即可。',
+      accountSaved: '已保存',
+      connectionHelp: '连接帮助',
+      telegramAutoFallback: '自动准备备用连接',
+      telegramCustomAddress: '使用自定义地址',
+      connectionHelpHint: '连接失败时，可以准备一条备用线路，或改用你自己的地址。',
+      // v0.15（Stage 1 / S4）：私聊（确认本人 → 选择任务 → 试用）与待处理流程。
+      privateOpen: '设置私聊',
+      privateView: '查看私聊',
+      privateSetupTitle: '设置私聊',
+      privateReadyTitle: '私聊已开启',
+      privateStepConfirm: '确认是你',
+      privateStepTask: '选择任务',
+      privateStepTry: '试用',
+      privateStepDone: '完成',
+      privateConfirmHint: '用手机给机器人发一句话，然后在下面确认是你。',
+      privateConfirmWaiting: '还没有收到消息',
+      privateConfirmMint: '生成确认码',
+      privateConfirmCodeHint: '把这个码发给机器人，就能确认是你：',
+      privateConfirmPendingTitle: '等待确认',
+      privateTaskHint: '选一个私聊要汇报的任务。',
+      privateTaskEmpty: '现在没有正在运行的任务。',
+      privateTaskUse: '就用这个',
+      privateTryHint: '在手机私聊里发送「状态」，看看能不能收到回复。',
+      privateTryWord: '状态',
+      privateFinish: '完成',
+      privateClose: '关闭私聊',
+      privateCloseConfirm: '关闭后手机就不能回话了，确定关闭吗？',
+      privateCloseStay: '先不关',
+      privateCurrentChannel: '当前渠道',
+      privateNoChannel: '还没有确认的渠道',
+      privateNoTask: '还没有任务',
+      privatePeople: '使用者',
+      pendingOpen: '查看',
+      pendingLater: '稍后处理',
+      pendingAlreadyHandled: '这件事已经被处理过了',
+      pendingQuestionFrom: '来自任务的问题',
       channels: '通知渠道',
       activity: '最近活动',
       viewAll: '查看全部',
@@ -92,8 +148,6 @@ window.__ModuleLoader__.load({
       copyCode: '复制配对码',
       codeCopied: '配对码已复制',
       copyUnavailableSelect: '无法访问剪贴板，请手动选中上方配对码复制。',
-      navDaily: '常用',
-      navManage: '管理',
       confirmDemote: '确认降权',
       memberDemoteImpact: '降为普通成员后不再拥有所有者权限',
       memberRemoveImpact: '将从成员名单中移除',
@@ -110,7 +164,6 @@ window.__ModuleLoader__.load({
       restartPending: '等待重启',
       disabled: '已停用',
       unavailable: '不可用',
-      unconfigured: '未配置',
       runningOk: '运行正常',
       needsAction: '需要处理',
       connectionLost: '无法读取 dsh-notifier 状态',
@@ -198,6 +251,7 @@ window.__ModuleLoader__.load({
       advancedDisabled: '高级管理台未启用',
       refresh: '刷新',
       configured: '已配置',
+      notSet: '未设置',
       recent20: '近 20 次',
       delivered: '送达',
       skipped: '跳过',
@@ -219,58 +273,18 @@ window.__ModuleLoader__.load({
       unknownError: '发生未知错误',
       staleData: '连接中断，当前显示的是上次成功读取的数据。',
       renderFailed: '通知与控制界面发生错误',
-      diagnosticsCenter: '诊断中心',
-      diagnosticsIntro: '是否需要处理、为什么，以及最近一次检查',
-      attentionQuestion: '现在是否需要注意？',
-      noneRequired: '运行正常，无需处理',
-      why: '原因',
-      lastChecked: '最近检查',
-      notAvailableYet: '暂时无法读取',
-      pluginVersion: '插件版本',
-      hostVersion: '宿主版本',
-      processId: '进程标识',
-      eventsMode: '事件模式',
-      questionsMode: '提问模式',
-      imageInput: '图片入站',
-      storageState: '存储状态',
-      storageWritable: '可写入',
-      migration: '状态迁移',
-      channelSummaryTitle: '渠道摘要',
-      totalChannels: '渠道总数',
-      notifyConfiguredActive: '通知（已配置/运行）',
-      controlConfiguredActive: '远程控制（已配置/运行）',
-      evidenceLevel: '证据等级',
       evidenceNone: '无投递证据',
       evidenceAccepted: '已发送到提供方',
       evidenceConfirmed: '已确认送达',
-      restartPendingList: '等待重启生效',
-      noEvidenceList: '尚无投递证据',
-      inactiveList: '已配置未激活',
-      degradedList: '最近失败渠道',
-      noneList: '无',
-      capabilityTitle: '能力',
-      capQuestions: '待处理提问',
-      capSessions: '会话',
-      capBindings: '路由绑定',
-      capMembers: '成员',
-      capAdvanced: '高级管理台',
-      available: '可用',
       yes: '是',
       no: '否',
       supportReport: '支持报告',
       reportIntro: '生成诊断报告',
       reportNotBackup: '诊断报告不包含密钥。',
       generateReport: '生成支持报告',
-      copyReport: '复制',
-      downloadReport: '下载',
       copiedOk: '已复制到剪贴板',
       downloadedOk: '已下载报告文件',
       copyFailedDownload: '无法复制，已改为下载',
-      failuresTitle: '最近失败',
-      noFailures: '暂无失败记录',
-      hostTitle: '宿主',
-      storageTitle: '存储',
-      controlTitle: '控制面',
       // v0.15（T24）：远程入口（手机访问）。
       remoteEntry: '远程入口',
       remoteIntro: '填写 HTTPS 地址，在手机上打开通知与控制。',
@@ -287,6 +301,21 @@ window.__ModuleLoader__.load({
       remoteQrEquivalent: '二维码与普通链接指向同一个地址',
       remoteHint: '链接可以打开不代表已取得管理权限；连接与权限请分别核对。',
       remoteNoSecret: '不要在链接里放入 ticket / token / 密码等秘密参数。',
+      // v0.15（Stage 1 / S5）：二级能力收口——通知总览 + 用户向帮助。
+      notifySettingsTitle: '通知设置',
+      notifySettingsIntro: '打开通知的渠道会收到 DSH 的重要事件。',
+      notifySettingsEmpty: '还没有渠道能接收通知，先添加一个渠道。',
+      notifySettingsOpen: '打开设置',
+      helpTitle: '帮助',
+      helpIntro: '先试这几步；还不行就生成摘要发给开发者。',
+      helpTipPhone: '手机没收到消息',
+      helpTipPhoneBody: '确认渠道里的信息填写正确，点「发送测试通知」再看一次。',
+      helpTipConnect: '连接一直失败',
+      helpTipConnectBody: '回到该渠道，展开「连接帮助」，按提示准备备用连接。',
+      helpTipReply: '手机回复没有反应',
+      helpTipReplyBody: '确认私聊已开启，并且已经确认是你。',
+      helpTipRestart: '刚改完还没生效',
+      helpTipRestartBody: '重启 DSH 后再试一次。',
     })
 
     const en = Object.freeze({
@@ -299,16 +328,89 @@ window.__ModuleLoader__.load({
       importFields: 'Changed fields', importConfigure: 'Complete setup', importEmpty: 'No pending channels',
       exportFailed: 'Download failed. Copy the content below.', cloudflare: 'Cloudflare deploy',
       title: 'Notify & Control',
-      intro: 'Notifications, remote responses, and runtime state for DSH',
+      // v0.15（Stage 1 / S2）：Native v2 shell — one "Notify & Private chat" page + added channels.
+      nativeTitle: 'Notify & Private chat',
+      nativeIntro: 'Send important events to your device, and reply from your phone.',
+      more: 'More',
+      moreNotify: 'Notification settings',
+      moreRemote: 'Remote access',
+      moreImport: 'Import old settings',
+      moreHelp: 'Help',
+      allChannels: 'All',
+      railAdd: 'Add channel',
+      overviewNotify: 'Notifications',
+      overviewNotifyEmpty: 'No channel has notifications on yet',
+      overviewPrivate: 'Private chat',
+      overviewPrivateOff: 'Private chat is not on yet',
+      currentTask: 'Current task',
+      usersLabel: 'People',
+      pendingBannerTitle: 'Something needs your attention',
+      pendingBannerView: 'View',
+      pendingBannerHide: 'Hide',
+      pendingEmpty: 'Nothing needs your attention',
+      pickerTitle: 'Add a channel',
+      pickerSearch: 'Search channels',
+      pickerCommon: 'Common',
+      pickerOther: 'Other ways to notify',
+      pickerAdded: 'Added',
+      pickerEmpty: 'No channel matches that',
+      pickerClose: 'Close',
+      channelStatusLabel: 'Status',
+      accountDefault: 'Default account',
+      accountMore: 'More settings',
+      addAccount: 'Add account',
+      goSetUp: 'Set up',
+      goFix: 'Fix it',
       needsAttention: 'Needs your attention',
       running: 'Running',
+      // v0.15 (Stage 1 / S3): account cards — basic/more split, secret tri-state, plain-language test, on-demand fallback.
+      accountBasic: 'Basic settings',
+      accountExpand: 'Expand settings',
+      accountCollapse: 'Collapse settings',
+      accountNoFields: 'This channel has nothing to fill in — just save.',
+      accountSaved: 'Saved',
+      connectionHelp: 'Connection help',
+      telegramAutoFallback: 'Prepare a fallback connection',
+      telegramCustomAddress: 'Use a custom address',
+      connectionHelpHint: 'If connecting fails, prepare a fallback line or switch to your own address.',
+      // v0.15 (Stage 1 / S4): private chat (confirm → pick a task → try) and pending flow.
+      privateOpen: 'Set up private chat',
+      privateView: 'View private chat',
+      privateSetupTitle: 'Set up private chat',
+      privateReadyTitle: 'Private chat is on',
+      privateStepConfirm: 'Confirm it is you',
+      privateStepTask: 'Pick a task',
+      privateStepTry: 'Try it',
+      privateStepDone: 'Done',
+      privateConfirmHint: 'Send the bot a message from your phone, then confirm it is you below.',
+      privateConfirmWaiting: 'No message yet',
+      privateConfirmMint: 'Make a confirmation code',
+      privateConfirmCodeHint: 'Send this code to the bot to confirm it is you:',
+      privateConfirmPendingTitle: 'Waiting to confirm',
+      privateTaskHint: 'Pick the task private chat should report on.',
+      privateTaskEmpty: 'No task is running right now.',
+      privateTaskUse: 'Use this one',
+      privateTryHint: 'Send "status" in the private chat on your phone and see if it replies.',
+      privateTryWord: 'status',
+      privateFinish: 'Done',
+      privateClose: 'Turn off private chat',
+      privateCloseConfirm: 'Your phone will not be able to reply after this. Turn it off?',
+      privateCloseStay: 'Keep it on',
+      privateCurrentChannel: 'Current channel',
+      privateNoChannel: 'No confirmed channel yet',
+      privateNoTask: 'No task yet',
+      privatePeople: 'People',
+      pendingOpen: 'View',
+      pendingLater: 'Handle later',
+      pendingAlreadyHandled: 'This one was already handled',
+      pendingQuestionFrom: 'A question from a task',
       channels: 'Notification channels',
       activity: 'Recent activity',
       viewAll: 'View all',
       manageChannels: 'Manage channels',
       addChannel: 'Add channel',
-      noChannels: 'No notification channel configured',
-      noChannelsHint: 'Configure a channel to deliver important DSH events to your device.',
+      noChannels: 'No notification channel yet',
+      noChannelsHint: 'Add a channel to send important DSH events to your device.',
       setupChannel: 'Set up notification',
       setupFirst: 'Set up first channel',
       setupIntro: 'Choose a channel you already use and save it; testing is optional and can wait.',
@@ -337,7 +439,7 @@ window.__ModuleLoader__.load({
       staleUpdatedAt: 'Data may be out of date',
       // v0.15 (T19 / U06–U13): schema controls, secret keep/replace/clear, leave-draft
       // confirmation, pairing-code copy, nav layering, destructive-impact confirmation.
-      secretConfiguredKeep: 'Configured (kept by default)',
+      secretConfiguredKeep: 'Set up (kept by default)',
       secretNotShown: 'The saved value is never shown, for safety',
       secretKeep: 'Keep',
       secretReplace: 'Replace',
@@ -350,8 +452,6 @@ window.__ModuleLoader__.load({
       copyCode: 'Copy pairing code',
       codeCopied: 'Pairing code copied',
       copyUnavailableSelect: 'Clipboard is unavailable — select the pairing code above and copy it manually.',
-      navDaily: 'Daily',
-      navManage: 'Manage',
       confirmDemote: 'Confirm demote',
       memberDemoteImpact: 'Loses owner privileges once demoted to member',
       memberRemoveImpact: 'Will be removed from the member list',
@@ -368,7 +468,6 @@ window.__ModuleLoader__.load({
       restartPending: 'Restart pending',
       disabled: 'Disabled',
       unavailable: 'Unavailable',
-      unconfigured: 'Not configured',
       runningOk: 'Running normally',
       needsAction: 'Needs attention',
       connectionLost: 'Unable to read dsh-notifier status',
@@ -431,7 +530,7 @@ window.__ModuleLoader__.load({
       inheritLabel: 'Inherit',
       resolvedByLabel: 'Resolved by',
       sourceSession: 'Session override',
-      sourceWorkspace: 'Workspace binding',
+      sourceWorkspace: 'Workspace setting',
       sourceGlobal: 'Global default',
       lastActiveLabel: 'Last active',
       disposedLabel: 'Disposed',
@@ -440,7 +539,7 @@ window.__ModuleLoader__.load({
       modePersonal: 'Personal',
       modeUnset: 'Not set',
       approvalOwnerOnlyLabel: 'Owner-only approval',
-      ownerConfiguredLabel: 'Owner configured',
+      ownerConfiguredLabel: 'Owner set',
       approvalMembersCountLabel: 'Approval members',
       saveControl: 'Save control policy',
       controlSaved: 'Control policy saved',
@@ -455,7 +554,8 @@ window.__ModuleLoader__.load({
       advanced: 'Open advanced console',
       advancedDisabled: 'Advanced console is disabled',
       refresh: 'Refresh',
-      configured: 'Configured',
+      configured: 'Set up',
+      notSet: 'Not set',
       recent20: 'Last 20',
       delivered: 'Delivered',
       skipped: 'Skipped',
@@ -464,7 +564,7 @@ window.__ModuleLoader__.load({
       lastFailure: 'Last failure',
       reason: 'Reason',
       inboundRestartHint: 'Restart DSH after saving remote-control settings to establish a new connection.',
-      outboundRestartHint: 'Saved, but the runtime has not converged yet (e.g. a required credential was cleared). Restart DSH to apply the latest config.',
+      outboundRestartHint: 'Saved. Restart DSH to apply the latest settings.',
       applyHot: 'Applies immediately after saving',
       applyRestart: 'Applies after restart',
       setupActivationTitle: 'Set up notification',
@@ -477,58 +577,18 @@ window.__ModuleLoader__.load({
       unknownError: 'An unknown error occurred',
       staleData: 'Connection interrupted; showing the last successfully loaded data.',
       renderFailed: 'Notify & Control could not render',
-      diagnosticsCenter: 'Diagnostics',
-      diagnosticsIntro: 'Whether anything needs attention, why, and when we last checked',
-      attentionQuestion: 'Does anything need attention right now?',
-      noneRequired: 'Running normally — nothing to do',
-      why: 'Why',
-      lastChecked: 'Last checked',
-      notAvailableYet: 'Not available yet',
-      pluginVersion: 'Plugin version',
-      hostVersion: 'Host version',
-      processId: 'Process id',
-      eventsMode: 'Events mode',
-      questionsMode: 'Questions mode',
-      imageInput: 'Image input',
-      storageState: 'Storage state',
-      storageWritable: 'Writable',
-      migration: 'State migration',
-      channelSummaryTitle: 'Channel summary',
-      totalChannels: 'Total channels',
-      notifyConfiguredActive: 'Notify (configured / active)',
-      controlConfiguredActive: 'Remote control (configured / active)',
-      evidenceLevel: 'Evidence level',
       evidenceNone: 'No delivery evidence',
       evidenceAccepted: 'Sent to provider',
       evidenceConfirmed: 'Delivery confirmed',
-      restartPendingList: 'Awaiting restart',
-      noEvidenceList: 'No delivery evidence yet',
-      inactiveList: 'Configured but inactive',
-      degradedList: 'Recently failed',
-      noneList: 'None',
-      capabilityTitle: 'Capabilities',
-      capQuestions: 'Pending questions',
-      capSessions: 'Sessions',
-      capBindings: 'Routing bindings',
-      capMembers: 'Members',
-      capAdvanced: 'Advanced console',
-      available: 'Available',
       yes: 'Yes',
       no: 'No',
       supportReport: 'Support report',
-      reportIntro: 'Generate a diagnostic report.',
-      reportNotBackup: 'The report contains no credentials.',
+      reportIntro: 'Generate a summary and attach it to your report.',
+      reportNotBackup: 'The summary contains no credentials.',
       generateReport: 'Generate support report',
-      copyReport: 'Copy',
-      downloadReport: 'Download',
       copiedOk: 'Copied to clipboard',
       downloadedOk: 'Report downloaded',
       copyFailedDownload: 'Could not copy — downloaded instead',
-      failuresTitle: 'Recent failures',
-      noFailures: 'No recent failures',
-      hostTitle: 'Host',
-      storageTitle: 'Storage',
-      controlTitle: 'Control plane',
       // v0.15 (T24): remote entry (phone access).
       remoteEntry: 'Remote entry',
       remoteIntro: 'Enter an HTTPS address to open Notify & Control on your phone.',
@@ -545,6 +605,21 @@ window.__ModuleLoader__.load({
       remoteQrEquivalent: 'The QR code and the plain link point to the same address',
       remoteHint: 'A link that opens does not mean you hold management permissions; check connection and permissions separately.',
       remoteNoSecret: 'Do not put ticket / token / password params into the link.',
+      // v0.15 (Stage 1 / S5): consolidate secondary settings — notification overview + user-facing help.
+      notifySettingsTitle: 'Notification settings',
+      notifySettingsIntro: 'Channels with notifications on receive important DSH events.',
+      notifySettingsEmpty: 'No channel can notify yet — add one first.',
+      notifySettingsOpen: 'Open settings',
+      helpTitle: 'Help',
+      helpIntro: 'Try these first; if it still fails, generate a summary for the developer.',
+      helpTipPhone: 'The phone got nothing',
+      helpTipPhoneBody: 'Check the channel details are correct, then send a test notification again.',
+      helpTipConnect: 'Connecting keeps failing',
+      helpTipConnectBody: 'Go back to that channel, expand "Connection help", and prepare a fallback connection.',
+      helpTipReply: 'Replying from the phone does nothing',
+      helpTipReplyBody: 'Check private chat is on and that you are confirmed.',
+      helpTipRestart: 'A change has not taken effect',
+      helpTipRestartBody: 'Restart DSH and try again.',
     })
 
     function resolveText(ctx, value) {
@@ -643,7 +718,11 @@ window.__ModuleLoader__.load({
     function createController(ctx) {
       const rpc = createRpcClient(ctx)
       let snapshot = Object.freeze({
-        view: { kind: 'home' },
+        // v0.15（Stage 1 / S2）：唯一用户页面「通知与私聊」就是默认视图。
+        view: { kind: 'native' },
+        // v0.15（Stage 1 / S2）：Native v2 页面数据（native.snapshot / native.channel）。
+        native: null,
+        nativeChannel: null,
         home: null,
         channels: null,
         tasks: null,
@@ -669,8 +748,14 @@ window.__ModuleLoader__.load({
       let fallbackTimer = null
       let disposed = false
       // v0.12.1（P1-13）：同一资源只接受最新一代请求的响应，避免迟到数据覆盖当前视图。
-      const generations = { home: 0, channels: 0, channel: 0, tasks: 0, questions: 0, members: 0, pending: 0, pairing: 0, sessions: 0, session: 0, bindings: 0, activity: 0, diagnostics: 0 }
+      const generations = { native: 0, nativeChannel: 0, home: 0, channels: 0, channel: 0, tasks: 0, questions: 0, members: 0, pending: 0, pairing: 0, sessions: 0, session: 0, bindings: 0, activity: 0, diagnostics: 0 }
       let paused = false
+
+      /** 语言：服务端 read model 需要 zh/en 决定用户词，与宿主编排语言一致。 */
+      const nativeLang = () => {
+        const current = String(ctx?.locale?.current ?? '').toLowerCase()
+        return current.startsWith('en') ? 'en' : 'zh'
+      }
 
       const emit = (patch) => {
         snapshot = Object.freeze({ ...snapshot, ...patch })
@@ -723,6 +808,34 @@ window.__ModuleLoader__.load({
           return value
         } catch (error) {
           if (generation !== generations.channels) return null
+          throw error
+        }
+      }
+      // v0.15（Stage 1 / S2）：Native v2 只读入口。一次拉取渠道栏 + 全部渠道 + 私聊 + 待处理。
+      // 与旧 loadHome 同构（同代际守卫），但走窄动作表 native.snapshot。
+      async function loadNative() {
+        const generation = ++generations.native
+        try {
+          const value = await rpc.call('native.snapshot', { lang: nativeLang() })
+          if (generation !== generations.native) return value
+          commit('native', value)
+          return value
+        } catch (error) {
+          if (generation !== generations.native) return null
+          setError(error)
+          throw error
+        }
+      }
+      async function loadNativeChannel(type) {
+        const generation = ++generations.nativeChannel
+        try {
+          const value = await rpc.call('native.channel', { type, lang: nativeLang() })
+          if (generation !== generations.nativeChannel) return value
+          if (snapshot.view.kind !== 'native-channel' || snapshot.view.type !== type) return value
+          commit('nativeChannel', value)
+          return value
+        } catch (error) {
+          if (generation !== generations.nativeChannel) return null
           throw error
         }
       }
@@ -841,7 +954,13 @@ window.__ModuleLoader__.load({
         if (disposed) return false
         try {
           const kind = snapshot.view.kind
-          if (kind === 'channels') await loadChannels()
+          if (kind === 'native') await loadNative()
+          else if (kind === 'native-channel') await loadNativeChannel(snapshot.view.type)
+          // v0.15（Stage 1 / S4）：私聊页与待处理页共用同一份 native 快照。
+          else if (kind === 'native-private' || kind === 'native-pending') await loadNative()
+          // v0.15（Stage 1 / S5）：通知总览复用 native 快照；帮助页无需额外读取。
+          else if (kind === 'notify-settings') await loadNative()
+          else if (kind === 'channels') await loadChannels()
           else if (kind === 'channel') await loadChannel(snapshot.view.type)
           else if (kind === 'tasks') await loadTasks()
           else if (kind === 'questions') await loadQuestions()
@@ -852,12 +971,11 @@ window.__ModuleLoader__.load({
           else if (kind === 'session') await loadSession(snapshot.view.id)
           else if (kind === 'bindings') await loadBindings()
           else if (kind === 'activity') await loadActivity()
-          else if (kind === 'diagnostics') await loadDiagnostics()
           else await loadHome()
           emit({ staleAt: null, connectionState: 'connected' })
           return true
         } catch {
-          const hasData = snapshot.home !== null || snapshot.channels !== null || snapshot.channel !== null || snapshot.tasks !== null || snapshot.questions !== null || snapshot.members !== null || snapshot.pending !== null || snapshot.pairing !== null || snapshot.sessions !== null || snapshot.session !== null || snapshot.bindings !== null || snapshot.activity !== null || snapshot.diagnostics !== null
+          const hasData = snapshot.native !== null || snapshot.nativeChannel !== null || snapshot.home !== null || snapshot.channels !== null || snapshot.channel !== null || snapshot.tasks !== null || snapshot.questions !== null || snapshot.members !== null || snapshot.pending !== null || snapshot.pairing !== null || snapshot.sessions !== null || snapshot.session !== null || snapshot.bindings !== null || snapshot.activity !== null || snapshot.diagnostics !== null
           emit({ staleAt: Date.now(), connectionState: hasData ? 'stale' : 'disconnected' })
           return false
         }
@@ -887,6 +1005,111 @@ window.__ModuleLoader__.load({
           const value = await rpc.call('channels.test', { type })
           setError(null)
           await loadChannel(type).catch(() => {})
+          return value
+        } finally {
+          setBusy(key, false)
+        }
+      }
+      // v0.15（Stage 1 / S2）：Native v2 窄写动作。每个动作只调一个 `native.*` 方法
+      // （服务端把它委派给**一个**既有 authority），成功后刷新当前 Native 视图；
+      // 不写 store、不做补偿写、不建第二 authority。
+      async function nativeApproveUser(id) {
+        const key = `pending:${id}`
+        if (snapshot.busy[key] === true) return null
+        setBusy(key, true)
+        try {
+          const value = await rpc.call('native.approveUser', { id })
+          setError(null)
+          await refreshCurrent().catch(() => {})
+          return value
+        } finally {
+          setBusy(key, false)
+        }
+      }
+      async function nativeDismissUser(id) {
+        const key = `pending:${id}`
+        if (snapshot.busy[key] === true) return null
+        setBusy(key, true)
+        try {
+          const value = await rpc.call('native.dismissUser', { id })
+          setError(null)
+          await refreshCurrent().catch(() => {})
+          return value
+        } finally {
+          setBusy(key, false)
+        }
+      }
+      // v0.15（Stage 1 / S3）：Native v2 账号卡的保存与测试。仍走窄动作表——出站与入站各对应
+      // **一个** authority（native.saveChannel / native.saveInboundChannel），测试只针对已保存配置。
+      // secret 三态在这里收敛成 payload（值）+ clearSecrets（清除列表），空串既不表示保留也不表示清除。
+      async function nativeSaveChannel(type, direction, patch, clearSecrets = []) {
+        const key = `save:${type}:${direction}`
+        if (snapshot.busy[key] === true) return { saved: false, duplicate: true, refreshed: false }
+        setBusy(key, true)
+        try {
+          const method = direction === 'inbound' ? 'native.saveInboundChannel' : 'native.saveChannel'
+          const payload = { type, patch }
+          if (clearSecrets.length > 0) payload.clearSecrets = [...clearSecrets]
+          const value = await rpc.call(method, payload)
+          setError(null)
+          // 落盘结果就是回执；刷新详情是另一件事——刷新失败不能上报成「保存失败」。
+          const refreshed = await loadNativeChannel(type).then(() => true).catch(() => false)
+          return { ...(value && typeof value === 'object' ? value : {}), refreshed }
+        } finally {
+          setBusy(key, false)
+        }
+      }
+      async function nativeTestChannel(type) {
+        const key = `test:${type}`
+        if (snapshot.busy[key] === true) return null
+        setBusy(key, true)
+        try {
+          const value = await rpc.call('native.testChannel', { type, lang: nativeLang() })
+          setError(null)
+          await loadNativeChannel(type).catch(() => {})
+          return value
+        } finally {
+          setBusy(key, false)
+        }
+      }
+      // v0.15（Stage 1 / S4）：待处理项结算。仍走窄动作表——服务端把它委派给**一个**既有
+      // authority（提问控制服务 / 成员控制服务）。已被手机端处理过时服务端返回 alreadyHandled，
+      // 客户端据此显示「已经被处理过了」，绝不把它当成新动作再执行一次（防重放）。
+      async function nativeSettlePending(ref, action, options = []) {
+        const key = `pending:${ref}`
+        if (snapshot.busy[key] === true) return { settled: false, duplicate: true }
+        setBusy(key, true)
+        try {
+          const value = await rpc.call('native.settlePending', { ref, action, options })
+          setError(null)
+          await loadNative().catch(() => {})
+          return value
+        } finally {
+          setBusy(key, false)
+        }
+      }
+      // v0.15（Stage 1 / S4）：确认本人（待确认身份 → 正式使用者）。
+      async function nativeMintPairing(label = '') {
+        const key = 'pairing:mint'
+        if (snapshot.busy[key] === true) return null
+        setBusy(key, true)
+        try {
+          const value = await rpc.call('native.mintPairing', { label })
+          setError(null)
+          return value
+        } finally {
+          setBusy(key, false)
+        }
+      }
+      // v0.15（Stage 1 / S4）：关闭私聊 = 移除入站配置（既有一个 authority）。
+      async function nativeClosePrivateChat(type) {
+        const key = `save:${type}:inbound`
+        if (snapshot.busy[key] === true) return { removed: false, duplicate: true }
+        setBusy(key, true)
+        try {
+          const value = await rpc.call('native.removeChannel', { type, direction: 'inbound' })
+          setError(null)
+          await loadNative().catch(() => {})
           return value
         } finally {
           setBusy(key, false)
@@ -1050,6 +1273,9 @@ window.__ModuleLoader__.load({
       }
       function navigate(view) {
         // v0.12.1（P2-10）：导航只负责切视图；目标视图的 mount effect 是唯一加载 owner。
+        const changingNativeChannel = view?.kind === 'native-channel'
+          && (snapshot.view.kind !== 'native-channel' || snapshot.view.type !== view.type)
+        if (changingNativeChannel) generations.nativeChannel += 1
         const changingChannel = view?.kind === 'channel'
           && (snapshot.view.kind !== 'channel' || snapshot.view.type !== view.type)
         if (changingChannel) generations.channel += 1
@@ -1060,6 +1286,7 @@ window.__ModuleLoader__.load({
         emit({
           view,
           error: null,
+          ...(changingNativeChannel ? { nativeChannel: null } : {}),
           ...(changingChannel ? { channel: null } : {}),
           ...(changingSession ? { session: null } : {}),
         })
@@ -1126,6 +1353,12 @@ window.__ModuleLoader__.load({
         getSnapshot: () => snapshot,
         subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener) },
         loadHome, loadChannels, loadChannel, loadTasks, loadQuestions, loadMembers, loadPending, loadPairingCodes, loadSessions, loadSession, loadBindings, loadActivity, loadDiagnostics,
+        // v0.15（Stage 1 / S2）：Native v2 只读 + 窄写动作。
+        loadNative, loadNativeChannel, nativeApproveUser, nativeDismissUser,
+        // v0.15（Stage 1 / S3）：账号卡保存/测试（仍走窄动作表）。
+        nativeSaveChannel, nativeTestChannel,
+        // v0.15（Stage 1 / S4）：待处理结算、确认本人、关闭私聊（每个只调一个 authority）。
+        nativeSettlePending, nativeMintPairing, nativeClosePrivateChat,
         refreshCurrent, saveChannel, testChannel, settleQuestion, createStandaloneLaunch, validateRemoteUrl,
         exportConfig: () => rpc.call('portability.export'),
         previewImport: text => rpc.call('portability.preview', { text }),
@@ -1320,6 +1553,8 @@ window.__ModuleLoader__.load({
     // 这纯粹是**表现层**映射（schema），不改任何业务规则；未声明类型一律退回文本。
     // secret 字段显式区分 保留 / 替换 / 清除，绝不把掩码或旧值当值回填。
     const SECRET_MODES = Object.freeze([['keep', 'secretKeep'], ['replace', 'secretReplace'], ['clear', 'secretClear']])
+    // 首次挂载必须把已填的公共值同步一次；用哨兵对象保证「修订为 null」时也会触发第一次同步。
+    const FORM_SENTINEL = {}
     function SchemaField({ ctx, name, meta, value, onChange, secretMode, onSecretMode, t }) {
       const secret = meta?.secret === true
       const configured = meta?.configured === true
@@ -1718,85 +1953,807 @@ window.__ModuleLoader__.load({
           item?.detail ? h('span', { className: 'dn-rowMeta' }, resolveText(ctx, item.detail)) : null))
     }
 
-    function launchAdvancedConsole(controller, t, windowObject = window) {
-      const popup = windowObject.open('about:blank', '_blank')
-      if (!popup) return { opened: false }
-      try { popup.opener = null } catch (error) { void error }
-      try { popup.document.title = 'dsh-notifier' } catch (error) { void error }
-      void controller.createStandaloneLaunch().then(result => {
-        if (result?.available === true && typeof result.url === 'string' && result.url !== '') {
-          popup.location.replace(result.url)
-        } else {
-          popup.document.body.textContent = t('advancedDisabled')
-        }
-      }).catch(error => {
-        popup.document.body.textContent = error?.message || t('unknownError')
-      })
-      return { opened: true, popup }
+    // ————————————————————————————————————————————————————————————————
+    // v0.15（Stage 1 / S2）：Native v2 外壳。
+    //
+    // 用户信息架构只有一页——「通知与私聊」：左侧是已添加渠道（真实品牌 Logo + 渠道名），
+    // 右侧是「全部」概览或某渠道详情；二级能力收进「更多」菜单。旧 Home 的「常用 / 管理」
+    // pill 导航已删除：Home / Channels / Tasks / Sessions / Bindings 不再是用户 IA。
+    //
+    // 响应式（06_RESPONSIVE_LAYOUT_CONTRACT）：
+    //   ≥880px  左栏 176px + 分隔线 + minmax(0,1fr) 内容（右列可缩，卡片不会被硬挤）；
+    //   640–879 渠道栏变成顶部横向可滚动条；
+    //   <640    不保留常驻栏，顶部是当前渠道选择器。
+    // ————————————————————————————————————————————————————————————————
+
+    // 品牌标识：要让人认出**品牌**，不是内部 type。品牌色圆角底 + 品牌字形/简单图形，
+    // 绝不使用 ○ / ● 之类的点状图标。
+    const BRAND_MARKS = Object.freeze({
+      plane: 'M21.9 4.3 18.8 19c-.2 1-.9 1.2-1.7.8l-4.7-3.5-2.3 2.2c-.3.3-.5.5-.9.5l.3-4.7 8.6-7.8c.4-.3-.1-.5-.6-.2L6.9 12.6l-4.5-1.4c-1-.3-1-1 .2-1.4l17.6-6.8c.8-.3 1.5.2 1.2 1.3z',
+      screen: 'M3 4.5h14v9H3zM8 16.5h4M10 13.5v3',
+      link: 'M8.5 11.5a3 3 0 0 0 4.2 0l2.3-2.3a3 3 0 1 0-4.2-4.2l-1 1M11.5 8.5a3 3 0 0 0-4.2 0L5 10.8a3 3 0 1 0 4.2 4.2l1-1',
+    })
+
+    const BRAND_LOGO = Object.freeze({
+      telegram: Object.freeze({ color: '#2AABEE', mark: 'plane' }),
+      qq: Object.freeze({ color: '#12B7F5', text: 'QQ' }),
+      feishu: Object.freeze({ color: '#3370FF', text: '飞' }),
+      wecom: Object.freeze({ color: '#2F6BFF', text: '企' }),
+      dingtalk: Object.freeze({ color: '#0089FF', text: '钉' }),
+      wechat: Object.freeze({ color: '#07C160', text: '微' }),
+      bark: Object.freeze({ color: '#FF9500', text: 'B' }),
+      wxpusher: Object.freeze({ color: '#07C160', text: 'W' }),
+      serverchan: Object.freeze({ color: '#07C160', text: 'S' }),
+      pushplus: Object.freeze({ color: '#2E7DF6', text: 'P' }),
+      pushdeer: Object.freeze({ color: '#FF6B00', text: 'D' }),
+      pushover: Object.freeze({ color: '#249DF1', text: 'P' }),
+      gotify: Object.freeze({ color: '#2E8B57', text: 'G' }),
+      ntfy: Object.freeze({ color: '#338574', text: 'n' }),
+      chanify: Object.freeze({ color: '#4A90D9', text: 'C' }),
+      bell: Object.freeze({ color: '#6B7BFF', text: 'B' }),
+      igot: Object.freeze({ color: '#FF3B30', text: 'i' }),
+      qmsg: Object.freeze({ color: '#12B7F5', text: 'Q' }),
+      discord: Object.freeze({ color: '#5865F2', text: 'D' }),
+      slack: Object.freeze({ color: '#4A154B', text: 'S' }),
+      teams: Object.freeze({ color: '#6264A7', text: 'T' }),
+      mattermost: Object.freeze({ color: '#1E325C', text: 'M' }),
+      gchat: Object.freeze({ color: '#34A853', text: 'G' }),
+      wps: Object.freeze({ color: '#FF6600', text: 'W' }),
+      xizhi: Object.freeze({ color: '#07C160', text: '息' }),
+      desktop: Object.freeze({ color: '#5B6472', mark: 'screen' }),
+      custom: Object.freeze({ color: '#5B6472', mark: 'link' }),
+    })
+
+    function ChannelLogo({ brand, name, size = 32 }) {
+      const meta = BRAND_LOGO[String(brand ?? '')] ?? null
+      const color = meta?.color ?? '#5B6472'
+      const glyph = meta?.mark ? BRAND_MARKS[meta.mark] : null
+      const label = meta?.text ?? (glyph ? null : String(name ?? '').slice(0, 1).toUpperCase())
+      return h('svg', {
+        className: 'dn-logo', width: size, height: size, viewBox: '0 0 24 24',
+        'aria-hidden': true, focusable: 'false', 'data-brand': String(brand ?? 'generic'),
+      },
+        h('rect', { x: 0, y: 0, width: 24, height: 24, rx: 7, fill: color }),
+        glyph
+          ? h('path', { d: glyph, fill: 'none', stroke: '#fff', strokeWidth: 1.6, strokeLinecap: 'round', strokeLinejoin: 'round' })
+          : h('text', {
+              x: 12, y: 12.5, textAnchor: 'middle', dominantBaseline: 'middle',
+              fill: '#fff', fontSize: label && label.length > 1 ? 9.5 : 12, fontWeight: 600,
+            }, label ?? ''))
     }
 
-    function HomeView({ ctx, controller, state, t }) {
-      const home = state.home
-      useEffect(() => { void controller.loadHome().catch(error => controller.reportError(error)) }, [])
-      const openAdvanced = () => {
-        launchAdvancedConsole(controller, t)
-      }
-      const actions = [
-        h(Button, { key: 'refresh', onClick: () => void controller.refreshCurrent() }, t('refresh')),
-        h(Button, {
-          key: 'advanced',
-          onClick: openAdvanced,
-          'aria-label': t('advanced'),
-          title: t('advanced'),
-        }, '···'),
+    function AllGlyph() {
+      return h('svg', { width: 14, height: 14, viewBox: '0 0 16 16', 'aria-hidden': true, focusable: 'false' },
+        h('rect', { x: 1, y: 1, width: 6, height: 6, rx: 1.5, fill: 'currentColor' }),
+        h('rect', { x: 9, y: 1, width: 6, height: 6, rx: 1.5, fill: 'currentColor' }),
+        h('rect', { x: 1, y: 9, width: 6, height: 6, rx: 1.5, fill: 'currentColor' }),
+        h('rect', { x: 9, y: 9, width: 6, height: 6, rx: 1.5, fill: 'currentColor' }))
+    }
+
+    /** 私聊渠道 id（`<channel>:<account>`）→ 该渠道的渠道摘要（取品牌标识用）。 */
+    function brandRowOf(rows, id) {
+      const type = String(id ?? '').split(':')[0]
+      return (rows ?? []).find(row => row.id === type) ?? null
+    }
+
+    function ProductHeader({ t, onAdd, actions }) {
+      return h('header', { className: 'dn-productHead' },
+        h('div', { className: 'dn-productTitle' },
+          h('h1', null, t('nativeTitle')),
+          h('p', null, t('nativeIntro'))),
+        h('div', { className: 'dn-productActions' },
+          h(Button, { kind: 'primary', onClick: onAdd }, t('railAdd')),
+          actions))
+    }
+
+    // 二级能力不是用户 IA，收进「更多」；不再做一个高级后台。
+    // S5：通知设置 / 远程访问 / 导入旧设置 / 帮助——低频能力全部从主导航降级到这里。
+    function MoreMenu({ controller, t }) {
+      const [open, setOpen] = useState(false)
+      const items = [
+        ['moreNotify', 'notify-settings'],
+        ['moreRemote', 'remote'],
+        ['moreImport', 'portability'],
+        ['moreHelp', 'help'],
       ]
-      const navRow = (items, className, labelKey) => h('nav', { className: `dn-nav ${className}`, 'aria-label': t(labelKey) },
-        ...items.map(([kind, key]) =>
-          h('button', { key: kind, type: 'button', className: 'dn-navBtn', onClick: () => controller.navigate({ kind }) }, t(key))))
-      return h('div', { className: 'dn-page' },
-        h(PageHead, { title: t('title'), intro: t('intro'), actions }),
-        // v0.15（T19 / U11）：日常一步可达；管理组独立但仍在 Native 内全部可达。
-        navRow(NAV_DAILY, 'dn-nav--daily', 'navDaily'),
-        h('p', { className: 'dn-navCaption' }, t('navManage')),
-        navRow(NAV_MANAGE, 'dn-nav--manage', 'navManage'),
-        h(StatusRow, { ctx, summary: home?.summary, t, onRetry: () => void controller.refreshCurrent() }),
+      return h('div', { className: 'dn-moreWrap' },
+        h(Button, {
+          'aria-haspopup': 'menu',
+          'aria-expanded': open ? 'true' : 'false',
+          onClick: () => setOpen(value => !value),
+        }, `${t('more')} ▾`),
+        open
+          ? h('div', { className: 'dn-moreMenu', role: 'menu' },
+              ...items.map(([key, kind]) => h('button', {
+                key, type: 'button', role: 'menuitem', className: 'dn-moreItem',
+                onClick: () => { setOpen(false); controller.navigate({ kind }) },
+              }, t(key))))
+          : null)
+    }
+
+    function channelNavEntries({ items, selected, onSelect, onAdd, t }) {
+      return [
+        h('button', {
+          key: '__all', type: 'button', className: `dn-navItem ${selected === 'all' ? 'is-selected' : ''}`,
+          'data-nav': 'all', 'aria-current': selected === 'all' ? 'page' : undefined,
+          onClick: () => onSelect('all'),
+        },
+          h('span', { className: 'dn-navGlyph', 'aria-hidden': true }, h(AllGlyph)),
+          h('span', { className: 'dn-navLabel' }, t('allChannels'))),
+        ...items.map(row => h('button', {
+          key: row.id, type: 'button', className: `dn-navItem ${selected === row.id ? 'is-selected' : ''}`,
+          'data-nav': row.id, 'aria-current': selected === row.id ? 'page' : undefined,
+          onClick: () => onSelect(row.id),
+        },
+          h(ChannelLogo, { brand: row.brand, name: row.name, size: 24 }),
+          h('span', { className: 'dn-navLabel' }, row.name))),
+        h('button', {
+          key: '__add', type: 'button', className: 'dn-navItem dn-navAdd', 'data-nav': 'add',
+          onClick: onAdd,
+        },
+          h('span', { className: 'dn-navGlyph', 'aria-hidden': true }, '+'),
+          h('span', { className: 'dn-navLabel' }, t('railAdd'))),
+      ]
+    }
+
+    function ChannelRail(props) {
+      return h('nav', { className: 'dn-rail', 'aria-label': props.t('channels') }, ...channelNavEntries(props))
+    }
+
+    function ChannelStrip(props) {
+      return h('nav', { className: 'dn-strip', 'aria-label': props.t('channels') }, ...channelNavEntries(props))
+    }
+
+    // 手机：不保留常驻栏，顶部是当前渠道按钮，点开弹出渠道选择。
+    function ChannelTopSelector({ items, selected, onSelect, onAdd, t }) {
+      const [open, setOpen] = useState(false)
+      const current = selected === 'all' ? null : items.find(row => row.id === selected) ?? null
+      return h('div', { className: 'dn-channelSelect' },
+        h('button', {
+          type: 'button', className: 'dn-selectButton',
+          'aria-haspopup': 'listbox', 'aria-expanded': open ? 'true' : 'false',
+          onClick: () => setOpen(value => !value),
+        },
+          current ? h(ChannelLogo, { brand: current.brand, name: current.name, size: 22 })
+            : h('span', { className: 'dn-navGlyph', 'aria-hidden': true }, h(AllGlyph)),
+          h('span', { className: 'dn-selectLabel' }, current ? current.name : t('allChannels')),
+          h('span', { className: 'dn-selectCaret', 'aria-hidden': true }, '▾')),
+        open
+          ? h('div', { className: 'dn-selectMenu', role: 'listbox' },
+              h('button', {
+                type: 'button', role: 'option', className: 'dn-selectOption',
+                'aria-selected': selected === 'all' ? 'true' : 'false',
+                onClick: () => { setOpen(false); onSelect('all') },
+              }, t('allChannels')),
+              ...items.map(row => h('button', {
+                key: row.id, type: 'button', role: 'option', className: 'dn-selectOption',
+                'aria-selected': selected === row.id ? 'true' : 'false',
+                onClick: () => { setOpen(false); onSelect(row.id) },
+              },
+                h(ChannelLogo, { brand: row.brand, name: row.name, size: 20 }),
+                h('span', null, row.name))),
+              h('button', {
+                type: 'button', role: 'option', className: 'dn-selectOption dn-selectAdd',
+                'aria-selected': 'false',
+                onClick: () => { setOpen(false); onAdd() },
+              }, t('railAdd')))
+          : null)
+    }
+
+    // 待处理：不是永久导航，只在有待处理时从顶部浅色提示进入。
+    // 身份确认项直接确认/忽略；提问项就地选择或稍后处理（结算走窄动作表）。
+    // 已被手机端处理过的项不再执行一次，只提示「已经被处理过了」（防重放）。
+    function PendingList({ controller, state, items, t }) {
+      const [note, setNote] = useState({})
+      if (items.length === 0) return h('p', { className: 'dn-empty' }, t('pendingEmpty'))
+      const run = (item, choice) => {
+        if (state?.busy?.[`pending:${item.id}`] === true) return
+        const identity = (item.choices ?? []).some(candidate => candidate.id === 'approve')
+        const promise = identity
+          ? (choice.id === 'approve' ? controller.nativeApproveUser(item.id) : controller.nativeDismissUser(item.id))
+          : controller.nativeSettlePending(
+              item.id,
+              choice.kind === 'reject' ? 'reject' : 'choose',
+              choice.kind === 'reject' ? [] : [choice.id],
+            )
+        void Promise.resolve(promise).then(result => {
+          // 已被手机端裁决过：服务端不二次执行，界面也不假装成功。
+          if (result?.alreadyHandled === true) {
+            setNote(current => ({ ...current, [item.id]: t('pendingAlreadyHandled') }))
+          }
+        }).catch(error => controller.reportError(error))
+      }
+      return h('div', { className: 'dn-list' }, ...items.map(item => {
+        const identity = (item.choices ?? []).some(choice => choice.id === 'approve')
+        const busy = state?.busy?.[`pending:${item.id}`] === true
+        return h('article', { key: item.id, className: 'dn-question' },
+          h('div', { className: 'dn-questionMark', 'aria-hidden': true }, identity ? '?' : '!'),
+          h('div', { className: 'dn-questionBody' },
+            h('strong', { className: 'dn-rowTitle' }, item.title),
+            h('span', { className: 'dn-rowMeta' }, [item.sourceText, item.createdText].filter(Boolean).join(' · ')),
+            note[item.id] ? h('span', { className: 'dn-rowMeta', role: 'status' }, note[item.id]) : null,
+            h('div', { className: 'dn-questionActions' },
+              ...(item.choices ?? []).map(choice => h(Button, {
+                key: choice.id,
+                kind: choice.kind === 'reject' ? 'default' : 'primary',
+                disabled: busy,
+                onClick: () => run(item, choice),
+              }, choice.label)))))
+      }))
+    }
+
+    // 顶部浅色提示：不是永久导航，只在有待处理时出现，点开进入待处理页。
+    function PendingBanner({ count, onOpen, t }) {
+      return h('button', { type: 'button', className: 'dn-pendingBanner', onClick: onOpen },
+        h('span', { className: 'dn-pendingMark', 'aria-hidden': true }, '!'),
+        h('span', { className: 'dn-pendingText' }, `${t('pendingBannerTitle')} · ${count}`),
+        h('span', { className: 'dn-pendingGo' }, t('pendingBannerView')))
+    }
+
+    // 待处理页：从顶部提示进入，可返回「通知与私聊」主页。
+    function PendingPage({ controller, state, t }) {
+      const items = state.native?.pending ?? []
+      return h('div', { className: 'dn-privatePage' },
+        h('div', { className: 'dn-detailBack' },
+          h('button', { className: 'dn-link', onClick: () => controller.navigate({ kind: 'native' }) }, `← ${t('back')}`)),
+        h('h2', { className: 'dn-pageTitle' }, t('pendingBannerTitle')),
+        h(PendingList, { controller, state, items, t }))
+    }
+
+    // v0.15（Stage 1 / S4）：私聊页。只保留三个用户概念：确认是你 / 当前任务 / 使用者。
+    // 首次启用是三步向导（确认本人 → 选择任务 → 试用）；可以用了之后只显示当前渠道、当前任务、
+    // 使用者与「关闭私聊」。待处理项不在这里常驻——它们从顶部提示进入。
+    function PrivateChatPanel({ controller, state, t }) {
+      const native = state.native
+      const [minted, setMinted] = useState(null)
+      const [picked, setPicked] = useState(null)
+      const [showTry, setShowTry] = useState(false)
+      const [closing, setClosing] = useState(false)
+      const back = h('div', { className: 'dn-detailBack' },
+        h('button', { className: 'dn-link', onClick: () => controller.navigate({ kind: 'native' }) }, `← ${t('back')}`))
+      if (native === null) {
+        return h('div', { className: 'dn-privatePage' }, back,
+          h('p', { className: 'dn-inlineStatus' }, h(StateDot, { state: 'ongoing' }), t('loading')))
+      }
+      const pc = native.privateChat ?? null
+      if (pc === null || pc.enabled !== true) {
+        return h('div', { className: 'dn-privatePage' }, back,
+          h('h2', { className: 'dn-pageTitle' }, t('privateSetupTitle')),
+          h('p', { className: 'dn-empty' }, t('overviewPrivateOff')))
+      }
+      const setup = pc.setup ?? { step: 'confirm', pendingIdentities: [], tasks: [] }
+      const users = pc.users ?? []
+      const channelType = pc.channel ? String(pc.channel.id).split(':')[0] : null
+
+      const mint = () => {
+        void Promise.resolve(controller.nativeMintPairing())
+          .then(value => { if (value?.code) setMinted(value.code) })
+          .catch(error => controller.reportError(error))
+      }
+      const pickTask = (task) => { setPicked(task); setShowTry(true) }
+      const closePrivate = () => {
+        if (channelType === null) return
+        void Promise.resolve(controller.nativeClosePrivateChat(channelType))
+          .then(() => { setClosing(false); controller.navigate({ kind: 'native' }) })
+          .catch(error => { setClosing(false); controller.reportError(error) })
+      }
+
+      // 步骤条：确认本人 → 选择任务 → 试用。当前步之前/当前高亮，之后灰。
+      const stepOrder = ['confirm', 'task', 'try']
+      const activeStep = setup.step === 'ready' ? 'try' : setup.step
+      const steps = h('ol', { className: 'dn-steps' },
+        ...[['confirm', 'privateStepConfirm'], ['task', 'privateStepTask'], ['try', 'privateStepTry']].map(([id, key]) => h('li', {
+          key: id, className: `dn-step ${id === activeStep ? 'is-active' : ''} ${stepOrder.indexOf(id) < stepOrder.indexOf(activeStep) ? 'is-done' : ''}`,
+        }, t(key))))
+
+      return h('div', { className: 'dn-privatePage' }, back,
+        h('h2', { className: 'dn-pageTitle' }, setup.step === 'ready' ? t('privateReadyTitle') : t('privateSetupTitle')),
+        steps,
+        // 第一步：确认是你。
+        h(Section, { title: t('privateStepConfirm') },
+          setup.pendingIdentities.length > 0
+            ? h('div', { className: 'dn-list' }, ...setup.pendingIdentities.map(identity => h('div', {
+                key: identity.id, className: 'dn-row',
+              },
+                h('span', { className: 'dn-rowMain' },
+                  h('strong', { className: 'dn-rowTitle' }, identity.displayName),
+                  h('span', { className: 'dn-rowMeta' }, identity.sourceText)),
+                h('span', { className: 'dn-rowAside' },
+                  h(Button, {
+                    kind: 'primary',
+                    disabled: state?.busy?.[`pending:${identity.id}`] === true,
+                    onClick: () => void controller.nativeApproveUser(identity.id).catch(error => controller.reportError(error)),
+                  }, t('privateConfirmPendingTitle')),
+                  h(Button, {
+                    disabled: state?.busy?.[`pending:${identity.id}`] === true,
+                    onClick: () => void controller.nativeDismissUser(identity.id).catch(error => controller.reportError(error)),
+                  }, t('pendingLater'))))))
+            : h('div', null,
+                h('p', { className: 'dn-note' }, t('privateConfirmHint')),
+                h('p', { className: 'dn-empty' }, t('privateConfirmWaiting')),
+                minted
+                  ? h('div', { className: 'dn-codeBox' },
+                      h('span', { className: 'dn-rowMeta' }, t('privateConfirmCodeHint')),
+                      h('strong', { className: 'dn-code' }, minted))
+                  : h('div', { className: 'dn-formActions' },
+                      h(Button, { onClick: mint }, t('privateConfirmMint'))))),
+        // 第二步：选择任务。
+        h(Section, { title: t('privateStepTask') },
+          setup.tasks.length > 0
+            ? h('div', null,
+                h('p', { className: 'dn-note' }, t('privateTaskHint')),
+                h('div', { className: 'dn-list' }, ...setup.tasks.map(task => h('div', {
+                  key: task.id, className: 'dn-row',
+                },
+                  h('span', { className: 'dn-rowMain' }, h('strong', { className: 'dn-rowTitle' }, task.title)),
+                  h('span', { className: 'dn-rowAside' },
+                    h(Button, { onClick: () => pickTask(task) }, t('privateTaskUse')))))))
+            : h('p', { className: 'dn-empty' }, t('privateTaskEmpty'))),
+        // 第三步：试用。
+        h(Section, { title: t('privateStepTry') },
+          h('p', { className: 'dn-note' }, t('privateTryHint')),
+          h('p', { className: 'dn-tryWord' }, `「${t('privateTryWord')}」`),
+          h('div', { className: 'dn-formActions' },
+            h(Button, { kind: 'primary', onClick: () => controller.navigate({ kind: 'native' }) }, t('privateFinish')))),
+        // 可以用了：当前渠道 / 当前任务 / 使用者。
+        setup.step === 'ready'
+          ? h(Section, { title: t('privateCurrentChannel') },
+              h('div', { className: 'dn-list' },
+                pc.channel
+                  ? h('div', { className: 'dn-row' },
+                      h(ChannelLogo, { brand: brandRowOf(native.channels, pc.channel.id)?.brand, name: pc.channel.name, size: 28 }),
+                      h('span', { className: 'dn-rowMain' },
+                        h('strong', { className: 'dn-rowTitle' }, pc.channel.name),
+                        h('span', { className: 'dn-rowMeta' }, pc.verifiedText)))
+                  : h('p', { className: 'dn-empty' }, t('privateNoChannel')),
+                h('div', { className: 'dn-row' },
+                  h('span', { className: 'dn-rowMain' },
+                    h('strong', { className: 'dn-rowTitle' }, (picked ?? pc.currentTask)?.title ?? t('privateNoTask')),
+                    h('span', { className: 'dn-rowMeta' }, t('currentTask')))),
+                h('div', { className: 'dn-row' },
+                  h('span', { className: 'dn-rowMain' },
+                    h('strong', { className: 'dn-rowTitle' }, String(users.length)),
+                    h('span', { className: 'dn-rowMeta' }, t('privatePeople'))))),
+              h('div', { className: 'dn-formActions' },
+                closing
+                  ? h('div', { className: 'dn-leaveGuard', role: 'alertdialog', 'aria-label': t('privateCloseConfirm') },
+                      h('strong', null, t('privateCloseConfirm')),
+                      h('div', { className: 'dn-formActions' },
+                        h(Button, { onClick: () => setClosing(false) }, t('privateCloseStay')),
+                        h(Button, { kind: 'danger', onClick: closePrivate }, t('privateClose'))))
+                  : h(Button, { kind: 'danger', onClick: () => setClosing(true) }, t('privateClose'))))
+          : null,
+        // 首次向导：选择任务后可直接进入试用（不等服务端 ready）。
+        showTry && setup.step !== 'ready'
+          ? h('p', { className: 'dn-successText' }, `${t('privateStepTry')} · ${(picked ?? {}).title ?? ''}`)
+          : null)
+    }
+
+    function Overview({ controller, state, native, t, onOpenChannel, onAdd }) {
+      if (native === null) {
+        return h('p', { className: 'dn-inlineStatus' }, h(StateDot, { state: 'ongoing' }), t('loading'))
+      }
+      const rail = native.rail ?? []
+      if (rail.length === 0) {
+        return h('div', { className: 'dn-emptyState' },
+          h('strong', null, t('noChannels')),
+          h('span', null, t('noChannelsHint')))
+      }
+      const notifyRows = (native.channels ?? []).filter(row => row.notifyEnabled === true)
+      const pc = native.privateChat ?? null
+      // 待处理不是永久导航：只在有待处理时于主页顶部给一条浅色提示，点击进入待处理页。
+      const pendingCount = (native.pending ?? []).length
+      return h('div', null,
+        pendingCount > 0
+          ? h(PendingBanner, {
+              count: pendingCount,
+              onOpen: () => controller.navigate({ kind: 'native-pending' }),
+              t,
+            })
+          : null,
+        h(Section, { title: t('overviewNotify') },
+          notifyRows.length > 0
+            ? h('div', { className: 'dn-list' }, ...notifyRows.map(row => h('button', {
+                key: row.id, type: 'button', className: 'dn-row dn-rowButton', onClick: () => onOpenChannel(row.id),
+              },
+                h(ChannelLogo, { brand: row.brand, name: row.name, size: 28 }),
+                h('span', { className: 'dn-rowMain' },
+                  h('strong', { className: 'dn-rowTitle' }, row.name),
+                  h('span', { className: 'dn-rowMeta' }, row.usage)),
+                h('span', { className: 'dn-rowAside' }, h('span', { className: 'dn-badge' }, row.stateText)))))
+            : h('p', { className: 'dn-empty' }, t('overviewNotifyEmpty'))),
+        h(Section, { title: t('overviewPrivate') },
+          h('div', null,
+            pc?.enabled === true
+              ? h('div', { className: 'dn-list' },
+                  pc.channel
+                    ? h('div', { className: 'dn-row' },
+                        h(ChannelLogo, { brand: brandRowOf(native.channels, pc.channel.id)?.brand, name: pc.channel.name, size: 28 }),
+                        h('span', { className: 'dn-rowMain' },
+                          h('strong', { className: 'dn-rowTitle' }, pc.channel.name),
+                          h('span', { className: 'dn-rowMeta' }, pc.verifiedText)))
+                    : null,
+                  pc.currentTask
+                    ? h('div', { className: 'dn-row' },
+                        h('span', { className: 'dn-rowMain' },
+                          h('strong', { className: 'dn-rowTitle' }, pc.currentTask.title),
+                          h('span', { className: 'dn-rowMeta' }, t('currentTask'))))
+                    : null,
+                  h('div', { className: 'dn-row' },
+                    h('span', { className: 'dn-rowMain' },
+                      h('strong', { className: 'dn-rowTitle' }, String((pc.users ?? []).length)),
+                      h('span', { className: 'dn-rowMeta' }, t('usersLabel')))))
+              : h('p', { className: 'dn-empty' }, t('overviewPrivateOff')),
+            // 私聊没开启时不给死胡同页：直接引导去添加/配置一个支持私聊的渠道。
+            pc?.enabled === true
+              ? h('div', { className: 'dn-formActions' },
+                  h(Button, { onClick: () => controller.navigate({ kind: 'native-private' }) },
+                    pc.verified === true ? t('privateView') : t('privateOpen')))
+              : h('div', { className: 'dn-formActions' },
+                  h(Button, { onClick: onAdd }, t('pickerTitle'))))))
+    }
+
+    // v0.15（Stage 1 / S3）：账号卡里的一个方向表单（出站通知 / 入站私聊）。
+    //
+    // 字段以**数组**形状来自 read-model（secret 只有 presence，没有值），这里适配成 SchemaField 的
+    // meta 形状。secret 三态仍是 保留 / 替换 / 清除——空串既不表示保留也不表示清除（由 authority 判定）。
+    // 组件是**模块级稳定**的：轮询刷新时输入节点不 remount，连续输入不丢焦点（U05）。
+    function NativeDirectionForm({ ctx, controller, state, t, type, direction, fields, values, revision, canTest, hiddenKeys = [] }) {
+      const hidden = new Set(hiddenKeys)
+      const visible = (fields ?? []).filter(field => !hidden.has(field.key))
+      const fieldsByKey = useMemo(
+        () => Object.fromEntries((fields ?? []).map(field => [field.key, field])),
+        [fields],
+      )
+      const [patch, setPatch] = useState({})
+      const [dirty, setDirty] = useState(new Set())
+      const [secretModes, setSecretModes] = useState({})
+      const [notice, setNotice] = useState(null)
+      const [outcome, setOutcome] = useState(null)
+      const dirtyRef = useRef(dirty)
+      const revisionRef = useRef(FORM_SENTINEL)
+
+      // revision 变化时把**未编辑**字段同步到最新投影；dirty 字段保留本地草稿。
+      useEffect(() => {
+        if (revisionRef.current === revision) return
+        revisionRef.current = revision
+        setPatch(current => {
+          const next = { ...current }
+          for (const [key, value] of Object.entries(values ?? {})) {
+            if (!dirtyRef.current.has(key)) next[key] = value
+          }
+          return next
+        })
+      }, [revision])
+
+      const markDirty = (key, on) => {
+        setDirty(current => {
+          const next = new Set(current)
+          if (on) next.add(key); else next.delete(key)
+          dirtyRef.current = next
+          return next
+        })
+      }
+      const setField = (key, value) => { markDirty(key, true); setPatch(current => ({ ...current, [key]: value })) }
+      const setSecretMode = (key, mode) => {
+        setSecretModes(current => ({ ...current, [key]: mode }))
+        markDirty(key, mode !== 'keep')
+        if (mode !== 'replace') {
+          setPatch(current => {
+            if (!Object.prototype.hasOwnProperty.call(current, key)) return current
+            const next = { ...current }; delete next[key]; return next
+          })
+        }
+      }
+
+      const saveBusy = state?.busy?.[`save:${type}:${direction}`] === true
+      const testBusy = state?.busy?.[`test:${type}`] === true
+      const hasDirty = dirty.size > 0
+
+      const save = async () => {
+        const payload = {}
+        const clearSecrets = []
+        for (const key of dirty) {
+          // secret 显式「清除」→ 走 clearSecrets；绝不把掩码或旧值当值写回。
+          if (fieldsByKey[key]?.secret === true && (secretModes[key] ?? 'keep') === 'clear') { clearSecrets.push(key); continue }
+          payload[key] = patch[key]
+        }
+        if (Object.keys(payload).length === 0 && clearSecrets.length === 0) return
+        setNotice(null)
+        try {
+          const receipt = await controller.nativeSaveChannel(type, direction, payload, clearSecrets)
+          if (receipt?.duplicate === true) return
+          if (receipt?.saved !== false) {
+            setPatch(current => {
+              const next = { ...current }
+              for (const key of Object.keys(payload)) if (fieldsByKey[key]?.secret === true) delete next[key]
+              for (const key of clearSecrets) delete next[key]
+              return next
+            })
+            setSecretModes({})
+            const empty = new Set()
+            dirtyRef.current = empty
+            setDirty(empty)
+            setNotice(receipt?.refreshed === false
+              ? { kind: 'warn', text: t('savedRefreshFailed') }
+              : { kind: 'ok', text: t('accountSaved') })
+          }
+        } catch (error) {
+          // 落盘/校验失败：草稿保留，错误经统一出口展示。
+          controller.reportError(error)
+        }
+      }
+
+      const runTest = () => {
+        void controller.nativeTestChannel(type).then(result => {
+          if (result === null) return
+          setOutcome(result)
+        }).catch(error => controller.reportError(error))
+      }
+
+      const metaOf = (field) => ({
+        required: field.required,
+        secret: field.secret,
+        exposure: field.secret ? 'secret' : 'public',
+        type: field.type,
+        ...(Array.isArray(field.options) ? { options: field.options } : {}),
+        configured: field.present,
+        label: { zh: field.label, en: field.label },
+        ...(field.help ? { description: { zh: field.help, en: field.help } } : {}),
+      })
+
+      return h('div', { className: 'dn-accountForm' },
+        visible.length > 0
+          ? visible.map(field => h(SchemaField, {
+              key: field.key, ctx, name: field.key, meta: metaOf(field),
+              value: patch[field.key],
+              onChange: value => setField(field.key, value),
+              secretMode: secretModes[field.key],
+              onSecretMode: mode => setSecretMode(field.key, mode),
+              t,
+            }))
+          : h('p', { className: 'dn-note' }, t('accountNoFields')),
+        h('div', { className: 'dn-formActions' },
+          h(Button, {
+            kind: 'primary', disabled: saveBusy || !hasDirty,
+            onClick: () => void save(),
+          }, saveBusy ? t('saving') : t('save')),
+          direction === 'outbound' && canTest === true
+            ? h(Button, {
+                // 只测已保存配置；有未保存修改时先保存，绝不静默 save+send。
+                disabled: testBusy || hasDirty,
+                title: hasDirty ? t('unsavedChangesHint') : t('testCommittedConfig'),
+                onClick: runTest,
+              }, testBusy ? t('testing') : t('test'))
+            : null),
+        direction === 'outbound' && hasDirty ? h('p', { className: 'dn-note' }, t('unsavedChangesHint')) : null,
+        notice
+          ? h('p', {
+              className: notice.kind === 'ok' ? 'dn-successText' : 'dn-error',
+              role: notice.kind === 'ok' ? 'status' : 'alert', 'aria-live': 'polite',
+            }, notice.text)
+          : null,
+        outcome
+          ? h('p', {
+              className: outcome.kind === 'confirmed' || outcome.kind === 'sent' ? 'dn-successText' : outcome.kind === 'failed' ? 'dn-error' : 'dn-note',
+              role: 'status', 'aria-live': 'polite',
+            }, `${outcome.title} · ${outcome.message}`)
+          : null)
+    }
+
+    // Telegram 备用连接：默认不铺大段解释；连接失败或用户主动展开「连接帮助」时才出现。
+    function ConnectionHelp({ controller, t, disabled, onCustom }) {
+      return h('div', { className: 'dn-connHelp' },
+        h('p', { className: 'dn-note' }, t('connectionHelpHint')),
+        h('div', { className: 'dn-formActions' },
+          h(Button, {
+            disabled,
+            onClick: () => controller.navigate({ kind: 'cloudflare', type: 'telegram', activate: true }),
+          }, t('telegramAutoFallback')),
+          h(Button, { disabled, onClick: onCustom }, t('telegramCustomAddress'))))
+    }
+
+    // 账号卡：多账号时每条一卡，默认折叠；展开后按「基础设置 / 通知 / 私聊 / 更多设置」分段。
+    function AccountCard({ ctx, controller, state, account, type, revision, t }) {
+      const requiredFields = account.basicFields ?? []
+      const optionalFields = account.moreFields ?? []
+      const allFields = account.setupFields ?? []
+      // 没有必填字段时，「基础设置」直接放全部字段，避免出现空区块。
+      const basicFields = requiredFields.length > 0 ? requiredFields : allFields
+      const moreFields = requiredFields.length > 0 ? optionalFields : []
+      const hasMore = moreFields.length > 0
+      const telegram = type === 'telegram'
+      // Telegram 备用连接只在「连接出问题」或用户主动展开时出现。
+      const helpNeeded = telegram && account.state === 'needs-attention'
+      const [open, setOpen] = useState(false)
+      const [moreOpen, setMoreOpen] = useState(false)
+      const [helpOpen, setHelpOpen] = useState(false)
+      const [customAddress, setCustomAddress] = useState(false)
+      const showHelp = telegram && (helpNeeded || helpOpen)
+      const showMore = open && hasMore && (moreOpen || helpNeeded)
+      const saveBusy = state?.busy?.[`save:${type}:outbound`] === true
+      const toggleLabel = open ? t('accountCollapse') : t('accountExpand')
+
+      return h('article', { className: `dn-accountCard ${open ? 'is-open' : ''}` },
+        h('div', { className: 'dn-accountHead' },
+          h('div', { className: 'dn-accountMain' },
+            h('strong', { className: 'dn-rowTitle' }, account.displayName),
+            account.maskedIdentity ? h('span', { className: 'dn-rowMeta' }, account.maskedIdentity) : null),
+          h('span', { className: 'dn-badge' }, account.stateText),
+          h(Button, {
+            className: 'dn-accountToggle',
+            'aria-expanded': open ? 'true' : 'false',
+            'aria-label': `${toggleLabel} · ${account.displayName}`,
+            onClick: () => setOpen(value => !value),
+          }, open ? `${t('accountCollapse')} ▴` : `${t('accountMore')} ▾`)),
+        h('div', { className: 'dn-accountTags' },
+          account.notify?.enabled === true ? h('span', { className: 'dn-tag' }, t('overviewNotify')) : null,
+          account.privateChat?.enabled === true ? h('span', { className: 'dn-tag' }, t('overviewPrivate')) : null),
+        open
+          ? h('div', { className: 'dn-accountBody' },
+              h(Section, { title: t('accountBasic') },
+                h(NativeDirectionForm, {
+                  ctx, controller, state, t, type, direction: 'outbound',
+                  fields: basicFields, values: account.notify?.values ?? {},
+                  revision, canTest: account.notify?.canTest === true,
+                })),
+              showMore
+                ? h(Section, { title: t('accountMore') },
+                    h(NativeDirectionForm, {
+                      ctx, controller, state, t, type, direction: 'outbound',
+                      fields: moreFields, values: account.notify?.values ?? {},
+                      revision, canTest: account.notify?.canTest === true,
+                      hiddenKeys: telegram && !customAddress ? ['apiBase', 'gatewayKey'] : [],
+                    }))
+                : hasMore
+                  ? h('div', { className: 'dn-formActions' },
+                      h(Button, { onClick: () => setMoreOpen(true) }, `${t('accountMore')} ▾`))
+                  : null,
+              telegram
+                ? (showHelp
+                    ? h(ConnectionHelp, {
+                        controller, t, disabled: saveBusy,
+                        onCustom: () => { setCustomAddress(true); setMoreOpen(true) },
+                      })
+                    : h('div', { className: 'dn-formActions' },
+                        h(Button, { onClick: () => setHelpOpen(true) }, t('connectionHelp'))))
+                : null,
+              account.privateChat !== undefined
+                ? h(Section, { title: t('overviewPrivate') },
+                    h(NativeDirectionForm, {
+                      ctx, controller, state, t, type, direction: 'inbound',
+                      fields: account.privateChat.fields ?? [],
+                      values: account.privateChat.values ?? {},
+                      revision,
+                    }))
+                : null)
+          : null)
+    }
+
+    function ChannelPage({ ctx, controller, state, detail, type, revision, t, onOpen }) {
+      if (detail === null) {
+        return h('p', { className: 'dn-inlineStatus' }, h(StateDot, { state: 'ongoing' }), t('loading'))
+      }
+      const row = detail.channel
+      const accounts = detail.accounts ?? []
+      return h('div', { className: 'dn-channelPage' },
+        h('header', { className: 'dn-channelHead' },
+          h(ChannelLogo, { brand: row.brand, name: row.name, size: 40 }),
+          h('div', { className: 'dn-channelHeadMain' },
+            h('h2', { className: 'dn-channelName' }, row.name),
+            h('span', { className: 'dn-channelUsage' }, row.usage)),
+          h('span', { className: 'dn-badge' }, row.stateText)),
+        // read-model 保证每个渠道至少一个 default 账号，这里直接逐卡渲染。
+        accounts.map(account => h(AccountCard, {
+          key: account.id, ctx, controller, state, account, type, revision, t,
+        })))
+    }
+
+    // 添加渠道：不把全部渠道常驻左侧；picker 里按「常用 / 其他通知方式」分组，每条一句用途。
+    function ChannelPicker({ channels, onClose, onPick, t }) {
+      const [query, setQuery] = useState('')
+      const needle = query.trim().toLowerCase()
+      const match = (row) => needle === ''
+        || String(row.name ?? '').toLowerCase().includes(needle)
+        || String(row.usage ?? '').toLowerCase().includes(needle)
+      const groups = [['common', t('pickerCommon')], ['other', t('pickerOther')]]
+      const visible = channels.filter(match)
+      return h('div', {
+        className: 'dn-pickerOverlay', role: 'dialog', 'aria-modal': 'true', 'aria-label': t('pickerTitle'),
+      },
+        h('div', { className: 'dn-picker' },
+          h('div', { className: 'dn-pickerHead' },
+            h('h2', { className: 'dn-pickerTitle' }, t('pickerTitle')),
+            h('button', { type: 'button', className: 'dn-link', onClick: onClose }, t('pickerClose'))),
+          h('label', { className: 'dn-field' },
+            h('span', { className: 'dn-pickerGroup' }, t('pickerSearch')),
+            h('input', {
+              type: 'search', value: query, placeholder: t('pickerSearch'), 'aria-label': t('pickerSearch'),
+              onChange: event => setQuery(event.target.value),
+            })),
+          ...groups.map(([group, label]) => {
+            const rows = channels.filter(row => row.group === group && match(row))
+            if (rows.length === 0) return null
+            return h('div', { key: group },
+              h('p', { className: 'dn-pickerGroup' }, label),
+              h('div', { className: 'dn-channelPicker' }, ...rows.map(row => h('button', {
+                key: row.id, type: 'button', className: 'dn-pickerItem', 'data-channel': row.id,
+                onClick: () => onPick(row.id),
+              },
+                h(ChannelLogo, { brand: row.brand, name: row.name, size: 28 }),
+                h('span', { className: 'dn-pickerMain' },
+                  h('span', { className: 'dn-pickerName' }, row.name),
+                  h('span', { className: 'dn-pickerUsage' }, row.usage)),
+                row.state !== 'not-set' ? h('span', { className: 'dn-pickerAdded' }, t('pickerAdded')) : null))))
+          }),
+          visible.length === 0 ? h('p', { className: 'dn-empty' }, t('pickerEmpty')) : null))
+    }
+
+    // 唯一用户页面：通知与私聊。
+    function NotifierSettings({ ctx, controller, state, t }) {
+      const view = state.view
+      const kind = view.kind
+      const type = kind === 'native-channel' ? view.type : null
+      const [pickerOpen, setPickerOpen] = useState(view.picker === true)
+
+      useEffect(() => {
+        if (kind === 'native-channel') {
+          void controller.loadNativeChannel(type).catch(error => controller.reportError(error))
+          // 深链直达某个渠道时，快照还没拉过——补一次，左侧渠道栏才有内容。
+          if (state.native === null) void controller.loadNative().catch(error => controller.reportError(error))
+        } else void controller.loadNative().catch(error => controller.reportError(error))
+      }, [kind, type])
+
+      // 从「设置第一个渠道」等入口带 picker 意图进入时，自动打开添加渠道选择器。
+      useEffect(() => {
+        if (view.picker === true) setPickerOpen(true)
+      }, [view.picker])
+
+      const native = state.native
+      const rail = native?.rail ?? []
+      const selected = type ?? 'all'
+      const onSelect = (id) => controller.navigate(id === 'all' ? { kind: 'native' } : { kind: 'native-channel', type: id })
+      // 概览里的渠道行也留在 Native v2 外壳内（账号卡），不再跳到旧的渠道详情页。
+      const openChannel = (id) => controller.navigate({ kind: 'native-channel', type: id })
+      const openPicker = () => setPickerOpen(true)
+
+      return h('div', { className: 'dn-settings' },
+        h(ProductHeader, { t, onAdd: openPicker, actions: h(MoreMenu, { controller, t }) }),
+        native === null && state.error
+          ? h(ErrorNotice, { error: state.error, t, onRetry: () => void controller.refreshCurrent() })
+          : null,
         state.connectionState === 'stale'
           ? h('p', { className: 'dn-error', role: 'status' }, t('staleData'))
           : state.connectionState === 'disconnected'
             ? h('p', { className: 'dn-error', role: 'alert' }, t('connectionLost'))
-          : null,
-        home === null && state.error
-          ? h(ErrorNotice, { error: state.error, t, onRetry: () => void controller.loadHome().catch(error => controller.reportError(error)) })
-          : null,
-        (home?.questions?.length ?? 0) > 0
-          ? h(Section, {
-              title: `${t('needsAttention')}  ${home.questions.length}`,
-              action: h('button', { className: 'dn-link', onClick: () => controller.navigate({ kind: 'questions' }) }, `${t('viewAll')} →`),
-            },
-              ...home.questions.slice(0, 3).map(question =>
-                h(QuestionCard, {
-                  key: question.ref, ctx, question, controller, t,
-                  busy: state.busy[`question:${question.ref}`] === true,
-                })))
-          : null,
-        h(Section, {
-          title: t('running'),
-          action: h('button', { className: 'dn-link', onClick: () => controller.navigate({ kind: 'tasks' }) }, `${t('viewAll')} →`),
-        }, ...(home?.tasks?.length ? home.tasks.slice(0, 5).map(task => h(TaskRow, { key: task.taskRef, ctx, task })) : home === null ? [h('p', { className: 'dn-inlineStatus', key: 'loading' }, h(StateDot, { state: 'ongoing' }), t('loading'))] : [h('p', { className: 'dn-empty', key: 'empty' }, t('noTasks'))])),
-        h(Section, {
-          title: t('channels'),
-          action: h('button', { className: 'dn-link', onClick: () => controller.navigate({ kind: 'channels' }) }, `${t('manageChannels')} →`),
-        }, ...(home?.channels?.length ? home.channels.slice(0, 5).map(channel =>
-          h(ChannelRow, { key: channel.type, ctx, channel, t, onOpen: () => controller.navigate({ kind: 'channel', type: channel.type }) }))
-          : home === null ? [h('p', { className: 'dn-inlineStatus', key: 'loading' }, h(StateDot, { state: 'ongoing' }), t('loading'))]
-            : [h('div', { className: 'dn-emptyState', key: 'empty' },
-              h('strong', null, t('noChannels')),
-              h('span', null, t('noChannelsHint')),
-              h(Button, { kind: 'primary', onClick: () => controller.navigate({ kind: 'channels', setup: true }) }, t('setupChannel')))])),
-        h(Section, {
-          title: t('activity'),
-          action: h('button', { className: 'dn-link', onClick: () => controller.navigate({ kind: 'activity' }) }, `${t('viewAll')} →`),
-        }, ...(home?.activity?.length ? home.activity.slice(0, 5).map(item => h(ActivityRow, { key: item.id, ctx, item })) : home === null ? [h('p', { className: 'dn-inlineStatus', key: 'loading' }, h(StateDot, { state: 'ongoing' }), t('loading'))] : [h('p', { className: 'dn-empty', key: 'empty' }, t('noActivity'))])))
+            : null,
+        h('div', { className: 'dn-workspace' },
+          h(ChannelRail, { items: rail, selected, onSelect, onAdd: openPicker, t }),
+          h('div', { className: 'dn-railDivider', 'aria-hidden': true }),
+          h('div', { className: 'dn-content' },
+            h(ChannelStrip, { items: rail, selected, onSelect, onAdd: openPicker, t }),
+            h(ChannelTopSelector, { items: rail, selected, onSelect, onAdd: openPicker, t }),
+            // 私聊页与待处理页与主页共用同一份 native 快照，不占永久导航——从主页按钮 / 顶部提示进入。
+            kind === 'native-private'
+              ? h(PrivateChatPanel, { controller, state, t })
+              : kind === 'native-pending'
+                ? h(PendingPage, { controller, state, t })
+                : type === null
+                  ? h(Overview, { controller, state, native, t, onOpenChannel: openChannel, onAdd: openPicker })
+                  // 切渠道时旧详情可能还在快照里；只渲染与当前 type 匹配的详情，避免串台。
+                  : h(ChannelPage, {
+                      ctx, controller, state, t,
+                      detail: state.nativeChannel?.channel?.id === type ? state.nativeChannel : null,
+                      type, revision: native?.cursor ?? null,
+                    }))),
+        pickerOpen
+          ? h(ChannelPicker, {
+              channels: native?.channels ?? [],
+              onClose: () => setPickerOpen(false),
+              onPick: (id) => { setPickerOpen(false); controller.navigate({ kind: 'native-channel', type: id }) },
+              t,
+            })
+          : null)
     }
 
     // v0.15（T18 / U03 / U12）：保存与测试解耦——保存成立后即可「完成」，测试完全可选；
@@ -2031,7 +2988,7 @@ window.__ModuleLoader__.load({
     function TasksView({ ctx, controller, state, t }) {
       useEffect(() => { void controller.loadTasks().catch(error => controller.reportError(error)) }, [])
       return h('div', { className: 'dn-page' },
-        h('div', { className: 'dn-detailBack' }, h('button', { className: 'dn-link', onClick: () => controller.navigate({ kind: 'home' }) }, `← ${t('back')}`)),
+        h('div', { className: 'dn-detailBack' }, h('button', { className: 'dn-link', onClick: () => controller.navigate({ kind: 'native' }) }, `← ${t('back')}`)),
         h(PageHead, { title: t('tasks') }),
         h(ErrorNotice, { error: state.error, t, onRetry: () => void controller.loadTasks().catch(error => controller.reportError(error)) }),
         h('div', { className: 'dn-list' },
@@ -2046,7 +3003,7 @@ window.__ModuleLoader__.load({
       useEffect(() => { void controller.loadQuestions().catch(error => controller.reportError(error)) }, [])
       const rows = state.questions?.questions ?? []
       return h('div', { className: 'dn-page' },
-        h('div', { className: 'dn-detailBack' }, h('button', { className: 'dn-link', onClick: () => controller.navigate({ kind: 'home' }) }, `← ${t('back')}`)),
+        h('div', { className: 'dn-detailBack' }, h('button', { className: 'dn-link', onClick: () => controller.navigate({ kind: 'native' }) }, `← ${t('back')}`)),
         h(PageHead, { title: t('questions') }),
         h(ErrorNotice, { error: state.error, t, onRetry: () => void controller.loadQuestions().catch(error => controller.reportError(error)) }),
         h('div', { className: 'dn-list' },
@@ -2107,7 +3064,7 @@ window.__ModuleLoader__.load({
       const canUpdate = state.members?.canUpdate === true
       const canRemove = state.members?.canRemove === true
       return h('div', { className: 'dn-page' },
-        h('div', { className: 'dn-detailBack' }, h('button', { className: 'dn-link', onClick: () => controller.navigate({ kind: 'home' }) }, `← ${t('back')}`)),
+        h('div', { className: 'dn-detailBack' }, h('button', { className: 'dn-link', onClick: () => controller.navigate({ kind: 'native' }) }, `← ${t('back')}`)),
         h(PageHead, { title: t('members') }),
         h(ErrorNotice, { error: state.error, t, onRetry: () => void controller.loadMembers().catch(error => controller.reportError(error)) }),
         h('div', { className: 'dn-list' },
@@ -2149,7 +3106,7 @@ window.__ModuleLoader__.load({
       const canApprove = state.pending?.canApprove === true
       const canDismiss = state.pending?.canDismiss === true
       return h('div', { className: 'dn-page' },
-        h('div', { className: 'dn-detailBack' }, h('button', { className: 'dn-link', onClick: () => controller.navigate({ kind: 'home' }) }, `← ${t('back')}`)),
+        h('div', { className: 'dn-detailBack' }, h('button', { className: 'dn-link', onClick: () => controller.navigate({ kind: 'native' }) }, `← ${t('back')}`)),
         h(PageHead, { title: t('pendingIdentities') }),
         h(ErrorNotice, { error: state.error, t, onRetry: () => void controller.loadPending().catch(error => controller.reportError(error)) }),
         h('div', { className: 'dn-list' },
@@ -2217,7 +3174,7 @@ window.__ModuleLoader__.load({
         }).catch(error => controller.reportError(error))
       }
       return h('div', { className: 'dn-page' },
-        h('div', { className: 'dn-detailBack' }, h('button', { className: 'dn-link', onClick: () => controller.navigate({ kind: 'home' }) }, `← ${t('back')}`)),
+        h('div', { className: 'dn-detailBack' }, h('button', { className: 'dn-link', onClick: () => controller.navigate({ kind: 'native' }) }, `← ${t('back')}`)),
         h(PageHead, { title: t('pairingCodes') }),
         h(ErrorNotice, { error: state.error, t, onRetry: () => void controller.loadPairingCodes().catch(error => controller.reportError(error)) }),
         canMint
@@ -2373,7 +3330,7 @@ window.__ModuleLoader__.load({
       const rows = state.sessions?.sessions ?? []
       const canPatch = state.sessions?.canPatch === true
       return h('div', { className: 'dn-page' },
-        h('div', { className: 'dn-detailBack' }, h('button', { className: 'dn-link', onClick: () => controller.navigate({ kind: 'home' }) }, `← ${t('back')}`)),
+        h('div', { className: 'dn-detailBack' }, h('button', { className: 'dn-link', onClick: () => controller.navigate({ kind: 'native' }) }, `← ${t('back')}`)),
         h(PageHead, { title: t('sessions') }),
         h('div', { className: 'dn-detailBack' }, h('button', { className: 'dn-link', onClick: () => controller.navigate({ kind: 'bindings' }) }, t('advancedBindings'))),
         h(ErrorNotice, { error: state.error, t, onRetry: () => void controller.loadSessions().catch(error => controller.reportError(error)) }),
@@ -2490,7 +3447,7 @@ window.__ModuleLoader__.load({
     function ActivityView({ ctx, controller, state, t }) {
       useEffect(() => { void controller.loadActivity().catch(error => controller.reportError(error)) }, [])
       return h('div', { className: 'dn-page' },
-        h('div', { className: 'dn-detailBack' }, h('button', { className: 'dn-link', onClick: () => controller.navigate({ kind: 'home' }) }, `← ${t('back')}`)),
+        h('div', { className: 'dn-detailBack' }, h('button', { className: 'dn-link', onClick: () => controller.navigate({ kind: 'native' }) }, `← ${t('back')}`)),
         h(PageHead, { title: t('activity') }),
         h(ErrorNotice, { error: state.error, t, onRetry: () => void controller.loadActivity().catch(error => controller.reportError(error)) }),
         h('div', { className: 'dn-list' },
@@ -2507,12 +3464,10 @@ window.__ModuleLoader__.load({
           : t('evidenceNone')
     }
 
-    // v0.14（S11）：只读诊断中心。顶部先回答「是否需要注意 / 为什么 / 最近何时检查」，
-    // 再分层展示 Host / Storage / Channels / Capabilities / Recent failures，并可导出脱敏报告。
-    function DiagnosticsView({ ctx, controller, state, t }) {
-      useEffect(() => { void controller.loadDiagnostics().catch(error => controller.reportError(error)) }, [])
+    // v0.15（Stage 1 / S5）：帮助页。只讲用户能做的动作（现象 → 做什么），
+    // 不再暴露 Host / Storage / Capabilities 等运行时细节；需要深入时生成一份不含密钥的摘要。
+    function HelpView({ ctx, controller, state, t }) {
       const [report, setReport] = useState(null)
-      const snapshot = state.diagnostics
       const busy = state.busy['diagnostics:report'] === true
       const onGenerate = () => {
         void controller.generateSupportReport()
@@ -2520,89 +3475,22 @@ window.__ModuleLoader__.load({
           .catch(error => controller.reportError(error))
       }
       const back = h('div', { className: 'dn-detailBack' },
-        h('button', { className: 'dn-link', onClick: () => controller.navigate({ kind: 'home' }) }, `← ${t('back')}`))
-      const retry = () => void controller.loadDiagnostics().catch(error => controller.reportError(error))
-      if (!snapshot) {
-        return h('div', { className: 'dn-page' }, back,
-          h(PageHead, { title: t('diagnosticsCenter'), intro: t('diagnosticsIntro') }),
-          h(ErrorNotice, { error: state.error, t, onRetry: retry }),
-          state.error ? null : h('p', { className: 'dn-empty' }, t('notAvailableYet')))
-      }
-
-      const attention = snapshot.attention ?? {}
-      const reasons = Array.isArray(attention.reasons) ? attention.reasons : []
-      const host = snapshot.host ?? {}
-      const storage = snapshot.storage ?? {}
-      const channels = snapshot.channels ?? {}
-      const capabilities = snapshot.capabilities ?? {}
-      const failures = Array.isArray(snapshot.recentFailures) ? snapshot.recentFailures : []
-      const listRow = (key, title, list) => h('div', { className: 'dn-row', key },
-        h('div', { className: 'dn-rowMain' },
-          h('strong', { className: 'dn-rowTitle' }, title),
-          h('span', { className: 'dn-rowMeta' }, Array.isArray(list) && list.length ? list.join(', ') : t('noneList'))))
-      const capText = (entry, detail) => entry?.available === true ? detail : t('unavailable')
-
+        h('button', { className: 'dn-link', onClick: () => controller.navigate({ kind: 'native' }) }, `← ${t('back')}`))
+      const tips = [
+        ['helpTipPhone', 'helpTipPhoneBody'],
+        ['helpTipConnect', 'helpTipConnectBody'],
+        ['helpTipReply', 'helpTipReplyBody'],
+        ['helpTipRestart', 'helpTipRestartBody'],
+      ]
       return h('div', { className: 'dn-page' }, back,
-        h(PageHead, { title: t('diagnosticsCenter'), intro: t('diagnosticsIntro') }),
-        h(ErrorNotice, { error: state.error, t, onRetry: retry }),
-        h('div', { className: 'dn-statusLine' },
-          h(StateDot, { state: attention.required === true ? 'warn' : 'done' }),
-          h('div', null,
-            h('strong', null, t('attentionQuestion')),
-            h('span', null, attention.required === true ? t('needsAction') : t('noneRequired')))),
-        reasons.length
-          ? h('div', { className: 'dn-list' }, ...reasons.map((reason, index) => h('div', { className: 'dn-row', key: reason?.code || index },
-              h(StateDot, { state: 'warn' }),
-              h('div', { className: 'dn-rowMain' },
-                h('strong', { className: 'dn-rowTitle' }, String(reason?.code || '')),
-                h('span', { className: 'dn-rowMeta' }, resolveText(ctx, reason?.detail))))))
-          : null,
-        h('p', { className: 'dn-note' }, `${t('lastChecked')}: ${String(snapshot.generatedAt ?? '')}`),
-        h(Section, { title: t('hostTitle') },
-          h('div', { className: 'dn-healthGrid' },
-            h('span', null, `${t('pluginVersion')}: ${String(snapshot.version ?? '')}`),
-            h('span', null, `${t('hostVersion')}: ${String(host.version ?? '')}`),
-            h('span', null, `${t('eventsMode')}: ${String(host.eventsMode ?? '')}`),
-            h('span', null, `${t('questionsMode')}: ${String(host.questionsMode ?? '')}`),
-            h('span', null, `${t('imageInput')}: ${String(host.mediaImageInput ?? '')}`),
-            h('span', null, `${t('processId')}: ${String(snapshot.process?.epoch ?? '')} #${String(snapshot.process?.revision ?? '')}`))),
-        h(Section, { title: t('storageTitle') },
-          h('div', { className: 'dn-healthGrid' },
-            h('span', null, `${t('storageState')}: ${String(storage.state ?? '')}`),
-            h('span', null, `${t('storageWritable')}: ${storage.writable === true ? t('yes') : t('no')}`),
-            storage.migration
-              ? h('span', null, `${t('migration')}: ${String(storage.migration.status ?? '')} (${String(storage.migration.migratedCount ?? 0)})`)
-              : null)),
-        h(Section, { title: t('channelSummaryTitle') },
-          h('div', { className: 'dn-healthGrid' },
-            h('span', null, `${t('totalChannels')}: ${String(channels.total ?? 0)}`),
-            h('span', null, `${t('notifyConfiguredActive')}: ${String(channels.notifyConfigured ?? 0)}/${String(channels.notifyActive ?? 0)}`),
-            h('span', null, `${t('controlConfiguredActive')}: ${String(channels.controlConfigured ?? 0)}/${String(channels.controlActive ?? 0)}`),
-            h('span', null, `${t('evidenceLevel')}: ${evidenceText(t, channels.latestEvidence)}`)),
-          h('div', { className: 'dn-list' },
-            listRow('restart', t('restartPendingList'), channels.restartPending),
-            listRow('noEvidence', t('noEvidenceList'), channels.noEvidenceTypes),
-            listRow('inactive', t('inactiveList'), channels.inactive),
-            listRow('degraded', t('degradedList'), channels.degradedTypes))),
-        h(Section, { title: t('capabilityTitle') },
-          h('div', { className: 'dn-healthGrid' },
-            h('span', null, `${t('capQuestions')}: ${capText(capabilities.questions, String(capabilities.questions?.pending ?? 0))}`),
-            h('span', null, `${t('capSessions')}: ${capText(capabilities.sessions, String(capabilities.sessions?.count ?? 0))}`),
-            h('span', null, `${t('capBindings')}: ${capText(capabilities.bindings, capabilities.bindings?.editable === true ? t('yes') : t('no'))}`),
-            h('span', null, `${t('capMembers')}: ${capText(capabilities.members, capabilities.members?.removable === true ? t('yes') : t('no'))}`),
-            h('span', null, `${t('capAdvanced')}: ${capabilities.advancedConsole === 'available' ? t('available') : t('unavailable')}`))),
-        h(Section, { title: t('failuresTitle') },
-          failures.length
-            ? h('div', { className: 'dn-list' }, ...failures.map((failure, index) => h('div', { className: 'dn-row', key: `${String(failure?.at ?? '')}-${index}` },
-                h(StateDot, { state: 'error' }),
-                h('div', { className: 'dn-rowMain' },
-                  h('strong', { className: 'dn-rowTitle' }, String(failure?.action ?? '')),
-                  h('span', { className: 'dn-rowMeta' }, [
-                    failure?.category,
-                    failure?.at,
-                    failure?.detail ? resolveText(ctx, failure.detail) : null,
-                  ].filter(Boolean).join(' · '))))))
-            : h('p', { className: 'dn-empty' }, t('noFailures'))),
+        h(PageHead, { title: t('helpTitle'), intro: t('helpIntro') }),
+        h(Section, { title: t('helpTitle') },
+          h('div', { className: 'dn-list' }, ...tips.map(([titleKey, bodyKey]) => h('div', {
+            key: titleKey, className: 'dn-row',
+          },
+            h('span', { className: 'dn-rowMain' },
+              h('strong', { className: 'dn-rowTitle' }, t(titleKey)),
+              h('span', { className: 'dn-rowMeta' }, t(bodyKey))))))),
         h(Section, { title: t('supportReport') },
           h('p', { className: 'dn-note' }, t('reportIntro')),
           h('p', { className: 'dn-note' }, t('reportNotBackup')),
@@ -2616,12 +3504,59 @@ window.__ModuleLoader__.load({
             : null))
     }
 
+    // v0.15（Stage 1 / S5）：通知总览。低频入口，只复用既有 authority——测试走 native.testChannel，
+    // 设置跳回渠道页；不新增写路径、不改通知模型，也不把通知开/关做成破坏性删除。
+    function NotifySettingsView({ ctx, controller, state, t }) {
+      const native = state.native
+      const [receipts, setReceipts] = useState({})
+      const back = h('div', { className: 'dn-detailBack' },
+        h('button', { className: 'dn-link', onClick: () => controller.navigate({ kind: 'native' }) }, `← ${t('back')}`))
+      if (native === null) {
+        return h('div', { className: 'dn-page' }, back,
+          h(PageHead, { title: t('notifySettingsTitle'), intro: t('notifySettingsIntro') }),
+          h('p', { className: 'dn-inlineStatus' }, h(StateDot, { state: 'ongoing' }), t('loading')))
+      }
+      const channels = (native.channels ?? []).filter(channel => channel?.canNotify === true)
+      const runTest = (type) => {
+        void controller.nativeTestChannel(type).then(result => {
+          if (result === null) return
+          setReceipts(current => ({ ...current, [type]: result }))
+        }).catch(error => controller.reportError(error))
+      }
+      return h('div', { className: 'dn-page' }, back,
+        h(PageHead, { title: t('notifySettingsTitle'), intro: t('notifySettingsIntro') }),
+        channels.length === 0
+          ? h('p', { className: 'dn-empty' }, t('notifySettingsEmpty'))
+          : h('div', { className: 'dn-list' }, ...channels.map(channel => {
+              const receipt = receipts[channel.id] ?? null
+              return h('div', { key: channel.id, className: 'dn-row' },
+                h(ChannelLogo, { brand: channel.brand, name: channel.name, size: 28 }),
+                h('span', { className: 'dn-rowMain' },
+                  h('strong', { className: 'dn-rowTitle' }, channel.name),
+                  h('span', { className: 'dn-rowMeta' }, receipt ? receipt.message : channel.stateText)),
+                h('span', { className: 'dn-rowAside' },
+                  channel.notifyEnabled
+                    ? h(Button, {
+                        disabled: state?.busy?.[`test:${channel.id}`] === true,
+                        onClick: () => runTest(channel.id),
+                      }, t('test'))
+                    : null,
+                  h(Button, { onClick: () => controller.navigate({ kind: 'native-channel', type: channel.id }) }, t('notifySettingsOpen'))))
+            })))
+    }
+
     function MainPanel({ controller, ctx }) {
       const state = useController(controller)
       const t = useT(ctx)
       useEffect(() => {
         controller.startWait()
       }, [])
+      // v0.15（Stage 1 / S2）：唯一用户页面「通知与私聊」。全部 / 某渠道都在这一页里切换，
+      // 不再有 Home/Channels/Tasks/… 的多页 IA。S4 的私聊页与待处理页同属这一页，不占主导航。
+      if (state.view.kind === 'native' || state.view.kind === 'native-channel'
+        || state.view.kind === 'native-private' || state.view.kind === 'native-pending') {
+        return h(NotifierSettings, { ctx, controller, state, t })
+      }
       if (state.view.kind === 'channels') return h(ChannelsView, { ctx, controller, state, t })
       // v0.12.1（P1-12）：按渠道类型重建详情组件，避免草稿/测试结果跨渠道串台。
       if (state.view.kind === 'channel') return h(ChannelDetailView, { key: state.view.type, ctx, controller, state, t })
@@ -2634,11 +3569,14 @@ window.__ModuleLoader__.load({
       if (state.view.kind === 'session') return h(SessionDetailView, { key: state.view.id, ctx, controller, state, t })
       if (state.view.kind === 'bindings') return h(BindingsView, { ctx, controller, state, t })
       if (state.view.kind === 'activity') return h(ActivityView, { ctx, controller, state, t })
-      if (state.view.kind === 'diagnostics') return h(DiagnosticsView, { ctx, controller, state, t })
+      // v0.15（Stage 1 / S5）：二级能力收口——通知总览 + 用户向帮助，全部从「更多」进入。
+      if (state.view.kind === 'notify-settings') return h(NotifySettingsView, { ctx, controller, state, t })
+      if (state.view.kind === 'help') return h(HelpView, { ctx, controller, state, t })
       if (state.view.kind === 'remote') return h(RemoteView, { ctx, controller, state, t })
       if (state.view.kind === 'portability') return h(PortabilityView, { ctx, controller, state, t })
       if (state.view.kind === 'cloudflare') return h(CloudflareView, { ctx, controller, state, t })
-      return h(HomeView, { ctx, controller, state, t })
+      // 兜底（含历史 `home` 视图）：单一用户页面。
+      return h(NotifierSettings, { ctx, controller, state, t })
     }
 
     // v0.15（T24）：远程入口视图。URL 校验在后端（remote.validate，纯本地解析、零网络）；本视图
@@ -2682,7 +3620,7 @@ window.__ModuleLoader__.load({
       }
 
       const back = h('div', { className: 'dn-detailBack' },
-        h('button', { className: 'dn-link', onClick: () => controller.navigate({ kind: 'home' }) }, `← ${t('back')}`))
+        h('button', { className: 'dn-link', onClick: () => controller.navigate({ kind: 'native' }) }, `← ${t('back')}`))
 
       return h('div', { className: 'dn-page' }, back,
         h(PageHead, { title: t('remoteEntry'), intro: t('remoteIntro') }),
@@ -2791,7 +3729,7 @@ window.__ModuleLoader__.load({
       }
       const decisionKeys = { add: 'importAdd', patch: 'importPatch', conflict: 'importConflict', skip: 'importSkip', unsupported: 'importUnsupported' }
       return h('div', { className: 'dn-page' },
-        h('button', { className: 'dn-link', disabled: busy, onClick: () => controller.navigate({ kind: 'channels' }) }, `← ${t('back')}`),
+        h('button', { className: 'dn-link', disabled: busy, onClick: () => controller.navigate({ kind: 'native' }) }, `← ${t('back')}`),
         h(PageHead, { title: t('configTransfer'), intro: t('transferIntro'), actions: h(Button, { disabled: busy, onClick: exportFile }, t('exportConfig')) }),
         h('label', { className: 'dn-field' }, t('importConfig'), h('input', { type: 'file', accept: '.json,application/json', disabled: busy, onChange: chooseFile })),
         h('label', { className: 'dn-field' }, 'JSON', h('textarea', {
@@ -2885,7 +3823,7 @@ window.__ModuleLoader__.load({
       const disabled = busy || !!data?.job
       const steps = { preparing: words('准备工具', 'Preparing tools'), login: words('等待登录', 'Awaiting login'), database: words('准备 Bark 服务', 'Preparing Bark'), migration: words('配置 Bark 服务', 'Configuring Bark'), deploy: words('部署服务', 'Deploying service'), verify: words('检查服务', 'Checking service') }
       return h('div', { className: 'dn-page' },
-        h('button', { className: 'dn-link', onClick: () => controller.navigate({ kind: 'channels' }) }, `← ${t('back')}`),
+        h('button', { className: 'dn-link', onClick: () => controller.navigate({ kind: 'native' }) }, `← ${t('back')}`),
         h(PageHead, { title: t('cloudflare'), intro: words('把 Bark 或 Telegram 网关部署到你的 Cloudflare 账号。', 'Deploy Bark or a Telegram gateway to your Cloudflare account.') }),
         h('div', { className: 'dn-formActions' },
           h(Button, { disabled, onClick: () => call('loginDevice') }, words('登录 Cloudflare', 'Log in to Cloudflare')),
@@ -2929,18 +3867,20 @@ window.__ModuleLoader__.load({
     function PluginConfig({ controller, ctx, view }) {
       const state = useController(controller)
       const t = useT(ctx)
-      useEffect(() => { if (view === 'page') void controller.loadHome().catch(error => controller.reportError(error)) }, [view])
+      useEffect(() => { if (view === 'page') void controller.loadNative().catch(error => controller.reportError(error)) }, [view])
       if (view !== 'page') return null
-      const ready = (state.home?.channels ?? []).some(channel => channel?.notify?.configured === true)
+      // v0.15（Stage 1 / S2）：就绪判定改读 Native 快照（notifyEnabled），不再依赖旧 surface.home。
+      const ready = (state.native?.channels ?? []).some(channel => channel?.notifyEnabled === true)
       return h('div', { className: 'dn-pluginConfig' },
         h('strong', null, ready ? t('pluginReady') : t('noChannels')),
-        h('p', null, ready ? resolveText(ctx, state.home?.summary?.detail) : t('noChannelsHint')),
+        h('p', null, ready ? t('nativeIntro') : t('noChannelsHint')),
         h('div', { className: 'dn-formActions' },
           h(Button, {
             kind: 'primary',
             onClick: () => {
               try { ctx.layout.selectPanel(PANEL_ID) } catch (error) { controller.reportError(error) }
-              controller.navigate({ kind: ready ? 'home' : 'channels', setup: !ready })
+              // 未就绪时直接落到「通知与私聊」页并打开添加渠道选择器。
+              controller.navigate(ready ? { kind: 'native' } : { kind: 'native', picker: true })
             },
           }, ready ? t('openControl') : t('setupFirst'))),
         h('p', { className: 'dn-note' }, t('pluginAdvanced')))
@@ -3025,6 +3965,99 @@ window.__ModuleLoader__.load({
       @keyframes dnPulse{0%,100%{opacity:.35}50%{opacity:1}}
       @media(max-width:719px){.dn-page{padding:20px 16px 40px}.dn-pageHead{gap:12px}.dn-row{align-items:flex-start}.dn-rowAside{align-items:flex-start}.dn-options{flex-direction:column}.dn-option{width:100%;text-align:left}}
       @media(prefers-reduced-motion:reduce){.dn-stateDot--ongoing{animation:none}}
+      /* v0.15（Stage 1 / S2）：Native v2「通知与私聊」外壳。页面宽度受控、右侧 min-width:0，
+         避免宿主内容区变窄时卡片被硬挤；窄屏不是把桌面版缩小，而是重新排布。 */
+      .dn-settings{box-sizing:border-box;width:100%;max-width:1040px;margin:0 auto;padding:24px clamp(16px,3vw,40px) 40px;color:var(--dsw-alias-label-primary);font-family:inherit}
+      .dn-settings :focus-visible{outline:2px solid var(--dsw-alias-state-business-primary);outline-offset:2px}
+      .dn-productHead{display:flex;align-items:flex-start;justify-content:space-between;gap:20px;margin:0 0 20px}
+      .dn-productTitle{min-width:0}
+      .dn-productTitle h1{margin:0;font-size:20px;line-height:28px;font-weight:500}
+      .dn-productTitle p{margin:4px 0 0;color:var(--dsw-alias-label-secondary);font-size:13px;line-height:20px}
+      .dn-productActions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+      .dn-moreWrap{position:relative}
+      .dn-moreMenu{position:absolute;right:0;top:calc(100% + 6px);z-index:20;min-width:168px;display:flex;flex-direction:column;padding:6px;border:.5px solid var(--dsw-alias-border-l2);border-radius:12px;background:var(--dsw-alias-bg-layer-1);box-shadow:0 6px 20px rgba(0,0,0,.08)}
+      .dn-moreItem{border:0;background:transparent;color:inherit;font:inherit;font-size:13px;text-align:left;padding:8px 10px;border-radius:var(--dsw-radius-md);cursor:pointer}
+      .dn-moreItem:hover{background:var(--dsw-alias-interactive-bg-hover)}
+      .dn-workspace{display:flex;align-items:flex-start;min-width:0}
+      .dn-rail{flex:0 0 176px;display:flex;flex-direction:column;gap:2px;padding:4px}
+      .dn-railDivider{flex:0 0 1px;align-self:stretch;background:var(--dsw-alias-border-l2);margin:0 16px}
+      .dn-content{flex:1 1 auto;min-width:0}
+      .dn-navItem{display:flex;align-items:center;gap:10px;min-height:46px;padding:6px 10px;border:.5px solid transparent;border-radius:10px;background:transparent;color:inherit;font:inherit;font-size:13px;text-align:left;cursor:pointer}
+      .dn-navItem:hover{background:var(--dsw-alias-interactive-bg-hover)}
+      .dn-navItem.is-selected{background:var(--dsw-alias-bg-layer-2);border-color:var(--dsw-alias-border-l2)}
+      .dn-navGlyph{width:24px;height:24px;display:grid;place-items:center;color:var(--dsw-alias-label-secondary);flex:0 0 auto}
+      .dn-navLabel{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+      .dn-navAdd{color:var(--dsw-alias-state-business-primary)}
+      .dn-logo{flex:0 0 auto;border-radius:7px}
+      .dn-strip{display:none;gap:6px;overflow-x:auto;margin:0 0 16px;padding-bottom:4px}
+      .dn-strip .dn-navItem{min-height:40px;padding:4px 10px;flex:0 0 auto}
+      .dn-strip .dn-navLabel{white-space:nowrap}
+      .dn-channelSelect{display:none;position:relative;margin:0 0 16px}
+      .dn-selectButton{display:flex;align-items:center;gap:8px;width:100%;min-height:40px;padding:6px 12px;border:.5px solid var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-alias-bg-layer-1);color:inherit;font:inherit;font-size:13px;cursor:pointer}
+      .dn-selectLabel{flex:1;text-align:left;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+      .dn-selectCaret{color:var(--dsw-alias-label-secondary)}
+      .dn-selectMenu{position:absolute;left:0;right:0;top:calc(100% + 4px);z-index:20;display:flex;flex-direction:column;padding:6px;border:.5px solid var(--dsw-alias-border-l2);border-radius:12px;background:var(--dsw-alias-bg-layer-1);box-shadow:0 6px 20px rgba(0,0,0,.08);max-height:60vh;overflow:auto}
+      .dn-selectOption{display:flex;align-items:center;gap:10px;border:0;background:transparent;color:inherit;font:inherit;font-size:13px;text-align:left;padding:8px 10px;border-radius:var(--dsw-radius-md);cursor:pointer}
+      .dn-selectOption:hover{background:var(--dsw-alias-interactive-bg-hover)}
+      .dn-selectOption[aria-selected="true"]{background:var(--dsw-alias-bg-layer-2)}
+      .dn-selectAdd{color:var(--dsw-alias-state-business-primary)}
+      .dn-badge{font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary);border:.5px solid var(--dsw-alias-border-l2);border-radius:999px;padding:1px 8px;white-space:nowrap}
+      .dn-tag{font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-bg-layer-2);border-radius:999px;padding:2px 8px}
+      .dn-accountCard{border:.5px solid var(--dsw-alias-border-l2);border-radius:12px;background:var(--dsw-alias-bg-layer-1);padding:14px 16px;margin:10px 0}
+      .dn-accountHead{display:flex;align-items:center;gap:12px}
+      .dn-accountMain{flex:1;min-width:0;display:flex;flex-direction:column}
+      .dn-accountTags{display:flex;gap:6px;flex-wrap:wrap;margin:10px 0}
+      .dn-accountToggle{flex:0 0 auto}
+      .dn-accountBody{margin-top:4px;padding-top:12px;border-top:.5px solid var(--dsw-alias-border-l2)}
+      .dn-accountForm{display:flex;flex-direction:column}
+      .dn-connHelp{margin:8px 0;padding:10px 12px;border:.5px solid var(--dsw-alias-border-l2);border-radius:10px}
+      .dn-channelPage{min-width:0}
+      .dn-channelHead{display:flex;align-items:center;gap:12px;padding:4px 0 12px;border-bottom:.5px solid var(--dsw-alias-border-l2);margin-bottom:8px}
+      .dn-channelHeadMain{flex:1;min-width:0;display:flex;flex-direction:column}
+      .dn-channelName{margin:0;font-size:16px;line-height:24px;font-weight:500}
+      .dn-channelUsage{font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary)}
+      .dn-pickerOverlay{position:fixed;inset:0;z-index:40;display:flex;align-items:flex-start;justify-content:center;padding:40px 16px;background:rgba(0,0,0,.28)}
+      .dn-picker{box-sizing:border-box;width:100%;max-width:560px;max-height:80vh;overflow:auto;background:var(--dsw-alias-bg-layer-1);border:.5px solid var(--dsw-alias-border-l2);border-radius:14px;padding:20px}
+      .dn-pickerHead{display:flex;align-items:center;justify-content:space-between;gap:12px}
+      .dn-pickerTitle{margin:0;font-size:16px;line-height:24px;font-weight:500}
+      .dn-pickerGroup{margin:14px 0 6px;font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary)}
+      .dn-pickerItem{display:flex;align-items:center;gap:12px;width:100%;border:0;background:transparent;color:inherit;font:inherit;text-align:left;padding:10px;border-radius:10px;cursor:pointer}
+      .dn-pickerItem:hover{background:var(--dsw-alias-interactive-bg-hover)}
+      .dn-pickerMain{flex:1;min-width:0;display:flex;flex-direction:column}
+      .dn-pickerName{font-size:14px;line-height:20px;font-weight:500}
+      .dn-pickerUsage{font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary)}
+      .dn-pickerAdded{font-size:12px;color:var(--dsw-alias-label-tertiary);white-space:nowrap}
+      /* 私聊页 / 待处理页（S4）。 */
+      .dn-privatePage{min-width:0}
+      .dn-detailBack{margin:0 0 8px}
+      .dn-steps{display:flex;flex-wrap:wrap;gap:8px;list-style:none;margin:0 0 16px;padding:0}
+      .dn-step{font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary);padding:2px 10px;border:.5px solid var(--dsw-alias-border-l2);border-radius:999px}
+      .dn-step.is-done{color:var(--dsw-alias-label-secondary)}
+      .dn-step.is-active{color:var(--dsw-alias-state-business-primary);border-color:var(--dsw-alias-state-business-primary)}
+      .dn-pendingBanner{display:flex;align-items:center;gap:10px;width:100%;margin:0 0 16px;padding:10px 12px;border:.5px solid var(--dsw-alias-border-l2);border-radius:12px;background:var(--dsw-alias-bg-layer-2);color:inherit;font:inherit;font-size:13px;text-align:left;cursor:pointer}
+      .dn-pendingBanner:hover{background:var(--dsw-alias-interactive-bg-hover)}
+      .dn-pendingMark{flex:0 0 auto;width:20px;height:20px;display:grid;place-items:center;border-radius:999px;background:var(--dsw-alias-state-business-primary);color:#fff;font-size:12px}
+      .dn-pendingText{flex:1;min-width:0}
+      .dn-pendingGo{color:var(--dsw-alias-state-business-primary);white-space:nowrap}
+      .dn-tryWord{font-size:14px;line-height:22px;margin:4px 0}
+      .dn-codeBox{display:flex;flex-direction:column;gap:4px;margin:8px 0;padding:10px 12px;border:.5px solid var(--dsw-alias-border-l2);border-radius:10px}
+      .dn-code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:16px;letter-spacing:.08em}
+      /* 中等内容区（680–879px）：左栏换成顶部横向可滚动渠道条，主内容占满宽度。 */
+      @media(max-width:879px){.dn-rail{display:none}.dn-railDivider{display:none}.dn-strip{display:flex}}
+      /* 手机（<680px）：不保留常驻渠道栏，顶部是当前渠道按钮，点开弹出渠道选择。 */
+      @media(max-width:679px){.dn-strip{display:none}.dn-channelSelect{display:block}}
+      @media(max-width:519px){
+        .dn-settings{padding:16px 14px 32px}
+        .dn-productHead{flex-direction:column;gap:12px}
+        .dn-productActions{width:100%}
+        .dn-moreMenu{right:auto;left:0}
+        .dn-pickerOverlay{padding:16px 10px}
+        .dn-picker{padding:16px}
+      }
+      @media(max-width:389px){
+        .dn-productActions{gap:6px}
+        .dn-productActions .dn-button{flex:1 1 auto;justify-content:center}
+      }
     `
 
     return {
@@ -3068,7 +4101,7 @@ window.__ModuleLoader__.load({
           name: 'sidebar.panellist',
           id: PANEL_ID,
           order: 20,
-          label: () => resolveText(ctx, { en: 'Notify & Control', zh: '通知与控制' }),
+          label: () => resolveText(ctx, { en: 'Notify & Private chat', zh: '通知与私聊' }),
         }, SidebarIcon))
         ctx.slots.inject('plugins.bundle.config', () => ctx.slots.register({
           name: 'plugins.bundle.config',

@@ -45,7 +45,7 @@ function loadModule({ rpcCall } = {}) {
   let source = readFileSync(new URL('../client.js', import.meta.url), 'utf8')
   source = source.replace(
     "return {\n      inject: ['slots', 'connection', 'locale', 'layout'],",
-    "return {\n      __test: { createController, launchAdvancedConsole, QuestionCard, QuestionsView, MemberRow, MembersView, PendingRow, PendingIdentitiesView, PairingCodeRow, PairingCodesView, SessionRow, SessionsView, BindingAgentRow, BindingChannelRow, BindingsView, TaskRow, ChannelRow, ActivityRow, DiagnosticsView, buildSupportReport },\n      inject: ['slots', 'connection', 'locale', 'layout'],",
+    "return {\n      __test: { createController, QuestionCard, QuestionsView, MemberRow, MembersView, PendingRow, PendingIdentitiesView, PairingCodeRow, PairingCodesView, SessionRow, SessionsView, BindingAgentRow, BindingChannelRow, BindingsView, TaskRow, ChannelRow, ActivityRow, HelpView, NotifySettingsView, buildSupportReport },\n      inject: ['slots', 'connection', 'locale', 'layout'],",
   )
   assert.match(source, /__test:/)
   let registration
@@ -92,54 +92,28 @@ test('client module registers the four intended DSH slots', () => {
   assert.equal(panellist.options.id, 'dsh-notifier')
   // 宿主 resolveSlotLabel 只对函数求值：label 必须是 thunk（对象会被当 React child 渲染并崩掉 sidebar）
   assert.equal(typeof panellist.options.label, 'function')
-  assert.equal(panellist.options.label(), 'Notify & Control')
+  assert.equal(panellist.options.label(), 'Notify & Private chat')
   for (const d of effects.reverse()) d()
 })
 
-test('advanced console keeps popup handle, severs opener, renders disabled state', async () => {
-  const popup = { opener: {}, document: { title: '', body: { textContent: '' } }, location: { replaced: null, replace(url) { this.replaced = url } } }
-  const { mod } = loadModule()
-  const calls = []
-  const result = mod.__test.launchAdvancedConsole(
-    { async createStandaloneLaunch() { return { available: false, reason: 'disabled' } } },
-    key => key,
-    { open(url, target, features) { calls.push({ url, target, features }); return popup } },
-  )
-  assert.equal(result.opened, true)
-  assert.equal(popup.opener, null)
-  assert.deepEqual(calls[0], { url: 'about:blank', target: '_blank', features: undefined })
-  await new Promise(resolve => setTimeout(resolve, 0))
-  assert.equal(popup.document.body.textContent, 'advancedDisabled')
-  assert.equal(popup.location.replaced, null)
-})
+// v0.15（Stage 1 / S2）：旧的「高级控制台」弹窗入口随 Home 的「常用 / 管理」pill 导航一并删除，
+// 相关弹窗测试作废（二级能力统一收进「更多」菜单，见 S5）。
 
-test('advanced console navigates the retained popup on successful launch', async () => {
-  const popup = { opener: {}, document: { title: '', body: { textContent: '' } }, location: { replaced: null, replace(url) { this.replaced = url } } }
-  const { mod } = loadModule()
-  mod.__test.launchAdvancedConsole(
-    { async createStandaloneLaunch() { return { available: true, url: 'http://127.0.0.1:8104/#ticket=fake' } } },
-    key => key,
-    { open() { return popup } },
-  )
-  await new Promise(resolve => setTimeout(resolve, 0))
-  assert.equal(popup.opener, null)
-  assert.equal(popup.location.replaced, 'http://127.0.0.1:8104/#ticket=fake')
-})
-
-test('question conflict race normalizes to alreadyHandled and refreshes home', async () => {
+test('question conflict race normalizes to alreadyHandled and refreshes the current view', async () => {
   const calls = []
   const { mod, ctx } = loadModule({
     async rpcCall(channel, endpoint) {
       calls.push({ channel, endpoint })
       if (endpoint === 'questions.settle') return { ok: false, error: { code: 'dsh-notifier/conflict', message: 'already handled' } }
-      if (endpoint === 'surface.home') return { ok: true, value: { revision: 3, summary: { status: 'healthy', detail: 'ok' }, questions: [], tasks: [], channels: [], activity: [] } }
+      // 默认视图现在是「通知与私聊」：refreshCurrent 走 native.snapshot（不再读 surface.home）。
+      if (endpoint === 'native.snapshot') return { ok: true, value: { epoch: 'e', revision: 3, cursor: 'tok.3', rail: [], channels: [], privateChat: { enabled: false, users: [] }, pending: [], storage: { canSave: true, text: 'ok' }, truncated: { rail: false, channels: false, pending: false } } }
       return { ok: true, value: { revision: 3 } }
     },
   })
   const controller = mod.__test.createController(ctx)
   const result = await controller.settleQuestion('q1', 'reject', [])
   assert.deepEqual({ settled: result.settled, alreadyHandled: result.alreadyHandled }, { settled: false, alreadyHandled: true })
-  assert.equal(calls.filter(x => x.endpoint === 'surface.home').length, 1)
+  assert.equal(calls.filter(x => x.endpoint === 'native.snapshot').length, 1)
   controller.dispose()
 })
 
@@ -531,7 +505,7 @@ test('bindings view hides edit controls when canEdit is false', () => {
   assert.match(textOf(view), /silence/, '只读时仍显示状态，但不显示编辑控件')
 })
 
-test('diagnostics center loads the canonical snapshot and refreshCurrent reloads it', async () => {
+test('help support report loads the canonical snapshot on demand', async () => {
   const calls = []
   const { mod, ctx } = loadModule({
     async rpcCall(_channel, endpoint) {
@@ -543,61 +517,60 @@ test('diagnostics center loads the canonical snapshot and refreshCurrent reloads
     },
   })
   const controller = mod.__test.createController(ctx)
-  await controller.loadDiagnostics()
-  assert.deepEqual(calls, ['diagnostics.snapshot'])
+  const result = await controller.generateSupportReport()
+  assert.deepEqual(calls, ['diagnostics.snapshot'], '支持报告只在用户点击时按需读取一次诊断快照')
   assert.equal(controller.getSnapshot().diagnostics.version, '0.13.1')
-  controller.navigate({ kind: 'diagnostics' })
-  await controller.refreshCurrent()
-  assert.deepEqual(calls, ['diagnostics.snapshot', 'diagnostics.snapshot'], '刷新当前诊断视图必须重载快照')
+  // 沙箱没有剪贴板 / 下载能力：明确回落为失败结果，绝不抛出。
+  assert.equal(result.type, 'failed')
   controller.dispose()
 })
 
-test('diagnostics view renders attention, layered state, and a support-report control', () => {
+test('help view renders the troubleshooting steps and a support-report control', () => {
   const { mod, ctx } = loadModule()
   const t = key => key
-  const controller = {
-    async loadDiagnostics() { return {} }, reportError() {}, navigate() {},
-    async generateSupportReport() { return { ok: true, type: 'copied' } },
-  }
-  const view = mod.__test.DiagnosticsView({
-    ctx, t, controller,
-    state: {
-      error: null, busy: {},
-      diagnostics: {
-        version: '0.13.1', generatedAt: '2026-09-27T00:00:00.000Z',
-        process: { epoch: 'epoch-1', revision: 12 },
-        host: { version: '1.2.3', eventsMode: 'dual', questionsMode: 'native-event', mediaImageInput: 'available' },
-        storage: { state: 'ready', writable: true, migration: { status: 'complete', migratedCount: 2 } },
-        channels: { total: 3, notifyConfigured: 2, notifyActive: 1, controlConfigured: 1, controlActive: 1, latestEvidence: 'accepted', restartPending: ['telegram'], noEvidenceTypes: ['bark'], inactive: ['webhook'], degradedTypes: [] },
-        capabilities: { questions: { available: true, pending: 4 }, sessions: { available: true, count: 2 }, bindings: { available: true, editable: true }, members: { available: true, removable: false }, advancedConsole: 'available' },
-        recentFailures: [{ at: '2026-09-27T00:00:00.000Z', category: 'delivery', action: 'channel-send', detail: { en: 'boom', zh: '炸' } }],
-        attention: { required: true, reasons: [{ code: 'channel-degraded', detail: { en: 'failed', zh: '失败' } }] },
-      },
-    },
-  })
+  const controller = { reportError() {}, navigate() {}, async generateSupportReport() { return { ok: true, type: 'copied' } } }
+  const view = mod.__test.HelpView({ ctx, t, controller, state: { error: null, busy: {} } })
   const text = textOf(view)
-  assert.match(text, /attentionQuestion/)
-  assert.match(text, /channel-degraded/)
-  assert.match(text, /1\.2\.3/)
-  assert.match(text, /ready/)
-  assert.match(text, /evidenceAccepted/)
-  assert.match(text, /restartPendingList/)
-  assert.match(text, /capAdvanced/)
-  assert.match(text, /channel-send/)
+  assert.match(text, /helpTipPhone/)
+  assert.match(text, /helpTipConnect/)
+  assert.match(text, /helpTipReply/)
+  assert.match(text, /helpTipRestart/)
   assert.match(text, /generateReport/)
+  // 用户向帮助绝不暴露内部诊断细节（宿主版本 / 存储 / 能力矩阵）。
+  assert.doesNotMatch(text, /pluginVersion|hostVersion|storageState|evidenceLevel|processId/)
+})
 
-  const calm = mod.__test.DiagnosticsView({
-    ctx, t, controller,
-    state: {
-      error: null, busy: {},
-      diagnostics: { generatedAt: 'now', attention: { required: false, reasons: [] }, host: {}, storage: {}, channels: {}, capabilities: {}, recentFailures: [] },
+test('notify settings view lists notify-capable channels and reuses test + channel navigation', () => {
+  const { mod, ctx } = loadModule()
+  const t = key => key
+  const navigations = []
+  const controller = {
+    reportError() {},
+    navigate(view) { navigations.push(view) },
+    async nativeTestChannel() { return { message: 'sent' } },
+  }
+  const state = {
+    error: null, busy: {},
+    native: {
+      channels: [
+        { id: 'telegram', name: 'Telegram', brand: 'telegram', state: 'ready', stateText: 'Ready', notifyEnabled: true, canNotify: true },
+        { id: 'bark', name: 'Bark', brand: 'bark', state: 'not-set', stateText: 'Not set up', notifyEnabled: false, canNotify: false },
+      ],
     },
-  })
-  assert.match(textOf(calm), /noneRequired/)
-  assert.match(textOf(calm), /noFailures/)
+  }
+  const view = mod.__test.NotifySettingsView({ ctx, t, controller, state })
+  const text = textOf(view)
+  assert.match(text, /Telegram/)
+  assert.match(text, /test/, '已开启通知的渠道显示「测试」')
+  assert.match(text, /notifySettingsOpen/)
+  assert.doesNotMatch(text, /Bark/, 'canNotify=false 的渠道不进入通知总览')
+  assert.deepEqual(navigations, [], '渲染本身不触发导航（写动作只在点击后发生）')
 
-  const empty = mod.__test.DiagnosticsView({ ctx, t, controller, state: { error: null, busy: {}, diagnostics: null } })
-  assert.match(textOf(empty), /notAvailableYet/)
+  const loading = mod.__test.NotifySettingsView({ ctx, t, controller, state: { error: null, busy: {}, native: null } })
+  assert.match(textOf(loading), /loading/)
+
+  const empty = mod.__test.NotifySettingsView({ ctx, t, controller, state: { error: null, busy: {}, native: { channels: [] } } })
+  assert.match(textOf(empty), /notifySettingsEmpty/)
 })
 
 test('support report is deterministic, redacted, and states the evidence level', () => {
@@ -653,9 +626,9 @@ test('static safety invariants remain true', () => {
   assert.match(source, /const RPC_CHANNEL = '\/dsh-notifier'/)
   assert.doesNotMatch(source, /Authorization|Bearer|channels\.scan|esbuild|react-dom/)
   assert.doesNotMatch(source, /'_blank', 'noopener'/)
-  assert.match(source, /windowObject\.open\('about:blank', '_blank'\)/)
-  assert.match(source, /popup\.opener = null/)
-  assert.match(source, /'aria-label': t\('advanced'\)/)
+  // v0.15（Stage 1 / S2）：Native v2 只读入口只走窄动作表（快照 / 单渠道详情）。
+  assert.match(source, /rpc\.call\('native\.snapshot'/)
+  assert.match(source, /rpc\.call\('native\.channel'/)
   assert.match(source, /task\?\.relativeTime/)
   assert.match(source, /item\?\.timeText/)
   assert.match(source, /question\?\.multiple === true/)

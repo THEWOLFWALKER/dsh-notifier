@@ -242,28 +242,37 @@ test('T19/U10 — copying a pairing code reports success; without a clipboard it
   }
 })
 
-test('T19/U11 — daily actions are one step away and management stays reachable in a separate group', async () => {
+test('S2/U11 — the user IA is one "Notify & Private chat" page: no daily/manage pill groups', async () => {
   const { ctx } = createContext({
     rpcCall: routed((endpoint) => {
-      if (endpoint === 'home.get') return { ok: true, value: { epoch: 'e', revision: 1, summary: {} } }
+      if (endpoint === 'native.snapshot') {
+        return {
+          ok: true,
+          value: {
+            epoch: 'e', revision: 1, cursor: 'tok.1',
+            rail: [{ id: 'telegram', name: 'Telegram', usage: 'usage', brand: 'telegram', group: 'common', state: 'ready', stateText: 'ready', notifyEnabled: true, privateChatEnabled: false }],
+            channels: [], privateChat: { enabled: false, users: [] }, pending: [],
+            storage: { canSave: true, text: 'saved' },
+            truncated: { rail: false, channels: false, pending: false },
+          },
+        }
+      }
       return { ok: true, value: { epoch: 'e', revision: 1 } }
     }),
   })
   const controller = mod.__test.createController(ctx)
-  const view = mount(React.createElement(mod.__test.HomeView, { ctx, controller, state: controller.getSnapshot(), t: (key) => key }))
+  const view = mount(React.createElement(mod.__test.NotifierSettings, {
+    ctx, controller, state: controller.getSnapshot(), t: (key) => key,
+  }))
   own(controller, view)
   await flush()
 
   const navs = [...view.container.querySelectorAll('nav')]
-  const daily = navs.find((nav) => nav.getAttribute('aria-label') === 'navDaily')
-  const manage = navs.find((nav) => nav.getAttribute('aria-label') === 'navManage')
-  assert.ok(daily, 'a labelled daily nav group exists (screen-reader navigable)')
-  assert.ok(manage, 'a separate management nav group exists')
-
-  const texts = (nav) => [...nav.querySelectorAll('button')].map((button) => button.textContent)
-  assert.ok(texts(daily).includes('questions') && texts(daily).includes('channels'), 'daily entry points are in the daily group')
-  assert.ok(texts(manage).includes('members') && texts(manage).includes('pairingCodes'), 'management entry points stay reachable in the management group')
-  assert.equal(texts(manage).includes('questions'), false, 'daily items are not duplicated into the management group')
+  assert.equal(navs.some((nav) => nav.getAttribute('aria-label') === 'navDaily'), false, 'the old daily pill group is gone')
+  assert.equal(navs.some((nav) => nav.getAttribute('aria-label') === 'navManage'), false, 'the old management pill group is gone')
+  const rail = navs.find((nav) => nav.getAttribute('aria-label') === 'channels')
+  assert.ok(rail, 'the channel rail is the only navigation')
+  assert.match(textOf(view.container), /nativeTitle/, 'the single page title is the product entry')
 })
 
 test('T19/U13 — a destructive action states its impact and only fires on explicit confirmation', async () => {

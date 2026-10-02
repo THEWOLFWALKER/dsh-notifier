@@ -14,7 +14,7 @@
 
 | 检查 | 结果 |
 |---|---|
-| 测试 | `npm test` **2465 tests**（2465 pass，0 fail，0 skip） |
+| 测试 | `npm test` **2512 tests**（2511 pass，1 known-flaky，0 fail） |
 | 配置和 Worker | 核心部署 / 转发检查与真实 React 操作检查 33 项通过；本地 workerd 执行 D1 迁移和签名请求通过 |
 | 打包与发布 | 文档、宿主兼容、渠道矩阵与打包检查通过；已推 dev 并通过 Ubuntu/macOS CI；最新隧道收尾已推 dev，最终 CI 状态需查看该提交的 Actions |
 

@@ -90,6 +90,36 @@ export function routeTargets(routing, channels, msg) {
   return targets
 }
 
+/**
+ * 重试建议分类（2B / D02）。重试决策**只**依据本函数，绝不看 `ok === false`——
+ * 「发送没抛错」与「可以安全重发」是两回事：
+ *   - safe                 请求确定未到达对端，可安全重发；
+ *   - provider-rate-limit  平台限流（如 TG 429 retry_after）——按平台窗口等待，不连撞；
+ *   - unknown              超时/结果未知：请求可能已到达对端，盲目重试会造成重复通知，**不重试**；
+ *   - no-retry             分段已部分送达或确定性失败：重发整条会重复轰炸，**不重试**。
+ */
+export const RETRY_ADVICE = Object.freeze({
+  SAFE: 'safe',
+  PROVIDER_RATE_LIMIT: 'provider-rate-limit',
+  UNKNOWN: 'unknown',
+  NO_RETRY: 'no-retry',
+})
+
+/**
+ * 把发送错误归类为唯一的重试建议词。缺省安全（可重试）——只有明确证据才升级为
+ * unknown / no-retry。
+ * @param {unknown} error
+ * @returns {'safe'|'provider-rate-limit'|'unknown'|'no-retry'}
+ */
+export function retryAdviceOf(error) {
+  if (error === null || error === undefined || typeof error !== 'object') return RETRY_ADVICE.SAFE
+  const retryAfterMs = Number(error?.retryAfterMs)
+  if (Number.isFinite(retryAfterMs) && retryAfterMs > 0) return RETRY_ADVICE.PROVIDER_RATE_LIMIT
+  if (error?.uncertain === true || error?.code === 'TIMEOUT') return RETRY_ADVICE.UNKNOWN
+  if (error?.noRetry === true) return RETRY_ADVICE.NO_RETRY
+  return RETRY_ADVICE.SAFE
+}
+
 /** 指数退避 sleep（可注入时钟，供测试）。 */
 function sleep(ms) {
   return ms > 0 ? new Promise((resolve) => setTimeout(resolve, ms)) : Promise.resolve()
@@ -97,8 +127,11 @@ function sleep(ms) {
 
 /**
  * 带重试的发送：attempts 次尝试，退避 backoffMs * 2^(n-1)。最后一次失败把错误抛出。
- * v0.6.3：error.noRetry === true 时立即抛出（分段已部分送达时重试会重发全部段，
- * 造成重复通知轰炸——见 notify.mjs sendOne 的 PARTIAL 标记）。
+ *
+ * 是否重试**只**由 retryAdviceOf(error) 决定：
+ *   - safe / provider-rate-limit → 继续重试（限流按平台 retryAfterMs 抬高退避）；
+ *   - unknown（超时/结果未知）   → 立即放弃，绝不盲目重发（at-least-once 重复通知）；
+ *   - no-retry（分段已部分送达） → 立即放弃（重发整条会重复轰炸，见 notify.mjs PARTIAL）。
  * @param {(message) => Promise<void>} sendFn
  */
 export async function sendWithRetry(sendFn, { attempts = 1, backoffMs = 0, onRetry } = {}) {
@@ -110,7 +143,8 @@ export async function sendWithRetry(sendFn, { attempts = 1, backoffMs = 0, onRet
       return await sendFn()
     } catch (error) {
       lastError = error
-      if (error?.noRetry === true) throw error
+      const advice = retryAdviceOf(error)
+      if (advice === RETRY_ADVICE.NO_RETRY || advice === RETRY_ADVICE.UNKNOWN) throw error
       if (attempt < attempts) {
         if (typeof onRetry === 'function') onRetry(attempt, error)
         // G-08：平台限流应答（如 TG 429 parameters.retry_after）附着的 retryAfterMs

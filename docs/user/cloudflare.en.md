@@ -2,7 +2,7 @@
 
 ## Enable a Telegram gateway
 
-1. Open Telegram settings and choose **Enable gateway**.
+1. Open the Telegram channel and choose **Enable gateway** under **Connection help**.
 2. Choose **Log in to Cloudflare** and complete authorization.
 3. Select your account. Leave the bot token and recipient blank to reuse existing settings; fill them in for first-time setup.
 4. Keep **Automatically fill and save Telegram settings** selected and choose **Enable gateway**.
@@ -13,11 +13,11 @@ The gateway reuses the bot token. After changing that token, enable the gateway 
 
 ## Use an existing gateway
 
-Choose **Custom gateway address** in Telegram settings and enter its root address. Ordinary Telegram reverse proxies and this plugin's gateway are supported. Save to apply. Choose **Direct** and save to stop using the gateway.
+Choose **Custom gateway address** under the Telegram channel's **Connection help** and enter its root address. Ordinary Telegram reverse proxies and this plugin's gateway are supported. Save to apply. Choose **Direct** and save to stop using the gateway.
 
 ## Self-host Bark
 
-Open **Cloudflare** from Channels, log in, select an account and choose Bark.
+Open the Cloudflare deploy page, log in, select an account and choose Bark. Reach it from the Telegram channel's **Connection help**.
 
 Allow Bark App registration for initial setup and deploy. Add the displayed server address in Bark App. Enter the Bark Key provided by the app and select **Link channel**.
 

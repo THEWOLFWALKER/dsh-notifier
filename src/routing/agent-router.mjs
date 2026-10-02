@@ -16,9 +16,10 @@
 //          ?? route:agents[workspace].channels ?? 全局渠道池（v0.3.0 行为，存量用户零感知）
 //   quiet:   同链回退，兜底 false。true 只静音出站推送（仍写账本），入站照常不受影响。
 //
-// 入站解析链（§3 + §0.5-4）：
-//   显式 bind > 通道默认 agent（精确 agentId 直接用；workspace 名下多活跃会话投
-//   lastActiveAt 最近者并标 ambiguous）> 唯一 agent 自动兜底 > latestSessionId（现状兜底）。
+// 入站解析链（§3 + §0.5-4，v0.15 R1 收紧）：
+//   显式 bind > 通道默认 agent（精确 agentId 直接用；workspace 名下多活跃会话标
+//   ambiguous 交上层消歧）> 无处可投（sessionId=null）。**不再**有唯一 agent 兜底或
+//   最近活跃兜底——私聊控制必须由用户显式选择任务。
 //
 // 防御红线：store 方法缺失/抛错、agentsList 抛错均不外泄——解析失败等价「无路由配置」
 // （回落全局池/现状链路），写入失败返回 false；setter 的入参契约违规抛 TypeError（快速
@@ -288,20 +289,21 @@ export function createAgentRouter({ store, agentsList } = {}) {
     },
 
     /**
-     * 解析入站去向（设计稿 §3）：某通道某用户的一条消息应投给哪个会话。
+     * 解析入站去向（设计稿 §3，R1 收紧）：某通道某用户的一条消息应投给哪个会话。
      * 链：显式 bind > 通道默认 agent（活跃 agentId 直接用；workspace 名下活跃会话
-     * 唯一直接用、多个投 lastActiveAt 最近者并标 ambiguous）> 唯一 agent > latestSessionId。
+     * 唯一直接用、多个标 ambiguous 交上层消歧）。**不再**有「唯一 agent 自动兜底」或
+     * 「最近活跃 latest」隐式默认——私聊控制必须由用户显式选择任务，无显式绑定时返回
+     * sessionId=null，由调用方回执引导选择。
      * 「活跃」= agentsList() 里存在该 id；bind 层不做活跃过滤（同 id resume 绑定仍有效）。
      *
      * @param {string} channel - 通道类型（如 'telegram'）。
      * @param {string} userId - 通道侧用户 id。
-     * @param {{ latestSessionId?: string|null }} [options] - 宿主最近活跃会话（最后兜底）。
-     * @returns {{ sessionId: string|null, source: 'bind'|'channel-default'|'single-agent'|'latest',
+     * @returns {{ sessionId: string|null, source: 'bind'|'channel-default'|'none',
      *   ambiguous: boolean, candidates?: string[] }}
-     *   ambiguous=true 时附带 candidates（该 workspace 全部活跃会话，按 lastActiveAt 降序，
-     *   首位即被投递的 sessionId）；sessionId=null 表示无处可投。
+     *   ambiguous=true 时附带 candidates（该 workspace 全部活跃会话，按 lastActiveAt 降序）；
+     *   sessionId=null 表示无处可投（无显式选择）。
      */
-    resolveInbound(channel, userId, { latestSessionId } = {}) {
+    resolveInbound(channel, userId) {
       // L1 显式绑定：值为字符串即命中（损坏数据跳过）。
       // G-49：读键与 conversation 的写键同走 identity.bindingKey（分量 trim + channel
       // 小写）——带空白/大小写漂移的分量两侧同键，绝不裂键（休眠边界封口）。
@@ -314,7 +316,9 @@ export function createAgentRouter({ store, agentsList } = {}) {
 
       const active = activeAgentIds()
 
-      // L2 通道默认 agent：精确 agentId 优先（撞名时按 agentId 语义解析）
+      // L2 通道默认 agent：**显式配置**（管理台设置 route:channels[channel].defaultAgent），
+      // 不是启发式默认。精确 agentId 优先；workspace 名下有多个活跃会话时标 ambiguous，
+      // 交上层下发选择卡消歧——绝不自动挑「最近活跃」那一个。
       const defaultAgent = plainObjectOf(readMap(KEY_CHANNELS)[channel])?.defaultAgent
       if (typeof defaultAgent === 'string' && defaultAgent !== '') {
         if (active.has(defaultAgent)) {
@@ -329,20 +333,13 @@ export function createAgentRouter({ store, agentsList } = {}) {
           return { sessionId: candidates[0], source: 'channel-default', ambiguous: false }
         }
         if (candidates.length > 1) {
-          // §0.5-4 多活跃会话消歧：投最近活跃，回执可提示「已投 <sid>，/bind 精确指定」
-          return { sessionId: candidates[0], source: 'channel-default', ambiguous: true, candidates }
+          // 多活跃会话：不选最近活跃，交上层按 candidates 下发选择卡（用户显式选择）
+          return { sessionId: null, source: 'channel-default', ambiguous: true, candidates }
         }
       }
 
-      // L3 唯一 agent 自动兜底：单 agent 用户零感知直达
-      const agents = listAgents()
-      if (agents.length === 1) {
-        return { sessionId: agents[0].id, source: 'single-agent', ambiguous: false }
-      }
-
-      // L4 最后兜底：最近活跃（现状语义；为空表示无处可投，由调用方回执兜底）
-      const latest = typeof latestSessionId === 'string' && latestSessionId !== '' ? latestSessionId : null
-      return { sessionId: latest, source: 'latest', ambiguous: false }
+      // R1：没有显式选择 = 无处可投。绝不回退到「唯一 agent」或「最近活跃」。
+      return { sessionId: null, source: 'none', ambiguous: false }
     },
 
     /**

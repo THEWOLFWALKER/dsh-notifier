@@ -34,7 +34,7 @@ function makeAgent(id = SID, status = 'idle') {
   }
 }
 
-function makeRig({ agents = [], downloadImageBytes, attachments } = {}) {
+function makeRig({ agents = [], downloadImageBytes, attachments, bind } = {}) {
   const store = createStore(tempPath())
   const bus = createInboundBus({ allowUsers: ['42'], store })
   const handlers = {}
@@ -67,7 +67,11 @@ function makeRig({ agents = [], downloadImageBytes, attachments } = {}) {
   }
   const flush = async (payload) => { userSays(payload); await sleep(FLUSH_MS + 10) }
   const fire = (event, p) => (handlers[event] ?? []).forEach((h) => h(p))
-  return { store, bus, replies, dispose, userSays, flush, fire, agentMap }
+  // R1 测试前置：投递类用例先显式选择一个任务（真实产品流程 = 用户先选任务再对话）。
+  // 隐式选择已由 R1 移除；专门的反例断言在 conversation.route / conversation.task-selection。
+  const select = (sid = SID) => userSays({ text: `/bind ${sid}` })
+  if (bind !== null && agents.length === 1) select(agents[0].id)
+  return { store, bus, replies, dispose, userSays, flush, fire, agentMap, select }
 }
 
 test('文本+图片双载：agent 收到 text 块与 durable image 块（不因 text!==\'\' 丢图）', async () => {

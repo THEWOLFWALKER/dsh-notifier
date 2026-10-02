@@ -189,14 +189,15 @@ test('resolveInbound：L1 显式 bind 命中（优先级最高，不做活跃过
   })
 })
 
-test('resolveInbound：bind 值损坏（非字符串）→ 跳过 bind 层走后续链', () => {
+test('resolveInbound：bind 值损坏（非字符串）→ 跳过 bind 层；无显式选择即无处可投', () => {
   const { router } = makeRouter({
     state: { 'bind:telegram:42': { sid: 's-9' } },
     agents: [{ id: 'a-1' }],
   })
+  // R1：损坏的 bind 不再回落到唯一 agent，必须由用户重新显式选择
   assert.deepEqual(router.resolveInbound('telegram', '42', {}), {
-    sessionId: 'a-1',
-    source: 'single-agent',
+    sessionId: null,
+    source: 'none',
     ambiguous: false,
   })
 })
@@ -213,14 +214,14 @@ test('resolveInbound：L2 通道默认为活跃 agentId → 直接命中', () =>
   })
 })
 
-test('resolveInbound：L2 通道默认为非活跃 agentId → 回落后续链（latest 兜底）', () => {
+test('resolveInbound：L2 通道默认为非活跃 agentId → 无 workspace 会话，无处可投（R1 不再回落 latest）', () => {
   const { router } = makeRouter({
     state: { 'route:channels': { telegram: { defaultAgent: 'a-2' } } },
     agents: [{ id: 'a-1' }, { id: 'a-3' }], // a-2 不活跃
   })
   assert.deepEqual(router.resolveInbound('telegram', '42', { latestSessionId: 'l-1' }), {
-    sessionId: 'l-1',
-    source: 'latest',
+    sessionId: null,
+    source: 'none',
     ambiguous: false,
   })
 })
@@ -243,7 +244,7 @@ test('resolveInbound：L2 通道默认为 workspace 名且恰 1 个活跃会话 
   })
 })
 
-test('resolveInbound：workspace 多活跃会话 → 投 lastActiveAt 最近者并 ambiguous + candidates（降序）', () => {
+test('resolveInbound：workspace 多活跃会话 → ambiguous，sessionId=null + candidates（降序），绝不自动挑最近', () => {
   const { router } = makeRouter({
     state: {
       'route:channels': { telegram: { defaultAgent: 'proj' } },
@@ -257,14 +258,14 @@ test('resolveInbound：workspace 多活跃会话 → 投 lastActiveAt 最近者�
     agents: [{ id: 'a-1' }, { id: 'a-2' }, { id: 'a-3' }],
   })
   const resolved = router.resolveInbound('telegram', '42', { latestSessionId: 'a-3' })
-  assert.equal(resolved.sessionId, 'a-2')
+  // R1：多候选交上层消歧，sessionId 必须为 null（不得自动投最近活跃）
+  assert.equal(resolved.sessionId, null)
   assert.equal(resolved.source, 'channel-default')
   assert.equal(resolved.ambiguous, true)
-  assert.deepEqual(resolved.candidates, ['a-2', 'a-1']) // lastActiveAt 降序，首位即被投递者
-  assert.equal(resolved.candidates[0], resolved.sessionId)
+  assert.deepEqual(resolved.candidates, ['a-2', 'a-1']) // lastActiveAt 降序，供消歧卡展示
 })
 
-test('resolveInbound：workspace 名下无活跃会话 → 回落（单 agent 兜底）', () => {
+test('resolveInbound：workspace 名下无活跃会话 → 无处可投（R1 不再单 agent 兜底）', () => {
   const { router } = makeRouter({
     state: {
       'route:channels': { telegram: { defaultAgent: 'proj' } },
@@ -273,31 +274,31 @@ test('resolveInbound：workspace 名下无活跃会话 → 回落（单 agent �
     agents: [{ id: 'a-1' }],
   })
   assert.deepEqual(router.resolveInbound('telegram', '42', {}), {
-    sessionId: 'a-1',
-    source: 'single-agent',
+    sessionId: null,
+    source: 'none',
     ambiguous: false,
   })
 })
 
-test('resolveInbound：L3 唯一 agent 自动兜底（单 agent 用户零感知）', () => {
+test('resolveInbound：R1 唯一 agent 不再自动兜底（私聊控制必须显式选择）', () => {
   const { router } = makeRouter({ agents: [{ id: 'a-1', status: 'busy' }] })
   assert.deepEqual(router.resolveInbound('telegram', '42', { latestSessionId: 'a-1' }), {
-    sessionId: 'a-1',
-    source: 'single-agent',
+    sessionId: null,
+    source: 'none',
     ambiguous: false,
   })
 })
 
-test('resolveInbound：L4 latestSessionId 最后兜底；为空时 sessionId=null', () => {
+test('resolveInbound：R1 移除 latestSessionId 兜底；无显式选择一律 sessionId=null', () => {
   const { router } = makeRouter({ agents: [{ id: 'a-1' }, { id: 'a-2' }] })
   assert.deepEqual(router.resolveInbound('telegram', '42', { latestSessionId: 'a-2' }), {
-    sessionId: 'a-2',
-    source: 'latest',
+    sessionId: null,
+    source: 'none',
     ambiguous: false,
   })
   assert.deepEqual(router.resolveInbound('telegram', '42', {}), {
     sessionId: null,
-    source: 'latest',
+    source: 'none',
     ambiguous: false,
   })
 })
@@ -697,8 +698,8 @@ test('防御：store.get/set 抛错 → 解析回落、写入失败，均不外�
     source: 'global',
   })
   assert.deepEqual(router.resolveInbound('telegram', '42', { latestSessionId: 'a-1' }), {
-    sessionId: 'a-1',
-    source: 'single-agent',
+    sessionId: null,
+    source: 'none',
     ambiguous: false,
   })
   assert.equal(router.setAgentBinding('proj', {}), false)
@@ -706,21 +707,21 @@ test('防御：store.get/set 抛错 → 解析回落、写入失败，均不外�
   assert.equal(typeof router.describe('s-1', 'proj', GLOBAL), 'string')
 })
 
-test('防御：agentsList 抛错/缺省/返回非数组/元素缺 id → 一律视为无 agent', () => {
+test('防御：agentsList 抛错/缺省/返回非数组/元素缺 id → 一律视为无 agent；R1 下均无处可投', () => {
   const throwing = createAgentRouter({ store: makeStore(), agentsList: () => { throw new Error('boom') } })
   assert.deepEqual(throwing.resolveInbound('telegram', '42', { latestSessionId: 'l-1' }), {
-    sessionId: 'l-1',
-    source: 'latest',
+    sessionId: null,
+    source: 'none',
     ambiguous: false,
   })
   const missing = createAgentRouter({ store: makeStore() }) // 未注入
   assert.equal(missing.resolveInbound('telegram', '42', {}).sessionId, null)
   const weird = createAgentRouter({ store: makeStore(), agentsList: () => 'nope' })
-  assert.equal(weird.resolveInbound('telegram', '42', { latestSessionId: 'l-2' }).sessionId, 'l-2')
-  // 缺 id 的元素被剔除：全部无效时不触发单 agent 兜底，走 latest
+  assert.equal(weird.resolveInbound('telegram', '42', { latestSessionId: 'l-2' }).sessionId, null)
+  // 缺 id 的元素被剔除：全部无效时无处可投
   const noIds = createAgentRouter({ store: makeStore(), agentsList: () => [{ status: 'idle' }, { status: 'busy' }] })
-  assert.equal(noIds.resolveInbound('telegram', '42', { latestSessionId: 'l-3' }).source, 'latest')
-  // 混入无效元素后只剩 1 个有效 agent：单 agent 兜底仍应命中
+  assert.equal(noIds.resolveInbound('telegram', '42', { latestSessionId: 'l-3' }).source, 'none')
+  // R1：即便只剩 1 个有效 agent 也不再自动兜底
   const partial = createAgentRouter({ store: makeStore(), agentsList: () => [{ status: 'idle' }, { id: 'a-1' }] })
-  assert.equal(partial.resolveInbound('telegram', '42', { latestSessionId: 'l-3' }).source, 'single-agent')
+  assert.equal(partial.resolveInbound('telegram', '42', { latestSessionId: 'l-3' }).source, 'none')
 })

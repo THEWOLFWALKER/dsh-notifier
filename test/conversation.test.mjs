@@ -85,6 +85,7 @@ test('会话路由：空闲 agent + 普通文本 → followup（dsh-notifier 来
   const agent = makeAgent('s1', 'idle')
   const rig = makeRig({ agents: [agent] })
   rig.fire('agent/created', agent)
+  rig.userSays('/bind s1') // R1：显式选择任务后方可投递
   rig.userSays('再加一步：把结果写到 docs')
   await sleep(60) // 合并窗
   assert.equal(agent.calls.followup.length, 1)
@@ -102,6 +103,7 @@ test('会话路由：忙碌 agent + 普通文本 → inject（排队不打断）
   const agent = makeAgent('s1', 'running')
   const rig = makeRig({ agents: [agent] })
   rig.fire('agent/created', agent)
+  rig.userSays('/bind s1')
   rig.userSays('补充：注意边界情况')
   await sleep(60)
   assert.equal(agent.calls.inject.length, 1)
@@ -114,6 +116,7 @@ test('会话路由：! 前缀 → steer（忙碌时纠偏，前缀被剥掉）',
   const agent = makeAgent('s1', 'running')
   const rig = makeRig({ agents: [agent] })
   rig.fire('agent/created', agent)
+  rig.userSays('/bind s1')
   rig.userSays('!不对，用 python 别用 bash')
   await sleep(60)
   assert.equal(agent.calls.steer.length, 1)
@@ -135,14 +138,17 @@ test('会话路由：只有 ! 的空文本被忽略', async () => {
 
 test('会话路由：合并窗内多条消息合并为一条投递', async () => {
   const agent = makeAgent('s1', 'idle')
-  const rig = makeRig({ agents: [agent], mergeWindowMs: 40 })
+  // 合并窗给足余量（对齐 C10 的 200ms）：/bind 的异步落盘在全量并发下可能被调度延迟，
+  // 40ms 窗会让首条消息在绑定落盘前单独冲刷而被当成未选任务丢弃（Windows 上尤其明显）。
+  const rig = makeRig({ agents: [agent], mergeWindowMs: 200 })
   rig.fire('agent/created', agent)
+  rig.userSays('/bind s1')
   rig.userSays('第一部分')
   await sleep(10)
   rig.userSays('第二部分')
   await sleep(10)
   rig.userSays('第三部分')
-  await sleep(80) // 窗口关闭
+  await sleep(260) // 窗口关闭
   assert.equal(agent.calls.followup.length, 1)
   assert.equal(agent.calls.followup[0].content[0].text, '第一部分\n第二部分\n第三部分')
   rig.dispose()
@@ -152,6 +158,7 @@ test('C10：合并窗单键最多 32 个片段，超限自动冲刷而非继续�
   const agent = makeAgent('s1', 'idle')
   const rig = makeRig({ agents: [agent], mergeWindowMs: 200 })
   rig.fire('agent/created', agent)
+  rig.userSays('/bind s1')
   for (let i = 0; i < 33; i += 1) rig.userSays(`p${i}`, { messageId: `merge-${i}` })
   await sleep(260)
   assert.equal(agent.calls.followup.length, 2)
@@ -164,6 +171,7 @@ test('会话路由：.. 终止符立即冲刷（不等窗口）', async () => {
   const agent = makeAgent('s1', 'idle')
   const rig = makeRig({ agents: [agent], mergeWindowMs: 2000 })
   rig.fire('agent/created', agent)
+  rig.userSays('/bind s1')
   rig.userSays('打完了')
   await sleep(20)
   rig.userSays('发吧..')
@@ -177,6 +185,7 @@ test('会话路由：!! 终止符立即冲刷并按 steer 投递', async () => {
   const agent = makeAgent('s1', 'running')
   const rig = makeRig({ agents: [agent], mergeWindowMs: 2000 })
   rig.fire('agent/created', agent)
+  rig.userSays('/bind s1')
   rig.userSays('改需求')
   await sleep(20)
   rig.userSays('现在就改!!')
@@ -190,6 +199,7 @@ test('命令集：/help 与 /status 回执', async () => {
   const agent = makeAgent('s1', 'running')
   const rig = makeRig({ agents: [agent] })
   rig.fire('agent/created', agent)
+  rig.userSays('/bind s1')
   rig.userSays('/help')
   await sleep(20)
   assert.ok(rig.replies.some((r) => /命令集/.test(r.text) && /\/bind/.test(r.text)))
@@ -224,7 +234,7 @@ test('命令集：/bind 绑定后消息投给指定会话；无效 id 回执提�
   rig.dispose()
 })
 
-test('命令集：/unbind 回到默认（最近活跃会话）', async () => {
+test('命令集：/unbind 清除显式绑定——R1 下不再回落最近活跃', async () => {
   const s1 = makeAgent('s1', 'idle')
   const s2 = makeAgent('s2', 'idle')
   const rig = makeRig({ agents: [s1, s2] })
@@ -234,9 +244,13 @@ test('命令集：/unbind 回到默认（最近活跃会话）', async () => {
   rig.userSays('/unbind')
   await sleep(20)
   assert.ok(rig.replies.some((r) => /已解绑/.test(r.text)))
+  assert.equal(rig.store.get('bind:telegram:42'), undefined)
   rig.userSays('默认给谁')
   await sleep(60)
-  assert.equal(s1.calls.followup.length, 1) // 回到最近活跃 s1
+  // R1：解绑后无处可投，绝不回落最近活跃
+  assert.equal(s1.calls.followup.length, 0)
+  assert.equal(s2.calls.followup.length, 0)
+  assert.ok(rig.replies.some((r) => /没有活跃会话/.test(r.text)))
   rig.dispose()
 })
 
@@ -244,6 +258,7 @@ test('命令集：/stop 调 agent.cancel', async () => {
   const agent = makeAgent('s1', 'running')
   const rig = makeRig({ agents: [agent] })
   rig.fire('agent/created', agent)
+  rig.userSays('/bind s1')
   rig.userSays('/stop')
   await sleep(20)
   assert.deepEqual(agent.calls.cancel, [{ kind: 'user' }])
@@ -257,6 +272,7 @@ test('G-04：/stop 附言形态不误杀长任务——不取消、回执未识�
   const agent = makeAgent('s1', 'running')
   const rig = makeRig({ agents: [agent] })
   rig.fire('agent/created', agent)
+  rig.userSays('/bind s1')
   // 旧行为：startsWith('/stop ') 命中 → 正在跑的长任务被误取消
   rig.userSays('/stop 一下别急')
   await sleep(40)
@@ -279,6 +295,7 @@ test('G-04：Control Core 装配时同样收紧——/stop 附言不再以 stop 
   })
   const rig = makeRig({ agents: [agent], mergeWindowMs: 0, control })
   rig.fire('agent/created', agent)
+  rig.userSays('/bind s1')
   rig.bus.accept({ channel: 'telegram', accountId: 'tg-app', userId: '42', chatId: '42', messageId: 'g04-cc-1', text: '/stop 一下别急' })
   await sleep(20)
   assert.deepEqual(agent.calls.cancel, [], '不以 stop 控制命令进 Control Core')
@@ -295,6 +312,7 @@ test('G-04：未知命令回执不再静默（/foo 也有「未识别的命令�
   const agent = makeAgent('s1', 'idle')
   const rig = makeRig({ agents: [agent] })
   rig.fire('agent/created', agent)
+  rig.userSays('/bind s1')
   rig.userSays('/etc/passwd 看看这个')
   await sleep(60)
   assert.equal(agent.calls.followup.length, 1, '不吞消息（既有语义）')
@@ -306,6 +324,7 @@ test('命令集：未知 /xxx 命令当普通文本投递（不吞消息）', as
   const agent = makeAgent('s1', 'idle')
   const rig = makeRig({ agents: [agent] })
   rig.fire('agent/created', agent)
+  rig.userSays('/bind s1')
   rig.userSays('/etc/passwd 看看这个')
   await sleep(60)
   assert.equal(agent.calls.followup.length, 1)
@@ -335,14 +354,16 @@ test('绑定会话消失时回执提示（agent 已退出）', async () => {
   rig.dispose()
 })
 
-test('agent/disposed 清掉默认目标（最近活跃）', async () => {
+test('R1：agent/disposed 不清除显式绑定——绑定只由用户 /unbind 清除', async () => {
   const agent = makeAgent('s1', 'idle')
   const rig = makeRig({ agents: [agent] })
   rig.fire('agent/created', agent)
+  rig.userSays('/bind s1')
+  await sleep(20)
   rig.fire('agent/disposed', agent)
-  rig.userSays('有人吗')
+  rig.userSays('还在吗')
   await sleep(60)
-  assert.ok(rig.replies.some((r) => /没有活跃会话/.test(r.text)))
+  assert.equal(agent.calls.followup.length, 1, '显式绑定不因 disposed 事件被清')
   rig.dispose()
 })
 
@@ -357,53 +378,40 @@ test('dispose 后消息不再投递、无悬挂计时器', async () => {
   assert.equal(agent.calls.inject.length, 0)
 })
 
-// ———————— v0.7.3 GitHub issue #4 Bug1 回归 ————————
+// ———————— R1：取消隐式「最近活跃根 agent」投递目标（原 #4 latest 追踪） ————————
 
-// DSH 的 agent/created | agent/disposed 事件签名是 (payload: { agent })，
-// 旧代码 agent?.id 恒 undefined → latestSessionId 永不赋值，
-// 未 /bind 用户文本全部「没有活跃会话」被拒投（命令能回、文本全丢）。
-test('agent/created 载荷形态 { agent } 必须解包（#4）：文本正常投递到最新根 agent', async () => {
+test('R1：agent/created 不再建立隐式投递目标——未显式选择即无处可投', async () => {
   const agent = makeAgent('s1', 'idle')
   const rig = makeRig({ agents: [agent] })
   rig.fire('agent/created', { agent }) // DSH 真实事件签名
   rig.userSays('跑一下测试')
   await sleep(60)
-  assert.equal(agent.calls.followup.length, 1, '载荷形态 { agent } 不得被忽略')
-  rig.dispose()
-})
-
-test('agent/disposed 载荷形态 { agent } 同样解包（#4）：默认目标被清理', async () => {
-  const agent = makeAgent('s1', 'idle')
-  const rig = makeRig({ agents: [agent] })
-  rig.fire('agent/created', { agent })
-  rig.fire('agent/disposed', { agent })
-  rig.userSays('有人吗')
-  await sleep(60)
+  assert.equal(agent.calls.followup.length, 0, 'R1：不得隐式投给最近创建的会话')
   assert.ok(rig.replies.some((r) => /没有活跃会话/.test(r.text)))
   rig.dispose()
 })
 
-// 后台 subagent 同样触发 agent/created；宿主暴露 ctx.agents.roots() 时只追踪根 agent。
-test('subagent 不劫持默认投递目标（#4）：roots() 存在时被过滤', async () => {
+test('R1：subagent 事件不劫持投递目标（无隐式目标可劫持）', async () => {
   const root = makeAgent('root-1', 'idle')
   const subagent = makeAgent('sub-1', 'running')
   const rig = makeRig({ agents: [root, subagent], roots: [root] })
   rig.fire('agent/created', { agent: root })
-  rig.fire('agent/created', { agent: subagent }) // 后台 subagent 晚到：不得覆盖 root-1
+  rig.fire('agent/created', { agent: subagent }) // 后台 subagent 晚到：不得成为目标
   rig.userSays('继续')
   await sleep(60)
-  assert.equal(root.calls.followup.length, 1, '根 agent 仍是默认投递目标')
-  assert.equal(subagent.calls.followup.length, 0, 'subagent 不得接收用户文本')
+  assert.equal(root.calls.followup.length, 0)
+  assert.equal(subagent.calls.followup.length, 0)
+  assert.ok(rig.replies.some((r) => /没有活跃会话/.test(r.text)))
   rig.dispose()
 })
 
-// 老宿主没有 ctx.agents.roots()：退化为全量追踪（解包修复仍生效，不因缺 API 崩溃）。
-test('老宿主无 roots() API：全量追踪降级（#4），不抛错', async () => {
+test('R1：老宿主无 roots() API 同样不建立隐式目标，不抛错', async () => {
   const agent = makeAgent('s1', 'idle')
   const rig = makeRig({ agents: [agent] }) // ctx.agents 无 roots
   rig.fire('agent/created', { agent })
   rig.userSays('继续')
   await sleep(60)
-  assert.equal(agent.calls.followup.length, 1)
+  assert.equal(agent.calls.followup.length, 0)
+  assert.ok(rig.replies.some((r) => /没有活跃会话/.test(r.text)))
   rig.dispose()
 })

@@ -286,13 +286,17 @@ test('文本投递成功后 registry.touch(目标会话)（活跃信号回流）
   rig.fire('agent/created', alpha)
   assert.equal(rig.calls.touch.length, 0)
 
-  await rig.flush('跑一下测试') // 单 agent：L3 唯一 agent 兜底命中
+  // R1：私聊控制必须显式选择任务；绑定本身回冲一次活跃信号
+  rig.userSays(`/bind ${ALPHA_1}`)
+  const afterBind = rig.calls.touch.length
+  await rig.flush('跑一下测试')
   assert.equal(alpha.calls.followup.length, 1)
-  assert.deepEqual(rig.calls.touch, [ALPHA_1])
+  assert.equal(rig.calls.touch.length, afterBind + 1, '投递成功后回冲一次活跃信号')
+  assert.equal(rig.calls.touch.at(-1), ALPHA_1)
   rig.dispose()
 })
 
-test('通道默认 workspace 多活跃会话：投最近活跃 + 消歧回执文案', async () => {
+test('通道默认 workspace 多活跃会话：R1 下不自动挑最近者，回执引导显式选择', async () => {
   const older = makeAgent(ALPHA_1, 'idle', '/home/u/proj/alpha')
   const newer = makeAgent(ALPHA_2, 'idle', '/home/u/proj/alpha')
   const rig = makeRig({ agents: [older, newer] })
@@ -302,11 +306,10 @@ test('通道默认 workspace 多活跃会话：投最近活跃 + 消歧回执文
   rig.router.setChannelDefault('telegram', 'alpha')
 
   await rig.flush('继续')
-  assert.equal(newer.calls.followup.length, 1, '投 lastActiveAt 最近者')
+  // R1：多活跃候选交用户消歧，绝不自动投最近活跃
+  assert.equal(newer.calls.followup.length, 0)
   assert.equal(older.calls.followup.length, 0)
-  const receipt = rig.replies.find((r) => r.text.includes('已投'))?.text
-  assert.ok(receipt !== undefined)
-  assert.equal(receipt, `已投 ${ALPHA_2}（该 workspace 有 2 个活跃会话，用 /agent use 或 /bind 精确指定）`)
+  assert.match(rig.replies.at(-1).text, /没有活跃会话可投递/)
   rig.dispose()
 })
 
@@ -344,28 +347,31 @@ test('registry 未装配：/agent 降级为宿主 agent 列表并附降级说明
   rig.dispose()
 })
 
-test('router 未装配：/agent 与 /route 回降级提示，旧链（bind > latest）投递回归', async () => {
+test('router 未装配：/agent 与 /route 回降级提示；R1 下只认显式 bind', async () => {
   const a1 = makeAgent('s1', 'idle', '/p/one')
   const a2 = makeAgent('s2', 'idle', '/p/two')
   const rig = makeRig({ agents: [a1, a2], router: null, registry: null })
   rig.fire('agent/created', a1)
-  rig.fire('agent/created', a2) // latest = s2
+  rig.fire('agent/created', a2)
 
   rig.userSays('/agent')
   assert.match(rig.replies.at(-1).text, /路由引擎未装配/)
   rig.userSays('/route')
   assert.match(rig.replies.at(-1).text, /路由引擎未装配/)
 
-  await rig.flush('旧链默认') // 无 router：回落 v0.3.1 行为 → 最近活跃
-  assert.equal(a2.calls.followup.length, 1)
+  // R1：无 router 时同样只认显式 bind，绝不回落「最近活跃」
+  await rig.flush('无显式选择')
+  assert.equal(a2.calls.followup.length, 0)
   assert.equal(a1.calls.followup.length, 0)
+  assert.match(rig.replies.at(-1).text, /没有活跃会话可投递/)
   rig.userSays('/bind s1')
-  await rig.flush('旧链显式绑定')
-  assert.equal(a1.calls.followup.length, 1, '/bind 仍走 store 旧链生效')
+  await rig.flush('显式绑定后投递')
+  assert.equal(a1.calls.followup.length, 1, '/bind 后走显式链生效')
+  assert.equal(a2.calls.followup.length, 0)
   rig.dispose()
 })
 
-test('router 抛错：命令族与投递主线全部降级，绝不崩', async () => {
+test('router 抛错：命令族与投递主线全部降级，绝不崩；退到显式 bind 链', async () => {
   const boom = () => { throw new Error('router boom') }
   const rig = makeRig({
     agents: [makeAgent('s1', 'idle', '/p/one')],
@@ -379,7 +385,11 @@ test('router 抛错：命令族与投递主线全部降级，绝不崩', async (
 
   rig.userSays('/agent') // resolveOutbound 抛错 → 行内降级为「解析不可用」
   assert.match(rig.replies.at(-1).text, /解析不可用/)
-  await rig.flush('扛住异常') // resolveInbound 抛错 → 回落旧链（latest）照常投递
+  await rig.flush('扛住异常') // resolveInbound 抛错 → 退到显式 bind 链；无绑定则安全不投递
+  assert.equal(agent.calls.followup.length, 0)
+  assert.match(rig.replies.at(-1).text, /没有活跃会话可投递/)
+  rig.userSays('/bind s1')
+  await rig.flush('显式绑定后仍可投递')
   assert.equal(agent.calls.followup.length, 1)
   rig.dispose()
 })
@@ -407,6 +417,7 @@ test('mergeWindowMs: 0 = 关闭合并（README 契约回归）：每条消息立
   // 导致「关闭合并」承诺失效（消息被并窗延迟 1.5s）。修复后 0 可达立即投递分支。
   const rig = makeRig({ agents: [agent], config: { mergeWindowMs: 0 } })
   rig.fire('agent/created', agent)
+  rig.userSays(`/bind ${ALPHA_1}`) // R1：显式选择任务后方可投递
   rig.userSays('第一条')
   rig.userSays('第二条') // 0 窗口下不允许合并：两条各自成一条投递
   assert.equal(agent.calls.followup.length, 2, '两条消息应各自立即投递（无合并）')
@@ -525,15 +536,15 @@ test('G-48：registry.detachInbound 幂等契约——重复摘除/无记录/分
 
 // ---------------------------------------------------------------- G-51 合并窗跨 chat 串台
 
-test('G-51：同 userId 双 chat（私聊+群）窗口交替发言 → 两条独立投递、各自回执', async () => {
+test('G-51：同 userId 双 chat（私聊+群）窗口交替发言 → 两条独立投递、不串台', async () => {
   const older = makeAgent(ALPHA_1, 'idle', '/home/u/proj/alpha')
   const newer = makeAgent(ALPHA_2, 'idle', '/home/u/proj/alpha')
   const rig = makeRig({ agents: [older, newer] })
   rig.fire('agent/created', older)
   rig.advance(100)
   rig.fire('agent/created', newer)
-  // 通道默认指向双活跃 workspace → 每次投递带消歧回执（回执去向 = 各自 chatId）
-  rig.router.setChannelDefault('telegram', 'alpha')
+  // R1：显式选择任务（同 userId 的两个 chat 共享同一绑定）
+  rig.userSays(`/bind ${ALPHA_2}`)
 
   // 窗口内交替发言：私聊两条 + 群两条。旧键 `${channel}:${userId}` 无 chat 维度，
   // 四条会并进同一条合并线，拼成「私聊碎片一\n群碎片一\n私聊碎片二\n群碎片二」混合投递
@@ -552,9 +563,9 @@ test('G-51：同 userId 双 chat（私聊+群）窗口交替发言 → 两条独
     '各窗只合并本 chat 的碎片',
   )
   assert.equal(older.calls.followup.length, 0)
-  // 各自回执：私聊窗的投递回执回私聊 chat，群窗的回群 chat（不串台）
-  assert.ok(rig.replies.some((r) => r.chatId === '42' && r.text.includes('已投')), '私聊投递回执回到私聊 chat')
-  assert.ok(rig.replies.some((r) => r.chatId === 'grp-1' && r.text.includes('已投')), '群投递回执回到群 chat')
+  // 不串台：不存在把两个 chat 碎片拼到一起的混合投递
+  assert.ok(!newer.calls.followup.some((m) => m.content[0].text.includes('私聊碎片一') && m.content[0].text.includes('群碎片一')),
+    '两个 chat 的碎片绝不交叉拼接')
   rig.dispose()
 })
 
@@ -562,6 +573,7 @@ test('G-51：chatId 缺失（undefined）仍聚合进 "" 维度——现状语�
   const agent = makeAgent(ALPHA_1, 'idle', '/home/u/proj/alpha')
   const rig = makeRig({ agents: [agent] })
   rig.fire('agent/created', agent)
+  rig.userSays(`/bind ${ALPHA_1}`) // R1：显式选择任务后方可投递
 
   // 不带 chatId 的信封（无 chat 概念的适配器 / 旧装配）：碎片仍并进同一条 '' 窗
   rig.bus.accept({ channel: 'telegram', userId: '42', messageId: 'm-g51-miss-1', text: '碎片一' })
@@ -653,6 +665,7 @@ test('Control Core 会话闸：personal 默认 converse 关闭 → 普通文本�
   const agent = makeAgent(ALPHA_1, 'idle', '/home/u/proj/alpha')
   const rig = makeRig({ agents: [agent], policy: {} }) // 默认 personal：converse 关
   rig.fire('agent/created', agent)
+  rig.userSays(`/bind ${ALPHA_1}`) // R1：先显式选择任务，闸门才有目标可判
   rig.bus.accept({ channel: 'telegram', accountId: 'tg-app', userId: '42', chatId: '42', messageId: 'm-conv-0', text: '跑一下' })
   await sleep(FLUSH_MS)
   assert.match(rig.replies.at(-1).text, /远程对话默认关闭/, '无 converse 授权应回执提示')
@@ -664,6 +677,7 @@ test('Control Core 会话闸：converse 显式开启且本地 accountId 在场 �
   const agent = makeAgent(ALPHA_1, 'idle', '/home/u/proj/alpha')
   const rig = makeRig({ agents: [agent], policy: { capabilities: { converse: true } } })
   rig.fire('agent/created', agent)
+  rig.userSays(`/bind ${ALPHA_1}`) // R1：先显式选择任务
   rig.bus.accept({ channel: 'telegram', accountId: 'tg-app', userId: '42', chatId: '42', messageId: 'm-conv-1', text: '跑一下' })
   await sleep(FLUSH_MS)
   assert.equal(agent.calls.followup.length, 1)
@@ -680,6 +694,7 @@ test('Control Core 会话闸：缺 accountId → fail-closed 不投递（channel
   const agent = makeAgent(ALPHA_1, 'idle', '/home/u/proj/alpha')
   const rig = makeRig({ agents: [agent], policy: { capabilities: { converse: true } } })
   rig.fire('agent/created', agent)
+  rig.userSays(`/bind ${ALPHA_1}`) // R1：先显式选择任务
   rig.bus.accept({ channel: 'telegram', userId: '42', chatId: '42', messageId: 'm-conv-3', text: '跑一下' }) // 无 accountId
   await sleep(FLUSH_MS)
   assert.equal(agent.calls.followup.length + agent.calls.inject.length + agent.calls.steer.length, 0, '缺账号来源不得投递')

@@ -131,6 +131,7 @@ export function createControlSurfaceService({
   storageStatus,
   launchTickets,
   adminLocation,
+  native = null,
 } = {}) {
   // v0.14（S01）：Native 不再自行编排通道写入——统一走共享 ChannelControlService。
   // 未注入时用既有依赖构造一个等价实例，保证旧调用方与测试行为不变。
@@ -141,6 +142,19 @@ export function createControlSurfaceService({
   }
   const call = async (method, payload = {}, signal) => {
     try {
+      // v0.15（Stage 1 / S2）：Native v2 窄动作表。`native.*` 由 createNativeSurfaceService
+      // 承担（唯一 authority 映射 + fail-closed），本 service 只做**同一路由内的委派**——
+      // 同一 `/dsh-notifier` 前缀只能有一个路由，故不是两条路由并存。旧 `surface.*` /
+      // `channels.*` 端点保留给尚未迁移的页面，Stage 1 收口时删除。
+      if (String(method).startsWith('native.')) {
+        if (native === null || typeof native.call !== 'function') {
+          const error = new Error('Native 能力当前不可用')
+          error.code = 'not-supported'
+          throw error
+        }
+        return await native.call(method, payload ?? {}, signal)
+      }
+
       if (method === 'surface.home') {
         const channelRows = channels.list()
         const taskRows = tasks.list()

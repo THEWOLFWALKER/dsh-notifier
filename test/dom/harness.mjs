@@ -33,8 +33,17 @@ const REGISTRATION_MARKER =
 
 const TEST_EXPORTS = [
   'createController', 'MainPanel', 'SetupFlow', 'ChannelsView', 'ChannelDetailView',
-  'MembersView', 'MemberRow', 'QuestionsView', 'HomeView', 'Button', 'StateDot',
+  'MembersView', 'MemberRow', 'QuestionsView', 'Button', 'StateDot',
   'PortabilityView', 'CloudflareView', 'ChannelDirectionSection', 'ErrorNotice', 'ErrorBoundary', 'buildSupportReport', 'PairingCodesView',
+  // v0.15（Stage 1 / S2）：Native v2 外壳。
+  'NotifierSettings', 'ProductHeader', 'ChannelRail', 'ChannelStrip', 'ChannelTopSelector',
+  'Overview', 'ChannelPage', 'ChannelPicker', 'AccountCard', 'PendingList', 'MoreMenu', 'ChannelLogo',
+  // v0.15（Stage 1 / S3）：账号卡方向表单 + Telegram 备用连接。
+  'NativeDirectionForm', 'ConnectionHelp',
+  // v0.15（Stage 1 / S4）：私聊向导 + 待处理提示 / 页面。
+  'PrivateChatPanel', 'PendingBanner', 'PendingPage',
+  // v0.15（Stage 1 / S5）：更多设置收口——通知总览 + 用户向帮助。
+  'HelpView', 'NotifySettingsView',
 ]
 
 /**
@@ -138,9 +147,12 @@ export function click(element) {
   })
 }
 
-/** Type into a controlled input the way a browser does, so React's onChange fires. */
+/** Type into a controlled input/textarea the way a browser does, so React's onChange fires. */
 export function typeInput(input, value) {
-  const setter = Object.getOwnPropertyDescriptor(globalThis.window.HTMLInputElement.prototype, 'value').set
+  const proto = input.tagName === 'TEXTAREA'
+    ? globalThis.window.HTMLTextAreaElement.prototype
+    : globalThis.window.HTMLInputElement.prototype
+  const setter = Object.getOwnPropertyDescriptor(proto, 'value').set
   act(() => {
     setter.call(input, value)
     input.dispatchEvent(new globalThis.window.Event('input', { bubbles: true }))

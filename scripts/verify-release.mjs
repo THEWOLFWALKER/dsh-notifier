@@ -24,6 +24,26 @@ const qualityCount = Number(packageJson.dshQuality?.testCount)
 check(/^\d+\.\d+\.\d+$/.test(version), `package.json version is invalid: ${version}`)
 check(Number.isInteger(qualityCount) && qualityCount > 0, 'dshQuality.testCount must be a positive integer')
 
+// R2（Stage 1 review）：测试计数门禁不得自证。package.json 与文档里的数字只是**待核对的主张**，
+// 唯一真相是 runner 实际发现的测试数——直接跑 `run-tests.mjs --count`（TAP 汇总）取回。
+// 这样手工改一个常量不可能让门禁变绿：数字必须与真实执行的测试集一致。
+function discoveredTestCount() {
+  try {
+    const raw = execFileSync(process.execPath, ['scripts/run-tests.mjs', '--count'], {
+      cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 4 * 1024 * 1024,
+    })
+    const value = Number(String(raw).trim())
+    return Number.isInteger(value) && value > 0 ? value : null
+  } catch {
+    return null
+  }
+}
+const actualTestCount = discoveredTestCount()
+check(actualTestCount !== null, 'release guard could not derive the real test count from the runner')
+if (actualTestCount !== null) {
+  check(qualityCount === actualTestCount, `package.json dshQuality.testCount is ${qualityCount}, but the runner discovered ${actualTestCount} tests`)
+}
+
 // Commit14 宿主兼容门：peer range / DSH host matrix / dshWorkshop.dshVersions 三处必须互相一致
 // （`scripts/verify-host-compat.mjs` 单一真相，避免任一清单先行漂移）。
 for (const failure of hostCompatFailures(root)) failures.push(failure)
@@ -49,8 +69,9 @@ check(uiHtml.includes(`v${version}`), `admin UI composed HTML does not contain v
 const documentedCounts = [
   one(handoff, /\|\s*测试\s*\|[^\n]*`npm test`[^\n]*\*\*(\d+) tests?/, 'HANDOFF test row'),
 ]
+const expectedCount = String(actualTestCount ?? qualityCount)
 for (const [index, count] of documentedCounts.entries()) {
-  check(count === String(qualityCount), `documented test count #${index + 1} is ${count}, expected ${qualityCount}`)
+  check(count === expectedCount, `documented test count #${index + 1} is ${count}, expected ${expectedCount}`)
 }
 
 // 首页元数据行版本门（2026-09-05 review 复查发现：README:28 曾停在 0.9.3/1478 漏网）：
@@ -96,8 +117,11 @@ for (const file of requiredPackageFiles.filter((entry) => !['src', 'types'].incl
 const tarballPaths = () => {
   let raw
   try {
-    raw = execFileSync('npm', ['pack', '--dry-run', '--json', '--ignore-scripts'], {
+    raw = execFileSync(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['pack', '--dry-run', '--json', '--ignore-scripts'], {
       cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+      // Windows 上 npm 是 .cmd 批处理，execFileSync 既不会按 PATHEXT 解析也不允许
+      // 直接 spawn .cmd（CVE-2024-27980），必须显式命名并走 shell。
+      shell: process.platform === 'win32',
     })
   } catch (error) {
     failures.push(`npm pack --dry-run failed: ${error instanceof Error ? error.message : String(error)}`)

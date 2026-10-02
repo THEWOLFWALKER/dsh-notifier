@@ -20,7 +20,7 @@ Replace `<profile-name>` with the DSH profile you use:
 dsh plugin add dsh-notifier@latest --profile <profile-name>
 ```
 
-Restart DSH and refresh the page. Open **Notify & Control**, choose a notification channel, fill in its settings and save. Send a test and check your phone.
+Restart DSH and refresh the page. Open **Notify & Private chat**, add a channel, fill in its settings and save. Send a test and check your phone.
 
 For notifications, that is all you need. To reply from your phone, configure incoming messages and [pair your account](docs/user/guide.en.md).
 
@@ -34,11 +34,11 @@ Already have a gateway? Choose **Custom gateway address** and enter its root add
 
 ## Move your settings
 
-Export settings from **Channels**, then preview and choose what to import on another computer. Passwords and bot credentials are excluded; add them after importing.
+Export settings from **More → Import old settings**, then preview and choose what to import on another computer. Passwords and bot credentials are excluded; add them after importing.
 
 ## Get help
 
-Check [troubleshooting](docs/user/TROUBLESHOOTING.en.md), then [report the issue](docs/user/SUPPORT.en.md) with the steps and a diagnostic summary.
+Check [troubleshooting](docs/user/TROUBLESHOOTING.en.md), then [report the issue](docs/user/SUPPORT.en.md) with the steps and a support summary.
 
 QQ: 3622976831 · Email: 3622976831@qq.com · QQ group: 947656156
 

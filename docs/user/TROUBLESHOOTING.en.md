@@ -1,20 +1,20 @@
 # Troubleshooting
 
-## Notify & Control is missing
+## Notify & Private chat is missing
 
 Check that dsh-notifier appears in the DSH plugin page. Restart DSH and refresh the page after installation. Make sure it is installed in the profile you use.
 
 ## Messages do not arrive
 
-Send a test, read the result and check your phone. Confirm the recipient and app notification permissions. Replace invalid credentials. For Telegram connection problems, use a custom gateway address or Enable gateway.
+Send a test, read the result and check your phone. Confirm the recipient and app notification permissions. Replace invalid credentials. For Telegram connection problems, open its **Connection help** and choose **Enable gateway**.
 
 ## Notifications arrive but replies do not work
 
-Configure incoming messages and restart if prompted. Send `/whoami` to the bot in a private chat. If unpaired, create a pairing code and send `/pair CODE`.
+Configure incoming messages and restart if prompted. Open the channel's **Private chat** and confirm it is you; if not confirmed yet, make a confirmation code and send `/pair CODE` in the private chat.
 
-## Pairing or approval has expired
+## Confirmation or approval has expired
 
-Pairing codes expire and are single-use. Generate a new one and use the corresponding bot's private chat. For an expired question or approval, return to the task on your computer.
+Confirmation codes expire and are single-use. Make a new one and use the corresponding bot's private chat. For an expired question or approval, return to the task on your computer.
 
 ## Gateway deployment fails
 

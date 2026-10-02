@@ -101,6 +101,8 @@ test('issue38: a text-only Telegram envelope reaches the Agent as a producer-own
   const rig = makeRig({ agents: [agent] })
   rig.fire('agent/created', agent)
 
+  // R1：私聊控制必须显式选择任务；agent/created 不再建立隐式投递目标。
+  await rig.flush({ text: `/bind ${SID}` })
   await rig.flush({ text: 'hi there' })
   assert.equal(agent.calls.followup.length, 1)
   const msg = agent.calls.followup[0]

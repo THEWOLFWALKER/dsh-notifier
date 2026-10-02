@@ -51,6 +51,20 @@ const syncSleep = (ms) => {
   try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms) } catch { /* 极老运行时：退化为忙等一拍 */ }
 }
 
+// Windows 上 rename 覆盖既有文件会被 AV/索引器/句柄的瞬时占用以 EPERM/EACCES/EBUSY 拒绝。
+// 这类失败是**可恢复的瞬时**状态（同一 rename 稍后即成功），不是永久不可写——直接判死会让
+// 一次 durable 写静默丢失（durable 事实被破坏）。有界重试（总等待 ~180ms）后再放弃，语义仍
+// 是「要么原子替换成功、要么磁盘与内存都不变」。
+const TRANSIENT_RENAME_CODES = new Set(['EPERM', 'EACCES', 'EBUSY'])
+const renameIntoPlace = (from, to, attempts = 10) => {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try { renameSync(from, to); return } catch (error) {
+      if (!TRANSIENT_RENAME_CODES.has(error?.code) || attempt === attempts - 1) throw error
+      syncSleep(4 + attempt * 4)
+    }
+  }
+}
+
 /**
  * 创建键值 store。
  * @param {string} filePath - JSON 文件路径（目录自动创建）
@@ -335,7 +349,7 @@ export function createStore(filePath) {
       tmp = `${filePath}.${process.pid}.${Math.random().toString(36).slice(2, 8)}.tmp`
       writeFileSync(tmp, JSON.stringify(draft), { encoding: 'utf8', mode: 0o600 })
       try { chmodSync(tmp, 0o600) } catch { /* Windows/受限环境无 chmod：尽力而为 */ }
-      renameSync(tmp, filePath)
+      renameIntoPlace(tmp, filePath)
       tmp = null
       state = draft
       dirty.clear()

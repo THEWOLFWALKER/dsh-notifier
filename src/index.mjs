@@ -35,6 +35,8 @@ import { createPublicFacade, composeOnSend, deepFreeze, redactAuditRecord } from
 // v0.3.2：路由引擎（双向解析链 + 会话台账，src/routing/*.mjs）
 import { createAgentRouter } from './routing/agent-router.mjs'
 import { createSessionRegistry } from './routing/session-registry.mjs'
+// v0.15 Stage 2（R1）：当前任务选择 authority——私聊投递目标的唯一写入者与读投影。
+import { createCurrentTaskAuthority } from './routing/current-task.mjs'
 // v0.10 移动任务选择（歧义前置）：多活跃任务无绑定先下发选择卡；待决状态经 store 持久化
 import { createTaskSelection } from './routing/task-selection.mjs'
 // v0.3.3：Web 管理台（HTTP 壳 + API 函数层 + 单文件 UI + 扫码流机 + 连通性自检）
@@ -65,6 +67,10 @@ import { createHostCapabilitySnapshot } from './host/capability.mjs'
 import { createLaunchTickets } from './control-surface/launch-ticket.mjs'
 import { createAdminSessions } from './control-surface/admin-session.mjs'
 import { createControlSurfaceService } from './control-surface/service.mjs'
+// v0.15（Stage 1 / S1–S2）：Native v2 用户边界——只读 read model + 窄动作表，经同一路由委派。
+import { createNativeReadModel } from './native/read-model.mjs'
+import { createNativeActions } from './native/actions.mjs'
+import { createNativeSurfaceService } from './native/register.mjs'
 import { createChannelControlService } from './control-plane/channels.mjs'
 import { createConfigPortabilityService } from './control-plane/config-portability.mjs'
 import { createDshImBridge } from './control-plane/dsh-im-bridge.mjs'
@@ -205,6 +211,9 @@ export function apply(ctx, config = {}) {
     ? inboundRaw.stateDir.trim()
     : defaultStateDir()
   const store = createStore(`${stateDir}/state.json`)
+  // v0.15 Stage 2（R1）：当前任务 authority 实例。conversation 与 Native 读模型共用同一实例，
+  // 保证「显式选择」这一事实只有一个写入者、一个读投影，杜绝多源写入与隐式推导。
+  const currentTaskAuthority = createCurrentTaskAuthority({ store, logger })
   // v0.8.7 引导码文件交付（LEAK-2）：码面写本机 0600 文件，stderr 只印路径——
   // 日志聚合（journald/Loki/ELK）不再承载 owner 级凭证。
   const BOOTSTRAP_CODE_FILE = `${stateDir}/bootstrap-paircode.txt`
@@ -781,6 +790,8 @@ export function apply(ctx, config = {}) {
         identity,
         ledger,
         remoteLog: resolved.remoteLog,
+        // R1：任务选择唯一写入者（与 Native 读模型同实例）。
+        currentTask: currentTaskAuthority,
         logger,
       }, strings)
       disposers.push(disposeConversation)
@@ -898,7 +909,35 @@ export function apply(ctx, config = {}) {
   })
   const surfaceCloudflare = createCloudflareDeploymentService({ store, root: `${stateDir}/cloudflare`, outboundConfig: outboundConfigService, inboundConfig: inboundConfigPort })
   disposers.push(() => surfaceCloudflare.dispose())
+  // v0.15（Stage 1 / S1–S2）：Native v2 边界实例。只读 read model 组合既有已脱敏投影；
+  // 写动作每个只调一个既有 authority（channelControl / questionsControl / membersControl）。
+  // 记账归属与旧 service 逐条一致，绝不双记。
+  const nativeReadModel = createNativeReadModel({
+    channels: surfaceChannels,
+    members: surfaceMembers,
+    questions: surfaceQuestions,
+    tasks: surfaceTasks,
+    // R1：当前任务读投影——只回显用户显式选择（owner 维度的 bind 键），绝不从投影推导。
+    selectedTaskRef: (owner) => currentTaskAuthority.get({ channel: owner?.channel, userId: owner?.userId }),
+    revision: surfaceRevision,
+    storageStatus: () => {
+      const boot = typeof store.bootStatus === 'function' ? store.bootStatus() : { readFailed: false }
+      return boot
+    },
+  })
+  const nativeActions = createNativeActions({
+    channelControl,
+    health: surfaceHealth,
+    revision: surfaceRevision,
+    activity: surfaceActivity,
+    questions: surfaceQuestions,
+    members: surfaceMembers,
+    // 用户动作给的是不透明 id（read-model 产出），在此解析回内部成员键——键形状永不进浏览器。
+    resolveUserId: (id) => nativeReadModel.memberKeyOf(id),
+  })
+  const nativeService = createNativeSurfaceService({ readModel: nativeReadModel, actions: nativeActions })
   const surfaceService = createControlSurfaceService({
+    native: nativeService,
     cloudflare: surfaceCloudflare,
     revision: surfaceRevision,
     channels: surfaceChannels,

@@ -39,7 +39,7 @@ to own the fact.
 | action rows | actions (business owner) | `interaction/ledger.mjs` on behalf of `actions.mjs` | single |
 | interaction ledger rows | interaction ledger | `interaction/ledger.mjs` | single |
 | inbound dedup rows | inbound bus | `inbound/bus.mjs` (fail-closed on durable failure) | single |
-| conversation bindings | inbound conversation | `inbound/conversation.mjs` | single |
+| conversation bindings (`bind:<channel>:<userId>`) | routing current-task | `routing/current-task.mjs` (conversation `/bind`, `/use`, `/agent use` all route through it) | single |
 | `taskselect:*` | routing | `task-selection.mjs` | single |
 | `tg:offset` | telegram-bot | `inbound/telegram-bot.mjs` | single |
 | `wechat:sync_buf` / ctx token | wechat legacy-core | `channels/wechat-ilink/legacy-core.mjs` | single |
@@ -122,7 +122,6 @@ removed. `src/inbound/store.mjs` is the only module allowed to call the raw `sto
 | `src/inbound/_qq-scan.mjs` | `qq:account` scan onboarding (`mergeDurable`) |
 | `src/inbound/bus.mjs` | inbound dedup rows (fail-closed) |
 | `src/inbound/channel-config.mjs` | `channel:<type>:inbound` / `<type>:account` |
-| `src/inbound/conversation.mjs` | conversation bindings |
 | `src/inbound/dingtalk-stream.mjs` | `dingtalk:robot-code` |
 | `src/inbound/identity.mjs` | `inbound:bindings`, `inbound:pending`, `inbound:migrated` |
 | `src/inbound/pairing.mjs` | `inbound:pairing`, `inbound:pairing:lockout` |
@@ -130,6 +129,7 @@ removed. `src/inbound/store.mjs` is the only module allowed to call the raw `sto
 | `src/inbound/wxpusher-callback.mjs` | `wxpusher:bind:<uid>` |
 | `src/interaction/ledger.mjs` | interaction ledger rows (all three chains write through its narrow mutations) |
 | `src/routing/agent-router.mjs` | `route:agents`, `route:channels`, `route:sessions` |
+| `src/routing/current-task.mjs` | conversation bindings (`bind:<channel>:<userId>`) |
 | `src/routing/session-registry.mjs` | `route:sessions` |
 | `src/routing/task-selection.mjs` | `taskselect:*` |
 <!-- /writer-fitness:allowlist -->

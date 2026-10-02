@@ -179,13 +179,15 @@ test('host seam audit: agents access degrades without throwing and never false-c
   })
   let inbound
   assert.doesNotThrow(() => { inbound = throwingRouter.resolveInbound('telegram', 'u1') })
-  assert.deepEqual(inbound, { sessionId: null, source: 'latest', ambiguous: false })
+  // R1：无显式选择即无处可投（不再回落「最近活跃」）。
+  assert.deepEqual(inbound, { sessionId: null, source: 'none', ambiguous: false })
 
   const singleAgentRouter = createAgentRouter({
     store: { get: () => undefined },
     agentsList: () => [{ id: 'a1', status: 'idle' }],
   })
-  assert.deepEqual(singleAgentRouter.resolveInbound('telegram', 'u1'), { sessionId: 'a1', source: 'single-agent', ambiguous: false })
+  // R1：唯一 agent 也不再自动兜底——私聊控制必须由用户显式选择任务。
+  assert.deepEqual(singleAgentRouter.resolveInbound('telegram', 'u1'), { sessionId: null, source: 'none', ambiguous: false })
 
   assert.deepEqual(detectConversationMode({}), { followup: 'unknown', inject: 'unknown', steer: 'unknown' })
 })

@@ -6,9 +6,10 @@
 //  - steer：   `!` 前缀 → 就近纠偏；空闲时等价 followup（「马上改，别跑偏」）
 // 命令集：/help /status /bind <sessionId> /unbind /stop /agent [/agent use|back] /route
 //         /quiet <workspace|sid> /unquiet <workspace|sid>（v0.5 特性 C：静默/恢复会话出站推送）
-// v0.3.2 入站去向（注入 router 时，设计稿 §3）：
-//   显式 bind > 通道默认 agent（workspace 多活跃会话投最近活跃 + 消歧回执）
-//   > 唯一 agent 兜底 > 最近活跃（现状）。router 缺省时保持 v0.3.1 旧行为（bind > latest）。
+// v0.15（Stage 1 review R1）入站去向（注入 router 时）：
+//   显式 bind > 通道默认 agent（workspace 多活跃会话 → 消歧，绝不自动挑一个）
+//   > 无处可投（回执引导用户显式选择任务）。**不再**有「唯一 agent 兜底」或「最近活跃」
+//   隐式默认——私聊控制必须由用户显式选择任务。router 缺省时同样只认显式 bind。
 // 军规：入站文本只能以 dsh-notifier 自有来源进会话流（Host P0-A：source.kind =
 // 'dsh-notifier'，淘汰 plugin kind），永不直接执行 shell；任何投递异常只回执用户，
 // 绝不弄崩宿主。
@@ -19,8 +20,7 @@ import { projectTasks } from '../routing/task-projection.mjs'
 import { CHANNEL_TYPES, REMOTE_LOG_DEFAULT_LINES, REMOTE_LOG_HARD_MAX_LINES, REMOTE_LOG_HARD_MAX_BYTES } from '../config.mjs'
 import { maskSecrets } from '../redact.mjs'
 import { chatScopeOf } from '../control/session-arbiter.mjs'
-import { bindingKey as identityBindingKey } from './identity.mjs'
-import { deleteDurable, setDurable } from './store.mjs'
+import { createCurrentTaskAuthority } from '../routing/current-task.mjs'
 import { MESSAGE_PRIORITY } from './bus.mjs'
 import {
   normalizeImageAttachment, normalizeFileAttachment, normalizeAttachmentItem,
@@ -126,6 +126,9 @@ export function registerConversationRouter(deps, strings) {
   const router = deps.router ?? null
   const registry = deps.registry ?? null
   const control = deps.control ?? null
+  // v0.15（R1）：当前任务选择 authority。会话绑定键的唯一写者——/bind、/use、/agent use
+  // 与本实例共用同一 store 键域（bind:<channel>:<userId>），全部经此落盘。
+  const currentTask = deps.currentTask ?? createCurrentTaskAuthority({ store, logger: deps.logger })
   // v0.10 任务选择（歧义前置）：非空时多活跃任务无绑定先下发选择卡；缺省回落旧行为。
   const taskSelection = deps.taskSelection ?? null
   // v0.10 待关注事项判定器（/tasks ⚠ 标记与投影 attention 字段）；缺省恒 false。
@@ -190,8 +193,7 @@ export function registerConversationRouter(deps, strings) {
     } catch { return [] }
   }
 
-  // 最近活跃的根 agent：未显式 /bind 时的默认投递目标
-  let latestSessionId = null
+  // v0.15（R1）：不再追踪「最近活跃根 agent」作为隐式默认投递目标——私聊控制必须显式选择任务。
   const disposers = []
 
   const agentsOf = () => {
@@ -200,10 +202,9 @@ export function registerConversationRouter(deps, strings) {
   const agentOf = (sessionId) => {
     try { return typeof ctx?.agents?.get === 'function' ? ctx.agents.get(sessionId) : undefined } catch { return undefined }
   }
-  // G-49：会话绑定持久化键。分量归一收敛到 identity.bindingKey（trim + channel 小写），
-  // 与 agent-router resolveInbound L1 的读键同源——' user ' 与 'user' 写读同键永不裂
-  // （休眠边界封口：现网适配器输出恰好归一，此改不改变现网行为）。
-  const bindingKey = (envelope) => `bind:${identityBindingKey(envelope.channel, envelope.userId)}`
+  // G-49：会话绑定持久化键由 current-task authority 的 currentTaskKey 单一构造（分量 trim +
+  // channel 小写），与 agent-router resolveInbound L1 的读键同源——' user ' 与 'user' 写读同键
+  // 永不裂。本模块读/写一律经 currentTask authority，不再自行构造键。
 
   // ---- v0.3.2 命令族支撑（军规：registry/router 任何缺失或抛错一律降级，绝不弄崩投递主线）----
 
@@ -279,21 +280,22 @@ export function registerConversationRouter(deps, strings) {
   }
 
   /**
-   * 入站去向解析（v0.3.2 §3 四层链）。router 注入时走完整链（L1 bind 读同一 store 键，
-   * 行为与旧 boundSession 等价）；未注入时回落 v0.3.1 旧行为。解析异常回落旧链（绝不弄崩投递）。
+   * 入站去向解析（v0.3.2 §3 链，R1 收紧）。router 注入时走完整链（L1 bind 读同一 store 键）；
+   * 未注入时只认显式 bind。**没有**隐式兜底：无显式绑定时返回 sessionId=null（source 'none'），
+   * 由调用方回执引导用户显式选择任务。解析异常同样退到显式 bind 链（绝不弄崩投递）。
    * @returns {{ sessionId: string|null, source: string, ambiguous: boolean, candidates?: string[] }}
    */
   const resolveTarget = (envelope) => {
     if (router !== null) {
       try {
-        return router.resolveInbound(envelope.channel, String(envelope.userId ?? ''), { latestSessionId })
+        return router.resolveInbound(envelope.channel, String(envelope.userId ?? ''))
       } catch (error) {
-        warn(`入站路由解析失败，回落默认链: ${error instanceof Error ? error.message : String(error)}`)
+        warn(`入站路由解析失败，回落显式绑定链: ${error instanceof Error ? error.message : String(error)}`)
       }
     }
-    const bound = store.get(bindingKey(envelope))
+    const bound = currentTask.get(envelope)
     if (typeof bound === 'string' && bound !== '') return { sessionId: bound, source: 'bind', ambiguous: false }
-    return { sessionId: latestSessionId, source: 'latest', ambiguous: false }
+    return { sessionId: null, source: 'none', ambiguous: false }
   }
   // 旧名兼容（/status 等沿用）
   const boundSession = (envelope) => resolveTarget(envelope).sessionId
@@ -310,7 +312,7 @@ say(t.helpLines.join('\n'))
       const bound = boundSession(envelope)
       const agent = bound !== null ? agentOf(bound) : undefined
       say([
-        `${t.statusBindLabel}${store.get(bindingKey(envelope)) ?? t.bindUnset}`,
+        `${t.statusBindLabel}${currentTask.get(envelope) ?? t.bindUnset}`,
         `${t.statusTargetLabel}${bound ?? t.targetUnset}`,
         `${t.statusStateLabel}${agent !== undefined ? agent.status : t.statusNotFound}`,
         `${t.activeSessionsLabel}${agentsOf().map((agent) => `${agent.id}(${agent.status})`).join(t.joiner) || t.activeSessionsNone}`,
@@ -332,8 +334,8 @@ say(t.helpLines.join('\n'))
       // 挂着本对话，/route 与管理台会话视图永久失真。旧值 === 新目标时跳过（幂等重绑
       // 不做摘挂写放大）；旧值缺失（首绑）无钩可摘。registry.detachInbound 幂等：旧 sid
       // 无记录/无该挂钩时安全无操作，不抛。
-      const previous = store.get(bindingKey(envelope))
-      if (setDurable(store, bindingKey(envelope), target) !== true) {
+      const previous = currentTask.get(envelope)
+      if (currentTask.select(envelope, target).ok !== true) {
         say('绑定保存失败，请稍后重试')
         return true
       }
@@ -348,9 +350,8 @@ say(t.helpLines.join('\n'))
     }
     if (cmd === 'unbind') {
       // 先读旧值再删：detachInbound 需要旧 sid 才能摘掉台账上的入站挂钩
-      const key = bindingKey(envelope)
-      const old = store.get(key)
-      if (deleteDurable(store, key).durable !== true) {
+      const old = currentTask.get(envelope)
+      if (currentTask.clear(envelope).ok !== true) {
         say('解绑保存失败，请稍后重试')
         return true
       }
@@ -642,8 +643,8 @@ say(t.helpLines.join('\n'))
 
   /** 把本对话绑定到指定会话（store bind 键 + 台账反查挂钩 + 活跃信号），复用 /bind 的摘挂语义。 */
   function applyBinding(envelope, sessionId) {
-    const previous = store.get(bindingKey(envelope))
-    if (setDurable(store, bindingKey(envelope), sessionId) !== true) return false
+    const previous = currentTask.get(envelope)
+    if (currentTask.select(envelope, sessionId).ok !== true) return false
     if (typeof previous === 'string' && previous !== '' && previous !== sessionId) {
       registryCall('detachInbound', previous, inboundBindingOf(envelope))
     }
@@ -759,8 +760,8 @@ say(t.helpLines.join('\n'))
     const sid = matched.sid
     const workspace = workspaceOfSid(sid)
     // G-48：同 /bind——覆盖绑定先摘旧会话挂钩（防一 user 双挂；旧值 === 新目标跳过）
-    const previous = store.get(bindingKey(envelope))
-    if (setDurable(store, bindingKey(envelope), sid) !== true) {
+    const previous = currentTask.get(envelope)
+    if (currentTask.select(envelope, sid).ok !== true) {
       say('绑定保存失败，请稍后重试')
       return
     }
@@ -774,10 +775,9 @@ say(t.helpLines.join('\n'))
 
   /** /agent back：读旧绑定 → 删 bind 键 + registry.detachInbound，回到通道默认路由。 */
   function handleAgentBack(envelope, say) {
-    const key = bindingKey(envelope)
-    const old = store.get(key)
+    const old = currentTask.get(envelope)
     if (typeof old === 'string' && old !== '') {
-      if (deleteDurable(store, key).durable !== true) {
+      if (currentTask.clear(envelope).ok !== true) {
         say('解绑保存失败，请稍后重试')
         return
       }
@@ -1122,45 +1122,8 @@ say(t.helpLines.join('\n'))
     pending.set(key, createMergeEntry(envelope, text, items))
   }, { priority: MESSAGE_PRIORITY.conversation })
 
-  // 追踪最近活跃 agent（默认投递目标）；agent 退出时清理绑定与合并窗。
-  // v0.7.3（#4）：DSH 的 agent/created | agent/disposed 事件签名是 (payload: { agent })，
-  // 监听器收到的是载荷对象而非 agent 本身——旧代码 agent?.id 恒 undefined，
-  // latestSessionId 永不赋值，未 /bind 用户的文本消息全部走到「没有活跃会话」被拒投
-  // （现象：命令能回、文本全丢）。此处解包 payload.agent（兼容直接传 agent 的旧宿主）。
-  const payloadAgent = (arg) => {
-    const agent = arg?.agent ?? arg
-    return (agent !== null && typeof agent === 'object' && agent.id !== undefined) ? agent : null
-  }
-  // 只追踪根 agent：后台 subagent 同样触发 agent/created，若不滤掉会把投递目标
-  // 劫持到 subagent 会话。宿主暴露 ctx.agents.roots() 时用它判定；老宿主无此 API
-  // 则退化为全量追踪（与修复前行为一致，仅解包修复生效）。
-  const rootIds = () => {
-    try {
-      const roots = ctx?.agents?.roots?.()
-      return (roots !== null && typeof roots === 'object') ? roots : null
-    } catch { return null }
-  }
-  const trackAgent = (payload) => {
-    const agent = payloadAgent(payload)
-    if (agent === null) return
-    const roots = rootIds()
-    if (roots !== null) {
-      const ids = (Array.isArray(roots) ? roots : Object.values(roots)).map((a) => a?.id)
-      if (!ids.includes(agent.id)) return // subagent：不劫持默认投递目标
-    }
-    latestSessionId = agent.id
-  }
-  try {
-    disposers.push(ctx.on('agent/created', trackAgent))
-  } catch { /* 宿主无此事件：默认绑定不可用，仍可 /bind */ }
-  try {
-    disposers.push(ctx.on('agent/disposed', (payload) => {
-      const agent = payloadAgent(payload)
-      if (agent !== null && agent.id === latestSessionId) latestSessionId = null
-      // 显式绑定到该 agent 的用户下次投递会收到「会话不存在」回执并自行 /bind，
-      // 不在此清绑定：store 里的绑定在 agent 重启（同 id resume）后仍然有效。
-    }))
-  } catch { /* 同上 */ }
+  // v0.15（R1）：不再监听 agent/created | agent/disposed 去追踪「最近活跃」投递目标。
+  // 未显式选择任务的用户，文本消息回执引导其先选择任务（不再隐式投给最近创建的会话）。
 
   return () => {
     disposeMessage?.()

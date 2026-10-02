@@ -77,7 +77,9 @@ test('v0.13 C2：每个事务 fresh-read disk，两个 store 的无关 key 不�
   assert.deepEqual(createStore(file).keys().sort(), ['a', 'b'])
 })
 
-test('S-04：加载时权限自检——mode 非 0600 → warn + chmod 收紧尝试（失败仅 warn 不阻塞启动）', () => {
+// Windows 无 Unix 权限位语义：chmod 只切只读位，statSync().mode 恒为 0o666，本用例
+// 的「过宽 0644 → 收紧 0600」断言在此平台不成立（POSIX/CI 照常执行）。
+test('S-04：加载时权限自检——mode 非 0600 → warn + chmod 收紧尝试（失败仅 warn 不阻塞启动）', { skip: process.platform === 'win32' ? 'Windows 无 Unix 权限位语义' : false }, () => {
   const dir = mkdtempSync(join(tmpdir(), 'dsh-store-perm-'))
   const file = join(dir, 'state.json')
   // 模拟旧版本/umask 异常/手工放宽留下的过宽 mode

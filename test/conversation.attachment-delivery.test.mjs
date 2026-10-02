@@ -38,7 +38,7 @@ function makeAgent(id = SID, status = 'idle') {
   }
 }
 
-function makeRig({ agents = [], downloadImageBytes, downloadFileBytes, attachments, logger = null, strings } = {}) {
+function makeRig({ agents = [], downloadImageBytes, downloadFileBytes, attachments, logger = null, strings, bind } = {}) {
   const store = createStore(tempPath())
   const bus = createInboundBus({ allowUsers: ['42'], store })
   const handlers = {}
@@ -86,7 +86,12 @@ function makeRig({ agents = [], downloadImageBytes, downloadFileBytes, attachmen
   }
   const flush = async (payload) => { userSays(payload); await sleep(FLUSH_MS + 10) }
   const fire = (event, p) => (handlers[event] ?? []).forEach((h) => h(p))
-  return { store, bus, replies, dispose, userSays, flush, fire, agentMap, saved }
+  // R1 测试前置：投递类用例先显式选择一个任务（真实产品流程 = 用户先选任务再对话）。
+  // 隐式选择已由 R1 移除；专门的反例断言在 conversation.route / conversation.task-selection。
+  // bind: null 可显式关闭；默认单 agent 时绑定它。
+  const select = (sid = SID) => userSays({ text: `/bind ${sid}` })
+  if (bind !== null && agents.length === 1) select(agents[0].id)
+  return { store, bus, replies, dispose, userSays, flush, fire, agentMap, saved, select }
 }
 
 test('#36 文本 + 文件：agent 收到 text 块与 durable file 块', async () => {
