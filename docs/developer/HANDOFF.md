@@ -6,7 +6,7 @@ Updated: 2026-10-03. Work is on `dev`, based on `3135257936d4bf4350c18e0abad9dc4
 
 - **P2** removed unused daily browser controllers and their state/navigation wiring, plus the unused Recovery launch RPC. Commit `6c9e72c6788d0d967adfce58e6c37656bed3f3f5`; pushed to `origin/dev`.
 - **P3** requires dsh-im checked contract v1, validates the target and account fingerprint before delivery, removes the guessed config importer, and treats ambiguous sends as unknown. Commit `128ff9a9a33cea90b07ac3c5bfb281989535da91`; pushed to `origin/dev`.
-- **P4** removed the unshipped cloud-store fake and future-contract documentation, narrowed the npm package contents, and reconciled the handoff and deletion record. Focused package/docs tests passed 13/13; `npm run verify:release` passed; the dry-run package contains 211 files and no internal execution artifacts. The P4 commit/push is in progress.
+- **P4** removed the unshipped cloud-store fake and future-contract documentation, narrowed the npm package contents, and reconciled the handoff and deletion record. Focused package/docs tests passed 13/13; `npm run verify:release` passed; the dry-run package contains 211 files and no internal execution artifacts. Commit `6b9109b` is pushed to `origin/dev`.
 
 ## Current implementation notes
 

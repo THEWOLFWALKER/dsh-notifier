@@ -3,7 +3,7 @@
 - Agent identity: Codex | GPT-6 | Work Mode scratch
 - Agent: /root
 - Branch: dev (explicit task instruction)
-- Status: active (P4 complete, P5 in progress)
+- Status: active (P4 complete, P5 pending)
 - Start/end: 2026-10-03 -> active
 - Scope: Continue Stage 4 from P2 through P5 on the fetched origin/dev baseline, with focused validation and a commit/push after each P.
 - Plan:
@@ -15,4 +15,4 @@
 - Do not touch: main, tags, releases, npm publication.
 - Validation: P2 focused client/invariant tests, `npm test`, and `npm run test:dom`; later stages use their specified focused tests and final acceptance commands.
 - Adversarial review: P2 checks the client controller object for removed legacy capabilities and scans production client source for retired RPC strings; Native epoch replacement still clears stale Native detail. DOM tests verify existing Native and secondary views.
-- Handoff: P2 completed and pushed as `6c9e72c6788d0d967adfce58e6c37656bed3f3f5` (full 2468/2468; DOM 41/41). P3 checked bridge/importer removal and full 2455/2455 validation are complete. P4 implementation and focused gates are complete; P4 commit/push follows. P5 final audit/gates remain.
+- Handoff: P2 completed and pushed as `6c9e72c6788d0d967adfce58e6c37656bed3f3f5` (full 2468/2468; DOM 41/41). P3 checked bridge/importer removal and full 2455/2455 validation are complete. P4 implementation and focused gates are complete and pushed as `6b9109b`. P5 final audit/gates remain.
