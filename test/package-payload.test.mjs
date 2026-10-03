@@ -21,7 +21,7 @@ const readmeLinks = (file) => {
 
 test('npm allowlist covers public README documents and assets', () => {
   const required = [
-    'README.md', 'README.zh-CN.md', 'AGENTS.md', 'docs/developer/PLUGINS.md', 'docs/developer/PLUGINS.en.md',
+    'README.md', 'README.zh-CN.md', 'docs/developer/PLUGINS.md', 'docs/developer/PLUGINS.en.md',
     'docs/user/guide.md', 'docs/user/guide.en.md', 'docs/user/AI_INSTALL.md', 'docs/user/AI_INSTALL.en.md',
     'docs/user/TROUBLESHOOTING.md', 'docs/user/TROUBLESHOOTING.en.md',
     'docs/developer/DIAGNOSTICS.md', 'docs/developer/DIAGNOSTICS.en.md', 'docs/user/SUPPORT.md', 'docs/user/SUPPORT.en.md',
@@ -43,4 +43,13 @@ test('relative README links resolve and are package-covered', () => {
       assert.equal(covered(target), true, `${readme} points to unpackaged ${target}`)
     }
   }
+})
+
+test('npm package excludes internal execution notes and test guidance', () => {
+  for (const file of [
+    'AGENTS.md', 'docs/developer/HANDOFF.md', 'docs/developer/control-plane-cloud-storage.md',
+    'docs/developer/v015-deletion-ledger.md', 'docs/developer/v015-fault-capacity.md',
+    'docs/developer/v015-final-acceptance.md', 'docs/developer/v0.15-execution/ledger/audit-ledger.csv',
+    'docs/developer/memory/index.md',
+  ]) assert.equal(covered(file), false, `internal artifact is packaged: ${file}`)
 })

@@ -86,7 +86,7 @@ for (const [index, v] of documentedVersions.entries()) {
 
 const requiredPackageFiles = [
   'src', 'types', 'cordis.patch.yml', 'CHANGELOG.md', 'README.md', 'README.zh-CN.md',
-  'docs/developer/PLUGINS.md', 'docs/developer/PLUGINS.en.md', 'THIRD_PARTY_NOTICES.md', 'AGENTS.md',
+  'docs/developer/PLUGINS.md', 'docs/developer/PLUGINS.en.md', 'THIRD_PARTY_NOTICES.md',
   'docs/user/AI_INSTALL.md', 'docs/user/AI_INSTALL.en.md', 'docs/developer/DIAGNOSTICS.md', 'docs/developer/DIAGNOSTICS.en.md',
   'docs/developer/OPERATIONS.md', 'docs/user/SUPPORT.md', 'docs/user/SUPPORT.en.md',
   'docs/user/TROUBLESHOOTING.md', 'docs/user/TROUBLESHOOTING.en.md', 'docs/developer/architecture.md',
@@ -141,6 +141,12 @@ if (packedPaths !== null) {
     /(?:^|\/)node_modules\//.test(path)
     || path.startsWith('test/')
     || path.startsWith('.agents/')
+    || path === 'AGENTS.md'
+    || path === 'docs/developer/HANDOFF.md'
+    || path.startsWith('docs/developer/memory/')
+    || path.startsWith('docs/developer/v0.15-execution/')
+    || /^docs\/developer\/v015-(?:deletion-ledger|fault-capacity|final-acceptance)\.md$/.test(path)
+    || path === 'docs/developer/control-plane-cloud-storage.md'
     || /(?:admin-gate|fresh-wizard|configured-channels)-(?:desktop|mobile)\.png$/.test(path)
     || /(?:^|\/)\.env(?:\.|$)/.test(path)
     || /(?:^|\/)\.wrangler\//.test(path)

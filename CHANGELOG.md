@@ -8,6 +8,9 @@
 - Allocate runtime generations per instance and exclude late health results.
 - Persist Cloud deployment jobs, recover by readback and keep secrets in configuration.
 - Count real Node test leaves instead of suite events.
+- Remove the unshipped in-memory cloud-storage placeholder and its future-contract documentation.
+- Keep internal execution records and agent instructions out of the npm package.
+- Describe the plugin by its user-facing notification, private-chat, and approval workflows.
 
 ## [Unreleased]
 

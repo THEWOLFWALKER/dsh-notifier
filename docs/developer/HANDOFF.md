@@ -1,34 +1,28 @@
-# 当前交接
+# Current handoff
 
-更新：2026-10-03。当前仅在 `dev` 开发，远端 4066cf4 为起点；离线 Stage 2 工作先以 830d7b5 导入远端历史。唯一当前任务包是 DSH-NOTIFIER-V015-STAGE2-REVIEW-STAGE3-FINAL-V1。旧 WP00–WP23 追踪属于历史，不作为当前执行计划。包版本保持 0.13.1，本阶段不发布。
+Updated: 2026-10-03. Work is on `dev`, based on `3135257936d4bf4350c18e0abad9dc4ee213b424`. The requested sequence is Stage 4 P2 through P5. Package version remains 0.13.1; this work does not publish it.
 
-## 当前实现
+## Completed
 
-- 当前任务按渠道、账户、用户隔离；旧记录仅在账户唯一可证时事务迁移，否则重新选择。Native 选择写入同一事实源。
-- 实例替换只增加一次世代；状态观察不增加，退出和重建隔离迟到结果。订阅、实例和健康历史有容量与清理路径。
-- Cloud 任务持久化身份、步骤、回执、取消和恢复状态，重启按资源名称读回。任务和资源行不再持有第二份 Bot Token。
-- 日常 Native 收口为通知与私聊，旧内部管理页面已删除；高级页面只显示恢复报告。旧 API 能力隔离在 compatibility adapter。
-- 六种接收入口在身份、配对和任务路由前拒绝群消息、群回调。群通知的出站协议保留。
-- 用户文档使用操作语言，打包仅保留当前 Native 截图；截图渲染实际 `client.js`，数据是固定示例，不等同真实宿主证据。
+- **P2** removed unused daily browser controllers and their state/navigation wiring, plus the unused Recovery launch RPC. Commit `6c9e72c6788d0d967adfce58e6c37656bed3f3f5`; pushed to `origin/dev`.
+- **P3** requires dsh-im checked contract v1, validates the target and account fingerprint before delivery, removes the guessed config importer, and treats ambiguous sends as unknown. Commit `128ff9a9a33cea90b07ac3c5bfb281989535da91`; pushed to `origin/dev`.
+- **P4** removed the unshipped cloud-store fake and future-contract documentation, narrowed the npm package contents, and reconciled the handoff and deletion record. Focused package/docs tests passed 13/13; `npm run verify:release` passed; the dry-run package contains 211 files and no internal execution artifacts. The P4 commit/push is in progress.
 
-## 检查
+## Current implementation notes
 
-| 检查 | 结果 |
+- Native daily controls are limited to notification and private chat; the Advanced Console is a read-only recovery report.
+- Inbound group traffic is rejected before identity, pairing, or task routing. Outbound group notifications remain supported.
+- dsh-im sends require the checked v1 contract and do not fall back to ordinary sends. Config-file import is not supported because no matching public export contract is available.
+- No cloud-storage provider or cloud-storage placeholder is part of the product.
+
+## Validation state
+
+| Phase | Status |
 |---|---|
-| 测试 | `npm test` **2498 tests**；2498 pass、0 fail、0 skip；release guard 独立计数一致 |
-| P0 | focused 56/56；首次全量 2510 项中的 5 项旧世代断言已更新 |
-| P1 | focused 52/52；相关 DOM 17/17 |
-| P2 | focused 92/92；全部 DOM 41/41 |
-| P3 | focused 故障与容量行为 166/166 |
-| P4 | focused 47/47；DOM 41/41；打包禁入路径 0 |
-| P5 | 全量 2498/2498；DOM 41/41；release guard / 28 渠道矩阵 / host compat / pack 全部通过 |
+| P2 | focused tests, full `npm test` (2468/2468), DOM tests (41/41), commit and push complete |
+| P3 | bridge tests (13/13), acceptance tests (3/3), full `npm test` (2455/2455), commit and push complete |
+| P4 | package/docs tests 13/13; release guard passed; dry-run package 211 files, forbidden internal files 0 |
+| P5 | pending adversarial review and final gates |
+| 测试 | `npm test` **2446 tests**（P4 runner count；P5 full run pending） |
 
-[删除账本](v015-deletion-ledger.md) · [故障/容量证据](v015-fault-capacity.md) · [架构](architecture.md) · [状态写入归属](state-writer-registry.md)。
-
-## BLOCKED 与证据边界
-
-- 本次没有公网 Cloudflare 账号、真实 Telegram/APNs 设备或完整 DSH 宿主环境。已有契约和本地 workerd 证据不能冒充新增真实账号/设备证据。
-- Wrangler 版本列表不保证返回地址。创建响应及本地回执同时丢失、读回又无地址时，安全停留在待恢复状态，不重复创建。这一路径有否定行为保证，完整公网恢复证明仍 BLOCKED。
-- dsh-im 现有桥接仅是模拟服务契约；上游提供面板嵌入接口，未证实 `ctx.dshIm.send/listBots/listTargets`，不宣传互通。
-
-P0–P5 已完成本地验收；验收表见 [最终记录](v015-final-acceptance.md)。仅推 dev，不合并 main，不建 tag，不做 GitHub Release 或 npm publish。
+P0/P1 details are in repository history. See [architecture](architecture.md), [deletion ledger](v015-deletion-ledger.md), and [Stage 4 acceptance record](v015-final-acceptance.md) for the current scope and evidence. Push only to `dev`; do not merge `main`, tag, create a release, or publish to npm.

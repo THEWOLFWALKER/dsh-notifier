@@ -1,7 +1,7 @@
 {
   "name": "dsh-notifier",
   "version": "0.13.1",
-  "description": "DSH 通知与远程操作控制面：28 个出站渠道、6 条入站控制通道、原生「通知与控制」UI、出站热生效；零强制运行时依赖。",
+  "description": "DSH 通知与私聊审批插件，支持 28 个出站渠道和原生通知管理界面；无需强制运行时依赖。",
   "type": "module",
   "main": "src/plugin-entry.mjs",
   "exports": {
@@ -32,7 +32,6 @@
     "docs/developer/PLUGINS.md",
     "docs/developer/PLUGINS.en.md",
     "THIRD_PARTY_NOTICES.md",
-    "AGENTS.md",
     "docs/user/AI_INSTALL.md",
     "docs/user/AI_INSTALL.en.md",
     "docs/developer/DIAGNOSTICS.md",
@@ -49,7 +48,6 @@
     "docs/user/upgrade-guide.md",
     "docs/user/upgrade-guide.en.md",
     "docs/user/user-lifecycle.md",
-    "docs/developer/control-plane-cloud-storage.md",
     "docs/assets/readme-hero.png",
     "docs/assets/qq-group.png",
     "client.js",
@@ -64,17 +62,12 @@
     "docs/developer/behavior-contract.md",
     "docs/developer/state-writer-registry.md",
     "docs/developer/VERSIONING.md",
-    "docs/developer/HANDOFF.md",
-    "docs/developer/KNOWLEDGE_BASE.md",
-    "docs/developer/memory",
     "docs/developer/archive/CHANGELOG.md",
     "docs/screenshots/native-v2-desktop.png",
     "docs/screenshots/native-v2-mobile.png",
     "docs/screenshots/native-v2-channel.png",
-    "docs/developer/v015-deletion-ledger.md",
-    "docs/developer/v015-fault-capacity.md",
     "docs/screenshots/native-v2-private.png",
-    "docs/developer/v015-final-acceptance.md"
+    "docs/user/README.md"
   ],
   "scripts": {
     "test": "node scripts/run-tests.mjs",
@@ -82,7 +75,7 @@
     "test:dom": "node test/dom/run.mjs"
   },
   "dshQuality": {
-    "testCount": 2455
+    "testCount": 2446
   },
   "dsh": {
     "bundle": {
@@ -142,9 +135,10 @@
     "remote-approval",
     "remote-control",
     "native-ui",
-    "control-plane",
-    "hot-apply",
-    "push-notifications"
+    "private-chat",
+    "approvals",
+    "push-notifications",
+    "notifications"
   ],
   "dshWorkshop": {
     "schema": "omdsh-workshop-package/v1",

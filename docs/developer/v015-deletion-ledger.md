@@ -8,7 +8,8 @@
 | old Tasks/Questions/Health/Activity presentation | DELETE | bounded Native task/pending/receipt data | native behavior + DOM |
 | unused locale properties + health CSS | DELETE | no remaining rendering consumers | locale lint + DOM |
 | control-surface/service.mjs | SHRINK | transport dispatch only | service integration contracts |
-| compatibility-adapter.mjs | KEEP | old Host/API contracts; shared secondary settings | focused compatibility tests |
+| compatibility-adapter.mjs | DELETE | obsolete large switch removed; current secondary RPCs use the explicit service allowlist | secondary-service and RPC allowlist tests |
+| control-plane/cloud-store.mjs | DELETE | in-memory fake had no runtime consumer and implied a future cloud-storage contract that is not shipped | removed with its product-facing tests and documentation |
 | Advanced Console | RECOVERY_ONLY | read-only report view; routine markup deleted, startup reads diagnostics only | recovery startup behavior + diagnostics/auth contracts |
 | adapters/** | KEEP | protocol assets | no protocol rewrite |
 | Store core | KEEP | synchronous durable transactions | fault tests |

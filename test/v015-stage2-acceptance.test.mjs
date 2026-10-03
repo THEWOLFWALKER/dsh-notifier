@@ -14,7 +14,7 @@
 //   D02  timeout/uncertain is not blindly retried
 //   D03  partial segmented send does not replay the whole message
 //
-// C01–C04 / P01 / K01 / K02 are proven by their own suites (s18-cloud-store,
+// C01–C04 / P01 / K01 / K02 are proven by their own suites
 // s13-config-portability, the ui-dom K-suite); this file deliberately does not duplicate them.
 
 import test from 'node:test'
