@@ -31,6 +31,9 @@ export const NATIVE_READ_METHODS = Object.freeze([
 
 /** 窄动作表：写入（actions，每个动作只调一个 authority）。 */
 export const NATIVE_ACTION_METHODS = Object.freeze([
+  // v0.15 Stage 4（R1）：`native.selectTask` 的 handler 已存在（client.js 已在调用），
+  // 但此前未登记进声明面，导致「可调用面」与「声明能力面」漂移。此处补齐。
+  'native.selectTask',
   'native.saveChannel',
   'native.saveInboundChannel',
   'native.removeChannel',
@@ -45,6 +48,23 @@ export const NATIVE_ACTION_METHODS = Object.freeze([
 ])
 
 export const NATIVE_METHODS = Object.freeze([...NATIVE_READ_METHODS, ...NATIVE_ACTION_METHODS])
+
+/**
+ * v0.15 Stage 4（S401）：handler table 与声明方法面必须**精确一致**——多一个（未声明却可调用）
+ * 或少一个（声明了却没有实现）都在构造期立即失败，杜绝 registry 漂移重新潜入。
+ * @param {string[]} handlerMethods
+ */
+function assertExactMethodSet(handlerMethods) {
+  const advertised = new Set(NATIVE_METHODS)
+  const implemented = new Set(handlerMethods)
+  const undeclared = handlerMethods.filter((method) => !advertised.has(method))
+  const unimplemented = NATIVE_METHODS.filter((method) => !implemented.has(method))
+  if (undeclared.length > 0 || unimplemented.length > 0) {
+    throw new Error(
+      `Native method registry drift: undeclared=[${undeclared.join(', ')}] unimplemented=[${unimplemented.join(', ')}]`,
+    )
+  }
+}
 
 const normalizeCode = (error) => {
   const raw = String(error?.code ?? 'internal').replace(/^dsh-notifier\//, '')
@@ -118,6 +138,8 @@ export function createNativeSurfaceService({ readModel = null, actions = null } 
     'native.mintPairing': (payload) => ok(requireActions().mintPairing(payload)),
     'native.revokePairing': (payload) => ok(requireActions().revokePairing(payload)),
   }
+  // v0.15 Stage 4（S401）：构造期即校验 handler table 与声明方法面精确一致（含 selectTask）。
+  assertExactMethodSet(Object.keys(table))
 
   return {
     methods: NATIVE_METHODS,
