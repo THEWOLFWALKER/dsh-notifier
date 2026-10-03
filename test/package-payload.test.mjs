@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { existsSync, readFileSync } from 'node:fs'
-import { dirname, resolve } from 'node:path'
+import { dirname, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -12,14 +12,16 @@ const covered = (target) => packageFiles.some((entry) => {
   return normalized === target || target.startsWith(`${normalized}/`)
 })
 
-const readmeLinks = (file) => {
-  const text = readFileSync(resolve(root, file), 'utf8')
+const relativeLinks = (file) => {
+  const source = resolve(root, file)
+  const text = readFileSync(source, 'utf8')
   return [...text.matchAll(/!?\[[^\]]*\]\(([^)]+)\)/g)]
     .map((match) => match[1].split('#', 1)[0])
     .filter((target) => target && !/^(?:[a-z]+:|\/)/i.test(target))
+    .map((target) => relative(root, resolve(dirname(source), target)).split('\\').join('/'))
 }
 
-test('npm allowlist covers public README documents and assets', () => {
+test('npm allowlist covers public entry documents and assets', () => {
   const required = [
     'README.md', 'README.zh-CN.md', 'docs/developer/PLUGINS.md', 'docs/developer/PLUGINS.en.md',
     'docs/user/guide.md', 'docs/user/guide.en.md', 'docs/user/AI_INSTALL.md', 'docs/user/AI_INSTALL.en.md',
@@ -36,11 +38,11 @@ test('npm allowlist covers public README documents and assets', () => {
   }
 })
 
-test('relative README links resolve and are package-covered', () => {
-  for (const readme of ['README.md', 'README.zh-CN.md']) {
-    for (const target of readmeLinks(readme)) {
-      assert.equal(existsSync(resolve(root, target)), true, `${readme} points to missing ${target}`)
-      assert.equal(covered(target), true, `${readme} points to unpackaged ${target}`)
+test('relative links in packaged entry documents resolve and are package-covered', () => {
+  for (const document of ['README.md', 'README.zh-CN.md', 'docs/developer/README.md', 'docs/developer/OPERATIONS.md', 'docs/user/README.md']) {
+    for (const target of relativeLinks(document)) {
+      assert.equal(existsSync(resolve(root, target)), true, `${document} points to missing ${target}`)
+      assert.equal(covered(target), true, `${document} points to unpackaged ${target}`)
     }
   }
 })

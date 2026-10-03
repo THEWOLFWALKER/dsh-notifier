@@ -22,7 +22,7 @@ Updated: 2026-10-03. Work is on `dev`, based on `3135257936d4bf4350c18e0abad9dc4
 | P2 | focused tests, full `npm test` (2468/2468), DOM tests (41/41), commit and push complete |
 | P3 | bridge tests (13/13), acceptance tests (3/3), full `npm test` (2455/2455), commit and push complete |
 | P4 | package/docs tests 13/13; release guard passed; dry-run package 211 files, forbidden internal files 0 |
-| P5 | pending adversarial review and final gates |
-| 测试 | `npm test` **2446 tests**（P4 runner count；P5 full run pending） |
+| P5 | loopback binding override closed; admin server/Origin tests 33/33; full Node 2447/2447; DOM 41/41; release, 28-channel matrix and host-compatibility gates passed |
+| 测试 | `npm test` **2447 tests**；2447 pass，0 fail/skip |
 
 P0/P1 details are in repository history. See [architecture](architecture.md), [deletion ledger](v015-deletion-ledger.md), and [Stage 4 acceptance record](v015-final-acceptance.md) for the current scope and evidence. Push only to `dev`; do not merge `main`, tag, create a release, or publish to npm.

@@ -11,6 +11,7 @@
 - Remove the unshipped in-memory cloud-storage placeholder and its future-contract documentation.
 - Keep internal execution records and agent instructions out of the npm package.
 - Describe the plugin by its user-facing notification, private-chat, and approval workflows.
+- Keep the Recovery server bound to loopback even if a caller supplies a public host override.
 
 ## [Unreleased]
 

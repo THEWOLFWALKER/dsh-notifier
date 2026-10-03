@@ -90,6 +90,21 @@ test('start：port 0 → 随机端口生效；address 必须是 127.0.0.1（永�
   })
 })
 
+test('start：忽略调用方提供的公网 host，管理台仍只绑定 127.0.0.1', async () => {
+  const server = createAdminServer({
+    api: makeApi().api,
+    verifyToken: () => true,
+    host: '0.0.0.0',
+    port: 0,
+  })
+  try {
+    const info = await server.start()
+    assert.equal(info.address, '127.0.0.1')
+  } finally {
+    await server.stop()
+  }
+})
+
 test('stop：幂等（二次调用不抛）；停止后端口不再响应；port 归 null', async () => {
   const lines = []
   const server = createAdminServer({

@@ -1052,7 +1052,6 @@ export function apply(ctx, config = {}) {
         verifyLaunchTicket: (ticket) => launchTickets.consume(ticket),
         createSession: () => adminSessions.mint(),
         verifySession: (token) => adminSessions.verify(token),
-        host: '127.0.0.1', // 红线：永不绑公网（§0.5-6，config.mjs 已写死不可配）
         port: resolved.admin.port,
         ui: createAdminUiHtml(resolved.lang),
         // Stage 4（S403）：Recovery-only——不再注入 events（GET /api/events SSE 已删除）。

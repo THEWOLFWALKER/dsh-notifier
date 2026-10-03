@@ -7,7 +7,7 @@ Current evidence scope: [HANDOFF.md](../HANDOFF.md). Historical dated walkthroug
 - QQ HELLO watchdog and mention/media payloads, DingTalk Stream soak, Feishu P2P payload paths, QQ keyboard rendering and WxPusher forged-UID provider behavior retain their existing provider-level evidence gaps.
 - Host event registration is current-context-first with `global:true` and one sticky root fallback. Never subscribe to both. Scoped error delivery still needs the outstanding real-host regression.
 - The exact DSH optional peer range deliberately warns on future unlisted versions. Add a verified matrix row before expanding it; real boot preflight for in-range / out-of-range versions remains narrower than source compatibility checks.
-- `ctx.dshIm.send/listBots/listTargets` is not proven on current upstream; do not advertise existing experimental bridge/import code as interoperability.
+- The dsh-im bridge accepts only its checked v1 contract and has not been verified against the current upstream host; do not advertise it as general interoperability. Config-file import is not implemented because no matching public export contract is available.
 - A legacy current-task row without a uniquely proven account must remain unresolved. A user must select again; guessing default can cross accounts.
 - Never replay an uncertain or partially delivered operation blindly. A persisted claim surviving an effect/settlement crash is not proof that the external effect did not happen.
 

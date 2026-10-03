@@ -4,7 +4,7 @@
 
 ## 当前工作
 
-v0.15 Stage 3：账户隔离的当前任务、实例世代、可恢复 Cloud 任务、私聊准入、Native v2 删除收口，以及故障和容量证据。当前发布状态和检查结果以 [HANDOFF.md](HANDOFF.md) 为准。
+v0.15 Stage 4：P2–P5 hardening of the Native surface, checked dsh-im delivery, package contents, and Recovery security. Current phase status and validation results are in [HANDOFF.md](HANDOFF.md) and [the acceptance record](v015-final-acceptance.md).
 
 ## 修改代码前
 

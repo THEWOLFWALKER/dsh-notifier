@@ -55,17 +55,18 @@ function apiStatusOf(error) {
  * @param {(ticket: string) => boolean} [options.verifyLaunchTicket] - 一次性启动票据校验器
  * @param {() => { token: string, expiresAt?: number }} [options.createSession] - 一次性票据兑换后的短会话创建器
  * @param {(token: string) => boolean} [options.verifySession] - HttpOnly 浏览器会话校验器
- * @param {string} [options.host='127.0.0.1'] - 只绑本机回环（红线：永不绑公网）
  * @param {number} [options.port=8104] - 监听端口；0 = 随机可用端口（测试用）
  * @param {string} [options.ui=''] - 单文件内嵌 HTML 串（空串时 GET / 返回最小占位页）
  * @param {string[]} [options.allowedOrigins=[]] - S-06 额外放行的 Origin（反代/HTTPS 场景）
- * @param {string[]} [options.allowedHosts=[]] - S-06 额外放行的 Host 头（公网反代场景）
+ * @param {string[]} [options.allowedHosts=[]] - S-06 额外放行的 Host 头（反代请求头）
  * @param {object} [options.logger] - { warn(message) } 注入；日志失败绝不致命
  * @returns {{ start: () => Promise<{ port: number, address: string }>,
  *             stop: () => Promise<void>,
  *             get port(): number | null }}
  */
-export function createAdminServer({ api, verifyToken, verifyLaunchTicket = null, createSession = null, verifySession = null, host = '127.0.0.1', port = 8104, ui = '', allowedOrigins = [], allowedHosts = [], logger } = {}) {
+export function createAdminServer({ api, verifyToken, verifyLaunchTicket = null, createSession = null, verifySession = null, port = 8104, ui = '', allowedOrigins = [], allowedHosts = [], logger } = {}) {
+  // Binding is an invariant, not a caller preference. Reverse proxies can connect over loopback.
+  const host = '127.0.0.1'
   const warn = (message) => {
     // stderr 双写（R5 审查 R5-2-P1-2：与 api.mjs 同款纪律，web profile 下 logger 不落 stdout）
     try { logger?.warn?.('[dsh-notifier/admin:server]', message) } catch { /* 日志失败绝不致命 */ }
@@ -75,18 +76,17 @@ export function createAdminServer({ api, verifyToken, verifyLaunchTicket = null,
 
   // ---- S-06（CWE-352/942）Origin/Host 第二道纵深 ----
   // Bearer 模型下浏览器不自动附带凭证（token 在 sessionStorage），经典 CSRF 难利用——
-  // 但「host 改 0.0.0.0/反代公网 + token 被钓」场景缺第二道防线：
+  // 反代场景仍有 Origin/Host 第二道防线：
   //  - Origin 头存在时必须在白名单（浏览器跨站请求必带；curl 等非浏览器客户端不带 → 放行，
   //    由 Bearer 鉴权兜底）；
   //  - Host 头必须在白名单（防 DNS rebinding：受害者浏览器被解析到 127.0.0.1 时
   //    Host 是攻击者域名，缺这道闸时同源策略完全失守）。
-  // 回环绑定（127.0.0.1/localhost）自动放行 127.0.0.1/localhost/[::1] 三形态（带不带端口、
-  // http/https 两种 Origin scheme 都接受——本机反代 TLS 终止是合法形态）；公网/反代
-  // 场景由 allowedOrigins/allowedHosts 显式注入。端口用实际监听值（port=0 测试随机分配）。
+  // 服务器始终只绑定 127.0.0.1。回环 Host 自动放行 127.0.0.1/localhost/[::1] 三形态
+  // （带不带端口、http/https 两种 Origin scheme 都接受）；反代请求头由
+  // allowedOrigins/allowedHosts 显式注入。端口用实际监听值（port=0 测试随机分配）。
   const extraOrigins = (Array.isArray(allowedOrigins) ? allowedOrigins : []).map((value) => String(value).trim()).filter((value) => value !== '')
   const extraHostHeaders = (Array.isArray(allowedHosts) ? allowedHosts : []).map((value) => String(value).trim().toLowerCase()).filter((value) => value !== '')
-  const loopbackBind = host === '127.0.0.1' || host === 'localhost' || host === '::1'
-  const hostVariants = loopbackBind ? ['127.0.0.1', 'localhost', '[::1]', '::1'] : [host]
+  const hostVariants = ['127.0.0.1', 'localhost', '[::1]', '::1']
 
   /** 按实际监听端口构建当次请求的 Origin/Host 白名单（listen 前 port=0 时只比 extras）。 */
   function buildGateAllowlist() {
@@ -98,12 +98,10 @@ export function createAdminServer({ api, verifyToken, verifyLaunchTicket = null,
       hosts.add(`${variant}:${actualPort}`)
       origins.add(`http://${variant}:${actualPort}`)
       origins.add(`https://${variant}:${actualPort}`)
-      if (loopbackBind) {
-        // 无端口形态：反代剥端口 / HTTP/1.0 客户端；仅回环绑定接受（公网绑定必须精确）
-        hosts.add(variant)
-        origins.add(`http://${variant}`)
-        origins.add(`https://${variant}`)
-      }
+      // 无端口形态：反代剥端口 / HTTP/1.0 客户端。监听端始终为回环地址。
+      hosts.add(variant)
+      origins.add(`http://${variant}`)
+      origins.add(`https://${variant}`)
     }
     return { hosts, origins }
   }

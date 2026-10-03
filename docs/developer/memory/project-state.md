@@ -1,9 +1,7 @@
 # 当前状态
 
-更新：2026-10-03。仅施工并推送 `dev`，包版本仍为 0.13.1。本轮不合并 main，不创建 tag，不发布。
+Updated: 2026-10-03. Stage 4 P2–P5 hardening is on `dev`, based on `3135257936d4bf4350c18e0abad9dc4ee213b424`. Package remains 0.13.1 and unpublished; this work does not merge `main`, tag, or release.
 
-远端 4066cf4 为本轮真实起点；用户补交的离线 Stage 2 工作以 830d7b5 保留远端历史后导入。当前唯一任务包为 DSH-NOTIFIER-V015-STAGE2-REVIEW-STAGE3-FINAL-V1，按 P0–P5 执行。旧 WP00–WP23 是历史资料。
+P2 removed unused browser controllers and Recovery launch RPC. P3 constrained dsh-im to checked contract v1 and removed guessed config import. P4 removed the unshipped cloud-store fake and narrowed package contents. P5 closed a caller-supplied public bind override in the Recovery server. Current code and validation are recorded in [HANDOFF.md](../HANDOFF.md) and [the acceptance record](../v015-final-acceptance.md).
 
-Native 每日页面已收口为通知与私聊。当前任务按账户隔离；群接收控制在共同入口拒绝。Cloud 任务可持久化和重启读回；配置持有凭证，任务和部署记录仅引用它。实例世代属于实例生命周期，不属于状态观察。
-
-最终全量 2498/2498、DOM 41/41 和全部本地验收门通过。验证与 BLOCKED 以 [HANDOFF.md](../HANDOFF.md) 为准。实际 React 截图采用固定示例数据；本地 workerd/协议测试不代表公网账号或设备验证。dsh-im 桥接仍为实验契约。
+Final validation: Node 2447/2447; DOM 41/41; release guard, 28-channel matrix, and host-compatibility guard pass. The Recovery admin server is hard-bound to `127.0.0.1`. No public Cloudflare account, live delivery device, or full real DSH host was available; local contracts do not establish that external evidence.

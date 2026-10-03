@@ -6,8 +6,8 @@
 - `package.json` is the package and version authority.
 - `README.md` and `README.zh-CN.md` are user-facing entry points.
 - `docs/developer/HANDOFF.md` is the detailed engineering snapshot; do not copy it into this file.
-- `docs/developer/KNOWLEDGE_BASE.md` is the documentation map. `docs/memory/` contains concise durable facts, not a second implementation spec.
-- Tracked `.agents/` workstreams and `docs/memory/` are the only collaboration-state authority; chat messages are not durable project state. Runtime truth remains `src/` and `test/`.
+- `docs/developer/KNOWLEDGE_BASE.md` is the documentation map. `docs/developer/memory/` contains concise durable facts, not a second implementation spec.
+- Tracked `.agents/` workstreams and `docs/developer/memory/` are the only collaboration-state authority; chat messages are not durable project state. Runtime truth remains `src/` and `test/`.
 - The npm package archive is an output. It never overrides the engineering tree.
 - Every task completion or milestone handoff must read and execute the project-local `.agents/skills/neat-freak/SKILL.md` checklist before the final response. Its canonical copy lives under `.agents/skills/neat-freak/`; tool-specific skill directories contain pointers only.
 - Single-repo two-branch model: `https://github.com/THEWOLFWALKER/dsh-notifier` is the canonical repository. Develop on `dev`, release on `main`; there is no separate private dev or public mirror repository to juggle.
@@ -73,7 +73,7 @@ For a channel change, also run the relevant adapter contract test and `node scri
 | Stable architecture and state flows | `docs/developer/architecture.md` |
 | Local operation and troubleshooting | `docs/developer/OPERATIONS.md` and `docs/user/guide.md` |
 | Version/release anti-split rules | `docs/developer/VERSIONING.md` |
-| Durable facts and decisions | `docs/memory/` |
+| Durable facts and decisions | `docs/developer/memory/` |
 | Existing detailed handoff | `docs/developer/HANDOFF.md` |
 | Adapter contribution contract | `docs/developer/ADAPTER.md` |
 | Plugin consumer contract | `docs/developer/PLUGINS.md` |

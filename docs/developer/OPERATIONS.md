@@ -2,9 +2,9 @@
 
 ## Release and development branches
 
-Published package: **0.13.1**. The current v0.15 work is on `dev`; `main` is unchanged by this closeout per the owner instruction of 2026-10-01.
+Current package version: **0.13.1**. Development happens on `dev`; `main` is the release branch. A local package dry run does not publish to npm.
 
-The current check results and remaining release steps are in [HANDOFF.md](HANDOFF.md). Historical package evidence remains in [archive/CHANGELOG.md](archive/CHANGELOG.md). Do not retag an existing release or treat a local tarball as a registry publication.
+Before preparing a release, run the checks below and follow [VERSIONING.md](VERSIONING.md). Historical package evidence remains in [archive/CHANGELOG.md](archive/CHANGELOG.md). Do not retag an existing release or treat a local tarball as a registry publication.
 
 ## Local checks
 

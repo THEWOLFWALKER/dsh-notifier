@@ -22,7 +22,7 @@
    git log --oneline -5
    git fetch --prune
    git pull --ff-only
-4. 读取 AGENTS.md、docs/KNOWLEDGE_BASE.md、docs/memory/README.md、docs/memory/、相关 .agents/workstreams/ 和 HANDOFF.md。
+4. 读取 AGENTS.md、docs/developer/KNOWLEDGE_BASE.md、docs/developer/memory/README.md、docs/developer/memory/、相关 .agents/workstreams/ 和 docs/developer/HANDOFF.md。
 5. 从 dev 分支创建目的明确的 codex/<topic> 分支；禁止直接在 main 上开发。若工作区有未提交改动，先记录并保护它们，不得擅自丢弃。
 
 二、必须遵守的工程原则
@@ -82,6 +82,6 @@
 ## 使用规则
 
 - 每次接力都使用上面的整段作为新 agent 的第一条消息，并填写四个身份字段。
-- agent 的持久状态以仓库中的 `AGENTS.md`、`docs/developer/HANDOFF.md`、`.agents/workstreams/` 和 `docs/memory/` 为准。
+- agent 的持久状态以仓库中的 `AGENTS.md`、`docs/developer/HANDOFF.md`、`.agents/workstreams/` 和 `docs/developer/memory/` 为准。
 - `docs/developer/HANDOFF.md` 每次接力都要更新当前快照；workstream 保留每个 agent 的详细身份和工作记录。
 - 任何 agent 都必须在推送后确认工作区干净，下一位 agent 再执行 `git pull --ff-only` 接续。
