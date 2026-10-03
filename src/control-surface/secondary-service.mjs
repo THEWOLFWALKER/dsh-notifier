@@ -2,7 +2,7 @@
 //
 // Stage 3 独立 Review R3：旧 `compatibility-adapter.mjs` 是一个巨型 switch，把 Native 已被替代的
 // legacy endpoint（surface.home / channels.* / tasks.* / questions.* / members.* / pairing.* /
-// sessions.* / bindings.* / diagnostics 原始面 / dshIm.import.*）全部继续暴露给任何已 admitted
+// sessions.* / bindings.* / diagnostics 原始面等）全部继续暴露给任何已 admitted
 // 客户端。本模块只保留「当前 daily UI 真的有调用者」的 secondary 方法；其余一律由 service 层
 // 按 `surface-allowlist.mjs` 拒绝为 `not-supported`（能力不存在，而不是 UI 不可见）。
 //
@@ -143,7 +143,7 @@ export function createSecondarySurfaceService({
         return ok(entry)
       }
 
-      // v0.15（T22）：可选 dsh-im 投递桥（缺失是正常态；发送走 checked 契约，见 P3）。
+      // v0.15 Stage 4：可选 dsh-im 投递桥（仅接受 contractVersion 1 checked contract）。
       if (method === 'dshIm.status' || method === 'dshIm.listBots'
         || method === 'dshIm.listTargets' || method === 'dshIm.send') {
         if (dshIm === null) {
@@ -153,16 +153,16 @@ export function createSecondarySurfaceService({
         }
       }
       if (method === 'dshIm.status') return ok({ ...revisionView(), ...dshIm.status() })
-      if (method === 'dshIm.listBots') return ok({ ...revisionView(), bots: await dshIm.listBots() })
-      if (method === 'dshIm.listTargets') return ok({ ...revisionView(), targets: await dshIm.listTargets(payload?.botId) })
+      if (method === 'dshIm.listBots') return ok({ ...revisionView(), bots: await dshIm.listBots({ signal }) })
+      if (method === 'dshIm.listTargets') return ok({ ...revisionView(), targets: await dshIm.listTargets(payload?.botId, { signal }) })
       if (method === 'dshIm.send') {
-        const value = await dshIm.send(payload)
+        const value = await dshIm.send(payload, { signal })
         activity.record('notification', 'dsh-im-send', {
           channel: 'dsh-im',
           accepted: value.accepted === true,
           confirmed: value.confirmed === true,
-          failed: value.unknown === true || value.rejected === true,
-          status: value.rejected === true ? 'failed' : 'ok',
+          failed: value.rejected === true,
+          status: value.rejected === true ? 'failed' : value.unknown === true ? 'unknown' : 'ok',
         })
         return ok(value)
       }

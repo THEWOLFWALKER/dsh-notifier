@@ -74,7 +74,6 @@ import { createNativeSurfaceService } from './native/register.mjs'
 import { createChannelControlService } from './control-plane/channels.mjs'
 import { createConfigPortabilityService } from './control-plane/config-portability.mjs'
 import { createDshImBridge } from './control-plane/dsh-im-bridge.mjs'
-import { createDshImImportService } from './control-plane/dsh-im-import.mjs'
 import { createMembersControlService } from './control-plane/members.mjs'
 import { createRoutingControlService } from './control-plane/sessions.mjs'
 import { createQuestionsControlService } from './control-plane/questions.mjs'
@@ -902,13 +901,6 @@ export function apply(ctx, config = {}) {
   // 不透明 (botId, targetId) 引用由 Native 客户端持于其 desired；这里只把桥接注入控制面。
   // 每次操作都重新防御读取 ctx.dshIm，故服务晚注入/撤销/重建天然可见（D01/D02）。
   const surfaceDshIm = createDshImBridge({ ctx, warn })
-  // v0.15（T23）：dsh-im 已知格式迁移导入器。它是纯 translator + planner，自身零写零网络——
-  // 把 dsh-im 导出翻译成 T21 portability v1 文档后，提交/cancel 全部委托给 canonical portability
-  // 权威（同一写者，不建第二 writer）。凭据绝不复制明文，只记来源与需求。
-  const surfaceDshImImport = createDshImImportService({
-    portability: surfacePortability,
-    outboundConfig: outboundConfigService,
-  })
   const surfaceCloudflare = createCloudflareDeploymentService({ store, root: `${stateDir}/cloudflare`, outboundConfig: outboundConfigService, inboundConfig: inboundConfigPort })
   disposers.push(() => surfaceCloudflare.dispose())
   // v0.15（Stage 1 / S1–S2）：Native v2 边界实例。只读 read model 组合既有已脱敏投影；

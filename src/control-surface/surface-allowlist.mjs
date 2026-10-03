@@ -75,5 +75,4 @@ export const REMOVED_LEGACY_PREFIXES = Object.freeze([
   'sessions.',
   'bindings.',
   'activity.list',
-  'dshIm.import.',
 ])

@@ -15,4 +15,4 @@
 - Do not touch: main, tags, releases, npm publication.
 - Validation: P2 focused client/invariant tests, `npm test`, and `npm run test:dom`; later stages use their specified focused tests and final acceptance commands.
 - Adversarial review: P2 checks the client controller object for removed legacy capabilities and scans production client source for retired RPC strings; Native epoch replacement still clears stale Native detail. DOM tests verify existing Native and secondary views.
-- Handoff: P2 implemented and validated. Remaining stages P3–P5 are not started. Latest P2 commit will be recorded after push.
+- Handoff: P2 completed and pushed as `6c9e72c6788d0d967adfce58e6c37656bed3f3f5` (full 2468/2468; DOM 41/41). P3 checked bridge/importer removal and full 2455/2455 validation are complete. P4–P5 remain.

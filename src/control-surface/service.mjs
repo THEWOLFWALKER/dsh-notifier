@@ -2,7 +2,7 @@
 //
 // Stage 4（S402/S405）：daily control-surface 现在有**显式方法白名单**——Native 窄动作表走 Native
 // service，允许的 secondary 用户功能走 secondary service，其余（旧 sessions.*/bindings.*/members.*/
-// pairing.*/channels.*/tasks.list/questions.*/surface.home/dshIm.import.* 等）一律 `not-supported`。
+// pairing.*/channels.*/tasks.list/questions.*/surface.home 等）一律 `not-supported`。
 // 不再存在「巨型 compatibility switch 的默认分支」把 legacy endpoint 泄漏给已 admitted 客户端。
 import { createSecondarySurfaceService } from './secondary-service.mjs'
 import { isDailyAllowedMethod } from './surface-allowlist.mjs'

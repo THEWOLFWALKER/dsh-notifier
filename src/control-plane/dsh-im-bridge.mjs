@@ -1,204 +1,207 @@
-// EXPERIMENTAL: simulated service/export contract, not verified against current dsh-im.
-// dsh-notifier v0.15 (T22) — optional dsh-im delivery bridge.
-//
-// The host MAY expose an optional `ctx.dshIm` service (send / listBots / listTargets).
-// This bridge is the *only* module that touches it, and it does so defensively. It
-// is NOT a provider adapter: it holds no platform credential, makes no HTTP call,
-// copies no session/permission, and never guesses a bot prefix. It only delegates a
-// user-selected, opaque `(botId, targetId)` reference to the host service.
-//
-// Availability is dynamic: the service can be missing at boot, arrive late, be
-// withdrawn, or be recreated. The bridge therefore re-reads it on every operation
-// (never caches a single object across calls) and guards in-flight sends with a
-// monotonic epoch — a late result from a service that was withdrawn/replaced while
-// a send was airborne is discarded as `unknown`, never reported as accepted.
-//
-// Delivery evidence is honest (three buckets, matching delivery-evidence.mjs):
-//   - `sent === true`            -> accepted  (provider accepted the request; no receipt)
-//   - `sent === false`/rejected  -> rejected  (deterministic non-delivery)
-//   - timeout / abort / ambiguous -> unknown  (the request may already have been sent)
-// Text-only: any media / interactive capability is explicitly rejected (unsupported).
-//
-// This module owns NO durable state (no store key); the opaque target reference is
-// caller/client-held desired. Disabling the bridge leaves dsh-im's own targets and
-// the notifier's own channels untouched.
-
+// dsh-notifier v0.15 Stage 4 — optional dsh-im checked-delivery bridge.
+// Only contractVersion 1 is accepted. Discovery is revalidated before each send;
+// credentials and target routes never cross the bridge boundary. There is no send fallback.
+import { createHash } from 'node:crypto'
 import { readHostService } from '../host/seam.mjs'
 
-const ERROR_CODES = Object.freeze({
-  UNAVAILABLE: 'host-unavailable',
-  NO_TARGET: 'bad-request',
-  UNSUPPORTED: 'not-supported',
-})
+const ERROR_CODES = Object.freeze({ UNAVAILABLE: 'host-unavailable', NO_TARGET: 'bad-request', UNSUPPORTED: 'not-supported' })
+const PRE_SEND_REJECTIONS = new Set(['account-unverified', 'account-changed', 'target-changed', 'capability-unavailable', 'unknown-target', 'unknown-bot', 'fingerprint-mismatch', 'target-digest-mismatch'])
+const FINGERPRINT_RE = /^[a-f0-9]{64}$/
+const str = value => typeof value === 'string' ? value.trim() : ''
+const isRecord = value => value !== null && typeof value === 'object' && !Array.isArray(value)
+const isFingerprint = value => FINGERPRINT_RE.test(str(value))
 
-const str = (value) => (typeof value === 'string' ? value.trim() : '')
-const isRecord = (value) => value !== null && typeof value === 'object'
-
-function dshImError(message, code) {
+function bridgeError(message, code) {
   const error = new Error(message)
   error.code = code
   return error
 }
-
-/** A send that timed out / was cancelled may already have reached the target → unknown. */
+function stableValue(value) {
+  if (Array.isArray(value)) return value.map(stableValue)
+  if (!isRecord(value)) return value
+  return Object.fromEntries(Object.keys(value).sort().map(key => [key, stableValue(value[key])]))
+}
+/** SHA-256(UTF-8 JSON({kind,route})), with object keys sorted. */
+export function expectedTargetDigest(target) {
+  if (!isRecord(target) || !str(target.kind) || !isRecord(target.route)) return null
+  return createHash('sha256').update(JSON.stringify({ kind: str(target.kind), route: stableValue(target.route) }), 'utf8').digest('hex')
+}
+function errorCode(error) { return str(error?.code).replace(/^dsh-im\//, '').toLowerCase() }
 function looksUncertain(error) {
   if (!isRecord(error)) return true
-  const hay = `${str(error.code)} ${str(error.name)} ${str(error.message)}`.toLowerCase()
-  return /timeout|timed.?out|abort|cancel|econnreset|econnrefused|socket closed|网络|超时|中断/.test(hay)
+  return /timeout|timed.?out|abort|cancel|econnreset|econnrefused|socket|network|超时|中断|网络/.test(`${errorCode(error)} ${str(error.name)} ${str(error.message)}`.toLowerCase())
+}
+/** Bound host calls even when the service ignores AbortSignal. */
+async function withDeadline(invoke, { timeoutMs, signal } = {}) {
+  if (signal?.aborted) throw Object.assign(new Error('operation cancelled'), { name: 'AbortError', code: 'ABORT_ERR' })
+  const controller = new AbortController()
+  let timer
+  let removeAbort = () => {}
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      controller.abort()
+      reject(Object.assign(new Error('dsh-im operation timed out'), { name: 'TimeoutError', code: 'ETIMEDOUT' }))
+    }, timeoutMs)
+  })
+  const aborted = signal ? new Promise((_, reject) => {
+    const onAbort = () => {
+      controller.abort()
+      reject(Object.assign(new Error('dsh-im operation cancelled'), { name: 'AbortError', code: 'ABORT_ERR' }))
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+    removeAbort = () => signal.removeEventListener('abort', onAbort)
+  }) : new Promise(() => {})
+  try { return await Promise.race([Promise.resolve().then(() => invoke(controller.signal)), timeout, aborted]) }
+  finally { clearTimeout(timer); removeAbort() }
 }
 
-/**
- * @param {object} deps
- * @param {(ctx?: any) => object|null} [deps.readService] - returns the current ctx.dshIm or null.
- * @param {object|null} [deps.ctx] - cordis context (used only when readService is absent).
- * @param {(message: string) => void} [deps.warn]
- */
-export function createDshImBridge({ readService = null, ctx = null, warn = null } = {}) {
-  const report = (message) => { try { warn?.(message) } catch { /* 诊断绝不致命 */ } }
-
-  // Default reader: defensive host-service read via the centralized seam.
-  let reader = readService
-  if (typeof reader !== 'function') {
-    reader = () => {
-      try { return readHostService(ctx, 'dshIm') } catch { return null }
-    }
-  }
-
-  // ————————————————— live service handle + epoch —————————————————
+export function createDshImBridge({ readService = null, ctx = null, warn = null, readTimeoutMs = 5_000, sendTimeoutMs = 15_000 } = {}) {
+  const report = message => { try { warn?.(message) } catch { /* diagnostics must not break delivery */ } }
+  const reader = typeof readService === 'function' ? readService : () => { try { return readHostService(ctx, 'dshIm') } catch { return null } }
   let epoch = 0
   let current = null
-  /** Re-read the current service; bump epoch whenever its identity changes. */
   const observe = () => {
     let service = null
     try { service = reader() } catch { service = null }
     service = isRecord(service) ? service : null
-    if (service !== current) {
-      current = service
-      epoch += 1
-    }
+    if (service !== current) { current = service; epoch += 1 }
     return service
   }
-
+  const validService = service => service !== null && service.contractVersion === 1
   const status = () => {
     const service = observe()
+    const valid = validService(service)
+    const hasListBots = valid && typeof service.listBots === 'function'
+    const hasDescribeBot = valid && typeof service.describeBot === 'function'
+    const hasListTargets = valid && typeof service.listTargets === 'function'
+    const hasSendChecked = valid && typeof service.sendChecked === 'function'
+    const complete = hasListBots && hasDescribeBot && hasListTargets && hasSendChecked
     return {
-      available: service !== null,
-      reason: service === null ? 'no-dsh-im' : 'ok',
-      hasSend: service !== null && typeof service.send === 'function',
-      hasListBots: service !== null && typeof service.listBots === 'function',
-      hasListTargets: service !== null && typeof service.listTargets === 'function',
+      available: complete,
+      reason: service === null ? 'no-dsh-im' : !valid ? 'unsupported-contract' : complete ? 'ok' : 'incomplete-contract',
+      contractVersion: service?.contractVersion ?? null,
+      hasListBots, hasDescribeBot, hasListTargets, hasSendChecked,
     }
   }
-
-  // ————————————————— safe projection (never leak platform credentials) —————————————————
-  const botOf = (raw) => {
-    if (!isRecord(raw)) return null
-    const botId = str(raw.botId ?? raw.id)
-    if (botId === '') return null
-    const label = str(raw.label ?? raw.name ?? raw.title) || botId
-    const platform = str(raw.platform)
-    return { botId, label, ...(platform !== '' ? { platform } : {}) }
+  const requireService = service => {
+    if (service === null) throw bridgeError('dsh-im 服务不可用', ERROR_CODES.UNAVAILABLE)
+    if (!validService(service)) throw bridgeError('dsh-im contractVersion 必须为 1', ERROR_CODES.UNSUPPORTED)
+    return service
+  }
+  const describe = (service, botId, signal) => {
+    if (typeof service.describeBot !== 'function') throw bridgeError('dsh-im 服务不支持 describeBot', ERROR_CODES.UNSUPPORTED)
+    return withDeadline(() => service.describeBot(botId), { timeoutMs: readTimeoutMs, signal })
+  }
+  const botProjection = (raw, description) => {
+    if (!isRecord(raw) || !isRecord(description)) return null
+    const botId = str(raw.botId ?? raw.id ?? description.botId)
+    if (!botId) return null
+    const channel = str(description.channel ?? raw.channel)
+    const label = str(description.label ?? description.name ?? raw.label ?? raw.name) || botId
+    const accountFingerprint = str(description.accountFingerprint ?? description.fingerprint)
+    const capabilities = Array.isArray(description.capabilities) ? description.capabilities : []
+    return {
+      botId, ...(channel ? { channel } : {}), label,
+      ...(isFingerprint(accountFingerprint) ? { accountFingerprint } : {}),
+      connected: description.connected === true,
+      checked: capabilities.includes('proactive-text-checked') && isFingerprint(accountFingerprint),
+    }
+  }
+  const findBot = async (service, botId, signal) => {
+    const wanted = str(botId)
+    if (!wanted) return null
+    if (typeof service.listBots !== 'function') throw bridgeError('dsh-im 服务不支持 listBots', ERROR_CODES.UNSUPPORTED)
+    const raw = await withDeadline(() => service.listBots(), { timeoutMs: readTimeoutMs, signal })
+    const rows = Array.isArray(raw) ? raw : Array.isArray(raw?.bots) ? raw.bots : []
+    const row = rows.find(item => isRecord(item) && str(item.botId ?? item.id) === wanted)
+    if (!row) return null
+    return botProjection(row, await describe(service, wanted, signal))
+  }
+  const checkedBot = async (service, botId, signal) => {
+    const bot = await findBot(service, botId, signal)
+    if (!bot) throw bridgeError('dsh-im bot 不存在或无法验证', 'not-found')
+    if (bot.checked !== true || bot.connected !== true) throw bridgeError('dsh-im bot 不支持已验证的主动文本投递', 'not-supported')
+    return bot
   }
 
-  const targetOf = (raw) => {
-    if (!isRecord(raw)) return null
-    const targetId = str(raw.targetId ?? raw.id)
-    if (targetId === '') return null
-    const label = str(raw.label ?? raw.name ?? raw.title) || targetId
-    const kind = str(raw.kind ?? raw.channel)
-    return { targetId, label, ...(kind !== '' ? { kind } : {}) }
+  async function listBots({ signal } = {}) {
+    const service = requireService(observe())
+    if (typeof service.listBots !== 'function' || typeof service.describeBot !== 'function') throw bridgeError('dsh-im 服务不支持 bot discovery', ERROR_CODES.UNSUPPORTED)
+    const raw = await withDeadline(() => service.listBots(), { timeoutMs: readTimeoutMs, signal })
+    const rows = Array.isArray(raw) ? raw : Array.isArray(raw?.bots) ? raw.bots : []
+    const output = []
+    for (const row of rows) {
+      const botId = isRecord(row) ? str(row.botId ?? row.id) : ''
+      if (!botId) continue
+      try {
+        const projected = botProjection(row, await describe(service, botId, signal))
+        if (projected) output.push(projected)
+      } catch { /* malformed or unresponsive bots fail closed individually */ }
+    }
+    return output
   }
-
-  /**
-   * Enumerate the host's public bots (stable, opaque ids + safe labels only).
-   * @returns {Promise<Array<{ botId: string, label: string, platform?: string }>>}
-   */
-  async function listBots() {
-    const service = observe()
-    if (service === null) throw dshImError('dsh-im 服务不可用', ERROR_CODES.UNAVAILABLE)
-    if (typeof service.listBots !== 'function') {
-      throw dshImError('当前 dsh-im 服务不支持 listBots', ERROR_CODES.UNSUPPORTED)
-    }
-    const raw = await service.listBots()
-    const rows = Array.isArray(raw) ? raw : (Array.isArray(raw?.bots) ? raw.bots : [])
-    return rows.map(botOf).filter((row) => row !== null)
+  async function listTargets(botId, { signal } = {}) {
+    const service = requireService(observe())
+    if (typeof service.listTargets !== 'function') throw bridgeError('dsh-im 服务不支持 listTargets', ERROR_CODES.UNSUPPORTED)
+    const bot = await checkedBot(service, botId, signal)
+    const raw = await withDeadline(() => service.listTargets(bot.botId), { timeoutMs: readTimeoutMs, signal })
+    const rows = Array.isArray(raw) ? raw : Array.isArray(raw?.targets) ? raw.targets : []
+    return rows.flatMap(target => {
+      if (!isRecord(target)) return []
+      const targetId = str(target.targetId ?? target.id)
+      const digest = expectedTargetDigest(target)
+      if (!targetId || !digest) return []
+      return [{ targetId, label: str(target.label ?? target.name ?? target.title) || targetId, kind: str(target.kind), expectedTargetDigest: digest }]
+    })
   }
-
-  /**
-   * Enumerate the host's public targets for one bot.
-   * @returns {Promise<Array<{ targetId: string, label: string, kind?: string }>>}
-   */
-  async function listTargets(botId) {
-    const service = observe()
-    if (service === null) throw dshImError('dsh-im 服务不可用', ERROR_CODES.UNAVAILABLE)
-    if (typeof service.listTargets !== 'function') {
-      throw dshImError('当前 dsh-im 服务不支持 listTargets', ERROR_CODES.UNSUPPORTED)
-    }
-    const raw = await service.listTargets(str(botId))
-    const rows = Array.isArray(raw) ? raw : (Array.isArray(raw?.targets) ? raw.targets : [])
-    return rows.map(targetOf).filter((row) => row !== null)
-  }
-
-  /**
-   * Delegate one plain-text send to the host dsh-im service.
-   * @param {{ botId: string, targetId: string, text: string, options?: object }} input
-   * @returns {Promise<{ ok: boolean, accepted: boolean, confirmed: false,
-   *   unknown: boolean, rejected: boolean, reason?: string }>}
-   */
-  async function send(input = {}) {
-    const botId = str(input?.botId)
-    const targetId = str(input?.targetId)
-    const text = str(input?.text)
-    const options = input?.options ?? null
-    if (botId === '' || targetId === '') {
-      throw dshImError('未选择 dsh-im 目标（botId/targetId 为空）', ERROR_CODES.NO_TARGET)
-    }
-    if (text === '') throw dshImError('通知正文为空', ERROR_CODES.NO_TARGET)
-    // Text-only: no media / interactive payload may ride along.
-    const hasMedia = options != null && options.media != null
-    if (isRecord(options) && (hasMedia || options.interactive === true || options.card != null)) {
-      throw dshImError('dsh-im 桥接仅支持纯文本投递', ERROR_CODES.UNSUPPORTED)
-    }
-
-    const service = observe()
-    if (service === null) throw dshImError('dsh-im 服务不可用', ERROR_CODES.UNAVAILABLE)
-    if (typeof service.send !== 'function') throw dshImError('当前 dsh-im 服务不支持 send', ERROR_CODES.UNSUPPORTED)
-    const startEpoch = epoch
-
-    let result
+  async function send(input = {}, { signal } = {}) {
+    const botId = str(input.botId), targetId = str(input.targetId), text = str(input.text)
+    const expectedFingerprint = str(input.expectedFingerprint), targetDigest = str(input.expectedTargetDigest)
+    const options = isRecord(input.options) ? input.options : {}
+    if (!botId || !targetId || !text) throw bridgeError('必须选择 bot、私聊目标并填写正文', ERROR_CODES.NO_TARGET)
+    if (!isFingerprint(expectedFingerprint) || !FINGERPRINT_RE.test(targetDigest)) throw bridgeError('缺少有效的账户指纹或目标校验摘要', ERROR_CODES.NO_TARGET)
+    if (options.media != null || options.interactive === true || options.card != null) throw bridgeError('dsh-im checked bridge 仅支持纯文本投递', ERROR_CODES.UNSUPPORTED)
+    const format = options.format === 'markdown' ? 'markdown' : 'plain'
+    const service = requireService(observe())
+    if (typeof service.sendChecked !== 'function') throw bridgeError('dsh-im 服务不支持 sendChecked', ERROR_CODES.UNSUPPORTED)
     try {
-      result = await service.send(botId, targetId, text, options ?? {})
-    } catch (error) {
-      // Timeout/cancel may already have been delivered → unknown; never a blind resend.
-      if (looksUncertain(error)) {
-        return { ok: false, accepted: false, confirmed: false, unknown: true, rejected: false, reason: 'timeout' }
+      const bot = await checkedBot(service, botId, signal)
+      if (bot.accountFingerprint !== expectedFingerprint) return rejected('account-changed')
+      if (typeof service.listTargets !== 'function') throw bridgeError('dsh-im 服务不支持 listTargets', ERROR_CODES.UNSUPPORTED)
+      const rawTargets = await withDeadline(() => service.listTargets(botId), { timeoutMs: readTimeoutMs, signal })
+      const targets = Array.isArray(rawTargets) ? rawTargets : Array.isArray(rawTargets?.targets) ? rawTargets.targets : []
+      const target = targets.find(row => isRecord(row) && str(row.targetId ?? row.id) === targetId)
+      if (!target) return rejected('unknown-target')
+      if (expectedTargetDigest(target) !== targetDigest) return rejected('target-changed')
+      if (observe() !== service) return unknown('service-replaced')
+      const startEpoch = epoch
+      const result = await withDeadline(signalForSend => {
+        if (observe() !== service || epoch !== startEpoch) throw bridgeError('dsh-im 服务在发送前被替换', 'service-replaced')
+        return service.sendChecked(botId, targetId, text, {
+          expectedFingerprint, expectedTargetDigest: targetDigest, format, signal: signalForSend,
+        })
+      }, { timeoutMs: sendTimeoutMs, signal })
+      if (observe() !== service || epoch !== startEpoch) {
+        report('dsh-im checked send 期间服务被替换，晚到结果按 unknown 隔离')
+        return unknown('service-replaced')
       }
-      return { ok: false, accepted: false, confirmed: false, unknown: false, rejected: true, reason: str(error?.message) || 'rejected' }
+      const resultCode = errorCode(result) || errorCode(result?.error) || str(result?.reason).toLowerCase()
+      if (PRE_SEND_REJECTIONS.has(resultCode)) return rejected(resultCode)
+      if (result === true || (isRecord(result) && (result.sent === true || result.accepted === true || result.ok === true))) return accepted()
+      if (result === false || (isRecord(result) && (result.sent === false || result.rejected === true || result.status === 'rejected'))) return rejected(resultCode || 'rejected')
+      return unknown('ambiguous')
+    } catch (error) {
+      if (observe() !== service) return unknown('service-replaced')
+      const code = errorCode(error)
+      if (PRE_SEND_REJECTIONS.has(code)) return rejected(code)
+      if (code === 'not-supported') return rejected('capability-unavailable')
+      if (code === 'not-found') return rejected('unknown-bot')
+      if (looksUncertain(error)) return unknown(code === 'etimedout' || code === 'abort_err' ? 'timeout' : 'uncertain')
+      return unknown('sdk-ambiguous')
     }
-
-    // Service was withdrawn/recreated while the send was airborne → isolate the late result.
-    const after = observe()
-    if (after !== service || epoch !== startEpoch) {
-      report('dsh-im send 迟到结果作废：服务在飞期间被替换，晚到回执按 unknown 隔离（不重发）')
-      return { ok: false, accepted: false, confirmed: false, unknown: true, rejected: false, reason: 'epoch' }
-    }
-
-    const sent = result === true
-      || (isRecord(result) && (result.sent === true || result.ok === true || result.accepted === true))
-    const rejected = result === false
-      || (isRecord(result) && (result.sent === false || result.rejected === true))
-
-    if (sent) return { ok: true, accepted: true, confirmed: false, unknown: false, rejected: false }
-    if (rejected) return { ok: false, accepted: false, confirmed: false, unknown: false, rejected: true, reason: 'rejected' }
-    // Anything else is ambiguous (no clear sent/reject signal) → unknown, never accepted.
-    return { ok: false, accepted: false, confirmed: false, unknown: true, rejected: false, reason: 'ambiguous' }
   }
-
-  return Object.freeze({
-    status,
-    listBots,
-    listTargets,
-    send,
-    get epoch() { return epoch },
-  })
+  function accepted() { return { ok: true, accepted: true, confirmed: false, unknown: false, rejected: false } }
+  function rejected(reason) { return { ok: false, accepted: false, confirmed: false, unknown: false, rejected: true, reason } }
+  function unknown(reason) { return { ok: false, accepted: false, confirmed: false, unknown: true, rejected: false, reason } }
+  return Object.freeze({ status, listBots, listTargets, send, get epoch() { return epoch } })
 }
