@@ -68,21 +68,17 @@ test('admin UI: first-run states (未配置/已配对/测试通知/正常运行)
   }
 })
 
-test('admin UI: personal mode defaults displayed', () => {
-  const html = ADMIN_UI_HTML
-  assert.match(html, /observe \+ approve 已开启/, 'observe+approve default shown')
-  assert.match(html, /converse 可按需开启/, 'converse opt-in noted')
-  assert.match(html, /群聊控制默认关闭/, 'group control off by default')
+test('admin UI: recovery is the sole navigation entry', () => {
+  const nav = ADMIN_UI_HTML.slice(ADMIN_UI_HTML.indexOf('<nav'), ADMIN_UI_HTML.indexOf('</nav>'))
+  assert.ok(nav.includes('data-tab="diagnostics"'))
+  for (const tab of ['members', 'channels', 'sessions', 'bindings']) assert.ok(!nav.includes('data-tab="' + tab + '"'))
 })
-
-test('admin UI: advanced settings hidden by default', () => {
-  const html = ADMIN_UI_HTML
-  assert.match(html, /高级设置默认隐藏/, 'advanced settings hidden')
+test('admin UI: deleted daily pages cannot be activated', () => {
+  for (const id of ['tab-dashboard', 'tab-channels', 'tab-members', 'tab-sessions', 'tab-bindings']) assert.ok(!ADMIN_UI_HTML.includes('id="' + id + '"'))
 })
-
-test('admin UI: QR pairing entry point visible', () => {
-  const html = ADMIN_UI_HTML
-  assert.ok(html.includes('scan') || html.includes('扫码') || html.includes('pair'), 'QR pairing entry present')
+test('admin UI: pairing is absent from recovery markup', () => {
+  assert.ok(!ADMIN_UI_HTML.includes('id="setup"'))
+  assert.ok(!ADMIN_UI_HTML.includes('id="pendingList"'))
 })
 
 test('admin UI: no credential leakage in HTML', () => {

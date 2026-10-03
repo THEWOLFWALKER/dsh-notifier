@@ -9,7 +9,9 @@
 | unused locale properties + health CSS | DELETE | no remaining rendering consumers | locale lint + DOM |
 | control-surface/service.mjs | SHRINK | transport dispatch only | service integration contracts |
 | compatibility-adapter.mjs | KEEP | old Host/API contracts; shared secondary settings | focused compatibility tests |
-| Advanced Console | RECOVERY_ONLY | read-only report view; routine tabs unavailable | markup + diagnostics contracts |
+| Advanced Console | RECOVERY_ONLY | read-only report view; routine markup deleted, startup reads diagnostics only | recovery startup behavior + diagnostics/auth contracts |
 | adapters/** | KEEP | protocol assets | no protocol rewrite |
 | Store core | KEEP | synchronous durable transactions | fault tests |
 | old view-shape tests | DELETE | locked deleted UI; replaced by S2–S5 real React suites | DOM |
+
+P5 gate follow-up: deleted 24 obsolete recovery daily-UI tests plus seven obsolete Native session/helper UI tests and replaced them with public startup/report behavior. Group protocol ingress tests now prove rejection; private message normalization and outbound group notification assets remain covered. Group denial sends no group reply, preventing queued reply growth during the 1025-event QQ flood drill.

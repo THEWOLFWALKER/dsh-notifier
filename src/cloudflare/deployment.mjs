@@ -13,7 +13,7 @@ export function createCloudflareDeploymentService({ store, root, outboundConfig,
   const tunnel = tunnelService ?? createNativeTunnelService({ store })
   const cli = runner ?? createWranglerRunner({ root })
   let job = null, disposed = false
-  let recoveryQueue = []
+  let recoveryQueue = [], recoveryScheduled = false
   const JOB_PREFIX = 'cloud:job:'
   const fingerprint = value => createHash('sha256').update(String(value)).digest('hex')
   const token = () => { const ref = store.get(`${PREFIX}telegram`)?.secretReference; return String((ref ? store.get(ref)?.botToken : outboundConfig.raw('telegram')?.botToken) ?? '').trim() }
@@ -138,7 +138,7 @@ export function createCloudflareDeploymentService({ store, root, outboundConfig,
         if (latest && !record.endpoint) {
           const endpoint = latest.endpoint ?? current.remoteReceipt?.endpoint
           if (!endpoint || latest.versions?.length !== 1) throw error('请检查已有服务的地址', 'recovery-required')
-          record.endpoint = endpoint; record.versionId = latest.versions[0].version_id; record.health = 'unknown'; saveRecord()
+          record.endpoint = endpoint; record.versionId = latest.versions[0].version_id; record.health = 'unknown'; record.secretGeneration = current.configSecretGeneration; saveRecord()
         }
         // A failed readback never proves absence. Only an explicit empty list allows create.
         if (!Array.isArray(deployments)) throw error('暂时无法确认已有服务', 'recovery-required')
@@ -236,9 +236,14 @@ export function createCloudflareDeploymentService({ store, root, outboundConfig,
   const expired = terminal.filter(([,r], i) => i >= 64 || r.updatedAt < Date.now() - 7 * 86400000)
   if (expired.length) mutate(draft => { for (const [k] of expired) delete draft[k] })
   function drainRecovery() {
-    if (disposed || job || !recoveryQueue.length) return
-    const next = recoveryQueue.shift()
-    queueMicrotask(() => { if (!disposed && !job) { try { resume(next) } catch { lastError = '请重试连接设置'; drainRecovery() } } })
+    if (disposed || job || recoveryScheduled || !recoveryQueue.length) return
+    recoveryScheduled = true
+    queueMicrotask(() => {
+      recoveryScheduled = false
+      if (disposed || job) return
+      const next = recoveryQueue.shift()
+      try { resume(next) } catch { lastError = '请重试连接设置'; drainRecovery() }
+    })
   }
   const unfinished = store.keys(JOB_PREFIX).map(k => store.get(k)).filter(r => r?.kind?.startsWith('deploy-') && !['done', 'failed', 'cancel-requested'].includes(r.state))
   recoveryQueue = unfinished.sort((a,b) => a.createdAt - b.createdAt)

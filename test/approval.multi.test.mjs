@@ -166,7 +166,8 @@ test('Control Core：QQ 按钮回调统一裁决；错误 account/chat、群聊�
   assert.equal(wrongUser.ok, true)
   assert.equal(rig.store.get(card2.approvalKey).status, 'pending')
   const group = rig.bus.accept({ channel: 'qq', accountId: 'QQ_APP', chatType: 'private', userId: 'u1', chatId: 'qq-chat-01', chatType: 'group', messageId: 'qq-group', text: 'x', approvalAction: parseApprovalAction(buildApprovalAction('allowed-once', card2.approvalKey, card2.token)) })
-  assert.equal(group.ok, true)
+  assert.equal(group.ok, false)
+  assert.equal(group.reason, 'group_chat_disabled')
   assert.equal(rig.store.get(card2.approvalKey).status, 'pending')
 
   // DingTalk has no confirmed native callback: numbered text remains the safe fallback.

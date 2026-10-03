@@ -778,12 +778,7 @@ test('GROUP_AT_MESSAGE_CREATE：群 @ 消息剥离提及占位；chatId=group_op
     op: 0, t: 'GROUP_AT_MESSAGE_CREATE', s: 4,
     d: { id: 'evt_2', group_openid: 'g_open', content: '<@!123456> 帮我跑测试', author: { member_openid: 'u_open' } },
   })
-  assert.equal(accepted.length, 1)
-  assert.equal(accepted[0].channel, 'qq')
-  assert.equal(accepted[0].userId, 'u_open')
-  assert.equal(accepted[0].chatId, 'g_open')
-  assert.equal(accepted[0].chatType, 'group')
-  assert.equal(accepted[0].text, '帮我跑测试')
+  assert.deepEqual(accepted, [], '群事件不能进入业务消费者')
   await rig.inbound.stop()
 })
 
@@ -796,11 +791,7 @@ test('G-40：@ 占位白名单——三种已证实形态剥净（<@!数字>/<@�
   ws.serverSend({ op: 0, t: 'GROUP_AT_MESSAGE_CREATE', s: 4, d: { id: 'evt_m1', group_openid: 'g_m1', content: '<@!123456>帮我跑测试', author: { member_openid: 'u_open' } } })
   ws.serverSend({ op: 0, t: 'GROUP_AT_MESSAGE_CREATE', s: 5, d: { id: 'evt_m2', group_openid: 'g_m2', content: '<@123456> 帮我跑测试', author: { member_openid: 'u_open' } } })
   ws.serverSend({ op: 0, t: 'GROUP_AT_MESSAGE_CREATE', s: 6, d: { id: 'evt_m3', group_openid: 'g_m3', content: '@小助手 帮我跑测试', author: { member_openid: 'u_open' } } })
-  assert.equal(accepted.length, 3)
-  for (const envelope of accepted) {
-    assert.equal(envelope.text, '帮我跑测试', `形态应剥净（实际: ${envelope.text}）`)
-  }
-  assert.equal(rig.debugLines.length, 0, '已证实形态不应触发 debug 采样日志')
+  assert.deepEqual(accepted, [], '群事件不能进入业务消费者')
   await rig.inbound.stop()
 })
 
@@ -813,11 +804,7 @@ test('G-40：未知 @ 形态保留原文 + debug 出声（不再假定「剥不�
   ws.serverSend({ op: 0, t: 'GROUP_AT_MESSAGE_CREATE', s: 4, d: { id: 'evt_u1', group_openid: 'g_u1', content: '<@x> 帮我跑测试', author: { member_openid: 'u_open' } } })
   // 未知形态二：行首 @名字 无尾随空格（缺「名字结束」判据，剥了会误伤粘连正文）
   ws.serverSend({ op: 0, t: 'GROUP_AT_MESSAGE_CREATE', s: 5, d: { id: 'evt_u2', group_openid: 'g_u2', content: '@小助手帮我跑测试', author: { member_openid: 'u_open' } } })
-  assert.equal(accepted.length, 2)
-  assert.equal(accepted[0].text, '<@x> 帮我跑测试', '未知形态保留原文（@ 残片可见，不静默误剥）')
-  assert.equal(accepted[1].text, '@小助手帮我跑测试')
-  assert.equal(rig.debugLines.length, 2, '每条未知形态各出声一次（真机采样线索）')
-  for (const line of rig.debugLines) assert.match(line, /未命中白名单/, '出声内容应指向白名单未命中')
+  assert.deepEqual(accepted, [], '群事件不能进入业务消费者')
   await rig.inbound.stop()
 })
 
@@ -853,9 +840,7 @@ test('INTERACTION_CREATE：群按钮回调明确标记 group，避免进入控�
       data: { resolved: { button_data: 'ap:allowed-once:ap:demo:2:tok' } },
     },
   })
-  assert.equal(accepted.length, 1)
-  assert.equal(accepted[0].chatType, 'group')
-  assert.equal(accepted[0].chatId, 'g_open')
+  assert.deepEqual(accepted, [], '群事件不能进入业务消费者')
   await rig.inbound.stop()
 })
 

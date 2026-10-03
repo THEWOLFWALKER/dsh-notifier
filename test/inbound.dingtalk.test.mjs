@@ -315,7 +315,7 @@ test('入站消息：data 二次 parse → bus.accept 形状（channel/userId/ch
   })
 })
 
-test('G-06 @ 机器人剥离：行首 @提及 与 命令词 @ 后缀在入站剥净（args 无 @ 残片）', async () => {
+test('private-only: DingTalk group mentions, commands and pairing never reach consumers', async () => {
   const rig = makeRig()
   const accepted = []
   rig.bus.onMessage((envelope) => accepted.push(envelope))
@@ -329,11 +329,7 @@ test('G-06 @ 机器人剥离：行首 @提及 与 命令词 @ 后缀在入站剥
   // 纯 @提及（无正文）→ 剥完为空，按空消息不投递
   pushMessage({ msgId: 'msg_at4', conversationType: '2', text: { content: '@我的机器人 ' } })
   await tick()
-  assert.deepEqual(accepted.map((e) => e.text), [
-    '/status 跑一下',
-    '/pair ABCD-1234',
-    '帮我看下 @同事 的排期',
-  ], '行首机器人提及与命令词 @ 后缀剥净，正文 @ 保留，纯提及不投递')
+  assert.deepEqual(accepted, [], '群普通消息、命令和配对消息均在业务链前拒绝')
 })
 
 test('msgId 去重：服务端重推同 msgId 不二次投递（60s 重推吸收），但每帧仍回 ack', async () => {

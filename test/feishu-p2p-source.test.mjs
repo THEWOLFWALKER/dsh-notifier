@@ -317,9 +317,9 @@ test('#9 群聊跨会话编号作答：oc_G 投递、oc_OTHER 回复 → 仍拒�
   await sleep(30)
   const seen = []
   rig.bus.onMessage((envelope) => { seen.push(envelope.text); return false }, { priority: 99 })
-  rig.bus.accept({ channel: 'feishu', accountId: 'FS_APP', chatType: 'group', userId: 'ouG', chatId: 'oc_OTHER', messageId: 'm2', text: '1' })
+  const admission = rig.bus.accept({ channel: 'feishu', accountId: 'FS_APP', chatType: 'group', userId: 'ouG', chatId: 'oc_OTHER', messageId: 'm2', text: '1' })
   assert.deepEqual(seen, [], '错误 chat 的裸编号被消费（不回对话路由）')
-  assert.ok(rig.instances[0].texts.some((entry) => /原会话/.test(entry.text)), '回执指回原会话')
+  assert.equal(admission.reason, 'group_chat_disabled')
   const result = await pending
   assert.equal(result.answered, false, '群聊跨会话作答不落终态')
   rig.bridge.dispose()

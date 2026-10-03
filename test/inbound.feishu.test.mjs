@@ -284,7 +284,7 @@ test('im.message.receive_v1：文本入站 → bus.accept 规范化 envelope（@
 /** 飞书 mentions 事件负载形态（官方《接收消息内容结构》）：mentions 与 content 同级，
  *  每项 { key: '@_user_N', name: 展示名, id: { open_id, … } }（id 另有字符串旧 schema，
  *  还原只用 key/name）。占位符 @_user_N 的 N 对应 mentions 的序号。 */
-function mentionEvent({ text, mentions, messageId = 'om_m', chatId = 'oc_group', chatType = 'group' }) {
+function mentionEvent({ text, mentions, messageId = 'om_m', chatId = 'oc_private', chatType = 'p2p' }) {
   return {
     sender: { sender_id: { open_id: 'ou_1' } },
     message: {
@@ -340,7 +340,7 @@ test('G-25 命令词粘连提及：/pair@_user_1 code → 命令词 @ 后缀剥�
   await rig.inbound.stop()
 })
 
-test('G-25 行首机器人提及 + 群聊命令：@_user_1 /stop → 还原后剥行首寻址噪音，命令仍可解析', async () => {
+test('G-25 私聊消息的行首提及 + 命令：@_user_1 /stop → 还原后剥行首寻址噪音，命令仍可解析', async () => {
   const rig = makeRig()
   const accepted = []
   rig.bus.onMessage((envelope) => accepted.push(envelope))

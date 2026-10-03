@@ -78,7 +78,7 @@ test('QQ 群 control gate：/stop 与普通文本均消费/回执，不绕过 Co
   assert.equal(agent.calls.followup.length, 0)
   assert.equal(rig.replies.length, 0, 'group messages never enter the conversation listener')
   assert.equal(stopReply.reason, 'group_chat_disabled'); assert.equal(textReply.reason, 'group_chat_disabled')
-  assert.equal(stopReply.reply, '请私聊操作')
+  assert.equal(stopReply.reply, undefined)
   rig.dispose()
 })
 

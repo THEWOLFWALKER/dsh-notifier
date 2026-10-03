@@ -365,15 +365,7 @@ function inboundTypes() {
 }
 function loadAll() {
   setLoading(true)
-  return Promise.all([api('/api/overview'), api('/api/bindings'), api('/api/sessions'), api('/api/channels'), api('/api/members'), api('/api/questions')])
-    .then(function (rs) {
-      state.overview = rs[0]; state.bindings = rs[1]; state.sessions = rs[2]; state.channels = rs[3]; state.members = rs[4]; state.questions = rs[5]
-      draft = null
-      renderDashboard(); renderBindings(); renderSessions(); renderChannels(); renderMembers(); renderPendingQuestions()
-      flash(tr('refreshed', { time: new Date().toLocaleTimeString() }), 'ok')
-    })
-    .catch(function (e) { flash(tr('loadFailed', { error: errText(e) }), 'err') })
-    .then(function () { setLoading(false); renderTokenState() })
+  return loadDiagnostics().then(function () { setLoading(false); renderTokenState() })
 }
 function switchTab(name) {
   name = 'diagnostics'
@@ -485,7 +477,6 @@ function applyAdminMode() {
 }
 function setAdminMode(mode) {
   try { window.localStorage.setItem(MODE_KEY, mode === 'advanced' ? 'advanced' : 'personal') } catch (e) {}
-  applyAdminMode()
 }
 function readTestedState() {
   try { return window.localStorage.getItem(TESTED_KEY) === '1' } catch (e) { return false }
@@ -1767,7 +1758,6 @@ function init() {
   $('#btnRefresh').addEventListener('click', function () { loadAll() })
   var diagBtn = $('#diagRefresh')
   if (diagBtn) diagBtn.addEventListener('click', function () { loadDiagnostics() })
-  applyAdminMode()
   var modeToggle = $('#modeToggle')
   if (modeToggle) modeToggle.addEventListener('click', function () {
     setAdminMode(readAdminMode() === 'advanced' ? 'personal' : 'advanced')
@@ -1804,27 +1794,6 @@ function init() {
     setCandidateToken(launch)
     gateReason = tr('launchInvalid')
   }
-  // 首访向导与验证横幅（事件委托；面板缺按钮时静默）
-  var setupEl0 = $('#setup')
-  if (setupEl0) setupEl0.addEventListener('click', onSetupClick)
-  var banner0 = $('#verifyBanner')
-  if (banner0) banner0.addEventListener('click', onBannerClick)
-  var next0 = $('#nextAction')
-  if (next0) next0.addEventListener('click', onNextActionClick)
-  var skipBtn = $('#setupSkip')
-  if (skipBtn) skipBtn.addEventListener('click', dismissSetup)
-  var finishBtn = $('#setupFinish')
-  if (finishBtn) finishBtn.addEventListener('click', finishSetup)
-  $('#tab-bindings').addEventListener('change', onBindingsChange)
-  $('#tab-bindings').addEventListener('click', onBindingsClick)
-  $('#tab-sessions').addEventListener('click', onSessionsClick)
-  $('#tab-channels').addEventListener('click', onChannelsClick)
-  // 成员页事件委托（R5 审查 R5-2-P1-1：首版漏挂——铸码/删成员/撤码/转正/忽略/改角色整页死键）
-  $('#tab-members').addEventListener('click', onMembersClick)
-  $('#tab-members').addEventListener('change', onMembersChange)
-  // 待处理远程提问结算（事件委托，面板空/缺按钮时静默）
-  $('#pendingQuestionsPanel').addEventListener('click', onQuestionsClick)
-  initNotifyTab()
   renderTokenState()
   loadAll()
 }

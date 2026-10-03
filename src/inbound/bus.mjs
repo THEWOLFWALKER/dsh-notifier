@@ -211,7 +211,7 @@ export function createInboundBus(options = {}) {
      */
     accept(envelope) {
       const admission = privateControlAdmission(envelope)
-      if (!admission.ok) return { ...admission, reply: '请私聊操作' }
+      if (!admission.ok) return admission
       if (isDuplicate(envelope)) {
         warn(`跳过重复入站消息：${envelope.channel}:${envelope.messageId}`)
         return { ok: false, reason: 'duplicate' }

@@ -16,7 +16,7 @@ Tests exercise live services, actual disk/restart state, and real React DOM; sou
 
 Long-run drills: 1000 notification HTTP requests to a local server, 500 admitted private events, 1000 replace/retire cycles, and 1000 Cloud status reads. They assert successful operations and no pending waiter/subscription growth, rather than machine-specific timing.
 
-Runtime identity fences cap at 128 types and observer registrations at 256; new overflow is rejected before source mutation. Health tracks at most 128 types, with 100 maximum entries per type and a default 24-hour TTL. Runtime disposal retires all live senders, invalidates generations, and unsubscribes every source observer. Cloud startup sweeps terminal history to 64 rows / seven days; unfinished claims are retained and resumed serially once per startup. Existing bus/dedup/pairing/import/merge/history caps remain in their owners.
+Runtime identity fences cap at 128 types and observer registrations at 256; new overflow is rejected before source mutation. Health tracks at most 128 types, with 100 maximum entries per type and a default 24-hour TTL. Runtime disposal retires all live senders, invalidates generations, and unsubscribes every source observer. Cloud startup sweeps terminal history to 64 rows / seven days; unfinished claims are retained and resumed serially once per startup. Existing bus/dedup/pairing/import/merge/history caps remain in their owners. Group rejection does not enqueue a reply; provider QQ flood tests exercise 1025 group events without a reply backlog.
 
 ## Evidence limit
 

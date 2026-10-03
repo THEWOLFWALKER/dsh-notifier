@@ -1,16 +1,6 @@
 # 诊断与复现
 
-在「通知与控制 → 诊断」生成诊断报告。报告包含已脱敏的状态摘要，可复制或下载。界面不可用时，按下面的步骤收集版本、配置状态与复现现象。
-
-## 更快：Native「诊断」视图一键生成
-
-从 v0.14 起，Native「通知与控制 → 诊断」可以直接生成上面这份报告：
-
-- 顶部先回答三件事：**是否需要处理、为什么、最近一次检查**；
-- 分层显示 Host、存储、渠道摘要、能力可用性、最近失败；
-- 「生成诊断报告」把已经脱敏的 canonical 快照序列化成一段 markdown（front-matter 结论 + fenced JSON），可复制或下载。
-
-因此下面的手工收集是**兜底路径**：Native UI 不可用，或问题本身就出在 UI / 宿主渲染时再用。
+在「通知与私聊 → 更多 → 帮助」生成支持报告。报告包含脱敏状态摘要，可复制或下载。页面只按需读取，不进行修复或重放。Native 不可用时，可从恢复页读取同一诊断服务，或按下文手工收集版本、配置状态与复现现象。
 
 ## 先做什么
 
@@ -62,7 +52,7 @@ Git
 只保留能触发问题的最短步骤，例如：
 
 ```text
-1. 打开 Notify & Control
+1. 打开 Notify & Private chat
 2. 进入 Telegram
 3. 修改 chatId
 4. 保存
@@ -111,7 +101,7 @@ DSH CLI / profile 命令按当前环境可用能力执行。
 
 ```text
 Plugins 是否能看到 dsh-notifier
-Sidebar 是否有 Notify & Control
+Sidebar 是否有 Notify & Private chat
 client.js 是否存在于实际安装包
 浏览器/Host Client 是否有 slot/module error
 页面是空白、报错还是旧版 UI

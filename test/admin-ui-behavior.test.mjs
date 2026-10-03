@@ -225,7 +225,7 @@ test('fragment 启动凭证：/#token= 静默验证、先清地址栏、成功�
   assert.equal(rig.prompts().length, 0, '绝不弹 window.prompt')
   assert.equal(rig.store.getItem('dsh-admin-session-token'), 'LAUNCH-1', '验证成功后写 sessionStorage')
   assert.equal(rig.localStore.has('dsh-admin-session-token'), false, 'token 绝不写 localStorage')
-  assert.equal(auths.length, 7, 'loadAll 6 个 API + 1 个 SSE 连接均携带启动 token')
+  assert.equal(auths.length, 1, '恢复报告请求携带启动 token')
   assert.ok(auths.every((a) => a === 'Bearer LAUNCH-1'))
 })
 
@@ -274,7 +274,7 @@ test('fragment 解析：仅认 #token= 参数；query 里的 token 样串不被�
     'clearFragment 只去 fragment（保留 path+query）')
 })
 
-test('无 token 首访：解锁门单飞挡住 loadAll+SSE（7 请求共享一扇门），提交后全部放行', async () => {
+test('无 token 首访：解锁门单飞挡住 loadAll+SSE，提交后全部放行', async () => {
   const rig = boot()
   const auths = []
   rig.setFetch(async (url, init) => {
@@ -284,13 +284,13 @@ test('无 token 首访：解锁门单飞挡住 loadAll+SSE（7 请求共享一�
   })
   rig.init()
   await settle()
-  assert.equal(rig._gateShows(), 1, '6 个并行 API + SSE 共享同一扇解锁门')
+  assert.equal(rig._gateShows(), 1, '报告读取打开解锁门')
   assert.equal(auths.length, 0, '解锁前不发出任何带凭证请求')
   assert.equal(rig.prompts().length, 0, '绝不弹 window.prompt')
   assert.equal(rig.els.get('#gate').hidden, false, '门可见')
   driveGate(rig, 'GATE-OK')
   await settle()
-  assert.equal(auths.length, 7, '提交后 6 个 API + SSE 全部放行')
+  assert.equal(auths.length, 1, '提交后报告请求放行')
   assert.ok(auths.every((a) => a === 'Bearer GATE-OK'))
   assert.equal(rig.store.getItem('dsh-admin-session-token'), 'GATE-OK')
   assert.equal(rig.els.get('#gate').hidden, true, '解锁后门收起')
@@ -455,7 +455,7 @@ test('SSE 首访缺 token：与并发 api 共享单飞解锁门（不叠门）�
   driveGate(rig, 'NEW')
   await load
   await settle()
-  assert.equal(auths.length, 7, '6 个并行 api + 1 个 SSE 连接')
+  assert.equal(auths.length, 2, '报告请求与 SSE 均使用解锁凭证')
   assert.ok(auths.every((a) => a === 'Bearer NEW'), '所有请求都用解锁得到的 token')
   assert.equal(rig.store.getItem('dsh-admin-session-token'), 'NEW', 'SSE 连接成功后会话持久化')
 })
@@ -587,71 +587,17 @@ test('静态契约：窄屏与无障碍——viewport、≤768px 媒体查询、
   assert.ok(html.includes('prefers-reduced-motion'), '动效应尊重 prefers-reduced-motion')
 })
 
-test('静态契约：向导/导航 data-tab 均指向真实存在的标签页容器', () => {
-  const html = ADMIN_UI_HTML
-  const tabButtonRe = /<button[^>]*class="[^"]*tabbtn[^"]*"[^>]*data-tab="([^"]+)"/g
-  const navSection = html.slice(html.indexOf('<nav'), html.indexOf('</nav>'))
-  const navTabs = [...navSection.matchAll(tabButtonRe)].map((m) => m[1])
-  for (const t of ['dashboard', 'channels', 'members', 'notify', 'bindings', 'sessions']) {
-    assert.ok(navTabs.includes(t), 'nav 含 ' + t)
-  }
-  const doneSection = html.slice(html.indexOf('id="setupPane4"'), html.indexOf('class="setup-foot"'))
-  const doneTabs = [...doneSection.matchAll(tabButtonRe)].map((m) => m[1])
-  assert.ok(doneTabs.includes('channels') && doneTabs.includes('members'), '完成页直达渠道与成员')
-  for (const t of doneTabs) assert.ok(navTabs.includes(t), '完成页引用的 tab 存在：' + t)
-  for (const t of navTabs) assert.ok(html.includes('id="tab-' + t + '"'), 'tab 容器存在：' + t)
-})
 
-test('静态契约：首访向导四步结构齐备，主按钮文案即完成条件', () => {
-  const html = ADMIN_UI_HTML
-  assert.ok(html.includes('id="setup"'), '向导容器存在')
-  for (const s of ['1', '2', '3', '4']) assert.ok(html.includes('data-step="' + s + '"'), '步骤轨 ' + s)
-  for (const s of ['1', '2', '3', '4']) assert.ok(html.includes('id="setupPane' + s + '"'), '步骤面板 ' + s)
-  assert.ok(html.includes('id="setupGoTest"'), '保存并测试按钮存在')
-  assert.ok(html.includes('保存并发送测试通知'), '主按钮文案即完成条件')
-  assert.ok(html.includes('id="setupSkip"'), '可跳过（不阻塞进入管理台）')
-  assert.ok(html.includes('先把通知送到你手上'), '向导目标一句话')
-})
 
-test('静态契约：首屏四态进度轨、个人模式默认、高级设置显式开启', () => {
-  const html = ADMIN_UI_HTML
-  for (const label of ['未配置', '已保存', '已测试', '正常运行']) {
-    assert.ok(html.includes(label), '进度轨含状态 ' + label)
-  }
-  assert.match(html, /id="modeToggle"[^>]*>打开高级设置</, '高级设置必须有明确入口')
-  assert.match(html, /class="tabbtn advanced-tab"[^>]*data-tab="bindings"[^>]*hidden/, '绑定矩阵默认隐藏')
-  assert.match(html, /class="tabbtn advanced-tab"[^>]*data-tab="sessions"[^>]*hidden/, '会话默认隐藏')
-  assert.ok(html.includes('MODE_KEY') && html.includes("'advanced'"), '模式切换必须是显式个人/高级状态')
-})
 
-test('静态契约：YAML 仅作为高级入口，空通道状态给出字段配置指引', () => {
-  const html = ADMIN_UI_HTML
-  assert.ok(html.includes('YAML 仅作为高级入口'), 'YAML 不作为默认路径')
-  assert.ok(html.includes('按字段配置'), '空状态指向字段驱动的通道页')
-  assert.ok(html.includes('YAML 仍可用于自动部署与高级配置，但不是默认路径'), '向导页脚说清 YAML 定位')
-  assert.ok(html.includes('打开高级设置'), '界面说明高级设置入口')
-})
 
-test('静态契约：测试通知成功/失败均给出下一步与重试文案', () => {
-  const html = ADMIN_UI_HTML
-  assert.ok(html.includes('下一步：回首页确认运行状态'), '成功测试给出后续路径')
-  assert.ok(html.includes('检查必填凭证后重试'), '失败测试给出可执行重试路径')
-  assert.ok(html.includes('测试失败：'), '异常响应可见')
-  assert.ok(html.includes('保存成功不等于通知可达'), '向导明确「保存 ≠ 可达」')
-})
 
-test('静态契约：首访快速路径——向导完成页直达渠道/成员，解锁门说清回环与存储边界', () => {
-  const html = ADMIN_UI_HTML
-  const doneSection = html.slice(html.indexOf('id="setupPane4"'), html.indexOf('class="setup-foot"'))
-  assert.match(doneSection, /data-tab="channels"/, '完成页可去配置手机回复')
-  assert.match(doneSection, /data-tab="members"/, '完成页可去配对成员')
-  assert.ok(html.includes('仅 127.0.0.1 回环可访问'), '解锁门标明仅本机回环')
-  assert.ok(html.includes('绝不写入 localStorage'), '解锁门说清 token 存储边界')
-  assert.ok(html.includes('observe + approve 已开启'), '个人模式默认 observe+approve')
-  assert.ok(html.includes('converse 可按需开启'), 'converse 按需开启')
-  assert.ok(html.includes('群聊控制默认关闭'), '群聊控制默认关闭')
-  assert.ok(html.includes('高级设置默认隐藏'), '高级设置默认隐藏')
-})
+
+
+
+
+
+
 
 // ————————————————— F. 首访向导行为（交付包核心链路） —————————————————
 
@@ -680,339 +626,45 @@ function makeInput(key, value, required) {
   return el
 }
 
-test('首访向导：无已启用出站 + 未验证 → 向导显示，推荐瓷砖在前、入站不进向导', () => {
-  const rig = boot()
-  rig._setOverview(makeOverview({ outChannels: [outRow('bark', false, false)] }))
-  rig._setChannels([
-    { type: 'ntfy', direction: 'outbound', configured: false, fields: {}, config: {} },
-    { type: 'bark', direction: 'outbound', configured: false, fields: { key: { required: true } }, config: {} },
-    { type: 'feishu', direction: 'inbound', configured: false, fields: {}, config: {} },
-  ])
-  const rail = ['1', '2', '3', '4'].map((s) => { const el = makeElement('li'); el.setAttribute('data-step', s); return el })
-  rig.lists.set('#setupRail [data-step]', rail)
-  rig.renderDashboard()
-  assert.equal(rig.els.get('#setup').hidden, false, '向导显示')
-  const tiles = rig.els.get('#setupTiles').innerHTML
-  assert.ok(tiles.includes('data-setup-type="bark"'), '渠道瓷砖渲染')
-  assert.ok(tiles.includes('推荐'), '推荐渠道带推荐标')
-  assert.ok(tiles.indexOf('bark') < tiles.indexOf('ntfy'), '推荐渠道排在普通渠道前')
-  assert.ok(!tiles.includes('data-setup-type="feishu"'), '入站渠道不进首访向导')
-  assert.ok(tiles.includes('全部 2 个渠道'), '非推荐渠道收进展开区')
-  assert.ok(rail[0].classList.contains('current') && !rail[0].classList.contains('done'), '步骤轨定位第 1 步')
-})
 
-test('首访向导：选渠道后进入填凭证步，必填字段标星、描述入 placeholder', () => {
-  const rig = boot()
-  rig._setChannels([{ type: 'bark', direction: 'outbound', configured: false, fields: { key: { required: true, desc: 'Bark 设备 key' }, barkUrl: { required: false } }, config: {} }])
-  rig.setupSelect('bark')
-  assert.equal(rig._setupStep(), 2)
-  assert.equal(rig.els.get('#setupPane1').hidden, true)
-  assert.equal(rig.els.get('#setupPane2').hidden, false)
-  assert.equal(rig.els.get('#setupFormTitle').textContent, '填写 Bark 凭证')
-  const form = rig.els.get('#setupForm').innerHTML
-  assert.ok(form.includes('data-sf="key"'), '字段行渲染')
-  assert.ok(form.includes('data-req="1"'), '必填字段带标记')
-  assert.ok(form.includes('Bark 设备 key'), '字段描述入 placeholder')
-  assert.ok(form.indexOf('data-sf="key"') < form.indexOf('data-sf="barkUrl"'), '必填字段排在前')
-})
 
-test('首访向导：必填缺失 / 无修改（*** 未动）不发出任何请求', () => {
-  const rig = boot()
-  rig.setToken('T')
-  rig._setChannels([{ type: 'bark', direction: 'outbound', configured: false, fields: { key: { required: true } }, config: {} }])
-  rig.setupSelect('bark')
-  let fetches = 0
-  rig.setFetch(async () => { fetches += 1; return resp(200, {}) })
-  const input = makeInput('key', '', true)
-  rig.lists.set('#setupForm input[data-sf]', [input])
-  rig.setupSave(true, makeElement('button'))
-  assert.match(rig.els.get('#setupMsg2').textContent, /必填字段未填写：key/)
-  assert.equal(fetches, 0, '必填缺失不发请求')
-  input.value = '***'
-  rig.setupSave(false, makeElement('button'))
-  assert.match(rig.els.get('#setupMsg2').textContent, /没有修改的字段/)
-  assert.equal(fetches, 0, '*** 未修改不提交')
-})
 
-test('首访向导全链路：PUT 出站配置 → 当场真实测试 → 完成步 + tested 落库 + 向导收起', async () => {
-  const rig = boot()
-  rig.setToken('T')
-  rig._setChannels([{ type: 'bark', direction: 'outbound', configured: false, fields: { key: { required: true } }, config: {} }])
-  rig._setOverview(makeOverview({ outChannels: [outRow('bark', false, false)] }))
-  rig.setupSelect('bark')
-  const input = makeInput('key', 'DEVICEKEY', true)
-  rig.lists.set('#setupForm input[data-sf]', [input])
-  const calls = []
-  rig.setFetch(async (url, init) => {
-    calls.push({ url, method: init.method, body: init.body })
-    if (init.method === 'PUT') return resp(200, { type: 'bark', saved: true, direction: 'outbound' })
-    if (url.endsWith('/test')) return resp(200, { ok: true, detail: 'HTTP 200' })
-    return resp(200, okBody(url))
-  })
-  const btn = makeElement('button')
-  rig.setupSave(true, btn)
-  await settle()
-  const put = calls.find((c) => c.method === 'PUT')
-  assert.equal(put.url, '/api/channels/outbound/bark', '出站保存走方向 API')
-  assert.deepEqual(JSON.parse(put.body), { config: { key: 'DEVICEKEY' } }, '字段级 payload 正确')
-  assert.ok(calls.some((c) => c.url === '/api/channels/outbound/bark/test' && c.method === 'POST'),
-    '保存后当场发送真实测试通知')
-  assert.equal(rig.localStore.getItem('dsh-admin-first-run-tested'), '1', '送达事实落 localStorage（本浏览器已验证）')
-  assert.equal(rig.els.get('#setupPane4').hidden, false, '进入完成步')
-  assert.equal(rig.els.get('#setupPane3').hidden, true)
-  assert.match(rig.els.get('#setupDoneDetail').textContent, /送达回执：HTTP 200/)
-  assert.equal(rig.els.get('#setup').hidden, true, 'loadAll 刷新后向导整体收起（初始化完成）')
-  assert.equal(btn.disabled, false, '按钮恢复')
-})
 
-test('首访向导：测试失败保留输入并给出重试路径，「重新发送」直接再发真实测试', async () => {
-  const rig = boot()
-  rig.setToken('T')
-  rig._setChannels([{ type: 'bark', direction: 'outbound', configured: false, fields: { key: { required: true } }, config: {} }])
-  rig.setupSelect('bark')
-  const input = makeInput('key', 'BADKEY', true)
-  rig.lists.set('#setupForm input[data-sf]', [input])
-  let testCalls = 0
-  rig.setFetch(async (url, init) => {
-    if (init.method === 'PUT') return resp(200, { type: 'bark', saved: true })
-    if (url.endsWith('/test')) { testCalls += 1; return resp(200, { ok: false, detail: 'HTTP 401: unauthorized' }) }
-    return resp(200, okBody(url))
-  })
-  rig.setupSave(true, makeElement('button'))
-  await settle()
-  assert.equal(testCalls, 1)
-  assert.match(rig.els.get('#setupTestState').innerHTML, /测试失败：HTTP 401: unauthorized。请检查必填凭证后重试，输入已保留。/)
-  assert.equal(rig.localStore.has('dsh-admin-first-run-tested'), false, '失败不得标记已验证')
-  assert.equal(input.value, 'BADKEY', '表单输入保留')
-  const retestBtn = makeElement('button')
-  rig.setupTest(retestBtn)
-  await settle()
-  assert.equal(testCalls, 2, '重试直接再发真实测试')
-  assert.equal(retestBtn.disabled, false, '重试按钮恢复')
-})
 
-test('首访向导：state 写入失败（saved:false）回退到表单步并给出存储不可用提示', async () => {
-  const rig = boot()
-  rig.setToken('T')
-  rig._setChannels([{ type: 'bark', direction: 'outbound', configured: false, fields: { key: { required: true } }, config: {} }])
-  rig.setupSelect('bark')
-  rig.lists.set('#setupForm input[data-sf]', [makeInput('key', 'K', true)])
-  rig.setFetch(async (url, init) => (init.method === 'PUT' ? resp(200, { type: 'bark', saved: false }) : resp(200, okBody(url))))
-  rig.setupSave(true, makeElement('button'))
-  await settle()
-  assert.equal(rig._setupStep(), 2, '回退到表单步')
-  assert.match(rig.els.get('#setupMsg2').textContent, /写入失败：state 存储不可用/)
-})
 
-test('首访向导：「稍后再说」持久关闭向导且不阻塞进入管理台', () => {
-  const rig = boot()
-  rig._setOverview(makeOverview({ outChannels: [outRow('bark', false, false)] }))
-  rig._setChannels([])
-  rig.renderDashboard()
-  assert.equal(rig.els.get('#setup').hidden, false, '向导初始显示')
-  rig.dismissSetup()
-  assert.equal(rig.localStore.getItem('onboard_dismissed'), '1')
-  assert.equal(rig.els.get('#setup').hidden, true, 'dismiss 后向导隐藏')
-})
 
-test('验证横幅：已启用出站但本浏览器未验证 → 横幅显示；当场测试通过后收起', async () => {
-  const rig = boot()
-  rig.setToken('T')
-  rig._setOverview(makeOverview({ outChannels: [outRow('bark', true, true)] }))
-  rig._setChannels([])
-  rig.renderDashboard()
-  assert.equal(rig.els.get('#verifyBanner').hidden, false, '已启用未验证 → 横幅显示（升级老用户路径）')
-  assert.equal(rig.els.get('#setup').hidden, true, '升级用户不再强弹三步向导')
-  rig.setFetch(async (url, init) => (url.endsWith('/test') ? resp(200, { ok: true }) : resp(200, okBody(url))))
-  await rig.bannerTest(makeElement('button'))
-  assert.equal(rig.localStore.getItem('dsh-admin-first-run-tested'), '1')
-  assert.equal(rig.els.get('#verifyBanner').hidden, true, '验证通过后横幅收起')
-})
+
+
+
+
+
+
+
+
 
 // ————————————————— G. 首页渲染 —————————————————
 
-test('首页英雄区：四态进度（未配置 → 已保存 → 已测试 → 正常运行）与信号塔亮暗', () => {
-  const rig = boot()
-  const rail = ['unconfigured', 'saved', 'tested', 'ready'].map((s) => {
-    const el = makeElement('span')
-    el.setAttribute('data-hstate', s)
-    return el
-  })
-  rig.lists.set('#heroRail [data-hstate]', rail)
-  rig._setChannels([])
-  // 态 1：未配置
-  rig._setOverview(makeOverview({ outChannels: [outRow('bark', false, false)] }))
-  rig.renderDashboard()
-  assert.equal(rig.els.get('#heroState').textContent, '尚未配置通知渠道')
-  assert.ok(rail[0].classList.contains('current') && !rail[0].classList.contains('done'), '未配置为当前节点')
-  assert.ok(!rail[3].classList.contains('current'))
-  assert.ok(rig.els.get('#heroBeacon').className.includes('dim'), '未就绪信号塔暗态')
-  // 态 2：已保存未测试
-  rig._setOverview(makeOverview({ outChannels: [outRow('bark', true, false)] }))
-  rig.renderDashboard()
-  assert.equal(rig.els.get('#heroState').textContent, '已保存 · 待发送测试通知')
-  assert.ok(rail[0].classList.contains('done') && rail[1].classList.contains('current'))
-  // 态 3：已测试未并入运行时
-  rig.localStore.setItem('dsh-admin-first-run-tested', '1')
-  rig.renderDashboard()
-  assert.equal(rig.els.get('#heroState').textContent, '已验证送达 · 重启后并入投递')
-  assert.ok(rail[2].classList.contains('current'))
-  // 态 4：正常运行
-  rig._setOverview(makeOverview({ outChannels: [outRow('bark', true, true)] }))
-  rig.renderDashboard()
-  assert.equal(rig.els.get('#heroState').textContent, '通知链路正常')
-  assert.ok(rail[3].classList.contains('current') && rail[0].classList.contains('done'))
-  assert.equal(rig.els.get('#heroBeacon').className, 'beacon', '就绪后信号塔亮态')
-})
 
-test('下一步行动：按链路状态给出唯一主线动作（配置 → 测试 → 可选成员 → 就绪）', () => {
-  const rig = boot()
-  rig._setChannels([])
-  rig._setOverview(makeOverview({ outChannels: [outRow('bark', false, false)], members: 0 }))
-  rig.renderDashboard()
-  let html = rig.els.get('#nextAction').innerHTML
-  assert.match(html, /第一步：配置一个通知渠道/)
-  assert.ok(html.includes('data-next="setup"'))
-  rig._setOverview(makeOverview({ outChannels: [outRow('bark', true, false)], members: 0 }))
-  rig.renderDashboard()
-  html = rig.els.get('#nextAction').innerHTML
-  assert.match(html, /发送测试通知完成初始化/)
-  assert.ok(html.includes('data-next="setup"'))
-  rig.localStore.setItem('dsh-admin-first-run-tested', '1')
-  rig._setOverview(makeOverview({ outChannels: [outRow('bark', true, true)], members: 0 }))
-  rig.renderDashboard()
-  html = rig.els.get('#nextAction').innerHTML
-  assert.match(html, /可选：配对成员/)
-  assert.ok(html.includes('data-next="members"'))
-  rig._setOverview(makeOverview({ outChannels: [outRow('bark', true, true)], members: 2 }))
-  rig.renderDashboard()
-  assert.match(rig.els.get('#nextAction').innerHTML, /一切就绪/)
-})
 
-test('旧 overview（无 members 字段）时 UI 不崩，按 0 成员降级', () => {
-  const rig = boot()
-  rig._setChannels([])
-  const oldOverview = makeOverview({ outChannels: [] })
-  delete oldOverview.members
-  rig._setOverview(oldOverview)
-  let threw = false
-  try { rig.renderDashboard() } catch (e) { threw = true }
-  assert.equal(threw, false, 'overview 无 members 字段时不应崩')
-  assert.equal(rig.els.get('#statMembers').textContent, '–', '无 members 数据时成员统计显示 –（占位符）')
-})
 
-test('健康分组：渠道类型经 esc 转义，注入串不进入 DOM', () => {
-  const rig = boot()
-  rig._setChannels([])
-  rig._setOverview(makeOverview({
-    outChannels: [{ type: '<img src=x onerror=alert(1)>', direction: 'outbound', configured: false, enabled: false }],
-  }))
-  rig.renderDashboard()
-  const html = rig.els.get('#outGroups').innerHTML
-  assert.ok(!html.includes('<img'), '不注入 HTML')
-  assert.ok(html.includes('&lt;img'), '以转义形式呈现')
-})
+
+
+
+
 
 // ————————————————— H. 保留契约（危险确认 / 结算编码 / 提问面板 / 角标 / 剪贴板） —————————————————
 
-test('危险操作确认：撤销配对码必须二次确认，避免误触造成不可恢复失效', () => {
-  const script = extractScript(ADMIN_UI_HTML)
-  const marker = "var revokeId = memberKeyOf(btn, 'data-prevoke')"
-  const start = script.indexOf(marker)
-  assert.ok(start >= 0, '成员页应包含撤销配对码处理')
-  const end = script.indexOf("api('/api/pairing/'", start)
-  assert.ok(end > start, '撤销请求应位于处理分支中')
-  const block = script.slice(start, end)
-  assert.match(block, /window\.confirm\(/, '撤销配对码前必须调用 confirm')
-  assert.match(block, /立即失效|无法恢复/, '确认文案应说明不可逆影响')
-})
 
-test('危险操作确认：忽略待确认绑定需明确确认，避免误删待接入身份', () => {
-  const script = extractScript(ADMIN_UI_HTML)
-  const marker = "var dismissKey = memberKeyOf(btn, 'data-pdismiss')"
-  const start = script.indexOf(marker)
-  assert.ok(start >= 0, '成员页应包含忽略待确认绑定处理')
-  const end = script.indexOf("api('/api/members/'", start)
-  assert.ok(end > start, '忽略请求应位于处理分支中')
-  const block = script.slice(start, end)
-  assert.match(block, /window\.confirm\(/, '忽略待确认绑定前必须调用 confirm')
-  assert.match(block, /重新触发|当前请求将被删除/, '确认文案应说明忽略影响')
-})
 
-test('远程提问结算：POST 传对象避免 api 层二次 JSON 编码', () => {
-  const script = extractScript(ADMIN_UI_HTML)
-  const start = script.indexOf("api('/api/questions/'")
-  assert.ok(start >= 0, '应存在远程提问结算请求')
-  const end = script.indexOf('.then(function (d)', start)
-  const block = script.slice(start, end > start ? end : start + 500)
-  assert.match(block, /method:\s*'POST'/)
-  assert.match(block, /body:\s*body\b/, '结算请求应把对象交给 api() 统一序列化')
-  assert.doesNotMatch(block, /body:\s*JSON\.stringify\(body\)/, '禁止预序列化导致服务端收到 JSON 字符串')
-})
 
-test('阶段2A：loadAll 渲染面板，仅掩码 ref/聊天，token 与完整标识绝不进 HTML，且转义注入', async () => {
-  const rig = boot()
-  rig.setToken('TKN12345precious')
-  const travialPayload = [
-    {
-      ref: '0f0f0f0f0f0f',
-      question: '选图标 <img src=x onerror=alert(1)>',
-      options: ['测试', '生产'],
-      multiSelect: false,
-      status: 'pending',
-      agent: 'agent-abc123',
-      source: [{ channel: 'telegram', chat: 'chat-111111', user: 'user-222222' }],
-      createdAt: 1, expiresAt: 2,
-    },
-  ]
-  rig.setFetch(async (url) => {
-    if (url === '/api/questions') return resp(200, travialPayload)
-    if (url === '/api/overview') return resp(200, { channels: [], sessions: {}, agents: {}, members: { total: 0 } })
-    return resp(200, { ok: true })
-  })
-  await rig.loadAll()
-  const html = rig.els.get('#pendingQuestionsPanel').innerHTML
-  assert.match(html, /采用此项/, '每个选项提供采用按钮')
-  assert.match(html, /驳回/, '提供驳回（交还桌面）按钮')
-  assert.match(html, /0f0f0f0f0f0f/, 'ref 短段入面板')
-  assert.match(html, /chat-111111/, '掩码 chat 入面板')
-  assert.ok(!html.includes('TKN12345precious'), 'token 绝不进入 DOM')
-  assert.ok(!html.includes('user-222222full') && !html.includes('900113'), '完整原始标识绝不进入 DOM')
-  assert.ok(!html.includes('<img'), 'option/question 文本经 esc 转义，不注入 HTML')
-  assert.ok(html.includes('&lt;img'), '注入串以转义形式呈现')
-})
 
-test('阶段2A：无待决问题/空响应时面板显示空态文案，不崩', async () => {
-  const rig = boot()
-  rig.setToken('TKN')
-  rig.setFetch(async (url) => {
-    if (url === '/api/questions') return resp(200, [])
-    if (url === '/api/overview') return resp(200, { channels: [], sessions: {}, agents: {}, members: { total: 0 } })
-    return resp(200, { ok: true })
-  })
-  await rig.loadAll()
-  assert.match(rig.els.get('#pendingQuestionsPanel').innerHTML, /暂无待处理远程提问/, '空面板给出空态提示')
-})
 
-test('G-14：通道卡片角标——出站/入站已配置均标「重启后生效」（warn），未配置标「未配置」', async () => {
-  const rig = boot()
-  rig.setToken('TKN')
-  const out = { type: 'telegram', direction: 'outbound', configured: true, enabled: true, editable: true, restartRequired: true, config: { botToken: '***' }, fields: {} }
-  // v0.13（C11.5 / R6）：入站凭证只在下次启动建立 transport，restartRequired 恒 true。
-  const inn = { type: 'feishu', direction: 'inbound', configured: true, enabled: true, active: false, editable: true, restartRequired: true, config: { appId: '***' }, fields: {} }
-  const none = { type: 'pushplus', direction: 'outbound', configured: false, enabled: false, editable: true, restartRequired: true, config: {}, fields: {} }
-  rig.setFetch(async (url) => {
-    if (url === '/api/channels') return resp(200, [out, inn, none])
-    if (url === '/api/overview') return resp(200, { channels: [out, inn, none], sessions: {}, agents: {}, members: { total: 0 } })
-    if (url === '/api/questions') return resp(200, [])
-    return resp(200, { ok: true })
-  })
-  await rig.loadAll()
-  const html = rig.els.get('#channelCards').innerHTML
-  assert.match(html, /badge warn">重启后生效/, `已配置卡片应标「重启后生效」（实际：${html.slice(0, 200)}）`)
-  assert.match(html, /badge none">未配置/, '未配置卡片应标「未配置」')
-  assert.doesNotMatch(html, /badge ok">已配置/, '已配置的入站也必须提示重启后生效，不得谎称已生效')
-})
+
+
+
+
+
+
 
 test('入口复制：Clipboard 成功与失败/不可用均给出可读反馈', async () => {
   const rig = boot()
@@ -1029,4 +681,15 @@ test('入口复制：Clipboard 成功与失败/不可用均给出可读反馈', 
   rig.window.navigator.clipboard = undefined
   await rig.copyEntryPoint()
   assert.match(rig.els.get('#globalMsg').textContent, /当前地址已显示在顶部，可手动复制/)
+})
+
+
+test('recovery entry reads only the shared report and has no daily administration markup', async () => {
+  const rig = boot(), calls = []
+  rig.setToken('RECOVERY')
+  rig.setFetch(async (url, init) => { calls.push([url, init.method ?? 'GET']); return resp(200, {}) })
+  rig.init(); await settle()
+  assert.deepEqual(calls, [['/api/diagnostics', 'GET']])
+  assert.match(ADMIN_UI_HTML, /data-mode="recovery"/)
+  for (const id of ['setup', 'tab-dashboard', 'tab-channels', 'tab-members', 'tab-bindings', 'tab-sessions']) assert.ok(!ADMIN_UI_HTML.includes('id="' + id + '"'))
 })

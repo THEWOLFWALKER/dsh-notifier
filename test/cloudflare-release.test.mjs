@@ -335,3 +335,17 @@ test('P3 apply failure after durable settings resumes without another remote dep
     assert.equal(recovered.status().deployments[0].state, 'bound')
   } finally { recovered?.dispose(); r.cleanup() }
 })
+test('F03 uncertain create without endpoint readback remains recoverable and never recreates blindly', async () => {
+  const r = rig(); let recovered, attempts = 0
+  try {
+    await logged(r.service)
+    r.runner.deployWorker = async () => { attempts++; throw Error('response unavailable') }
+    r.service.deploy({ type: 'telegram', accountId: ACCOUNT, botToken: BOT }); await idle(r.service)
+    r.runner.readDeployment = async () => [{ versions: [{ version_id: 'remote', percentage: 100 }] }]
+    recovered = r.reopen(); await new Promise(setImmediate); await idle(recovered)
+    assert.equal(attempts, 1)
+    const disk = createStore(join(r.root, 'state.json'))
+    assert.equal(disk.get(disk.keys('cloud:job:')[0]).state, 'recovery-required')
+    assert.equal(disk.get('cloudflare:deployment:telegram').endpoint, undefined)
+  } finally { recovered?.dispose(); r.cleanup() }
+})

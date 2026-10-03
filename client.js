@@ -134,10 +134,8 @@ window.__ModuleLoader__.load({
       approve: '转正',
       sessions: '任务记录',
       bindings: '发送设置',
-      viewRawIdentifiers: '查看原始标识',
       cancelAction: '取消',
       // v0.14（Stage E / P1-10）：Session Detail（路由 / 出站 / 静默 / 控制 / 绑定）。
-      rawIdentifiersNote: '显示完整标识',
       reject: '拒绝',
       refresh: '刷新',
       configured: '已配置',
@@ -315,10 +313,8 @@ window.__ModuleLoader__.load({
       approve: 'Approve',
       sessions: 'Sessions',
       bindings: 'Routing bindings',
-      viewRawIdentifiers: 'View raw identifiers',
       cancelAction: 'Cancel',
       // v0.14 (Stage E / P1-10): Session Detail (routing / outbound / quiet / control / bindings).
-      rawIdentifiersNote: 'Raw identifiers are redacted by default; expand to reveal the full value.',
       reject: 'Reject',
       refresh: 'Refresh',
       configured: 'Set up',
@@ -1160,46 +1156,13 @@ window.__ModuleLoader__.load({
     // 首次点击只「武装」，必须再点确认才执行；4 秒无操作自动回落，避免误触后长期悬置。
     // last-owner 等底层约束仍由 authority 强制，UI 确认只是防手滑，不替代权威校验。
     // v0.15（T19 / U13）：`impact` 显示**具体对象与后果**（谁、会发生什么），取消则零 mutation。
-    function ConfirmButton({ children, confirmLabel, busy, disabled, onConfirm, t, kind = 'default', impact }) {
-      const [armed, setArmed] = useState(false)
-      useEffect(() => {
-        if (!armed) return undefined
-        const timer = setTimeout(() => setArmed(false), 4000)
-        return () => clearTimeout(timer)
-      }, [armed])
-      if (!armed) {
-        return h(Button, { kind, disabled, onClick: () => setArmed(true) }, children)
-      }
-      return h('span', { className: 'dn-confirm' },
-        impact ? h('span', { className: 'dn-confirmImpact' }, impact) : null,
-        h(Button, {
-          kind: 'danger',
-          disabled,
-          onClick: () => { setArmed(false); onConfirm() },
-        }, busy ? children : (confirmLabel ?? children)),
-        h(Button, { autoFocus: true, disabled, onClick: () => setArmed(false) }, t('cancelAction')))
-    }
+
 
     // v0.14（Stage E / P1-10）：原始标识默认脱敏——保留首尾少量字符，中间打码。
     // 仅在用户显式展开 raw 区时渲染完整值（见 RawIdentifiers）。
-    function redactIdentifier(value) {
-      const raw = String(value ?? '')
-      if (raw === '') return ''
-      if (raw.length <= 4) return `${raw.slice(0, 1)}***`
-      if (raw.length <= 10) return `${raw.slice(0, 2)}***${raw.slice(-2)}`
-      return `${raw.slice(0, 3)}***${raw.slice(-3)}`
-    }
 
-    function RawIdentifiers({ t, value }) {
-      return h('details', { className: 'dn-detail' },
-        h('summary', null, t('viewRawIdentifiers')),
-        h('p', { className: 'dn-note' }, t('rawIdentifiersNote')),
-        h('pre', { className: 'dn-raw' }, JSON.stringify(value, (key, item) => (
-          typeof item === 'string' && key !== '' && /id|key|user|owner|member|account/i.test(key)
-            ? redactIdentifier(item)
-            : item
-        ), 2)))
-    }
+
+
 
     function ErrorNotice({ error, t, onRetry }) {
       if (!error) return null

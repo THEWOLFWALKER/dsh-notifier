@@ -424,13 +424,14 @@ test('bus：bootstrap 并发单胜——同码两用户先后核销，仅第一�
   assert.equal(owners[0].userId, '1')
 })
 
-test('bus：群聊 /pair 拒答——码不消费，引导私聊', () => {
+test('bus：群聊 /pair 拒答——码不消费，不排队群回复', () => {
   const { bus, pairing } = makeRig()
   const bootstrap = pairing.mint({ origin: 'bootstrap', mintedBy: 'system:boot' })
   const group = bus.accept(env({
     text: `/pair ${bootstrap.code}`, chatId: '-100123', chatType: 'group',
   }))
-  assert.match(group.reply, /私聊/, '群里发码拒答')
+  assert.equal(group.reason, 'group_chat_disabled')
+  assert.equal(group.reply, undefined, '群拒绝不排队发送提示')
   // 码未被消费：私聊再发仍可核销
   const privateTry = bus.accept(env({ text: `/pair ${bootstrap.code}`, userId: '1' }))
   assert.match(privateTry.reply, /owner/)

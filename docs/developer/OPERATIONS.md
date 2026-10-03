@@ -24,11 +24,8 @@ The project has no runtime install step for tests. Optional packages are only ne
 
 Three distinct operator surfaces:
 
-1. **DSH Native Notify & Control** — primary daily surface. Since v0.14 it carries the daily
-   Questions, Tasks, Members, Pending identities, Pairing codes, Sessions, Channels, Activity and
-   Diagnostics views itself.
-2. **Advanced Console** — loopback-only (`127.0.0.1`) recovery / raw-audit fallback: raw storage,
-   the bindings matrix and low-level storage diagnosis when the Native surface cannot be used.
+1. **DSH Native Notify & Private chat** — the single daily page with channel selection, account settings, the private-chat wizard and contextual pending items. Secondary settings and support reports are under More.
+2. **Advanced Console** — loopback-only (`127.0.0.1`) recovery / raw-audit fallback: the shared read-only support report when the Native surface cannot be used. Daily administration markup is removed; startup does not fetch old daily APIs.
 3. **YAML / CLI** — automation/headless/reproducible deployment.
 
 Do not describe the Advanced Console as the only control console.
@@ -72,9 +69,9 @@ Do not manually edit a live state file while DSH is running.
    dsh plugin add dsh-notifier@latest --profile <profile-name>
    ```
 2. Restart DSH once.
-3. Open **Notify & Control** from Sidebar or Plugins.
+3. Open **Notify & Private chat** from Sidebar or Plugins.
 4. Configure one outbound channel.
-5. Use **Save and test**; setup is complete only after a real delivered test.
+5. Save settings, then use the separate optional test action. Check the phone; provider acceptance alone is not confirmed delivery.
 6. If remote control is needed, configure an inbound channel and pair the intended identity.
 7. Exercise one notification, one approval fallback, and one `ask_user` timeout/settlement before unattended use.
 

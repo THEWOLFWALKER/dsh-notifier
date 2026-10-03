@@ -4,17 +4,9 @@ Use this after first-line troubleshooting has not resolved the problem.
 
 The goal is a **small reproducible support report**, not a giant log dump.
 
-## Faster path: the Native Diagnostics view
+## Native support report
 
-Since v0.14 the Native **Notify & Control → Diagnostics** view can produce that report for you:
-
-- it first answers three questions — **does anything need attention, why, and when did we last check**;
-- it layers Host, storage, channel summary, capability availability and recent failures;
-- **Generate support report** serializes the already-redacted canonical snapshot into a markdown
-  block (front-matter summary + fenced JSON) that can be copied or downloaded.
-
-The manual collection below is therefore the **fallback**: use it when the Native UI is unavailable,
-or when the problem is in the UI / host rendering itself.
+Open **Notify & Private chat → More → Help**, then generate a support report. The report reads the shared redacted diagnostic snapshot on demand and offers copy/download. It never repairs state or replays interactions. If Native is unavailable, the recovery report reads the same service; otherwise use the manual evidence collection below.
 
 ## Evidence to collect
 
@@ -71,7 +63,7 @@ Do not guess the active package from the repository checkout; inspect the depend
 
 Capture:
 - Plugins entry present?
-- Notify & Control sidebar entry present?
+- Notify & Private chat sidebar entry present?
 - installed `client.js` present?
 - client/slot/module error?
 - blank, crash, or stale UI?
