@@ -376,6 +376,7 @@ function loadAll() {
     .then(function () { setLoading(false); renderTokenState() })
 }
 function switchTab(name) {
+  name = 'diagnostics'
   $all('.tabbtn').forEach(function (b) { b.classList.toggle('active', b.getAttribute('data-tab') === name) })
   $all('.tabsec').forEach(function (s) { s.classList.toggle('active', s.id === 'tab-' + name) })
   if (name === 'diagnostics') loadDiagnostics()

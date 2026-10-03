@@ -51,20 +51,14 @@ export function createAdminMarkup(t) {
   <button id="btnRefresh">${m.btnRefresh}</button>
 </header>
 <p id="recoveryNote" class="muted small">${m.recoveryNote}</p>
-<nav aria-label="${m.navAria}">
-  <button class="tabbtn active" data-tab="dashboard">${m.tabDashboard}</button>
-  <button class="tabbtn" data-tab="channels">${m.tabChannels}</button>
-  <button class="tabbtn" data-tab="members">${m.tabMembers}</button>
-  <button class="tabbtn" data-tab="notify">${m.tabNotify}</button>
+<nav aria-label="${m.navAria}" data-mode="recovery">
   <button class="tabbtn" data-tab="diagnostics">${m.tabDiagnostics}</button>
-  <button class="tabbtn advanced-tab" data-tab="bindings" hidden>${m.tabBindings}</button>
-  <button class="tabbtn advanced-tab" data-tab="sessions" hidden>${m.tabSessions}</button>
-  <button id="modeToggle" class="muted-btn" title="${m.modeToggleTitle}">${m.modeToggleOpen}</button>
 </nav>
+<style>#tab-dashboard,#tab-channels,#tab-members,#tab-notify,#tab-bindings,#tab-sessions{display:none!important}</style>
 <main id="main">
   <div id="globalMsg" class="msg"></div>
 
-  <section id="tab-dashboard" class="tabsec active">
+  <section id="tab-dashboard" class="tabsec">
 
     <!-- 首次配置向导：无任何已配置出站通道时作为首屏主内容；完成条件 = 用户当场收到测试通知 -->
     <div id="setup" class="setup" hidden>
@@ -233,7 +227,7 @@ export function createAdminMarkup(t) {
     </table>
   </section>
 
-  <section id="tab-diagnostics" class="tabsec">
+  <section id="tab-diagnostics" class="tabsec active">
     <p class="muted small">${m.diagLead}</p>
     <div class="row"><button id="diagRefresh">${m.diagRefresh}</button></div>
     <div id="diagView"></div>

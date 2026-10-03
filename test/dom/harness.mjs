@@ -32,10 +32,8 @@ const REGISTRATION_MARKER =
   "return {\n      inject: ['slots', 'connection', 'locale', 'layout'],"
 
 const TEST_EXPORTS = [
-  'createController', 'MainPanel', 'SetupFlow', 'ChannelsView', 'ChannelDetailView',
-  'MembersView', 'MemberRow', 'QuestionsView', 'Button', 'StateDot',
-  'PortabilityView', 'CloudflareView', 'ChannelDirectionSection', 'ErrorNotice', 'ErrorBoundary', 'buildSupportReport', 'PairingCodesView',
-  // v0.15（Stage 1 / S2）：Native v2 外壳。
+  'createController', 'MainPanel', 'Button', 'StateDot',
+  'PortabilityView', 'CloudflareView', 'ErrorNotice', 'ErrorBoundary', 'buildSupportReport', // v0.15（Stage 1 / S2）：Native v2 外壳。
   'NotifierSettings', 'ProductHeader', 'ChannelRail', 'ChannelStrip', 'ChannelTopSelector',
   'Overview', 'ChannelPage', 'ChannelPicker', 'AccountCard', 'PendingList', 'MoreMenu', 'ChannelLogo',
   // v0.15（Stage 1 / S3）：账号卡方向表单 + Telegram 备用连接。

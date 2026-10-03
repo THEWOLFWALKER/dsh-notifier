@@ -308,7 +308,7 @@ test('S4 private — choosing a task moves the wizard to the try step', async ()
     users: [],
     setup: { step: 'task', pendingIdentities: [], tasks: [{ id: 'task-9', title: 'payments-api' }] },
   }
-  const { ctx } = shellContext({ snapshot: { privateChat: wizard } })
+  const { ctx, calls } = shellContext({ snapshot: { privateChat: wizard } })
   const { view } = mountShell(ctx)
   await flush()
 
@@ -322,4 +322,5 @@ test('S4 private — choosing a task moves the wizard to the try step', async ()
 
   assert.match(view.container.textContent, /privateStepTry/, 'picking a task advances to the try step')
   assert.match(view.container.textContent, /payments-api/, 'the picked task is reflected')
+  assert.deepEqual(calls.find(call => call.endpoint === 'native.selectTask')?.payload, { taskRef: 'task-9' })
 })

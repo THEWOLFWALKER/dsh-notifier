@@ -42,7 +42,6 @@ window.__ModuleLoader__.load({
       usersLabel: '使用者',
       pendingBannerTitle: '有需要处理的事',
       pendingBannerView: '查看',
-      pendingBannerHide: '收起',
       pendingEmpty: '暂时没有需要处理的事',
       pickerTitle: '添加渠道',
       pickerSearch: '搜索渠道',
@@ -51,13 +50,7 @@ window.__ModuleLoader__.load({
       pickerAdded: '已添加',
       pickerEmpty: '没有找到这个渠道',
       pickerClose: '关闭',
-      channelStatusLabel: '状态',
-      accountDefault: '默认账号',
       accountMore: '更多设置',
-      addAccount: '添加账号',
-      goSetUp: '去设置',
-      goFix: '去处理',
-      needsAttention: '需要你处理',
       running: '正在运行',
       // v0.15（Stage 1 / S3）：账号卡——基础/更多两段、secret 三态、测试人话、备用连接按需出现。
       accountBasic: '基础设置',
@@ -77,7 +70,6 @@ window.__ModuleLoader__.load({
       privateStepConfirm: '确认是你',
       privateStepTask: '选择任务',
       privateStepTry: '试用',
-      privateStepDone: '完成',
       privateConfirmHint: '用手机给机器人发一句话，然后在下面确认是你。',
       privateConfirmWaiting: '还没有收到消息',
       privateConfirmMint: '生成确认码',
@@ -96,20 +88,13 @@ window.__ModuleLoader__.load({
       privateNoChannel: '还没有确认的渠道',
       privateNoTask: '还没有任务',
       privatePeople: '使用者',
-      pendingOpen: '查看',
       pendingLater: '稍后处理',
       pendingAlreadyHandled: '这件事已经被处理过了',
-      pendingQuestionFrom: '来自任务的问题',
       channels: '通知渠道',
       activity: '最近活动',
-      viewAll: '查看全部',
-      manageChannels: '管理渠道',
-      addChannel: '添加渠道',
       noChannels: '尚未配置通知渠道',
       noChannelsHint: '配置一个渠道后，DSH 的重要事件可以直接送到你的设备。',
-      setupChannel: '设置通知渠道',
       setupFirst: '设置第一个通知渠道',
-      setupIntro: '选择你已经在使用的渠道并保存；测试是可选的，稍后也可以。',
       save: '保存',
       test: '发送测试通知',
       testing: '正在发送测试通知…',
@@ -119,7 +104,6 @@ window.__ModuleLoader__.load({
       saving: '正在保存…',
       savedOk: '配置已保存',
       savedRefreshFailed: '已保存，但详情刷新失败。重试只会重新读取。',
-      savedPendingTest: '配置已保存。可立即发送测试通知，或稍后再试。',
       testCommittedConfig: '测试的是已保存的配置。',
       unsavedChangesHint: '有未保存的修改，请先保存再测试。',
       testUnconfirmed: '无法确认结果',
@@ -130,37 +114,17 @@ window.__ModuleLoader__.load({
       testReasonNetwork: '网络不可达',
       testReasonProvider: '平台返回错误',
       unknownNoRetry: '发送结果未知',
-      noAccountNote: '无需账号即可保存，测试完全可选。',
-      unavailableList: '当前能力不可用',
-      staleUpdatedAt: '数据可能已过期',
-      // v0.15（T19 / U06–U13）：按 schema 控件、secret 保留/替换/清除、离开草稿确认、
-      // 配对码复制、导航分层、删除/降权影响确认。
       secretConfiguredKeep: '已配置（默认保留）',
       secretNotShown: '出于安全，不显示已保存的值',
       secretKeep: '保留',
       secretReplace: '替换',
       secretClear: '清除',
       listHint: '每行一项，也可用逗号分隔',
-      unsavedLeaveTitle: '有未保存的修改',
-      unsavedLeaveBody: '离开将丢弃这些草稿修改；已保存的配置不受影响。',
-      leaveStay: '留在本页',
-      leaveDiscard: '放弃修改并离开',
-      copyCode: '复制配对码',
-      codeCopied: '配对码已复制',
-      copyUnavailableSelect: '无法访问剪贴板，请手动选中上方配对码复制。',
-      confirmDemote: '确认降权',
-      memberDemoteImpact: '降为普通成员后不再拥有所有者权限',
-      memberRemoveImpact: '将从成员名单中移除',
-      updating: '正在更新…',
-      complete: '完成',
       retry: '重试',
       back: '返回',
       notify: '通知',
       control: '远程控制',
-      healthy: '正常',
       ready: '可用',
-      degraded: '最近失败',
-      starting: '连接中',
       restartPending: '等待重启',
       disabled: '已停用',
       unavailable: '不可用',
@@ -171,98 +135,25 @@ window.__ModuleLoader__.load({
       loading: '正在读取通知状态…',
       tasks: '任务',
       questions: '待处理提问',
-      noQuestions: '暂无待处理提问',
       members: '成员',
-      noMembers: '暂无成员',
       owner: '所有者',
-      roleMember: '普通成员',
-      promote: '设为所有者',
-      demote: '降为普通成员',
       remove: '移除',
-      removing: '正在移除…',
-      memberUpdated: '已更新',
-      memberRemoved: '已移除',
       pendingIdentities: '待确认身份',
-      noPending: '暂无待确认身份',
       approve: '转正',
       dismiss: '忽略',
-      pairingCodes: '配对码',
-      noCodes: '暂无在铸配对码',
-      mintCode: '生成配对码',
-      minting: '正在生成…',
       revoke: '撤销',
-      revoking: '正在撤销…',
-      labelOptional: '备注（可选）',
-      codeShownOnce: '此配对码只显示一次，请立即保存。',
-      clearCode: '清除',
       sessions: '会话',
-      noSessions: '暂无会话',
-      sessionActive: '活跃',
-      sessionIdle: '空闲',
-      silence: '静默',
-      resumeNotify: '恢复通知',
-      noChannelsResolved: '无渠道',
-      advancedBindings: '高级绑定',
       bindings: '路由绑定',
-      noBindings: '暂无路由绑定',
-      agentBindings: '工作区 → 渠道',
-      channelBindings: '入站通道 → 默认工作区',
-      defaultAgent: '默认工作区',
       viewRawIdentifiers: '查看原始标识',
-      bindingsSaved: '绑定已保存',
-      // v0.14（Stage E / P1-09）：破坏性操作二次确认（成员移除 / 配对码撤销 / 绑定移除 / 入站默认绑定移除）。
-      confirmRemove: '确认移除',
-      confirmRevoke: '确认撤销',
       cancelAction: '取消',
       // v0.14（Stage E / P1-10）：Session Detail（路由 / 出站 / 静默 / 控制 / 绑定）。
-      openSession: '查看详情',
-      sessionDetail: '会话详情',
-      routingSection: '路由',
-      outboundSection: '通知渠道',
-      quietSection: '静默',
-      controlSection: '控制策略',
-      bindingsSection: '绑定',
-      workspaceLabel: '工作区',
-      inheritLabel: '继承',
-      resolvedByLabel: '解析来源',
-      sourceSession: '会话覆盖',
-      sourceWorkspace: '工作区绑定',
-      sourceGlobal: '全局默认',
-      lastActiveLabel: '最近活动',
-      disposedLabel: '已释放',
-      modeLabel: '控制模式',
-      modeTeam: '团队',
-      modePersonal: '个人',
-      modeUnset: '未设置',
-      approvalOwnerOnlyLabel: '仅所有者审批',
-      ownerConfiguredLabel: '已指定所有者',
-      approvalMembersCountLabel: '审批成员数',
-      saveControl: '保存控制策略',
-      controlSaved: '控制策略已保存',
       rawIdentifiersNote: '显示完整标识',
-      noTasks: '暂无任务',
-      noActivity: '暂无最近活动',
       reject: '拒绝',
-      submit: '提交选择',
-      handledElsewhere: '已在其他位置处理',
-      expired: '已过期',
-      submitting: '正在提交…',
-      advanced: '打开高级管理台',
-      advancedDisabled: '高级管理台未启用',
       refresh: '刷新',
       configured: '已配置',
-      notSet: '未设置',
-      recent20: '近 20 次',
       delivered: '送达',
       skipped: '跳过',
       failed: '失败',
-      lastSuccess: '最近成功',
-      lastFailure: '最近失败',
-      reason: '原因',
-      inboundRestartHint: '保存远程控制配置后，需要重启 DSH 才会重新建立连接。',
-      outboundRestartHint: '已保存，重启 DSH 后生效',
-      applyHot: '保存后立即生效',
-      applyRestart: '保存后等待重启生效',
       setupActivationTitle: '设置通知',
       setupActivationBody: 'dsh-notifier 已启用。配置一个通知渠道即可开始使用。',
       later: '稍后',
@@ -346,7 +237,6 @@ window.__ModuleLoader__.load({
       usersLabel: 'People',
       pendingBannerTitle: 'Something needs your attention',
       pendingBannerView: 'View',
-      pendingBannerHide: 'Hide',
       pendingEmpty: 'Nothing needs your attention',
       pickerTitle: 'Add a channel',
       pickerSearch: 'Search channels',
@@ -355,13 +245,7 @@ window.__ModuleLoader__.load({
       pickerAdded: 'Added',
       pickerEmpty: 'No channel matches that',
       pickerClose: 'Close',
-      channelStatusLabel: 'Status',
-      accountDefault: 'Default account',
       accountMore: 'More settings',
-      addAccount: 'Add account',
-      goSetUp: 'Set up',
-      goFix: 'Fix it',
-      needsAttention: 'Needs your attention',
       running: 'Running',
       // v0.15 (Stage 1 / S3): account cards — basic/more split, secret tri-state, plain-language test, on-demand fallback.
       accountBasic: 'Basic settings',
@@ -381,7 +265,6 @@ window.__ModuleLoader__.load({
       privateStepConfirm: 'Confirm it is you',
       privateStepTask: 'Pick a task',
       privateStepTry: 'Try it',
-      privateStepDone: 'Done',
       privateConfirmHint: 'Send the bot a message from your phone, then confirm it is you below.',
       privateConfirmWaiting: 'No message yet',
       privateConfirmMint: 'Make a confirmation code',
@@ -400,20 +283,13 @@ window.__ModuleLoader__.load({
       privateNoChannel: 'No confirmed channel yet',
       privateNoTask: 'No task yet',
       privatePeople: 'People',
-      pendingOpen: 'View',
       pendingLater: 'Handle later',
       pendingAlreadyHandled: 'This one was already handled',
-      pendingQuestionFrom: 'A question from a task',
       channels: 'Notification channels',
       activity: 'Recent activity',
-      viewAll: 'View all',
-      manageChannels: 'Manage channels',
-      addChannel: 'Add channel',
       noChannels: 'No notification channel yet',
       noChannelsHint: 'Add a channel to send important DSH events to your device.',
-      setupChannel: 'Set up notification',
       setupFirst: 'Set up first channel',
-      setupIntro: 'Choose a channel you already use and save it; testing is optional and can wait.',
       save: 'Save',
       test: 'Send test notification',
       testing: 'Sending test notification…',
@@ -423,7 +299,6 @@ window.__ModuleLoader__.load({
       saving: 'Saving…',
       savedOk: 'Configuration saved',
       savedRefreshFailed: 'Saved, but refreshing details failed. Retry only re-reads.',
-      savedPendingTest: 'Saved. Send a test notification now, or do it later.',
       testCommittedConfig: 'Tests the saved configuration.',
       unsavedChangesHint: 'You have unsaved changes — save before testing.',
       testUnconfirmed: 'Could not confirm delivery',
@@ -434,37 +309,17 @@ window.__ModuleLoader__.load({
       testReasonNetwork: 'Network unreachable',
       testReasonProvider: 'Provider returned an error',
       unknownNoRetry: 'Send result unknown',
-      noAccountNote: 'No account needed to save — testing is entirely optional.',
-      unavailableList: 'This capability is unavailable',
-      staleUpdatedAt: 'Data may be out of date',
-      // v0.15 (T19 / U06–U13): schema controls, secret keep/replace/clear, leave-draft
-      // confirmation, pairing-code copy, nav layering, destructive-impact confirmation.
       secretConfiguredKeep: 'Set up (kept by default)',
       secretNotShown: 'The saved value is never shown, for safety',
       secretKeep: 'Keep',
       secretReplace: 'Replace',
       secretClear: 'Clear',
       listHint: 'One item per line, or comma-separated',
-      unsavedLeaveTitle: 'You have unsaved changes',
-      unsavedLeaveBody: 'Leaving discards these draft edits; saved configuration is unaffected.',
-      leaveStay: 'Stay here',
-      leaveDiscard: 'Discard and leave',
-      copyCode: 'Copy pairing code',
-      codeCopied: 'Pairing code copied',
-      copyUnavailableSelect: 'Clipboard is unavailable — select the pairing code above and copy it manually.',
-      confirmDemote: 'Confirm demote',
-      memberDemoteImpact: 'Loses owner privileges once demoted to member',
-      memberRemoveImpact: 'Will be removed from the member list',
-      updating: 'Updating…',
-      complete: 'Done',
       retry: 'Retry',
       back: 'Back',
       notify: 'Notify',
       control: 'Remote control',
-      healthy: 'Healthy',
       ready: 'Ready',
-      degraded: 'Recent failure',
-      starting: 'Connecting',
       restartPending: 'Restart pending',
       disabled: 'Disabled',
       unavailable: 'Unavailable',
@@ -475,98 +330,25 @@ window.__ModuleLoader__.load({
       loading: 'Loading notification status…',
       tasks: 'Tasks',
       questions: 'Questions',
-      noQuestions: 'No pending questions',
       members: 'Members',
-      noMembers: 'No members yet',
       owner: 'Owner',
-      roleMember: 'Member',
-      promote: 'Make owner',
-      demote: 'Make member',
       remove: 'Remove',
-      removing: 'Removing…',
-      memberUpdated: 'Updated',
-      memberRemoved: 'Removed',
       pendingIdentities: 'Pending identities',
-      noPending: 'No pending identities',
       approve: 'Approve',
       dismiss: 'Dismiss',
-      pairingCodes: 'Pairing codes',
-      noCodes: 'No active pairing codes',
-      mintCode: 'Generate code',
-      minting: 'Generating…',
       revoke: 'Revoke',
-      revoking: 'Revoking…',
-      labelOptional: 'Label (optional)',
-      codeShownOnce: 'This pairing code is shown only once — save it now.',
-      clearCode: 'Clear',
       sessions: 'Sessions',
-      noSessions: 'No sessions',
-      sessionActive: 'Active',
-      sessionIdle: 'Idle',
-      silence: 'Silence',
-      resumeNotify: 'Resume',
-      noChannelsResolved: 'No channels',
-      advancedBindings: 'Advanced bindings',
       bindings: 'Routing bindings',
-      noBindings: 'No routing bindings',
-      agentBindings: 'Workspace → channels',
-      channelBindings: 'Inbound channel → default workspace',
-      defaultAgent: 'Default workspace',
       viewRawIdentifiers: 'View raw identifiers',
-      bindingsSaved: 'Bindings saved',
-      // v0.14 (Stage E / P1-09): destructive confirmation (member remove / pairing revoke / binding remove).
-      confirmRemove: 'Confirm remove',
-      confirmRevoke: 'Confirm revoke',
       cancelAction: 'Cancel',
       // v0.14 (Stage E / P1-10): Session Detail (routing / outbound / quiet / control / bindings).
-      openSession: 'Open details',
-      sessionDetail: 'Session detail',
-      routingSection: 'Routing',
-      outboundSection: 'Notification channels',
-      quietSection: 'Quiet',
-      controlSection: 'Control policy',
-      bindingsSection: 'Bindings',
-      workspaceLabel: 'Workspace',
-      inheritLabel: 'Inherit',
-      resolvedByLabel: 'Resolved by',
-      sourceSession: 'Session override',
-      sourceWorkspace: 'Workspace setting',
-      sourceGlobal: 'Global default',
-      lastActiveLabel: 'Last active',
-      disposedLabel: 'Disposed',
-      modeLabel: 'Control mode',
-      modeTeam: 'Team',
-      modePersonal: 'Personal',
-      modeUnset: 'Not set',
-      approvalOwnerOnlyLabel: 'Owner-only approval',
-      ownerConfiguredLabel: 'Owner set',
-      approvalMembersCountLabel: 'Approval members',
-      saveControl: 'Save control policy',
-      controlSaved: 'Control policy saved',
       rawIdentifiersNote: 'Raw identifiers are redacted by default; expand to reveal the full value.',
-      noTasks: 'No tasks',
-      noActivity: 'No recent activity',
       reject: 'Reject',
-      submit: 'Submit selection',
-      handledElsewhere: 'Handled elsewhere',
-      expired: 'Expired',
-      submitting: 'Submitting…',
-      advanced: 'Open advanced console',
-      advancedDisabled: 'Advanced console is disabled',
       refresh: 'Refresh',
       configured: 'Set up',
-      notSet: 'Not set',
-      recent20: 'Last 20',
       delivered: 'Delivered',
       skipped: 'Skipped',
       failed: 'Failed',
-      lastSuccess: 'Last success',
-      lastFailure: 'Last failure',
-      reason: 'Reason',
-      inboundRestartHint: 'Restart DSH after saving remote-control settings to establish a new connection.',
-      outboundRestartHint: 'Saved. Restart DSH to apply the latest settings.',
-      applyHot: 'Applies immediately after saving',
-      applyRestart: 'Applies after restart',
       setupActivationTitle: 'Set up notification',
       setupActivationBody: 'dsh-notifier is enabled. Configure one notification channel to get started.',
       later: 'Later',
@@ -960,18 +742,7 @@ window.__ModuleLoader__.load({
           else if (kind === 'native-private' || kind === 'native-pending') await loadNative()
           // v0.15（Stage 1 / S5）：通知总览复用 native 快照；帮助页无需额外读取。
           else if (kind === 'notify-settings') await loadNative()
-          else if (kind === 'channels') await loadChannels()
-          else if (kind === 'channel') await loadChannel(snapshot.view.type)
-          else if (kind === 'tasks') await loadTasks()
-          else if (kind === 'questions') await loadQuestions()
-          else if (kind === 'members') await loadMembers()
-          else if (kind === 'pending') await loadPending()
-          else if (kind === 'pairing') await loadPairingCodes()
-          else if (kind === 'sessions') await loadSessions()
-          else if (kind === 'session') await loadSession(snapshot.view.id)
-          else if (kind === 'bindings') await loadBindings()
-          else if (kind === 'activity') await loadActivity()
-          else await loadHome()
+          else await loadNative()
           emit({ staleAt: null, connectionState: 'connected' })
           return true
         } catch {
@@ -1277,6 +1048,9 @@ window.__ModuleLoader__.load({
         }
       }
       function navigate(view) {
+        const legacy = new Set(['home', 'channels', 'tasks', 'questions', 'members', 'pending', 'pairing', 'sessions', 'session', 'bindings', 'activity'])
+        if (legacy.has(view?.kind)) view = { kind: 'native' }
+        if (view?.kind === 'channel') view = { ...view, kind: 'native-channel' }
         // v0.12.1（P2-10）：导航只负责切视图；目标视图的 mount effect 是唯一加载 owner。
         const changingNativeChannel = view?.kind === 'native-channel'
           && (snapshot.view.kind !== 'native-channel' || snapshot.view.type !== view.type)
@@ -1493,21 +1267,6 @@ window.__ModuleLoader__.load({
 
     // v0.15（T18 / U04）：列表三态——loading（尚无响应，不伪装「暂无」）/ error（服务或网络失败，
     // 不伪装成空）/ empty（已回但为空）；stale 数据保留但标注更新时间，不伪装实时。
-    function listBody({ data, error, connectionState, staleAt, t, rows, emptyKey, render }) {
-      if (data === null || data === undefined) {
-        if (error) {
-          return [h('p', { className: 'dn-empty', role: 'alert', key: 'nodata' }, `${t('unavailableList')} · ${error?.message || t('unknownError')}`)]
-        }
-        return [h('p', { className: 'dn-inlineStatus', key: 'loading' }, h(StateDot, { state: 'ongoing' }), t('loading'))]
-      }
-      if (!rows.length) return [h('p', { className: 'dn-empty', key: 'empty' }, t(emptyKey))]
-      return [
-        connectionState === 'stale' && staleAt
-          ? h('p', { className: 'dn-rowMeta dn-stale', role: 'status', key: 'stale' }, `${t('staleUpdatedAt')} · ${new Date(staleAt).toLocaleTimeString()}`)
-          : null,
-        ...rows.map(render),
-      ]
-    }
 
     // v0.15（T19 / U07）：非 secret 草稿可**短时**保留（sessionStorage，随标签页关闭失效）；
     // secret 明文绝不写入任何 Web 存储、日志或支持报告——只写进当前 React state。
@@ -1663,159 +1422,6 @@ window.__ModuleLoader__.load({
         enableDisabled ? h('p', { className: 'dn-note' }, words('先保存当前修改，再开启网关。', 'Save your changes before enabling the gateway.')) : null)
     }
 
-    function ChannelDirectionSection({ ctx, controller, state, t, type, direction, section, onDirtyChange, importDraft }) {
-      const fields = section?.fields ?? {}
-      const [patch, setPatch] = useState({})
-      const [dirty, setDirty] = useState(new Set())
-      const [secretModes, setSecretModes] = useState({})
-      const [saveNotice, setSaveNotice] = useState(null)
-      const [testResult, setTestResult] = useState(null)
-      const dirtyRef = useRef(dirty)
-      const revisions = useRef(null)
-
-      // 服务端 revision 变化时，把**未编辑**字段同步到最新投影；dirty 字段保留本地草稿。
-      useEffect(() => {
-        const nextRevision = section?.configRevision ?? null
-        if (revisions.current === nextRevision) return
-        revisions.current = nextRevision
-        setPatch(current => {
-          const next = { ...current }
-          for (const [key, value] of Object.entries(section?.editableValues ?? {})) {
-            if (!dirtyRef.current.has(key)) next[key] = value
-          }
-          return next
-        })
-      }, [section?.configRevision])
-
-      // 挂载时恢复本方向非 secret 短时草稿（secret 从不落盘）。
-      useEffect(() => {
-        const restored = importDraft ?? loadDraft(direction, type, fields)
-        if (restored === null) return
-        setPatch(current => ({ ...current, ...restored }))
-        const set = new Set(Object.keys(restored))
-        dirtyRef.current = set
-        setDirty(set)
-      }, [])
-
-      // 非 secret 短时草稿持久化；无 dirty 时清除，避免把服务端值误当草稿。
-      useEffect(() => {
-        if (dirty.size > 0) saveDraft(direction, type, patch, fields)
-      }, [patch, dirty])
-
-      useEffect(() => { onDirtyChange?.(direction, dirty.size > 0) }, [dirty, direction, onDirtyChange])
-
-      const setField = (key, value) => {
-        setDirty(current => {
-          const set = new Set(current); set.add(key)
-          dirtyRef.current = set
-          return set
-        })
-        setPatch(current => ({ ...current, [key]: value }))
-      }
-      const setSecretMode = (key, mode) => {
-        setSecretModes(current => ({ ...current, [key]: mode }))
-        setDirty(current => {
-          const set = new Set(current)
-          if (mode === 'keep') set.delete(key); else set.add(key)
-          dirtyRef.current = set
-          return set
-        })
-        if (mode !== 'replace') {
-          setPatch(current => {
-            if (!Object.prototype.hasOwnProperty.call(current, key)) return current
-            const next = { ...current }; delete next[key]; return next
-          })
-        }
-      }
-      const save = async () => {
-        const payload = {}
-        const clear = []
-        for (const key of dirty) {
-          // U06：secret 显式「清除」→ 走 patch 的 clear 列表；不把掩码当值写回。
-          if (fields[key]?.secret === true && (secretModes[key] ?? 'keep') === 'clear') { clear.push(key); continue }
-          payload[key] = patch[key]
-        }
-        if (Object.keys(payload).length === 0 && clear.length === 0) return
-        setSaveNotice(null)
-        try {
-          const receipt = await controller.saveChannel(type, direction, clear.length > 0 ? { ...payload, clear } : payload)
-          if (receipt?.duplicate === true) return
-          if (receipt?.saved !== false) {
-            setPatch(current => {
-              const next = { ...current }
-              for (const key of Object.keys(payload)) if (fields[key]?.secret === true) delete next[key]
-              for (const key of clear) delete next[key]
-              return next
-            })
-            setSecretModes({})
-            const set = new Set()
-            dirtyRef.current = set
-            setDirty(set)
-            clearDraft(direction, type)
-            setSaveNotice(receipt?.refreshed === false
-              ? { kind: 'warn', text: t('savedRefreshFailed') }
-              : { kind: 'ok', text: t('savedOk') })
-          }
-        } catch (error) {
-          // 落盘/校验失败：草稿保留（U02），错误经统一出口展示。
-          controller.reportError(error)
-        }
-      }
-
-      const saveBusy = state?.busy?.[`save:${type}:${direction}`] === true
-      const testBusy = state?.busy?.[`test:${type}`] === true
-      const hasDirty = dirty.size > 0
-      const outcome = testResult ? testOutcome(ctx, testResult, t) : null
-      const runTest = () => {
-        void controller.testChannel(type).then(setTestResult).catch(error => {
-          // channels.test 的失败也走证据分级：unknown（无法确认），而不是「失败可重发」。
-          if (error?.code === 'dsh-notifier/not-supported' || error?.code === 'not-supported') {
-            controller.reportError(error)
-            return
-          }
-          setTestResult({ status: 'unknown', reasonCode: 'provider-error', detail: { en: String(error?.message ?? ''), zh: String(error?.message ?? '') } })
-        })
-      }
-      if (!section) return null
-      return h(Section, { title: direction === 'outbound' ? t('notify') : t('control') },
-        type === 'telegram' ? h(TelegramConnection, { ctx, controller, value: patch.apiBase, onChange: value => setField('apiBase', value), onDirect: () => { setField('apiBase', ''); setSecretMode('gatewayKey', 'clear') }, hasGatewayKey: fields.gatewayKey?.configured === true, disabled: saveBusy, enableDisabled: saveBusy || hasDirty }) : null,
-        ...Object.entries(fields).filter(([key]) => type !== 'telegram' || !['apiBase', 'gatewayKey'].includes(key)).map(([key, meta]) => h(SchemaField, {
-          key, ctx, name: key, meta,
-          value: patch[key],
-          onChange: value => setField(key, value),
-          secretMode: secretModes[key],
-          onSecretMode: mode => setSecretMode(key, mode),
-          t,
-        })),
-        h('div', { className: 'dn-formActions' },
-          h(Button, { kind: 'primary', disabled: saveBusy || !hasDirty, onClick: () => void save() }, saveBusy ? t('saving') : t('save')),
-          direction === 'outbound'
-            ? h(Button, {
-                // v0.15（T18 / U03）：只测已保存配置；有未保存修改时先保存，绝不静默 save+send。
-                disabled: testBusy || hasDirty,
-                title: hasDirty ? t('unsavedChangesHint') : t('testCommittedConfig'),
-                onClick: runTest,
-              }, testBusy ? t('testing') : t('test')) : null),
-        saveNotice
-          ? h('p', {
-              className: saveNotice.kind === 'ok' ? 'dn-successText' : 'dn-error',
-              role: saveNotice.kind === 'ok' ? 'status' : 'alert',
-              'aria-live': 'polite',
-            }, saveNotice.text)
-          : null,
-        direction === 'outbound' && hasDirty ? h('p', { className: 'dn-note' }, t('unsavedChangesHint')) : null,
-        h('p', { className: 'dn-rowMeta' }, section.applyMode === 'hot' ? t('applyHot') : section.applyMode === 'restart' ? t('applyRestart') : ''),
-        direction === 'inbound' && section.applyMode === 'restart' ? h('p', { className: 'dn-note' }, t('inboundRestartHint')) : null,
-        direction === 'outbound' && section.restartPending === true ? h('p', { className: 'dn-note' }, t('outboundRestartHint')) : null,
-        direction === 'outbound' && outcome
-          ? h('p', {
-              className: outcome.ok ? 'dn-successText' : 'dn-error',
-              role: outcome.ok ? 'status' : 'alert',
-              'aria-live': 'polite',
-            }, `${outcome.title} · ${outcome.note}`)
-          : null)
-    }
-
     function PageHead({ title, intro, actions }) {
       return h('header', { className: 'dn-pageHead' },
         h('div', null, h('h1', { className: 'dn-pageTitle' }, title),
@@ -1865,97 +1471,6 @@ window.__ModuleLoader__.load({
         h('div', null,
           h('strong', null, t('runningOk')),
           h('span', null, resolveText(ctx, summary?.detail))))
-    }
-
-    function QuestionCard({ ctx, question, controller, t, busy }) {
-      const [selected, setSelected] = useState([])
-      const [notice, setNotice] = useState(null)
-      const multiple = question?.multiple === true
-      const expired = question?.status === 'expired'
-      const toggle = (value) => {
-        setSelected(current => multiple
-          ? (current.includes(value) ? current.filter(item => item !== value) : [...current, value])
-          : [value])
-      }
-      const settle = async (action) => {
-        setNotice(null)
-        try {
-          const result = await controller.settleQuestion(question.ref, action, selected)
-          if (result?.alreadyHandled === true) setNotice(t('handledElsewhere'))
-        } catch (error) {
-          setNotice(error?.message || t('unknownError'))
-        }
-      }
-      return h('article', { className: 'dn-question' },
-        h('div', { className: 'dn-questionMark', 'aria-hidden': true }, '?'),
-        h('div', { className: 'dn-questionBody' },
-          h('strong', { className: 'dn-rowTitle' }, resolveText(ctx, question?.question)),
-          question?.context ? h('span', { className: 'dn-rowMeta' }, resolveText(ctx, question.context)) : null,
-          expired
-            ? h('span', { className: 'dn-rowMeta' }, `${t('expired')}${question?.expiresText ? ` · ${resolveText(ctx, question.expiresText)}` : ''}`)
-            : null,
-          expired ? null : h('div', { className: 'dn-options' },
-            ...(question?.options ?? []).map(option =>
-              h('button', {
-                type: 'button',
-                className: `dn-option ${selected.includes(option.value) ? 'is-selected' : ''}`,
-                disabled: busy,
-                onClick: () => toggle(option.value),
-                key: option.value,
-              }, resolveText(ctx, option.label)))),
-          expired ? null : h('div', { className: 'dn-questionActions' },
-            multiple ? h(Button, { disabled: busy || selected.length === 0, kind: 'primary', onClick: () => void settle('choose') }, busy ? t('submitting') : t('submit')) : null,
-            !multiple && selected.length > 0 ? h(Button, { disabled: busy, kind: 'primary', onClick: () => void settle('choose') }, busy ? t('submitting') : t('submit')) : null,
-            h(Button, { disabled: busy, onClick: () => void settle('reject') }, t('reject'))),
-          notice ? h('p', { className: 'dn-note', role: 'status' }, notice) : null))
-    }
-
-    function TaskRow({ ctx, task }) {
-      const attention = task?.attention === true
-      return h('div', { className: 'dn-row' },
-        h(StateDot, { state: attention ? 'warn' : task?.status === 'running' ? 'ongoing' : 'idle' }),
-        h('div', { className: 'dn-rowMain' },
-          h('strong', { className: 'dn-rowTitle' }, task?.taskRef || '(task)'),
-          h('span', { className: 'dn-rowMeta' }, [task?.workspace, task?.status].filter(Boolean).join(' · '))),
-        h('div', { className: 'dn-rowAside' },
-          h('span', { className: 'dn-rowMeta' }, Array.isArray(task?.boundChannels) ? task.boundChannels.join(' · ') : ''),
-          task?.relativeTime
-            ? h('time', { className: 'dn-rowMeta', dateTime: task?.lastActivityAt || undefined }, resolveText(ctx, task.relativeTime))
-            : null))
-    }
-
-    function ChannelRow({ ctx, channel, onOpen, t }) {
-      const state = channel?.health?.state ?? 'unconfigured'
-      const stateText = t(state === 'healthy' ? 'healthy'
-        : state === 'ready' ? 'ready'
-          : state === 'degraded' ? 'degraded'
-            : state === 'starting' ? 'starting'
-              : state === 'restart-pending' ? 'restartPending'
-                : state === 'disabled' ? 'disabled'
-                  : state === 'unavailable' ? 'unavailable' : 'unconfigured')
-      const stateDot = state === 'healthy' || state === 'ready' ? 'done'
-        : state === 'degraded' || state === 'restart-pending' ? 'warn'
-          : state === 'starting' ? 'ongoing' : 'idle'
-      const capabilities = [
-        channel?.capabilities?.notify ? t('notify') : null,
-        channel?.capabilities?.control ? t('control') : null,
-      ].filter(Boolean).join(' · ')
-      return h('button', { type: 'button', className: 'dn-row dn-rowButton', onClick: onOpen },
-        h('span', { className: 'dn-channelGlyph', 'aria-hidden': true }, String(channel?.type ?? '?').slice(0, 2).toUpperCase()),
-        h('span', { className: 'dn-rowMain' },
-          h('strong', { className: 'dn-rowTitle' }, resolveText(ctx, channel?.label) || channel?.type),
-          h('span', { className: 'dn-rowMeta' }, capabilities)),
-        h('span', { className: 'dn-rowAside dn-stateText' }, h(StateDot, { state: stateDot }), stateText, ' ›'))
-    }
-
-    function ActivityRow({ ctx, item }) {
-      const state = item?.level === 'error' ? 'error' : item?.level === 'warn' ? 'warn' : 'idle'
-      return h('div', { className: 'dn-row' },
-        h(StateDot, { state }),
-        h('time', { className: 'dn-activityTime', dateTime: item?.at || undefined }, resolveText(ctx, item?.timeText)),
-        h('div', { className: 'dn-rowMain' },
-          h('strong', { className: 'dn-rowTitle' }, resolveText(ctx, item?.title)),
-          item?.detail ? h('span', { className: 'dn-rowMeta' }, resolveText(ctx, item.detail)) : null))
     }
 
     // ————————————————————————————————————————————————————————————————
@@ -2403,15 +1918,16 @@ window.__ModuleLoader__.load({
     // 字段以**数组**形状来自 read-model（secret 只有 presence，没有值），这里适配成 SchemaField 的
     // meta 形状。secret 三态仍是 保留 / 替换 / 清除——空串既不表示保留也不表示清除（由 authority 判定）。
     // 组件是**模块级稳定**的：轮询刷新时输入节点不 remount，连续输入不丢焦点（U05）。
-    function NativeDirectionForm({ ctx, controller, state, t, type, direction, fields, values, revision, canTest, hiddenKeys = [] }) {
+    function NativeDirectionForm({ ctx, controller, state, t, type, direction, fields, values, revision, canTest, hiddenKeys = [], importDraft = null }) {
       const hidden = new Set(hiddenKeys)
       const visible = (fields ?? []).filter(field => !hidden.has(field.key))
       const fieldsByKey = useMemo(
         () => Object.fromEntries((fields ?? []).map(field => [field.key, field])),
         [fields],
       )
-      const [patch, setPatch] = useState({})
-      const [dirty, setDirty] = useState(new Set())
+      const draft = Object.fromEntries(Object.entries(importDraft ?? {}).filter(([k]) => fieldsByKey[k]?.secret !== true))
+      const [patch, setPatch] = useState(draft)
+      const [dirty, setDirty] = useState(new Set(Object.keys(draft)))
       const [secretModes, setSecretModes] = useState({})
       const [notice, setNotice] = useState(null)
       const [outcome, setOutcome] = useState(null)
@@ -2570,7 +2086,7 @@ window.__ModuleLoader__.load({
       const telegram = type === 'telegram'
       // Telegram 备用连接只在「连接出问题」或用户主动展开时出现。
       const helpNeeded = telegram && account.state === 'needs-attention'
-      const [open, setOpen] = useState(false)
+      const [open, setOpen] = useState(state.view?.importDraft !== undefined)
       const [moreOpen, setMoreOpen] = useState(false)
       const [helpOpen, setHelpOpen] = useState(false)
       const [customAddress, setCustomAddress] = useState(false)
@@ -2600,6 +2116,7 @@ window.__ModuleLoader__.load({
                 h(NativeDirectionForm, {
                   ctx, controller, state, t, type, direction: 'outbound',
                   fields: basicFields, values: account.notify?.values ?? {},
+                  importDraft: state.view?.importDirection === 'outbound' ? state.view.importDraft : null,
                   revision, canTest: account.notify?.canTest === true,
                 })),
               showMore
@@ -2629,6 +2146,7 @@ window.__ModuleLoader__.load({
                       ctx, controller, state, t, type, direction: 'inbound',
                       fields: account.privateChat.fields ?? [],
                       values: account.privateChat.values ?? {},
+                      importDraft: state.view?.importDirection === 'inbound' ? state.view.importDraft : null,
                       revision,
                     }))
                 : null)
@@ -2763,705 +2281,9 @@ window.__ModuleLoader__.load({
 
     // v0.15（T18 / U03 / U12）：保存与测试解耦——保存成立后即可「完成」，测试完全可选；
     // 测试只针对**已保存**的配置（绝不静默 save+send）；测试失败/无法确认不会困住用户。
-    function SetupFlow({ ctx, controller, state, channels, onDone, t }) {
-      const [type, setType] = useState(null)
-      const [draft, setDraft] = useState({})
-      const [phase, setPhase] = useState('choose') // choose | form | saved | testing | done
-      const [saved, setSaved] = useState(null)
-      const [testResult, setTestResult] = useState(null)
-      const [error, setError] = useState(null)
-      // v0.15（T19 / U07）：离开未保存草稿需可取消。
-      const [leaveArmed, setLeaveArmed] = useState(false)
-      const candidates = (channels ?? []).filter(channel => channel?.notify?.editable !== false)
-      const selected = candidates.find(channel => channel.type === type)
-      const fields = selected?.notify?.fields ?? {}
-      const setField = (key, value) => setDraft(current => ({ ...current, [key]: value }))
-      // 非 secret 短时草稿保留；secret 明文永不落 Web 存储（U07）。
-      useEffect(() => {
-        if (phase === 'form' && type !== null && Object.keys(draft).length > 0) saveDraft('setup', type, draft, fields)
-      }, [draft, phase, type])
-      const saveBusy = type !== null && state?.busy?.[`save:${type}:outbound`] === true
-      const testBusy = type !== null && state?.busy?.[`test:${type}`] === true
-      const save = async () => {
-        setError(null)
-        setTestResult(null)
-        try {
-          const receipt = await controller.saveChannel(type, 'outbound', draft)
-          // Secret 明文只写：保存成立后立即从 React state 驱逐（刷新投影只带 configured）。
-          setDraft(current => Object.fromEntries(
-            Object.entries(current).filter(([key]) => fields[key]?.secret !== true),
-          ))
-          clearDraft('setup', type)
-          setSaved(receipt ?? null)
-          setPhase('saved')
-        } catch (err) {
-          setError(err)
-          setPhase('form')
-        }
-      }
-      const test = async () => {
-        setError(null)
-        setTestResult(null)
-        setPhase('testing')
-        try {
-          const result = await controller.testChannel(type)
-          setTestResult(result)
-          const good = result?.confirmed === true || result?.accepted === true
-            || result?.status === 'delivered' || result?.status === 'accepted' || result?.delivered === true
-          setPhase(good ? 'done' : 'saved')
-        } catch (err) {
-          setError(err)
-          setPhase('saved')
-        }
-      }
-      if (phase === 'choose') {
-        return h('div', { className: 'dn-setupCard' },
-          h('h2', null, t('setupFirst')),
-          h('p', null, t('setupIntro')),
-          h('div', { className: 'dn-channelPicker' },
-            ...candidates.map(channel =>
-              h('button', {
-                type: 'button', className: 'dn-pickerRow', key: channel.type,
-                onClick: () => {
-                  setType(channel.type)
-                  // 恢复该类型此前的非 secret 短时草稿（若有）。
-                  setDraft(loadDraft('setup', channel.type, channel?.notify?.fields ?? {}) ?? {})
-                  setPhase('form')
-                },
-              }, resolveText(ctx, channel.label) || channel.type, h('span', null, '›')))))
-      }
-      const outcome = testResult ? testOutcome(ctx, testResult, t) : null
-      const body = phase === 'form'
-        ? [
-            type === 'telegram' ? h(TelegramConnection, { key: 'connection', ctx, controller, value: draft.apiBase, onChange: value => setField('apiBase', value), onDirect: () => setField('apiBase', ''), disabled: saveBusy, enableDisabled: true }) : null,
-            ...Object.entries(fields).filter(([key]) => type !== 'telegram' || !['apiBase', 'gatewayKey'].includes(key)).map(([key, meta]) => h(SchemaField, {
-              key, ctx, name: key, meta,
-              value: draft[key],
-              onChange: value => setField(key, value),
-              t,
-            })),
-            error ? h('p', { className: 'dn-error', role: 'alert', key: 'err' }, error?.message || t('unknownError')) : null,
-            h('p', { className: 'dn-note', key: 'note' }, t('noAccountNote')),
-            h('div', { className: 'dn-formActions', key: 'actions' },
-              h(Button, {
-                kind: 'primary',
-                disabled: saveBusy || Object.keys(draft).length === 0,
-                onClick: () => void save(),
-              }, saveBusy ? t('saving') : t('save'))),
-          ]
-        : [
-            h('p', { className: 'dn-successText', key: 'saved' }, t('savedOk')),
-            saved?.restartPending === true || saved?.applyMode === 'restart-pending'
-              ? h('p', { className: 'dn-note', key: 'restart' }, t('outboundRestartHint')) : null,
-            h('p', { className: 'dn-note', key: 'pendingTest' }, t('savedPendingTest')),
-            outcome
-              ? h('p', {
-                  className: outcome.ok ? 'dn-successText' : 'dn-error',
-                  role: outcome.ok ? undefined : 'alert',
-                  key: 'outcome',
-                }, `${outcome.title} · ${outcome.note}`)
-              : null,
-            error ? h('p', { className: 'dn-error', role: 'alert', key: 'err' }, error?.message || t('unknownError')) : null,
-            phase === 'testing' ? h('p', { className: 'dn-inlineStatus', key: 'testing' }, h(StateDot, { state: 'ongoing' }), t('testing')) : null,
-            h('div', { className: 'dn-formActions', key: 'actions' },
-              h(Button, {
-                disabled: testBusy || phase === 'testing',
-                onClick: () => void test(),
-              }, testBusy || phase === 'testing' ? t('testing') : t('test')),
-              h(Button, { kind: 'primary', onClick: onDone }, t('complete'))),
-          ]
-      const goBack = () => {
-        // U07：未保存草稿时离开需可取消；确认后才丢弃。
-        if (phase === 'form' && Object.keys(draft).length > 0) { setLeaveArmed(true); return }
-        setPhase('choose'); setType(null)
-      }
-      return h('div', { className: 'dn-setupCard' },
-        h('div', { className: 'dn-detailBack' },
-          h('button', { className: 'dn-link', onClick: goBack }, `← ${t('back')}`)),
-        h('h2', null, resolveText(ctx, selected?.label) || type),
-        leaveArmed
-          ? h('div', { className: 'dn-leaveGuard', role: 'alertdialog', 'aria-label': t('unsavedLeaveTitle') },
-              h('strong', null, t('unsavedLeaveTitle')),
-              h('p', { className: 'dn-note' }, t('unsavedLeaveBody')),
-              h('div', { className: 'dn-formActions' },
-                h(Button, { autoFocus: true, onClick: () => setLeaveArmed(false) }, t('leaveStay')),
-                h(Button, {
-                  kind: 'danger',
-                  onClick: () => {
-                    setLeaveArmed(false)
-                    if (type !== null) clearDraft('setup', type)
-                    setDraft({})
-                    setPhase('choose')
-                    setType(null)
-                  },
-                }, t('leaveDiscard'))))
-          : null,
-        ...body)
-    }
-
-    function ChannelsView({ ctx, controller, state, t }) {
-      const data = state.channels
-      useEffect(() => { void controller.loadChannels().catch(error => controller.reportError(error)) }, [])
-      const [setup, setSetup] = useState(state.view.setup === true)
-      const channels = data?.channels ?? []
-      if (setup) return h('div', { className: 'dn-page' },
-        h(PageHead, { title: t('setupChannel') }),
-        h(SetupFlow, { ctx, controller, state, channels, t, onDone: () => { setSetup(false); void controller.loadChannels().catch(error => controller.reportError(error)) } }))
-      return h('div', { className: 'dn-page' },
-        h(PageHead, {
-          title: t('channels'),
-          actions: h('div', { className: 'dn-formActions' },
-            h(Button, { onClick: () => controller.navigate({ kind: 'portability' }) }, t('configTransfer')),
-            h(Button, { onClick: () => controller.navigate({ kind: 'cloudflare' }) }, t('cloudflare')),
-            h(Button, { kind: 'primary', onClick: () => setSetup(true) }, t('addChannel'))),
-        }),
-        h(ErrorNotice, { error: state.error, t, onRetry: () => void controller.loadChannels().catch(error => controller.reportError(error)) }),
-        h('div', { className: 'dn-list' },
-          ...listBody({
-            data, error: state.error, connectionState: state.connectionState, staleAt: state.staleAt, t,
-            rows: channels, emptyKey: 'noChannels',
-            render: channel => h(ChannelRow, {
-              key: channel.type, ctx, channel, t,
-              onOpen: () => controller.navigate({ kind: 'channel', type: channel.type }),
-            }),
-          })))
-    }
-
-    function ChannelDetailView({ ctx, controller, state, t }) {
-      const type = state.view.type
-      const backRef = useRef(null)
-      // v0.15（T19 / U07）：聚合两个方向的 dirty，用于离开确认；写权威仍在 authority。
-      const [dirtyMap, setDirtyMap] = useState({ outbound: false, inbound: false })
-      const [leaveArmed, setLeaveArmed] = useState(false)
-      useEffect(() => { void controller.loadChannel(type).catch(error => controller.reportError(error)) }, [type])
-      const onDirtyChange = useCallback((direction, isDirty) => {
-        setDirtyMap(current => current[direction] === isDirty ? current : { ...current, [direction]: isDirty })
-      }, [])
-
-      const channel = state.channel?.channel
-      const hasUnsaved = dirtyMap.outbound === true || dirtyMap.inbound === true
-      const closeLeave = () => {
-        setLeaveArmed(false)
-        try { backRef.current?.focus?.() } catch { /* 焦点回退是增强，不是必需 */ }
-      }
-      const goBack = () => {
-        if (hasUnsaved) { setLeaveArmed(true); return }
-        controller.navigate({ kind: 'channels' })
-      }
-      if (!channel) {
-        // v0.15（T18 / U04）：读取中与读取失败必须可区分——服务缺失/失败不能显示成「正在读取」。
-        return h('div', { className: 'dn-page' },
-          h('div', { className: 'dn-detailBack' },
-            h('button', { className: 'dn-link', onClick: () => controller.navigate({ kind: 'channels' }) }, `← ${t('back')}`)),
-          h(PageHead, { title: type }),
-          h(ErrorNotice, { error: state.error, t, onRetry: () => void controller.loadChannel(type).catch(error => controller.reportError(error)) }),
-          state.error
-            ? null
-            : h('p', { className: 'dn-inlineStatus', 'aria-live': 'polite' }, h(StateDot, { state: 'ongoing' }), t('loading')))
-      }
-
-      const health = channel.health ?? {}
-      return h('div', { className: 'dn-page' },
-        h('div', { className: 'dn-detailBack' },
-          h('button', { ref: backRef, className: 'dn-link', onClick: goBack }, `← ${t('back')}`)),
-        h(PageHead, { title: resolveText(ctx, channel.label) || type }),
-        h(ErrorNotice, { error: state.error, t, onRetry: () => void controller.loadChannel(type).catch(error => controller.reportError(error)) }),
-        leaveArmed
-          ? h('div', { className: 'dn-leaveGuard', role: 'alertdialog', 'aria-label': t('unsavedLeaveTitle') },
-              h('strong', null, t('unsavedLeaveTitle')),
-              h('p', { className: 'dn-note' }, t('unsavedLeaveBody')),
-              h('div', { className: 'dn-formActions' },
-                h(Button, { autoFocus: true, onClick: closeLeave }, t('leaveStay')),
-                h(Button, {
-                  kind: 'danger',
-                  onClick: () => { setLeaveArmed(false); controller.navigate({ kind: 'channels' }) },
-                }, t('leaveDiscard'))))
-          : null,
-        // U05：模块级稳定组件——父级轮询/状态更新不会让它 remount，输入焦点与 caret 保留。
-        h(ChannelDirectionSection, { ctx, controller, state, t, type, direction: 'outbound', section: channel.notify, onDirtyChange, importDraft: state.view.importDirection === 'outbound' ? state.view.importDraft : null }),
-        h(ChannelDirectionSection, { ctx, controller, state, t, type, direction: 'inbound', section: channel.control, onDirtyChange, importDraft: state.view.importDirection === 'inbound' ? state.view.importDraft : null }),
-        h(Section, { title: t('recent20') },
-          h('div', { className: 'dn-healthGrid' },
-            h('span', null, `${Number(health.delivered ?? 0)} ${t('delivered')}`),
-            h('span', null, `${Number(health.skipped ?? 0)} ${t('skipped')}`),
-            h('span', null, `${Number(health.failed ?? 0)} ${t('failed')}`)),
-          health.lastSuccessAt ? h('p', { className: 'dn-rowMeta' }, `${t('lastSuccess')} · ${resolveText(ctx, health.lastSuccessText) || health.lastSuccessAt}`) : null,
-          health.lastFailureAt ? h('p', { className: 'dn-rowMeta' }, `${t('lastFailure')} · ${resolveText(ctx, health.lastFailureText) || health.lastFailureAt}`) : null,
-          health.lastFailureReason ? h('p', { className: 'dn-rowMeta' }, `${t('reason')} · ${resolveText(ctx, health.lastFailureReason)}`) : null))
-    }
-
-    function TasksView({ ctx, controller, state, t }) {
-      useEffect(() => { void controller.loadTasks().catch(error => controller.reportError(error)) }, [])
-      return h('div', { className: 'dn-page' },
-        h('div', { className: 'dn-detailBack' }, h('button', { className: 'dn-link', onClick: () => controller.navigate({ kind: 'native' }) }, `← ${t('back')}`)),
-        h(PageHead, { title: t('tasks') }),
-        h(ErrorNotice, { error: state.error, t, onRetry: () => void controller.loadTasks().catch(error => controller.reportError(error)) }),
-        h('div', { className: 'dn-list' },
-          ...listBody({
-            data: state.tasks, error: state.error, connectionState: state.connectionState, staleAt: state.staleAt, t,
-            rows: state.tasks?.tasks ?? [], emptyKey: 'noTasks',
-            render: task => h(TaskRow, { key: task.taskRef, ctx, task }),
-          })))
-    }
-
-    function QuestionsView({ ctx, controller, state, t }) {
-      useEffect(() => { void controller.loadQuestions().catch(error => controller.reportError(error)) }, [])
-      const rows = state.questions?.questions ?? []
-      return h('div', { className: 'dn-page' },
-        h('div', { className: 'dn-detailBack' }, h('button', { className: 'dn-link', onClick: () => controller.navigate({ kind: 'native' }) }, `← ${t('back')}`)),
-        h(PageHead, { title: t('questions') }),
-        h(ErrorNotice, { error: state.error, t, onRetry: () => void controller.loadQuestions().catch(error => controller.reportError(error)) }),
-        h('div', { className: 'dn-list' },
-          ...listBody({
-            data: state.questions, error: state.error, connectionState: state.connectionState, staleAt: state.staleAt, t,
-            rows, emptyKey: 'noQuestions',
-            render: question => h(QuestionCard, {
-              key: question.ref, ctx, question, controller, t,
-              busy: state.busy[`question:${question.ref}`] === true,
-            }),
-          })))
-    }
-
-    function MemberRow({ ctx, member, controller, t, busy, canUpdate, canRemove }) {
-      const isOwner = member?.role === 'owner'
-      const name = String(member?.label || member?.userId || member?.key || '')
-      const meta = [member?.channel, member?.accountId, isOwner ? t('owner') : t('roleMember')].filter(Boolean).join(' · ')
-      return h('div', { className: 'dn-row' },
-        h(StateDot, { state: isOwner ? 'done' : 'idle' }),
-        h('div', { className: 'dn-rowMain' },
-          h('strong', { className: 'dn-rowTitle' }, name),
-          h('span', { className: 'dn-rowMeta' }, meta)),
-        h('div', { className: 'dn-rowAside' },
-          // v0.15（T19 / U13）：降权（owner→member）是破坏性操作，需确认并说明后果；
-          // 升权不改权限边界，保持一步直达。last-owner 由 authority 在事务内拦住，UI 预检不独自保证。
-          canUpdate
-            ? (isOwner
-                ? h(ConfirmButton, {
-                    t,
-                    kind: 'default',
-                    confirmLabel: t('confirmDemote'),
-                    impact: `${name} · ${t('memberDemoteImpact')}`,
-                    busy,
-                    disabled: busy,
-                    onConfirm: () => void controller.updateMember(member.key, { role: 'member' }).catch(error => controller.reportError(error)),
-                  }, busy ? t('updating') : t('demote'))
-                : h(Button, {
-                    disabled: busy,
-                    onClick: () => void controller.updateMember(member.key, { role: 'owner' }).catch(error => controller.reportError(error)),
-                  }, t('promote')))
-            : null,
-          canRemove
-            ? h(ConfirmButton, {
-                t,
-                kind: 'default',
-                confirmLabel: t('confirmRemove'),
-                impact: `${name} · ${t('memberRemoveImpact')}`,
-                busy,
-                disabled: busy,
-                onConfirm: () => void controller.removeMember(member.key).catch(error => controller.reportError(error)),
-              }, busy ? t('removing') : t('remove'))
-            : null))
-    }
-
-    function MembersView({ ctx, controller, state, t }) {
-      useEffect(() => { void controller.loadMembers().catch(error => controller.reportError(error)) }, [])
-      const rows = state.members?.members ?? []
-      const canUpdate = state.members?.canUpdate === true
-      const canRemove = state.members?.canRemove === true
-      return h('div', { className: 'dn-page' },
-        h('div', { className: 'dn-detailBack' }, h('button', { className: 'dn-link', onClick: () => controller.navigate({ kind: 'native' }) }, `← ${t('back')}`)),
-        h(PageHead, { title: t('members') }),
-        h(ErrorNotice, { error: state.error, t, onRetry: () => void controller.loadMembers().catch(error => controller.reportError(error)) }),
-        h('div', { className: 'dn-list' },
-          ...listBody({
-            data: state.members, error: state.error, connectionState: state.connectionState, staleAt: state.staleAt, t,
-            rows, emptyKey: 'noMembers',
-            render: member => h(MemberRow, {
-              key: member.key, ctx, member, controller, t,
-              busy: state.busy[`member:${member.key}`] === true, canUpdate, canRemove,
-            }),
-          })))
-    }
-
-    function PendingRow({ member, controller, t, busy, canApprove, canDismiss }) {
-      const meta = [member?.channel, member?.accountId, member?.origin].filter(Boolean).join(' · ')
-      return h('div', { className: 'dn-row' },
-        h(StateDot, { state: 'warn' }),
-        h('div', { className: 'dn-rowMain' },
-          h('strong', { className: 'dn-rowTitle' }, String(member?.userId || member?.key || '')),
-          h('span', { className: 'dn-rowMeta' }, meta)),
-        h('div', { className: 'dn-rowAside' },
-          canApprove
-            ? h(Button, {
-                disabled: busy,
-                onClick: () => void controller.approvePending(member.key).catch(error => controller.reportError(error)),
-              }, t('approve'))
-            : null,
-          canDismiss
-            ? h(Button, {
-                disabled: busy,
-                onClick: () => void controller.dismissPending(member.key).catch(error => controller.reportError(error)),
-              }, t('dismiss'))
-            : null))
-    }
-
-    function PendingIdentitiesView({ ctx, controller, state, t }) {
-      useEffect(() => { void controller.loadPending().catch(error => controller.reportError(error)) }, [])
-      const rows = state.pending?.pending ?? []
-      const canApprove = state.pending?.canApprove === true
-      const canDismiss = state.pending?.canDismiss === true
-      return h('div', { className: 'dn-page' },
-        h('div', { className: 'dn-detailBack' }, h('button', { className: 'dn-link', onClick: () => controller.navigate({ kind: 'native' }) }, `← ${t('back')}`)),
-        h(PageHead, { title: t('pendingIdentities') }),
-        h(ErrorNotice, { error: state.error, t, onRetry: () => void controller.loadPending().catch(error => controller.reportError(error)) }),
-        h('div', { className: 'dn-list' },
-          ...listBody({
-            data: state.pending, error: state.error, connectionState: state.connectionState, staleAt: state.staleAt, t,
-            rows, emptyKey: 'noPending',
-            render: member => h(PendingRow, {
-              key: member.key, member, controller, t,
-              busy: state.busy[`pending:${member.key}`] === true, canApprove, canDismiss,
-            }),
-          })))
-    }
-
-    function PairingCodeRow({ code, controller, t, busy, canRevoke }) {
-      const meta = [code?.origin, code?.mintedBy, code?.state].filter(Boolean).join(' · ')
-      return h('div', { className: 'dn-row' },
-        h(StateDot, { state: 'idle' }),
-        h('div', { className: 'dn-rowMain' },
-          h('strong', { className: 'dn-rowTitle' }, String(code?.label || code?.id || '')),
-          h('span', { className: 'dn-rowMeta' }, meta)),
-        h('div', { className: 'dn-rowAside' },
-          canRevoke
-            ? h(ConfirmButton, {
-                t,
-                confirmLabel: t('confirmRevoke'),
-                busy,
-                disabled: busy,
-                onConfirm: () => void controller.revokePairingCode(code.id).catch(error => controller.reportError(error)),
-              }, busy ? t('revoking') : t('revoke'))
-            : null))
-    }
-
-    function PairingCodesView({ ctx, controller, state, t }) {
-      useEffect(() => { void controller.loadPairingCodes().catch(error => controller.reportError(error)) }, [])
-      // 码面只在本次响应出现一次：本地持有、刷新即丢（不落任何持久层）。
-      const [minted, setMinted] = useState(null)
-      const [label, setLabel] = useState('')
-      // v0.15（T19 / U10）：复制结果的**局部**状态（null | 'copied' | 'unavailable'）。
-      const [copyState, setCopyState] = useState(null)
-      const codeRef = useRef(null)
-      const onCopy = () => {
-        void copyText(String(minted?.code ?? '')).then(ok => {
-          setCopyState(ok ? 'copied' : 'unavailable')
-          // 无剪贴板能力时给出**手动 fallback**：选中码面，用户可直接 Ctrl/Cmd-C。
-          if (!ok && codeRef.current && typeof window?.getSelection === 'function') {
-            try {
-              const range = document.createRange()
-              range.selectNodeContents(codeRef.current)
-              const selection = window.getSelection()
-              selection.removeAllRanges()
-              selection.addRange(range)
-            } catch {}
-          }
-        })
-      }
-      const rows = state.pairing?.codes ?? []
-      const canMint = state.pairing?.canMint === true
-      const canRevoke = state.pairing?.canRevoke === true
-      const busyMint = state.busy['pairing:mint'] === true
-      const onMint = () => {
-        void controller.mintPairingCode(label).then(value => {
-          setMinted(value ?? null)
-          setCopyState(null)
-          setLabel('')
-        }).catch(error => controller.reportError(error))
-      }
-      return h('div', { className: 'dn-page' },
-        h('div', { className: 'dn-detailBack' }, h('button', { className: 'dn-link', onClick: () => controller.navigate({ kind: 'native' }) }, `← ${t('back')}`)),
-        h(PageHead, { title: t('pairingCodes') }),
-        h(ErrorNotice, { error: state.error, t, onRetry: () => void controller.loadPairingCodes().catch(error => controller.reportError(error)) }),
-        canMint
-          ? h('div', { className: 'dn-field' },
-              h('input', {
-                type: 'text', value: label, maxLength: 64, placeholder: t('labelOptional'),
-                onChange: event => setLabel(event.target.value),
-              }),
-              h(Button, { kind: 'primary', disabled: busyMint, onClick: onMint }, busyMint ? t('minting') : t('mintCode')))
-          : null,
-        minted
-          ? h('div', { className: 'dn-code', key: 'minted' },
-              h('p', { className: 'dn-note' }, t('codeShownOnce')),
-              h('code', { className: 'dn-codeValue', ref: codeRef, tabIndex: 0 }, String(minted.code ?? '')),
-              h('div', { className: 'dn-formActions' },
-                h(Button, { kind: 'primary', onClick: onCopy }, t('copyCode')),
-                h('button', { className: 'dn-link', onClick: () => { setMinted(null); setCopyState(null) } }, t('clearCode'))),
-              copyState
-                ? h('p', { className: 'dn-note', role: 'status', 'aria-live': 'polite' },
-                    copyState === 'copied' ? t('codeCopied') : t('copyUnavailableSelect'))
-                : null)
-          : null,
-        h('div', { className: 'dn-list' },
-          ...listBody({
-            data: state.pairing, error: state.error, connectionState: state.connectionState, staleAt: state.staleAt, t,
-            rows, emptyKey: 'noCodes',
-            render: code => h(PairingCodeRow, {
-              key: code.id, ctx, code, controller, t,
-              busy: state.busy[`pairing:${code.id}`] === true, canRevoke,
-            }),
-          })))
-    }
-
-    function SessionRow({ ctx, controller, t, row, busy, canPatch }) {
-      const active = row?.active === true
-      const channels = row?.resolved?.channelTypes ?? []
-      const quiet = row?.resolved?.quiet === true
-      const meta = [
-        active ? t('sessionActive') : t('sessionIdle'),
-        channels.length ? channels.join(', ') : t('noChannelsResolved'),
-        quiet ? t('silence') : null,
-      ].filter(Boolean).join(' · ')
-      return h('div', { className: 'dn-row' },
-        h(StateDot, { state: active ? 'done' : 'idle' }),
-        h('div', { className: 'dn-rowMain' },
-          h('strong', { className: 'dn-rowTitle' }, String(row?.workspace || row?.id || '')),
-          h('span', { className: 'dn-rowMeta' }, meta)),
-        h('div', { className: 'dn-rowAside' },
-          canPatch
-            ? h(Button, {
-                disabled: busy,
-                onClick: () => void controller.patchSessionOutbound(row.id, { quiet: !quiet }).catch(error => controller.reportError(error)),
-              }, quiet ? t('resumeNotify') : t('silence'))
-            : null,
-          // v0.14（Stage E / P1-10）：进入 Session Detail（路由 / 出站 / 控制 / 绑定）。
-          h('button', {
-            type: 'button', className: 'dn-link',
-            onClick: () => controller.navigate({ kind: 'session', id: row.id }),
-          }, t('openSession'))))
-    }
 
     // v0.14（Stage E / P1-10）：Session Detail。只做投影与「写入口」编排——路由写权威在
     // agent-router、控制归一在 session-arbiter、生命周期在 session-registry，本视图不另造 authority。
-    function SessionDetailSection({ title, children }) {
-      return h('section', { className: 'dn-section' },
-        h('h3', { className: 'dn-subhead' }, title),
-        ...children)
-    }
-
-    function SourceLabel(source, t) {
-      return source === 'session' ? t('sourceSession')
-        : source === 'agent-workspace' ? t('sourceWorkspace')
-          : source === 'global' ? t('sourceGlobal')
-            : String(source ?? '')
-    }
-
-    function SessionDetailView({ ctx, controller, state, t }) {
-      const id = state.view.id
-      useEffect(() => { void controller.loadSession(id).catch(error => controller.reportError(error)) }, [id])
-      const detail = state.session ?? null
-      const session = detail?.session ?? null
-      const canPatch = detail?.canPatch === true
-      const canControl = detail?.canControl === true
-      const busy = state.busy[`session:${id}`] === true
-      const controlBusy = state.busy[`session-control:${id}`] === true
-      const back = h('div', { className: 'dn-detailBack' }, h('button', { className: 'dn-link', onClick: () => controller.navigate({ kind: 'sessions' }) }, `← ${t('back')}`))
-      if (session === null) {
-        return h('div', { className: 'dn-page' }, back,
-          h(PageHead, { title: t('sessionDetail') }),
-          h(ErrorNotice, { error: state.error, t, onRetry: () => void controller.loadSession(id).catch(error => controller.reportError(error)) }),
-          h('p', { className: 'dn-empty' }, t('loading')))
-      }
-      const resolved = session.resolved ?? {}
-      const channels = Array.isArray(resolved.channelTypes) ? resolved.channelTypes : []
-      const quiet = resolved.quiet === true
-      const control = session.control ?? {}
-      const modeValue = control.mode ?? null
-      const nextMode = modeValue === 'team' ? 'personal' : 'team'
-      const writeControl = (diff) => void controller.patchSessionControl(id, diff).catch(error => controller.reportError(error))
-      const rowLine = (label, value) => h('p', { className: 'dn-rowMeta' }, `${label}: ${value}`)
-      return h('div', { className: 'dn-page' },
-        back,
-        h(PageHead, { title: t('sessionDetail'), intro: String(session.workspace || session.id || '') }),
-        h(ErrorNotice, { error: state.error, t, onRetry: () => void controller.loadSession(id).catch(error => controller.reportError(error)) }),
-        h(SessionDetailSection, { title: t('routingSection') }, [
-          rowLine(t('workspaceLabel'), String(session.workspace || t('modeUnset'))),
-          rowLine(t('inheritLabel'), String(session.inherit ?? t('modeUnset'))),
-          rowLine(t('resolvedByLabel'), SourceLabel(resolved.source, t)),
-          rowLine(t('outboundSection'), channels.length ? channels.join(', ') : t('noChannelsResolved')),
-          rowLine(t('lastActiveLabel'), String(session.lastActiveAt ?? t('modeUnset'))),
-          session.disposedAt !== undefined ? rowLine(t('disposedLabel'), String(session.disposedAt)) : null,
-        ]),
-        h(SessionDetailSection, { title: t('outboundSection') }, [
-          canPatch
-            ? h('div', { className: 'dn-formActions' },
-                h(Button, {
-                  disabled: busy,
-                  onClick: () => void controller.patchSessionOutbound(id, { quiet: !quiet }).catch(error => controller.reportError(error)),
-                }, quiet ? t('resumeNotify') : t('silence')))
-            : h('p', { className: 'dn-note' }, t('unavailable')),
-        ]),
-        h(SessionDetailSection, { title: t('controlSection') }, [
-          rowLine(t('modeLabel'), modeValue === 'team' ? t('modeTeam') : modeValue === 'personal' ? t('modePersonal') : t('modeUnset')),
-          rowLine(t('approvalOwnerOnlyLabel'), control.approvalOwnerOnly === true ? t('yes') : t('no')),
-          rowLine(t('ownerConfiguredLabel'), control.ownerConfigured === true ? t('yes') : t('no')),
-          rowLine(t('approvalMembersCountLabel'), String(control.approvalMembersCount ?? 0)),
-          canControl
-            ? h('div', { className: 'dn-formActions' },
-                h(Button, {
-                  disabled: controlBusy,
-                  onClick: () => writeControl({ mode: nextMode }),
-                }, `${t('modeLabel')}: ${nextMode === 'team' ? t('modeTeam') : t('modePersonal')}`),
-                h(Button, {
-                  disabled: controlBusy,
-                  onClick: () => writeControl({ approvalOwnerOnly: control.approvalOwnerOnly !== true }),
-                }, `${t('approvalOwnerOnlyLabel')}: ${control.approvalOwnerOnly === true ? t('no') : t('yes')}`))
-            : h('p', { className: 'dn-note' }, t('unavailable')),
-        ]),
-        h(SessionDetailSection, { title: t('bindingsSection') }, [
-          h('p', { className: 'dn-rowMeta' }, `${t('inheritLabel')}: ${String(session.inherit ?? t('modeUnset'))}`),
-          h('div', { className: 'dn-formActions' },
-            h(Button, { onClick: () => controller.navigate({ kind: 'bindings' }) }, t('advancedBindings'))),
-        ]),
-        // 原始标识默认折叠 + 脱敏。
-        h(RawIdentifiers, {
-          t,
-          value: { id: session.id, workspace: session.workspace, outbound: session.outbound ?? null, inbound: session.inbound ?? null, control: session.control ?? null },
-        }))
-    }
-
-    function SessionsView({ ctx, controller, state, t }) {
-      useEffect(() => { void controller.loadSessions().catch(error => controller.reportError(error)) }, [])
-      const rows = state.sessions?.sessions ?? []
-      const canPatch = state.sessions?.canPatch === true
-      return h('div', { className: 'dn-page' },
-        h('div', { className: 'dn-detailBack' }, h('button', { className: 'dn-link', onClick: () => controller.navigate({ kind: 'native' }) }, `← ${t('back')}`)),
-        h(PageHead, { title: t('sessions') }),
-        h('div', { className: 'dn-detailBack' }, h('button', { className: 'dn-link', onClick: () => controller.navigate({ kind: 'bindings' }) }, t('advancedBindings'))),
-        h(ErrorNotice, { error: state.error, t, onRetry: () => void controller.loadSessions().catch(error => controller.reportError(error)) }),
-        h('div', { className: 'dn-list' },
-          ...listBody({
-            data: state.sessions, error: state.error, connectionState: state.connectionState, staleAt: state.staleAt, t,
-            rows, emptyKey: 'noSessions',
-            render: row => h(SessionRow, {
-              key: row.id, ctx, controller, t, row,
-              busy: state.busy[`session:${row.id}`] === true, canPatch,
-            }),
-          })))
-    }
-
-    function BindingAgentRow({ ctx, controller, t, table, name, entry, canEdit, busy }) {
-      const channels = Array.isArray(entry?.channels) ? entry.channels : []
-      const quiet = entry?.quiet === true
-      const meta = [
-        channels.length ? channels.join(', ') : t('noChannelsResolved'),
-        quiet ? t('silence') : null,
-      ].filter(Boolean).join(' · ')
-      const write = (next) => {
-        const nextTable = { ...table, [name]: next }
-        return void controller.putBindings({ agents: nextTable }).catch(error => controller.reportError(error))
-      }
-      const remove = () => {
-        const nextTable = { ...table }
-        delete nextTable[name]
-        return void controller.putBindings({ agents: nextTable }).catch(error => controller.reportError(error))
-      }
-      return h('div', { className: 'dn-row' },
-        h(StateDot, { state: quiet ? 'idle' : 'done' }),
-        h('div', { className: 'dn-rowMain' },
-          h('strong', { className: 'dn-rowTitle' }, String(name)),
-          h('span', { className: 'dn-rowMeta' }, meta)),
-        h('div', { className: 'dn-rowAside' },
-          canEdit
-            ? h(Button, { disabled: busy, onClick: () => write({ ...entry, quiet: !quiet }) }, quiet ? t('resumeNotify') : t('silence'))
-            : null,
-          canEdit
-            ? h(ConfirmButton, {
-                t,
-                confirmLabel: t('confirmRemove'),
-                busy,
-                disabled: busy,
-                onConfirm: remove,
-              }, t('remove'))
-            : null))
-    }
-
-    function BindingChannelRow({ ctx, controller, t, table, name, entry, canEdit, busy }) {
-      const [draft, setDraft] = useState(entry?.defaultAgent ?? '')
-      const save = () => {
-        const nextTable = { ...table, [name]: { defaultAgent: draft.trim() } }
-        return void controller.putBindings({ channels: nextTable }).catch(error => controller.reportError(error))
-      }
-      const remove = () => {
-        const nextTable = { ...table }
-        delete nextTable[name]
-        return void controller.putBindings({ channels: nextTable }).catch(error => controller.reportError(error))
-      }
-      return h('div', { className: 'dn-row' },
-        h(StateDot, { state: 'idle' }),
-        h('div', { className: 'dn-rowMain' },
-          h('strong', { className: 'dn-rowTitle' }, String(name)),
-          h('span', { className: 'dn-rowMeta' }, String(entry?.defaultAgent ?? ''))),
-        canEdit
-          ? h('div', { className: 'dn-rowAside' },
-              h('input', {
-                type: 'text', value: draft, maxLength: 256, placeholder: t('defaultAgent'),
-                onChange: event => setDraft(event.target.value),
-              }),
-              h(Button, { disabled: busy || draft.trim() === '', onClick: save }, t('save')),
-              h(ConfirmButton, {
-                t,
-                confirmLabel: t('confirmRemove'),
-                busy,
-                disabled: busy,
-                onConfirm: remove,
-              }, t('remove')))
-          : null)
-    }
-
-    function BindingsView({ ctx, controller, state, t }) {
-      useEffect(() => { void controller.loadBindings().catch(error => controller.reportError(error)) }, [])
-      const agents = state.bindings?.agents ?? {}
-      const channels = state.bindings?.channels ?? {}
-      const canEdit = state.bindings?.canEdit === true
-      const busy = state.busy['bindings:save'] === true
-      const agentNames = Object.keys(agents)
-      const channelNames = Object.keys(channels)
-      return h('div', { className: 'dn-page' },
-        h('div', { className: 'dn-detailBack' }, h('button', { className: 'dn-link', onClick: () => controller.navigate({ kind: 'sessions' }) }, `← ${t('back')}`)),
-        h(PageHead, { title: t('bindings') }),
-        h(ErrorNotice, { error: state.error, t, onRetry: () => void controller.loadBindings().catch(error => controller.reportError(error)) }),
-        h('h3', { className: 'dn-subhead' }, t('agentBindings')),
-        h('div', { className: 'dn-list' },
-          ...listBody({
-            data: state.bindings, error: state.error, connectionState: state.connectionState, staleAt: state.staleAt, t,
-            rows: agentNames, emptyKey: 'noBindings',
-            render: name => h(BindingAgentRow, { key: name, ctx, controller, t, table: agents, name, entry: agents[name], canEdit, busy }),
-          })),
-        h('h3', { className: 'dn-subhead' }, t('channelBindings')),
-        h('div', { className: 'dn-list' },
-          ...(state.bindings === null ? [] : listBody({
-            data: state.bindings, error: state.error, connectionState: state.connectionState, staleAt: state.staleAt, t,
-            rows: channelNames, emptyKey: 'noBindings',
-            render: name => h(BindingChannelRow, { key: name, ctx, controller, t, table: channels, name, entry: channels[name], canEdit, busy }),
-          }))),
-        // v0.14（Stage E / P1-10）：原始标识默认折叠 + 脱敏（展开也只显示打码值）。
-        h(RawIdentifiers, { t, value: { agents, channels } }))
-    }
-
-    function ActivityView({ ctx, controller, state, t }) {
-      useEffect(() => { void controller.loadActivity().catch(error => controller.reportError(error)) }, [])
-      return h('div', { className: 'dn-page' },
-        h('div', { className: 'dn-detailBack' }, h('button', { className: 'dn-link', onClick: () => controller.navigate({ kind: 'native' }) }, `← ${t('back')}`)),
-        h(PageHead, { title: t('activity') }),
-        h(ErrorNotice, { error: state.error, t, onRetry: () => void controller.loadActivity().catch(error => controller.reportError(error)) }),
-        h('div', { className: 'dn-list' },
-          ...listBody({
-            data: state.activity, error: state.error, connectionState: state.connectionState, staleAt: state.staleAt, t,
-            rows: state.activity?.items ?? [], emptyKey: 'noActivity',
-            render: item => h(ActivityRow, { key: item.id, ctx, item }),
-          })))
-    }
 
     function evidenceText(t, value) {
       return value === 'confirmed' ? t('evidenceConfirmed')
@@ -3562,18 +2384,7 @@ window.__ModuleLoader__.load({
         || state.view.kind === 'native-private' || state.view.kind === 'native-pending') {
         return h(NotifierSettings, { ctx, controller, state, t })
       }
-      if (state.view.kind === 'channels') return h(ChannelsView, { ctx, controller, state, t })
       // v0.12.1（P1-12）：按渠道类型重建详情组件，避免草稿/测试结果跨渠道串台。
-      if (state.view.kind === 'channel') return h(ChannelDetailView, { key: state.view.type, ctx, controller, state, t })
-      if (state.view.kind === 'tasks') return h(TasksView, { ctx, controller, state, t })
-      if (state.view.kind === 'questions') return h(QuestionsView, { ctx, controller, state, t })
-      if (state.view.kind === 'members') return h(MembersView, { ctx, controller, state, t })
-      if (state.view.kind === 'pending') return h(PendingIdentitiesView, { ctx, controller, state, t })
-      if (state.view.kind === 'pairing') return h(PairingCodesView, { ctx, controller, state, t })
-      if (state.view.kind === 'sessions') return h(SessionsView, { ctx, controller, state, t })
-      if (state.view.kind === 'session') return h(SessionDetailView, { key: state.view.id, ctx, controller, state, t })
-      if (state.view.kind === 'bindings') return h(BindingsView, { ctx, controller, state, t })
-      if (state.view.kind === 'activity') return h(ActivityView, { ctx, controller, state, t })
       // v0.15（Stage 1 / S5）：二级能力收口——通知总览 + 用户向帮助，全部从「更多」进入。
       if (state.view.kind === 'notify-settings') return h(NotifySettingsView, { ctx, controller, state, t })
       if (state.view.kind === 'help') return h(HelpView, { ctx, controller, state, t })
@@ -3759,7 +2570,7 @@ window.__ModuleLoader__.load({
         h(Section, { title: t('importStaged') },
           readback === null ? h('p', { className: 'dn-note' }, t('loading')) : readback.staged?.length ? readback.staged.map(r => h('div', { className: 'dn-row', key: `${r.direction}:${r.type}` },
             h('span', { className: 'dn-rowMain' }, `${r.type} · ${t(r.direction === 'outbound' ? 'notify' : 'control')}`),
-            h(Button, { disabled: busy, onClick: () => controller.navigate({ kind: 'channel', type: r.type === 'qq' ? 'qqbot' : r.type === 'wechat' ? 'weixin' : r.type, importDirection: r.direction, importDraft: r.config }) }, t('importConfigure')))) : h('p', { className: 'dn-note' }, t('importEmpty'))))
+            h(Button, { disabled: busy, onClick: () => controller.navigate({ kind: 'native-channel', type: r.type === 'qq' ? 'qqbot' : r.type === 'wechat' ? 'weixin' : r.type, importDirection: r.direction, importDraft: r.config }) }, t('importConfigure')))) : h('p', { className: 'dn-note' }, t('importEmpty'))))
     }
 
     function TunnelSettings({ ctx, controller, data, disabled, onRead }) {
@@ -3965,7 +2776,6 @@ window.__ModuleLoader__.load({
       .dn-leaveGuard p{margin:6px 0 10px}
       .dn-page :focus-visible{outline:2px solid var(--dsw-alias-state-business-primary);outline-offset:2px}
       @media(max-width:359px){.dn-page{padding:16px 12px 36px}.dn-navBtn{padding:4px 10px}}
-      .dn-healthGrid{display:flex;gap:16px;flex-wrap:wrap;font-size:13px}.dn-activityTime{width:48px;color:var(--dsw-alias-label-tertiary);font-size:12px}
       .dn-pluginConfig{display:flex;flex-direction:column;gap:8px;padding:8px 0}.dn-pluginConfig>p,.dn-activation>p{margin:0;color:var(--dsw-alias-label-secondary);font-size:13px;line-height:20px}
       @keyframes dnPulse{0%,100%{opacity:.35}50%{opacity:1}}
       @media(max-width:719px){.dn-page{padding:20px 16px 40px}.dn-pageHead{gap:12px}.dn-row{align-items:flex-start}.dn-rowAside{align-items:flex-start}.dn-options{flex-direction:column}.dn-option{width:100%;text-align:left}}

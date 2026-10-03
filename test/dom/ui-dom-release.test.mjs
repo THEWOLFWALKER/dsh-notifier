@@ -154,22 +154,17 @@ test('Native one-click gateway deploy fills address and reuses token without a m
 })
 test('Native Telegram custom address remains editable and saves with the existing token', async () => {
   const r = rig(); r.outbound.save('telegram', { botToken: '123:secret', chatId: '42' })
-  const calls = []
-  const controller = { navigate(view) { calls.push(view) }, async saveChannel(type, direction, patch) { return r.outbound.save(type, patch) }, reportError(e) { throw e } }
-  const section = { fields: r.outbound.describe('telegram').fields, editableValues: { chatId: '42' }, configRevision: 1, applyMode: 'hot' }
-  const v = mount(React.createElement(mod.__test.ChannelDirectionSection, { ctx: r.ctx, controller, state: {}, t: k => k, type: 'telegram', direction: 'outbound', section }))
+  const controller = { async nativeSaveChannel(type, direction, patch) { return r.outbound.save(type, patch) }, reportError(e) { throw e } }
+  const fields = [{ key: 'apiBase', label: 'Custom address', type: 'text', secret: false }]
+  const v = mount(React.createElement(mod.__test.NativeDirectionForm, { ctx: r.ctx, controller, state: {}, t: k => k, type: 'telegram', direction: 'outbound', fields, values: {}, revision: 1 }))
   await flush()
   try {
-    const select = v.container.querySelector('select[aria-label="Telegram connection"]')
-    act(() => { select.value = 'custom'; select.dispatchEvent(new window.Event('change', { bubbles: true })) })
-    const input = v.container.querySelector('input[aria-label="Telegram gateway address"]')
+    const input = v.container.querySelector('input[aria-label="Custom address"]')
     typeInput(input, 'https://g'); assert.equal(input.disabled, false)
     typeInput(input, 'https://gateway.example')
     click(buttonByText(v.container, 'save')); await flush()
     assert.equal(r.outbound.raw('telegram').apiBase, 'https://gateway.example')
     assert.equal(r.outbound.raw('telegram').botToken, '123:secret')
-    click(buttonByText(v.container, 'Enable gateway'))
-    assert.equal(calls[0].kind, 'cloudflare')
   } finally { r.close(v) }
 })
 
