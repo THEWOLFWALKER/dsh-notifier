@@ -39,13 +39,16 @@ export function createSurfaceHealth({ window = 20, ttlMs = DEFAULT_HEALTH_TTL_MS
   const epochOf = (type) => epochs.get(String(type ?? '')) ?? 0
   const listOf = (type) => {
     const key = String(type ?? '')
-    if (!events.has(key)) events.set(key, [])
+    if (!events.has(key)) {
+      if (events.size >= 128 || (!epochs.has(key) && epochs.size >= 128)) return []
+      events.set(key, [])
+    }
     return events.get(key)
   }
   /** TTL 淘汰：只保留 ttl 内的观察（ttl=0 表示不过期）。 */
   const prune = (type, at = now()) => {
     if (ttl <= 0) return
-    const list = listOf(type)
+    const list = events.get(String(type ?? "")) ?? []
     const cutoff = at - ttl
     const fresh = list.filter((event) => event.at >= cutoff)
     if (fresh.length !== list.length) events.set(String(type ?? ''), fresh)
@@ -59,7 +62,7 @@ export function createSurfaceHealth({ window = 20, ttlMs = DEFAULT_HEALTH_TTL_MS
   /** 递增实例世代并丢弃旧世代观察（旧 epoch 的迟到观察不污染新实例）。 */
   const markEpoch = (type, epoch) => {
     const key = String(type ?? '')
-    if (key === '') return 0
+    if (key === '' || (!epochs.has(key) && epochs.size >= 128)) return 0
     const incoming = Number.isFinite(epoch) ? Number(epoch) : epochOf(key) + 1
     const current = epochOf(key)
     if (incoming <= current) return current
@@ -71,7 +74,7 @@ export function createSurfaceHealth({ window = 20, ttlMs = DEFAULT_HEALTH_TTL_MS
     prune(type)
     const out = blank(type)
     out.epoch = epochOf(type)
-    for (const event of listOf(type)) {
+    for (const event of events.get(String(type ?? "")) ?? []) {
       if (out.observedAt === null) out.observedAt = event.at
       if (event.kind === 'delivered') {
         out.delivered += 1

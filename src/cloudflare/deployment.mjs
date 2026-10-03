@@ -13,6 +13,7 @@ export function createCloudflareDeploymentService({ store, root, outboundConfig,
   const tunnel = tunnelService ?? createNativeTunnelService({ store })
   const cli = runner ?? createWranglerRunner({ root })
   let job = null, disposed = false
+  let recoveryQueue = []
   const JOB_PREFIX = 'cloud:job:'
   const fingerprint = value => createHash('sha256').update(String(value)).digest('hex')
   const token = () => { const ref = store.get(`${PREFIX}telegram`)?.secretReference; return String((ref ? store.get(ref)?.botToken : outboundConfig.raw('telegram')?.botToken) ?? '').trim() }
@@ -53,7 +54,7 @@ export function createCloudflareDeploymentService({ store, root, outboundConfig,
           try { saveJob(current, { state: current.cancelRequested ? 'cancel-requested' : 'recovery-required', recoveryRequired: !current.cancelRequested, errorCode: e.code ?? 'operation-failed' }) } catch {}
         }
         if (!disposed && job === current) lastError = e.code === 'storage-failed' ? e.message : '操作未完成，请检查登录和网络后重试。已有服务会保留。'
-      } finally { if (job === current) job = null }
+      } finally { if (job === current) job = null; drainRecovery() }
     })()
     return status()
   }
@@ -230,8 +231,18 @@ export function createCloudflareDeploymentService({ store, root, outboundConfig,
       })
     }
   }
+  // Terminal history is bounded even if no new deployment is requested after restart.
+  const terminal = store.keys(JOB_PREFIX).map(k => [k, store.get(k)]).filter(([,r]) => ['done', 'failed', 'cancel-requested'].includes(r?.state)).sort((a,b) => b[1].updatedAt - a[1].updatedAt)
+  const expired = terminal.filter(([,r], i) => i >= 64 || r.updatedAt < Date.now() - 7 * 86400000)
+  if (expired.length) mutate(draft => { for (const [k] of expired) delete draft[k] })
+  function drainRecovery() {
+    if (disposed || job || !recoveryQueue.length) return
+    const next = recoveryQueue.shift()
+    queueMicrotask(() => { if (!disposed && !job) { try { resume(next) } catch { lastError = '请重试连接设置'; drainRecovery() } } })
+  }
   const unfinished = store.keys(JOB_PREFIX).map(k => store.get(k)).filter(r => r?.kind?.startsWith('deploy-') && !['done', 'failed', 'cancel-requested'].includes(r.state))
-  if (unfinished.length === 1) queueMicrotask(() => { if (!disposed && !job) { try { resume(unfinished[0]) } catch { lastError = '请重试连接设置' } } })
+  recoveryQueue = unfinished.sort((a,b) => a.createdAt - b.createdAt)
+  drainRecovery()
   return { status, loginDevice, refresh, deploy, link, unbind,
     tunnelConfigure: payload => tunnel.configure(payload),
     tunnelStart: payload => tunnel.start(payload),

@@ -254,6 +254,7 @@ export function apply(ctx, config = {}) {
     }),
     initial: overlay.channels,
   })
+  disposers.push(() => outboundSource.dispose())
   resolved.channels = outboundSource.snapshot()
   const testRawConfigOf = overlay.testRawConfigOf
   const resolvedOutboundRows = new Map(overlay.channels.map((entry) => [entry.type, entry.config]))

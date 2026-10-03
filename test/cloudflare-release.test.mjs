@@ -280,3 +280,58 @@ test('Cloud remote creation with lost response resumes from exact resource readb
     assert.equal(calls, 1); assert.equal(recovered.status().deployments[0].health, 'ready')
   } finally { recovered?.dispose(); r.cleanup() }
 })
+
+test('P3 remote create succeeds but receipt write fails: restart reads exact resource without recreating', async () => {
+  const r = rig(); let recovered
+  const original = r.store.transact
+  try {
+    await logged(r.service)
+    const create = r.runner.deployWorker
+    r.runner.deployWorker = async args => {
+      const result = await create(args)
+      let once = true
+      r.store.transact = fn => { if (once) { once = false; return { committed: false, code: 'STATE_WRITE_FAILED' } }; return original(fn) }
+      return result
+    }
+    r.service.deploy({ type: 'telegram', accountId: ACCOUNT, botToken: BOT }); await idle(r.service)
+    assert.equal(r.store.get('cloudflare:deployment:telegram').endpoint, undefined)
+    recovered = r.reopen(); await new Promise(setImmediate); await idle(recovered)
+    assert.equal(r.counts().deployed, 1); assert.equal(recovered.status().deployments[0].health, 'ready')
+  } finally { r.store.transact = original; recovered?.dispose(); r.cleanup() }
+})
+test('P3 restart sweeps terminal Cloud rows; repeated status reads do not grow durable history', () => {
+  const r = rig(); let recovered
+  try {
+    r.store.transact(draft => { for (let i = 0; i < 200; i++) draft[`cloud:job:history-${i}`] = { kind: 'deploy-bark', state: 'done', updatedAt: Date.now() - i } })
+    recovered = r.reopen()
+    for (let i = 0; i < 1000; i++) recovered.status()
+    assert.equal(createStore(join(r.root, 'state.json')).keys('cloud:job:').length, 64)
+  } finally { recovered?.dispose(); r.cleanup() }
+})
+for (const step of ['prepare', 'database', 'migration', 'create', 'verify', 'apply']) {
+  test(`P3 restart at durable ${step} recovers retained Bark resource`, async () => {
+    const r = rig(); let recovered
+    try {
+      await logged(r.service)
+      r.service.deploy({ type: 'bark', accountId: ACCOUNT }); await idle(r.service)
+      const key = r.store.keys('cloud:job:')[0]
+      r.store.transact(draft => { draft[key] = { ...draft[key], state: 'running', step } })
+      recovered = r.reopen(); await new Promise(setImmediate); await idle(recovered)
+      assert.deepEqual(r.counts(), { created: 1, deployed: 1 })
+      assert.equal(createStore(join(r.root, 'state.json')).get(key).state, 'done')
+    } finally { recovered?.dispose(); r.cleanup() }
+  })
+}
+test('P3 apply failure after durable settings resumes without another remote deployment', async () => {
+  const r = rig(); let recovered
+  try {
+    await logged(r.service)
+    r.outboundConfig.applyCommitted = () => ({ applied: false, restartPending: true })
+    r.service.deploy({ type: 'telegram', accountId: ACCOUNT, botToken: BOT, activate: true, chatId: '42' }); await idle(r.service)
+    assert.equal(r.store.get(r.store.keys('cloud:job:')[0]).step, 'apply')
+    assert.ok(r.outboundConfig.raw('telegram').apiBase)
+    recovered = r.reopen(); await new Promise(setImmediate); await idle(recovered)
+    assert.equal(r.counts().deployed, 1)
+    assert.equal(recovered.status().deployments[0].state, 'bound')
+  } finally { recovered?.dispose(); r.cleanup() }
+})

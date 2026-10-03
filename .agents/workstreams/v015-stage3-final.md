@@ -17,3 +17,5 @@
 
 - P1: afb069a pushed; focused 52/52, release/private DOM 17/17.
 - P2: common pre-routing private admission; six provider negative cases; copy gate expanded; focused 92/92 and DOM 41/41.
+
+- P3: fault/capacity focused 166/166; real rename contention, runtime disposal/caps, 1000 local HTTP sends, 500 private events, Cloud restart and receipt failure; external account evidence BLOCKED (documented).

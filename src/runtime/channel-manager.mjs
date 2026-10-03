@@ -12,9 +12,14 @@ export function createRuntimeChannelManager({ source, initial = [] } = {}) {
     throw new TypeError('runtime channel source is required')
   }
   const runtime = new Map()
-  const listeners = new Set()
+  const listeners = new Map()
+  let disposed = false
+  const admit = type => {
+    if (disposed) throw new Error("runtime manager disposed")
+    if (!runtime.has(type) && runtime.size >= 128) throw new RangeError("runtime channel capacity reached")
+  }
   const publish = (event) => {
-    for (const listener of [...listeners]) {
+    for (const listener of [...listeners.keys()]) {
       try { listener(Object.freeze({ ...event })) } catch { /* observer failures never alter runtime truth */ }
     }
   }
@@ -28,20 +33,17 @@ export function createRuntimeChannelManager({ source, initial = [] } = {}) {
   }
 
   const stateOf = (type) => runtime.get(String(type ?? '').trim()) ?? { state: 'stopped', restartPending: false }
-  // v0.15（T08 / C03）：runtime truth 的**单调栅栏**。每个 lifecycle 更新可带一个 config
-  // revision（`channel:<type>:outbound` 的 `source.version`）。同一 type 上，携带更旧 revision
-  // 的迟到 apply 结果绝不允许覆盖已更新的 runtime 状态——否则一次被 N+1 超越的旧 apply 迟到
-  // 落地，会把已经生效的新配置在观察面上打回旧态。栅栏只比较 revision，不写进状态对象
-  // （runtimeState 形状保持 `{state, restartPending, ...detail}` 不变）。
+  // Older configuration applies cannot overwrite newer revisions.
   const appliedRevision = new Map()
-  // v0.15（Gate 2C）：每 type 的 runtime **实例世代**。发送开始时 `capture()` 的 epoch 随
-  // audit record 交给健康面；换实例后旧 epoch 的迟到观察一律不计入当前健康（但账本/调用
-  // 结果本身保留）。与 publish 一一对应，故与 surfaceHealth 的 markEpoch 保持同步。
+  // Only instance creation/replacement/retirement advances this fence.
   const epochs = new Map()
   const epochOf = (type) => epochs.get(String(type ?? '').trim()) ?? 0
   const update = (type, state, detail = {}) => {
     const key = String(type ?? '').trim()
-    const { revision, ...rest } = detail
+    if (disposed) return copy(stateOf(key))
+    admit(key)
+    const { revision, generation, ...rest } = detail
+    if (Number.isFinite(generation) && generation !== epochOf(key)) return copy(stateOf(key))
     const incoming = Number.isFinite(revision) ? Number(revision) : null
     if (incoming !== null) {
       const known = appliedRevision.get(key)
@@ -64,6 +66,7 @@ export function createRuntimeChannelManager({ source, initial = [] } = {}) {
     has: (type) => stateOf(type).state === 'online' && source.has(type),
     get: (type) => source.get(type),
     replace(type, config) {
+      type = String(type ?? "").trim(); admit(type)
       epochs.set(type, epochOf(type) + 1)
       update(type, 'starting', { restartPending: false })
       try {
@@ -76,6 +79,7 @@ export function createRuntimeChannelManager({ source, initial = [] } = {}) {
       }
     },
     remove(type) {
+      type = String(type ?? "").trim(); admit(type)
       const removed = source.remove(type)
       // Retirement invalidates in-flight results even before another instance is created.
       epochs.set(type, epochOf(type) + 1)
@@ -83,6 +87,8 @@ export function createRuntimeChannelManager({ source, initial = [] } = {}) {
       return removed
     },
     replaceAll(entries) {
+      const keys = new Set([...runtime.keys(), ...entries.map(e => e.type)])
+      if (disposed || keys.size > 128) throw new RangeError("runtime channel capacity reached")
       const value = source.replaceAll(entries)
       const live = new Set(value.map((entry) => entry.type))
       for (const type of live) { epochs.set(type, epochOf(type) + 1); update(type, 'online', { restartPending: false }) }
@@ -104,9 +110,19 @@ export function createRuntimeChannelManager({ source, initial = [] } = {}) {
     },
     subscribe(listener) {
       if (typeof listener !== 'function') return () => {}
-      listeners.add(listener)
-      const stopSource = source.subscribe(listener)
-      return () => { listeners.delete(listener); stopSource() }
+      if (disposed) return () => {}
+      if (listeners.size >= 256) throw new RangeError("runtime observer capacity reached")
+      if (listeners.has(listener)) return () => {}
+      const stopSource = source.subscribe(event => { if (!disposed) listener(event) })
+      listeners.set(listener, stopSource)
+      return () => { const stop = listeners.get(listener); listeners.delete(listener); stop?.() }
+    },
+    dispose() {
+      if (disposed) return
+      for (const type of source.types()) this.remove(type)
+      disposed = true
+      for (const stop of listeners.values()) stop()
+      listeners.clear()
     },
     get version() { return source.version },
   }
