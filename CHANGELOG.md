@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Remove obsolete daily browser controllers and the unused standalone Recovery launch RPC.
 - Isolate current tasks by account and persist Native task selection.
 - Allocate runtime generations per instance and exclude late health results.
 - Persist Cloud deployment jobs, recover by readback and keep secrets in configuration.

@@ -950,8 +950,6 @@ export function apply(ctx, config = {}) {
     portability: surfacePortability,
     dshIm: surfaceDshIm,
     activity: surfaceActivity,
-    launchTickets,
-    adminLocation: () => adminListenInfo,
   })
   // v0.12：Native 通道挂在宿主 HTTP server 上（`/dsh-notifier` prefix 路由），与宿主 connection
   // 插件挂 `/api` 同款，故注册方必须能同时访问 connection（准入）与 webServer（挂路由）。

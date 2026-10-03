@@ -473,19 +473,6 @@ window.__ModuleLoader__.load({
         // v0.15（Stage 1 / S2）：Native v2 页面数据（native.snapshot / native.channel）。
         native: null,
         nativeChannel: null,
-        home: null,
-        channels: null,
-        tasks: null,
-        questions: null,
-        members: null,
-        pending: null,
-        pairing: null,
-        sessions: null,
-        bindings: null,
-        activity: null,
-        diagnostics: null,
-        channel: null,
-        session: null,
         busy: Object.freeze({}),
         error: null,
         epoch: null,
@@ -498,7 +485,7 @@ window.__ModuleLoader__.load({
       let fallbackTimer = null
       let disposed = false
       // v0.12.1（P1-13）：同一资源只接受最新一代请求的响应，避免迟到数据覆盖当前视图。
-      const generations = { native: 0, nativeChannel: 0, home: 0, channels: 0, channel: 0, tasks: 0, questions: 0, members: 0, pending: 0, pairing: 0, sessions: 0, session: 0, bindings: 0, activity: 0, diagnostics: 0 }
+      const generations = { native: 0, nativeChannel: 0 }
       let paused = false
 
       /** 语言：服务端 read model 需要 zh/en 决定用户词，与宿主编排语言一致。 */
@@ -522,7 +509,7 @@ window.__ModuleLoader__.load({
         return {
           epochChanged,
           patch: {
-            ...(epochChanged ? { home: null, channels: null, tasks: null, questions: null, members: null, pending: null, pairing: null, sessions: null, session: null, bindings: null, activity: null, diagnostics: null, channel: null } : {}),
+            ...(epochChanged ? { native: null, nativeChannel: null } : {}),
             epoch: incomingEpoch,
             revision: epochChanged ? incomingRevision : Math.max(snapshot.revision, incomingRevision),
             connectionState: 'connected',
@@ -536,33 +523,7 @@ window.__ModuleLoader__.load({
         return clock.epochChanged
       }
 
-      async function loadHome() {
-        const generation = ++generations.home
-        try {
-          const value = await rpc.call('surface.home')
-          if (generation !== generations.home) return value
-          commit('home', value)
-          return value
-        } catch (error) {
-          if (generation !== generations.home) return null
-          setError(error)
-          throw error
-        }
-      }
-      async function loadChannels() {
-        const generation = ++generations.channels
-        try {
-          const value = await rpc.call('channels.list')
-          if (generation !== generations.channels) return value
-          commit('channels', value)
-          return value
-        } catch (error) {
-          if (generation !== generations.channels) return null
-          throw error
-        }
-      }
-      // v0.15（Stage 1 / S2）：Native v2 只读入口。一次拉取渠道栏 + 全部渠道 + 私聊 + 待处理。
-      // 与旧 loadHome 同构（同代际守卫），但走窄动作表 native.snapshot。
+      // Native v2 只读入口。一次拉取渠道栏、渠道状态、私聊和待处理项。
       async function loadNative() {
         const generation = ++generations.native
         try {
@@ -589,117 +550,6 @@ window.__ModuleLoader__.load({
           throw error
         }
       }
-      async function loadChannel(type) {
-        const generation = ++generations.channel
-        try {
-          const value = await rpc.call('channels.get', { type })
-          if (generation !== generations.channel) return value
-          if (snapshot.view.kind !== 'channel' || snapshot.view.type !== type) return value
-          commit('channel', value)
-          return value
-        } catch (error) {
-          if (generation !== generations.channel) return null
-          throw error
-        }
-      }
-      async function loadTasks() {
-        const generation = ++generations.tasks
-        try {
-          const value = await rpc.call('tasks.list')
-          if (generation !== generations.tasks) return value
-          commit('tasks', value)
-          return value
-        } catch (error) {
-          if (generation !== generations.tasks) return null
-          throw error
-        }
-      }
-      async function loadQuestions() {
-        const generation = ++generations.questions
-        try {
-          const value = await rpc.call('questions.list')
-          if (generation !== generations.questions) return value
-          commit('questions', value)
-          return value
-        } catch (error) {
-          if (generation !== generations.questions) return null
-          throw error
-        }
-      }
-      async function loadMembers() {
-        const generation = ++generations.members
-        try {
-          const value = await rpc.call('members.list')
-          if (generation !== generations.members) return value
-          commit('members', value)
-          return value
-        } catch (error) {
-          if (generation !== generations.members) return null
-          throw error
-        }
-      }
-      async function loadPending() {
-        const generation = ++generations.pending
-        try {
-          const value = await rpc.call('members.pending')
-          if (generation !== generations.pending) return value
-          commit('pending', value)
-          return value
-        } catch (error) {
-          if (generation !== generations.pending) return null
-          throw error
-        }
-      }
-      async function loadPairingCodes() {
-        const generation = ++generations.pairing
-        try {
-          const value = await rpc.call('pairing.list')
-          if (generation !== generations.pairing) return value
-          commit('pairing', value)
-          return value
-        } catch (error) {
-          if (generation !== generations.pairing) return null
-          throw error
-        }
-      }
-      async function loadSessions() {
-        const generation = ++generations.sessions
-        try {
-          const value = await rpc.call('sessions.list')
-          if (generation !== generations.sessions) return value
-          commit('sessions', value)
-          return value
-        } catch (error) {
-          if (generation !== generations.sessions) return null
-          throw error
-        }
-      }
-      // v0.14（Stage E / P1-10）：Session Detail 单行读取；导航切走时丢弃迟到响应。
-      async function loadSession(id) {
-        const generation = ++generations.session
-        try {
-          const value = await rpc.call('sessions.detail', { id })
-          if (generation !== generations.session) return value
-          if (snapshot.view.kind !== 'session' || snapshot.view.id !== id) return value
-          commit('session', value)
-          return value
-        } catch (error) {
-          if (generation !== generations.session) return null
-          throw error
-        }
-      }
-      async function loadActivity() {
-        const generation = ++generations.activity
-        try {
-          const value = await rpc.call('activity.list', { limit: 100 })
-          if (generation !== generations.activity) return value
-          commit('activity', value)
-          return value
-        } catch (error) {
-          if (generation !== generations.activity) return null
-          throw error
-        }
-      }
       async function refreshCurrent() {
         if (disposed) return false
         try {
@@ -714,39 +564,9 @@ window.__ModuleLoader__.load({
           emit({ staleAt: null, connectionState: 'connected' })
           return true
         } catch {
-          const hasData = snapshot.native !== null || snapshot.nativeChannel !== null || snapshot.home !== null || snapshot.channels !== null || snapshot.channel !== null || snapshot.tasks !== null || snapshot.questions !== null || snapshot.members !== null || snapshot.pending !== null || snapshot.pairing !== null || snapshot.sessions !== null || snapshot.session !== null || snapshot.bindings !== null || snapshot.activity !== null || snapshot.diagnostics !== null
+          const hasData = snapshot.native !== null || snapshot.nativeChannel !== null
           emit({ staleAt: Date.now(), connectionState: hasData ? 'stale' : 'disconnected' })
           return false
-        }
-      }
-      async function saveChannel(type, direction, patch) {
-        const key = `save:${type}:${direction}`
-        // v0.15（T18 / U02）：busy 期间同一业务提交不再重入（RPC 慢时连点不产生第二次提交）。
-        if (snapshot.busy[key] === true) return { saved: false, duplicate: true, refreshed: false }
-        setBusy(key, true)
-        try {
-          const value = await rpc.call('channels.save', { type, direction, patch })
-          setError(null)
-          // v0.15（T18 / U01）：durable receipt 就是落盘结果本身；刷新详情是**另一件事**——
-          // 刷新失败绝不能上报成「保存失败」（旧实现把 loadChannel 的异常直接冒泡，导致
-          // 已落盘的保存被当成失败、草稿不清理）。这里分开，仅回传 refreshed 供视图区分提示。
-          const refreshed = await loadChannel(type).then(() => true).catch(() => false)
-          return { ...(value && typeof value === 'object' ? value : {}), refreshed }
-        } finally {
-          setBusy(key, false)
-        }
-      }
-      async function testChannel(type) {
-        const key = `test:${type}`
-        if (snapshot.busy[key] === true) return null
-        setBusy(key, true)
-        try {
-          const value = await rpc.call('channels.test', { type })
-          setError(null)
-          await loadChannel(type).catch(() => {})
-          return value
-        } finally {
-          setBusy(key, false)
         }
       }
       // v0.15（Stage 1 / S2）：Native v2 窄写动作。每个动作只调一个 `native.*` 方法
@@ -859,183 +679,28 @@ window.__ModuleLoader__.load({
           setBusy(key, false)
         }
       }
-      async function settleQuestion(ref, action, options = []) {
-        const key = `question:${ref}`
-        setBusy(key, true)
-        try {
-          const value = await rpc.call('questions.settle', { ref, action, options })
-          await refreshCurrent().catch(() => {})
-          return value
-        } catch (error) {
-          if (error?.code === 'dsh-notifier/conflict' || error?.code === 'dsh-notifier/already-handled') {
-            await refreshCurrent().catch(() => {})
-            return { settled: false, alreadyHandled: true }
-          }
-          throw error
-        } finally {
-          setBusy(key, false)
-        }
-      }
-      async function createStandaloneLaunch() {
-        return rpc.call('standalone.createLaunch')
-      }
       // v0.15（T24）：远程入口 URL 校验。纯只读 RPC（零写、零网络、不 touch revision）。
       async function validateRemoteUrl(url) {
         return rpc.call('remote.validate', { url })
       }
-      async function updateMember(key, diff) {
-        const busyKey = `member:${key}`
-        setBusy(busyKey, true)
-        try {
-          const value = await rpc.call('members.update', { key, ...diff })
-          await loadMembers().catch(() => {})
-          return value
-        } finally {
-          setBusy(busyKey, false)
-        }
-      }
-      async function removeMember(key) {
-        const busyKey = `member:${key}`
-        setBusy(busyKey, true)
-        try {
-          const value = await rpc.call('members.remove', { key })
-          await loadMembers().catch(() => {})
-          return value
-        } finally {
-          setBusy(busyKey, false)
-        }
-      }
-      async function approvePending(key) {
-        const busyKey = `pending:${key}`
-        setBusy(busyKey, true)
-        try {
-          const value = await rpc.call('members.approve', { key })
-          await loadPending().catch(() => {})
-          return value
-        } finally {
-          setBusy(busyKey, false)
-        }
-      }
-      async function dismissPending(key) {
-        const busyKey = `pending:${key}`
-        setBusy(busyKey, true)
-        try {
-          const value = await rpc.call('members.dismiss', { key })
-          await loadPending().catch(() => {})
-          return value
-        } finally {
-          setBusy(busyKey, false)
-        }
-      }
-      async function mintPairingCode(label = '') {
-        setBusy('pairing:mint', true)
-        try {
-          const value = await rpc.call('pairing.mint', { label })
-          await loadPairingCodes().catch(() => {})
-          return value
-        } finally {
-          setBusy('pairing:mint', false)
-        }
-      }
-      async function revokePairingCode(id) {
-        const busyKey = `pairing:${id}`
-        setBusy(busyKey, true)
-        try {
-          const value = await rpc.call('pairing.revoke', { id })
-          await loadPairingCodes().catch(() => {})
-          return value
-        } finally {
-          setBusy(busyKey, false)
-        }
-      }
-      async function patchSessionOutbound(id, diff) {
-        const busyKey = `session:${id}`
-        setBusy(busyKey, true)
-        try {
-          const value = await rpc.call('sessions.patch', { id, diff })
-          await loadSessions().catch(() => {})
-          return value
-        } finally {
-          setBusy(busyKey, false)
-        }
-      }
-      // v0.14（Stage E / P1-10）：控制覆盖层写入；写到当前 Session Detail 时重载详情而非列表。
-      async function patchSessionControl(id, diff) {
-        const busyKey = `session-control:${id}`
-        setBusy(busyKey, true)
-        try {
-          const value = await rpc.call('sessions.control', { id, diff })
-          if (snapshot.view.kind === 'session' && snapshot.view.id === id) await loadSession(id).catch(() => {})
-          return value
-        } finally {
-          setBusy(busyKey, false)
-        }
-      }
-      async function loadBindings() {
-        const generation = ++generations.bindings
-        try {
-          const value = await rpc.call('bindings.get')
-          if (generation !== generations.bindings) return value
-          commit('bindings', value)
-          return value
-        } catch (error) {
-          if (generation !== generations.bindings) return null
-          throw error
-        }
-      }
-      // v0.14（S11）：诊断快照是只读 canonical 读；不写 revision、不记 activity。
-      async function loadDiagnostics() {
-        const generation = ++generations.diagnostics
-        try {
-          const value = await rpc.call('diagnostics.snapshot')
-          if (generation !== generations.diagnostics) return value
-          commit('diagnostics', value)
-          return value
-        } catch (error) {
-          if (generation !== generations.diagnostics) return null
-          throw error
-        }
-      }
       async function generateSupportReport() {
         setBusy('diagnostics:report', true)
         try {
-          const value = await loadDiagnostics()
+          const value = await rpc.call('diagnostics.snapshot')
           return await deliverReport(buildSupportReport(value))
         } finally {
           setBusy('diagnostics:report', false)
         }
       }
-      async function putBindings(patch) {
-        setBusy('bindings:save', true)
-        try {
-          const value = await rpc.call('bindings.put', patch)
-          await loadBindings().catch(() => {})
-          return value
-        } finally {
-          setBusy('bindings:save', false)
-        }
-      }
       function navigate(view) {
-        const legacy = new Set(['home', 'channels', 'tasks', 'questions', 'members', 'pending', 'pairing', 'sessions', 'session', 'bindings', 'activity'])
-        if (legacy.has(view?.kind)) view = { kind: 'native' }
-        if (view?.kind === 'channel') view = { ...view, kind: 'native-channel' }
-        // v0.12.1（P2-10）：导航只负责切视图；目标视图的 mount effect 是唯一加载 owner。
+        // 导航只负责切视图；目标视图的 mount effect 是唯一加载 owner。
         const changingNativeChannel = view?.kind === 'native-channel'
           && (snapshot.view.kind !== 'native-channel' || snapshot.view.type !== view.type)
         if (changingNativeChannel) generations.nativeChannel += 1
-        const changingChannel = view?.kind === 'channel'
-          && (snapshot.view.kind !== 'channel' || snapshot.view.type !== view.type)
-        if (changingChannel) generations.channel += 1
-        // v0.14（Stage E）：切换 Session Detail 时先清缓存，避免 A 的详情在 B 加载前短暂显示。
-        const changingSession = view?.kind === 'session'
-          && (snapshot.view.kind !== 'session' || snapshot.view.id !== view.id)
-        if (changingSession) generations.session += 1
         emit({
           view,
           error: null,
           ...(changingNativeChannel ? { nativeChannel: null } : {}),
-          ...(changingChannel ? { channel: null } : {}),
-          ...(changingSession ? { session: null } : {}),
         })
       }
       function startWait() {
@@ -1099,21 +764,20 @@ window.__ModuleLoader__.load({
       return Object.freeze({
         getSnapshot: () => snapshot,
         subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener) },
-        loadHome, loadChannels, loadChannel, loadTasks, loadQuestions, loadMembers, loadPending, loadPairingCodes, loadSessions, loadSession, loadBindings, loadActivity, loadDiagnostics,
         // v0.15（Stage 1 / S2）：Native v2 只读 + 窄写动作。
         loadNative, loadNativeChannel, nativeApproveUser, nativeDismissUser,
         // v0.15（Stage 1 / S3）：账号卡保存/测试（仍走窄动作表）。
         nativeSaveChannel, nativeTestChannel,
         // v0.15（Stage 1 / S4）：待处理结算、确认本人、关闭私聊（每个只调一个 authority）。
         nativeSettlePending, nativeMintPairing, nativeClosePrivateChat, nativeSelectTask,
-        refreshCurrent, saveChannel, testChannel, settleQuestion, createStandaloneLaunch, validateRemoteUrl,
+        refreshCurrent, validateRemoteUrl,
         exportConfig: () => rpc.call('portability.export'),
         previewImport: text => rpc.call('portability.preview', { text }),
         commitImport: (token, selections) => rpc.call('portability.commit', { token, selections }),
         cancelImport: token => rpc.call('portability.cancel', { token }),
         readImported: () => rpc.call('portability.readBack'),
         cloudCall: (method, payload = {}) => rpc.call(`cloudflare.${method}`, payload),
-        updateMember, removeMember, approvePending, dismissPending, mintPairingCode, revokePairingCode, patchSessionOutbound, patchSessionControl, putBindings, generateSupportReport,
+        generateSupportReport,
         navigate, startWait, setActive, dispose,
         // v0.12.1（P1-09）：视图必须能把业务失败写入统一错误出口。
         reportError(error) { setError(error ?? null) },
@@ -2603,7 +2267,7 @@ window.__ModuleLoader__.load({
       const t = useT(ctx)
       useEffect(() => { if (view === 'page') void controller.loadNative().catch(error => controller.reportError(error)) }, [view])
       if (view !== 'page') return null
-      // v0.15（Stage 1 / S2）：就绪判定改读 Native 快照（notifyEnabled），不再依赖旧 surface.home。
+      // 就绪判定读取 Native 快照中的 notifyEnabled。
       const ready = (state.native?.channels ?? []).some(channel => channel?.notifyEnabled === true)
       return h('div', { className: 'dn-pluginConfig' },
         h('strong', null, ready ? t('pluginReady') : t('noChannels')),

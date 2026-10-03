@@ -88,6 +88,7 @@ test('daily allowlist 精确包含全部 Native 方法，且不含已删除的 l
   for (const method of NATIVE_METHODS) assert.ok(isDailyAllowedMethod(method), `${method} 应在 allowlist 中`)
   for (const method of SECONDARY_METHODS) assert.ok(isDailyAllowedMethod(method), `${method} 应在 allowlist 中`)
   assert.ok(DAILY_ALLOWED_METHODS.includes('surface.wait'))
+  assert.ok(!isDailyAllowedMethod('standalone.createLaunch'), '无 UI 调用者的启动票据 RPC 不保留在日常面')
   assert.ok(!isDailyAllowedMethod('surface.home'))
   for (const prefix of REMOVED_LEGACY_PREFIXES) {
     assert.ok(!DAILY_ALLOWED_METHODS.some((method) => method === prefix || method.startsWith(prefix)),

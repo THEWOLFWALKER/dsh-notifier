@@ -52,8 +52,6 @@ export function createSecondarySurfaceService({
   portability = null,
   dshIm = null,
   activity,
-  launchTickets,
-  adminLocation,
 } = {}) {
   const revisionView = () => {
     const current = revision.current()
@@ -143,17 +141,6 @@ export function createSecondarySurfaceService({
           throw error
         }
         return ok(entry)
-      }
-
-      // 独立 Recovery 启动票据。
-      if (method === 'standalone.createLaunch') {
-        const location = typeof adminLocation === 'function' ? adminLocation() : null
-        if (!location?.port) return ok({ available: false, reason: 'disabled' })
-        const minted = launchTickets.mint()
-        return ok({
-          available: true,
-          url: `http://${location.address || '127.0.0.1'}:${location.port}/#ticket=${encodeURIComponent(minted.ticket)}`,
-        })
       }
 
       // v0.15（T22）：可选 dsh-im 投递桥（缺失是正常态；发送走 checked 契约，见 P3）。

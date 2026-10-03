@@ -9,7 +9,7 @@
 // 分层：
 //  - Native daily：窄动作表（native.*），唯一日常读写面。
 //  - Secondary：当前真实 UI 仍在使用、且不属于 Native 的动作面（配置导出/导入、Cloudflare、
-//    远程入口校验、独立启动票据、只读诊断快照、revision wait、可选 dsh-im 投递桥）。
+//    远程入口校验、只读诊断快照、revision wait、可选 dsh-im 投递桥）。
 //  - Legacy：已无 UI 调用者、由 Native 等价能力取代的旧接口——本阶段删除，不再列出。
 //  - Recovery：Advanced Console 的后端（admin/server.mjs）自有独立只读路由，不经本 RPC 通道。
 
@@ -43,8 +43,6 @@ export const SECONDARY_METHODS = Object.freeze([
   'cloudflare.tunnelStop',
   // v0.15（T24）：远程入口 URL 校验（纯本地解析、零网络、零写）。
   'remote.validate',
-  // 独立 Recovery 启动票据（帮助/Recovery 入口）。
-  'standalone.createLaunch',
   // v0.15（T22）：可选 dsh-im 投递桥（服务缺失是正常态；发送走 checked 契约）。
   'dshIm.status',
   'dshIm.listBots',

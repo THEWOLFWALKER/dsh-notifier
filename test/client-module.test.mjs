@@ -99,50 +99,41 @@ test('client module registers the four intended DSH slots', () => {
 // v0.15（Stage 1 / S2）：旧的「高级控制台」弹窗入口随 Home 的「常用 / 管理」pill 导航一并删除，
 // 相关弹窗测试作废（二级能力统一收进「更多」菜单，见 S5）。
 
-test('question conflict race normalizes to alreadyHandled and refreshes the current view', async () => {
-  const calls = []
-  const { mod, ctx } = loadModule({
-    async rpcCall(channel, endpoint) {
-      calls.push({ channel, endpoint })
-      if (endpoint === 'questions.settle') return { ok: false, error: { code: 'dsh-notifier/conflict', message: 'already handled' } }
-      // 默认视图现在是「通知与私聊」：refreshCurrent 走 native.snapshot（不再读 surface.home）。
-      if (endpoint === 'native.snapshot') return { ok: true, value: { epoch: 'e', revision: 3, cursor: 'tok.3', rail: [], channels: [], privateChat: { enabled: false, users: [] }, pending: [], storage: { canSave: true, text: 'ok' }, truncated: { rail: false, channels: false, pending: false } } }
-      return { ok: true, value: { revision: 3 } }
-    },
-  })
+test('controller keeps only Native and live secondary methods', () => {
+  const { mod, ctx } = loadModule()
   const controller = mod.__test.createController(ctx)
-  const result = await controller.settleQuestion('q1', 'reject', [])
-  assert.deepEqual({ settled: result.settled, alreadyHandled: result.alreadyHandled }, { settled: false, alreadyHandled: true })
-  assert.equal(calls.filter(x => x.endpoint === 'native.snapshot').length, 1)
+  const removed = ['loadHome', 'loadChannels', 'loadTasks', 'loadQuestions', 'loadMembers', 'loadPending', 'loadPairingCodes', 'loadSessions', 'loadSession', 'loadBindings', 'loadActivity', 'loadDiagnostics', 'updateMember', 'removeMember', 'approvePending', 'dismissPending', 'mintPairingCode', 'revokePairingCode', 'patchSessionOutbound', 'patchSessionControl', 'putBindings', 'settleQuestion', 'saveChannel', 'testChannel']
+  for (const name of removed) assert.equal(name in controller, false, `${name} must not be exposed by client.js`)
+  for (const name of ['loadNative', 'loadNativeChannel', 'nativeSettlePending', 'nativeSaveChannel', 'nativeTestChannel', 'exportConfig', 'previewImport', 'commitImport', 'cloudCall', 'validateRemoteUrl', 'generateSupportReport']) {
+    assert.equal(typeof controller[name], 'function', `${name} remains an active UI flow`)
+  }
   controller.dispose()
 })
 
-test('controller treats epoch change as restart and clears old revision/cache truth', async () => {
+test('controller treats Native epoch change as restart and clears stale Native cache', async () => {
   let epoch = 'epoch-a'
   let revision = 9
   const { mod, ctx } = loadModule({
     async rpcCall(_channel, endpoint, payload) {
-      if (endpoint === 'surface.home') return { ok: true, value: { epoch, revision, summary: {}, questions: [], tasks: [], channels: [], activity: [] } }
-      if (endpoint === 'channels.list') return { ok: true, value: { epoch, revision, channels: [{ type: 'telegram' }] } }
+      if (endpoint === 'native.snapshot') return { ok: true, value: { epoch, revision, rail: [], channels: [], pending: [] } }
       if (endpoint === 'native.channel') return { ok: true, value: { epoch, revision, channel: { id: payload.type } } }
       return { ok: true, value: { epoch, revision } }
     },
   })
   const controller = mod.__test.createController(ctx)
-  await controller.loadHome()
-  await controller.loadChannels()
-  assert.equal(controller.getSnapshot().revision, 9)
+  await controller.loadNative()
+  await controller.loadNativeChannel('telegram')
   epoch = 'epoch-b'
   revision = 1
-  await controller.loadHome()
+  await controller.loadNative()
   const restarted = controller.getSnapshot()
   assert.equal(restarted.epoch, 'epoch-b')
   assert.equal(restarted.revision, 1, '新 epoch 的低 revision 不得被旧进程高 revision 压住')
-  assert.equal(restarted.channels, null, 'epoch 变化必须清除旧进程缓存')
+  assert.equal(restarted.nativeChannel, null, 'epoch 变化必须清除旧进程 Native 详情')
   controller.dispose()
 })
 
-test('channel navigation clears previous channel before the next request resolves', async () => {
+test('Native channel navigation clears previous details before the next request resolves', async () => {
   const { mod, ctx } = loadModule({
     async rpcCall(_channel, endpoint, payload) {
       if (endpoint === 'native.channel') return { ok: true, value: { epoch: 'e', revision: 1, channel: { id: payload.type } } }
@@ -150,183 +141,13 @@ test('channel navigation clears previous channel before the next request resolve
     },
   })
   const controller = mod.__test.createController(ctx)
-  controller.navigate({ kind: 'channel', type: 'telegram' })
+  controller.navigate({ kind: 'native-channel', type: 'telegram' })
   await controller.loadNativeChannel('telegram')
   assert.equal(controller.getSnapshot().nativeChannel.channel.id, 'telegram')
-  controller.navigate({ kind: 'channel', type: 'feishu' })
+  controller.navigate({ kind: 'native-channel', type: 'feishu' })
   assert.equal(controller.getSnapshot().nativeChannel, null, 'B 详情加载前不得短暂显示 A 的数据')
   controller.dispose()
 })
-
-test('questions inbox loads the full pending list from questions.list', async () => {
-  const calls = []
-  const { mod, ctx } = loadModule({
-    async rpcCall(_channel, endpoint) {
-      calls.push(endpoint)
-      if (endpoint === 'questions.list') return { ok: true, value: { epoch: 'e', revision: 2, questions: [{ ref: 'q1' }] } }
-      return { ok: true, value: { epoch: 'e', revision: 2 } }
-    },
-  })
-  const controller = mod.__test.createController(ctx)
-  await controller.loadQuestions()
-  assert.deepEqual(calls, ['questions.list'])
-  assert.deepEqual(controller.getSnapshot().questions.questions, [{ ref: 'q1' }])
-  controller.dispose()
-})
-
-
-
-test('settling from the inbox refreshes the inbox list, not the home cache', async () => {
-  const calls = []
-  const { mod, ctx } = loadModule({
-    async rpcCall(_channel, endpoint) {
-      calls.push(endpoint)
-      if (endpoint === 'questions.settle') return { ok: true, value: { epoch: 'e', revision: 5, settled: true, alreadyHandled: false } }
-      if (endpoint === 'questions.list') return { ok: true, value: { epoch: 'e', revision: 5, questions: [] } }
-      return { ok: true, value: { epoch: 'e', revision: 5 } }
-    },
-  })
-  const controller = mod.__test.createController(ctx)
-  controller.navigate({ kind: 'questions' })
-  await controller.settleQuestion('q1', 'choose', ['0'])
-  assert.deepEqual(calls, ['questions.settle', 'native.snapshot'], '结算后重载 Native 快照')
-  controller.dispose()
-})
-
-test('members view loads the member list from members.list', async () => {
-  const calls = []
-  const { mod, ctx } = loadModule({
-    async rpcCall(_channel, endpoint) {
-      calls.push(endpoint)
-      if (endpoint === 'members.list') return { ok: true, value: { epoch: 'e', revision: 2, members: [{ key: 'telegram:u1', role: 'owner' }], canUpdate: true, canRemove: true } }
-      return { ok: true, value: { epoch: 'e', revision: 2 } }
-    },
-  })
-  const controller = mod.__test.createController(ctx)
-  await controller.loadMembers()
-  assert.deepEqual(calls, ['members.list'])
-  assert.equal(controller.getSnapshot().members.members[0].key, 'telegram:u1')
-  controller.dispose()
-})
-
-
-
-test('member role change and removal refresh the member list', async () => {
-  const calls = []
-  const { mod, ctx } = loadModule({
-    async rpcCall(_channel, endpoint) {
-      calls.push(endpoint)
-      if (endpoint === 'members.list') return { ok: true, value: { epoch: 'e', revision: 3, members: [] } }
-      return { ok: true, value: { epoch: 'e', revision: 3 } }
-    },
-  })
-  const controller = mod.__test.createController(ctx)
-  await controller.updateMember('telegram:1', { role: 'owner' })
-  await controller.removeMember('telegram:2')
-  assert.deepEqual(calls, ['members.update', 'members.list', 'members.remove', 'members.list'])
-  controller.dispose()
-})
-
-test('pending identities load and approve/dismiss refresh the list', async () => {
-  const calls = []
-  const { mod, ctx } = loadModule({
-    async rpcCall(_channel, endpoint) {
-      calls.push(endpoint)
-      if (endpoint === 'members.pending') {
-        return { ok: true, value: { epoch: 'e', revision: 4, pending: [{ key: 'qq:u9', channel: 'qq', userId: 'u9', origin: 'learned' }], canApprove: true, canDismiss: true } }
-      }
-      return { ok: true, value: { epoch: 'e', revision: 4 } }
-    },
-  })
-  const controller = mod.__test.createController(ctx)
-  await controller.loadPending()
-  assert.deepEqual(calls, ['members.pending'])
-  assert.equal(controller.getSnapshot().pending.pending[0].key, 'qq:u9')
-  await controller.approvePending('qq:u9')
-  await controller.dismissPending('qq:u10')
-  assert.deepEqual(calls, [
-    'members.pending', 'members.approve', 'members.pending', 'members.dismiss', 'members.pending',
-  ])
-  controller.dispose()
-})
-
-
-
-test('pairing codes load, mint returns the code once, revoke refreshes', async () => {
-  const calls = []
-  const { mod, ctx } = loadModule({
-    async rpcCall(_channel, endpoint) {
-      calls.push(endpoint)
-      if (endpoint === 'pairing.list') {
-        return { ok: true, value: { epoch: 'e', revision: 5, codes: [{ id: 'abcd1234', origin: 'owner', state: 'minted-active' }], canMint: true, canRevoke: true } }
-      }
-      if (endpoint === 'pairing.mint') {
-        return { ok: true, value: { id: 'ef567890', code: 'ABCD-EFGH', expiresAt: 1 } }
-      }
-      return { ok: true, value: { epoch: 'e', revision: 5 } }
-    },
-  })
-  const controller = mod.__test.createController(ctx)
-  await controller.loadPairingCodes()
-  assert.equal(controller.getSnapshot().pairing.codes[0].id, 'abcd1234')
-  const minted = await controller.mintPairingCode('laptop')
-  assert.equal(minted.code, 'ABCD-EFGH', '码面只在铸造响应中出现一次')
-  await controller.revokePairingCode('abcd1234')
-  assert.deepEqual(calls, [
-    'pairing.list', 'pairing.mint', 'pairing.list', 'pairing.revoke', 'pairing.list',
-  ])
-  controller.dispose()
-})
-
-
-
-test('sessions list loads and outbound override patch refreshes the list', async () => {
-  const calls = []
-  const { mod, ctx } = loadModule({
-    async rpcCall(_channel, endpoint) {
-      calls.push(endpoint)
-      if (endpoint === 'sessions.list') {
-        return { ok: true, value: { epoch: 'e', revision: 6, canPatch: true, sessions: [{ id: 's1', workspace: 'ws-a', active: true, resolved: { channelTypes: ['bark'], quiet: false, source: 'agent-workspace' } }] } }
-      }
-      return { ok: true, value: { epoch: 'e', revision: 6, id: 's1', outbound: { quiet: true } } }
-    },
-  })
-  const controller = mod.__test.createController(ctx)
-  await controller.loadSessions()
-  assert.equal(controller.getSnapshot().sessions.sessions[0].id, 's1')
-  const patched = await controller.patchSessionOutbound('s1', { quiet: true })
-  assert.deepEqual(patched.outbound, { quiet: true })
-  assert.deepEqual(calls, ['sessions.list', 'sessions.patch', 'sessions.list'], '写入后必须重载会话列表')
-  controller.dispose()
-})
-
-
-
-
-
-test('bindings view loads bindings.get and putBindings reloads the snapshot', async () => {
-  const calls = []
-  const { mod, ctx } = loadModule({
-    async rpcCall(_channel, endpoint) {
-      calls.push(endpoint)
-      if (endpoint === 'bindings.get') {
-        return { ok: true, value: { epoch: 'e', revision: 7, canEdit: true, agents: { 'ws-a': { channels: ['bark'] } }, channels: { telegram: { defaultAgent: 'ws-a' } } } }
-      }
-      return { ok: true, value: { epoch: 'e', revision: 7, canEdit: true, agents: { 'ws-a': { channels: ['bark'], quiet: true } }, channels: {} } }
-    },
-  })
-  const controller = mod.__test.createController(ctx)
-  await controller.loadBindings()
-  assert.deepEqual(controller.getSnapshot().bindings.agents, { 'ws-a': { channels: ['bark'] } })
-  const written = await controller.putBindings({ agents: { 'ws-a': { channels: ['bark'], quiet: true } } })
-  assert.deepEqual(written.agents, { 'ws-a': { channels: ['bark'], quiet: true } })
-  assert.deepEqual(calls, ['bindings.get', 'bindings.put', 'bindings.get'], '写入后必须重载绑定快照')
-  controller.dispose()
-})
-
-
-
-
 
 test('help support report loads the canonical snapshot on demand', async () => {
   const calls = []
@@ -342,7 +163,7 @@ test('help support report loads the canonical snapshot on demand', async () => {
   const controller = mod.__test.createController(ctx)
   const result = await controller.generateSupportReport()
   assert.deepEqual(calls, ['diagnostics.snapshot'], '支持报告只在用户点击时按需读取一次诊断快照')
-  assert.equal(controller.getSnapshot().diagnostics.version, '0.13.1')
+  assert.equal('diagnostics' in controller.getSnapshot(), false, '诊断快照只用于生成支持报告，不缓存为日常状态')
   // 沙箱没有剪贴板 / 下载能力：明确回落为失败结果，绝不抛出。
   assert.equal(result.type, 'failed')
   controller.dispose()
@@ -421,6 +242,9 @@ test('static safety invariants remain true', () => {
   // v0.15（Stage 1 / S2）：Native v2 只读入口只走窄动作表（快照 / 单渠道详情）。
   assert.match(source, /rpc\.call\('native\.snapshot'/)
   assert.match(source, /rpc\.call\('native\.channel'/)
+  for (const method of ['surface.home', 'channels.list', 'channels.save', 'channels.test', 'tasks.list', 'questions.list', 'questions.settle', 'members.list', 'pairing.list', 'sessions.list', 'sessions.patch', 'sessions.control', 'bindings.get', 'bindings.put', 'activity.list']) {
+    assert.equal(source.includes(method), false, `client.js must not retain obsolete RPC ${method}`)
+  }
   assert.match(source, /class ErrorBoundary extends Component/)
   assert.match(source, /data-error-code/)
 })
