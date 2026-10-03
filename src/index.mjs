@@ -254,7 +254,6 @@ export function apply(ctx, config = {}) {
     }),
     initial: overlay.channels,
   })
-  disposers.push(() => outboundSource.dispose())
   resolved.channels = outboundSource.snapshot()
   const testRawConfigOf = overlay.testRawConfigOf
   const resolvedOutboundRows = new Map(overlay.channels.map((entry) => [entry.type, entry.config]))
@@ -318,6 +317,7 @@ export function apply(ctx, config = {}) {
   const notifier = createNotifier(ctx, outboundSource, { segment: resolved.segment, routing: resolved.routing, onSend })
 
   const disposers = []
+  disposers.push(() => outboundSource.dispose())
   // v0.15（T13）：宿主可选依赖的单一生命周期入口。装配层不再裸调 ctx.inject——late inject
   // （服务晚出现）、replacement（服务重建后子插件重放）与 dispose（插件卸载释放全部登记）
   // 都经此收敛；无 ctx.inject 的宿主/测试桩立即以根 ctx 直连（局部降级，绝不阻断装配）。

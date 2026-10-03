@@ -20,7 +20,7 @@ export function createCloudflareDeploymentService({ store, root, outboundConfig,
   let accounts = [], login = null, lastError = null
   function mutate(fn) {
     const r = transactDurable(store, fn)
-    if (!r.committed) throw error('本地保存失败，云资源不会自动删除', 'storage-failed')
+    if (!r.committed) throw error('保存失败，已创建的服务会保留', 'storage-failed')
     return r.value
   }
   const keyOf = type => `${PREFIX}${type}`
@@ -175,13 +175,13 @@ export function createCloudflareDeploymentService({ store, root, outboundConfig,
     const record = raw(type)
     if (!record?.endpoint || record.health !== 'ready') throw error('请先完成连接设置和检查')
     if (type === 'telegram' && record.secretGeneration && fingerprint(token()) !== record.secretGeneration) throw error('凭证已更改，请重新设置连接', 'conflict')
-    if (!Array.isArray(directions) || directions.length === 0 || directions.some(d => !['outbound', 'inbound'].includes(d)) || (type === 'bark' && directions.includes('inbound'))) throw error('请选择有效的绑定方向')
+    if (!Array.isArray(directions) || directions.length === 0 || directions.some(d => !['outbound', 'inbound'].includes(d)) || (type === 'bark' && directions.includes('inbound'))) throw error('请选择通知或私聊')
     const patch = type === 'telegram' ? { apiBase: record.endpoint, gatewayKey: token(), botToken: token(), ...(chatId ? { chatId: String(chatId) } : {}) } : { server: record.endpoint, barkUrl: null, ...(barkKey ? { key: String(barkKey) } : {}) }
     const plans = [...new Set(directions)].map(direction => ({ direction, plan: direction === 'outbound' ? outboundConfig.planPatch(type, patch) : inboundConfig.planPut(type, { apiBase: patch.apiBase, gatewayKey: patch.gatewayKey, botToken: patch.botToken }) }))
     const committed = new Map()
     mutate(draft => {
       const fresh = draft[keyOf(type)]
-      if (fresh?.versionId !== record.versionId) throw error('部署已更新，请刷新后绑定', 'conflict')
+      if (fresh?.versionId !== record.versionId) throw error('连接已更新，请刷新后重试', 'conflict')
       const backup = { ...(fresh.backup ?? {}) }
       for (const { direction, plan } of plans) {
         if (!(direction in backup)) {

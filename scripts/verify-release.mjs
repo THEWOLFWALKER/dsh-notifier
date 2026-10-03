@@ -93,9 +93,7 @@ const requiredPackageFiles = [
   'docs/user/guide.md', 'docs/user/guide.en.md', 'docs/developer/compatibility-matrix.md',
   'docs/user/upgrade-guide.md', 'docs/user/upgrade-guide.en.md',
   'docs/assets/readme-hero.png', 'docs/assets/qq-group.png',
-  'docs/screenshots/admin-gate-desktop.png', 'docs/screenshots/fresh-wizard-desktop.png',
-  'docs/screenshots/fresh-wizard-step2-desktop.png', 'docs/screenshots/configured-channels-desktop.png',
-  'docs/screenshots/fresh-wizard-mobile.png', 'docs/screenshots/configured-channels-mobile.png',
+'docs/screenshots/native-v2-desktop.png', 'docs/screenshots/native-v2-mobile.png', 'docs/screenshots/native-v2-channel.png', 'docs/screenshots/native-v2-private.png',
 ]
 // S-11（W13）：files 从「含整个 scripts 目录」改为显式列举发布脚本（hook-server.mjs
 // 开发用不随包分发）——校验每个发布脚本都在 files 清单里，缺一个即失败。
@@ -142,6 +140,8 @@ if (packedPaths !== null) {
   const forbidden = packedPaths.filter((path) => (
     /(?:^|\/)node_modules\//.test(path)
     || path.startsWith('test/')
+    || path.startsWith('.agents/')
+    || /(?:admin-gate|fresh-wizard|configured-channels)-(?:desktop|mobile)\.png$/.test(path)
     || /(?:^|\/)\.env(?:\.|$)/.test(path)
     || /(?:^|\/)\.wrangler\//.test(path)
     || /(?:^|\/)(?:\.cache|coverage|\.DS_Store)(?:\/|$)/.test(path)

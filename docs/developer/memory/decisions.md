@@ -38,7 +38,7 @@ Every change requires a written plan and follows `plan -> implement -> adversari
 
 ## DSH Visual Consistency
 
-The sub-agent console and admin GUI are part of the DSH product surface. Their visual tokens, density, navigation, responsive behavior, and interaction patterns must remain aligned with `src/admin/ui.mjs`; a parallel visual language is not acceptable.
+The sub-agent console and admin GUI are part of the DSH product surface. Their visual tokens, density, navigation, responsive behavior, and interaction patterns must remain aligned with DSH Host tokens consumed by `client.js`; a parallel visual language is not acceptable.
 
 ## Cross-IM Control Plane Direction
 
@@ -46,7 +46,7 @@ The planned product direction is a DSH cross-IM mobile control plane, not a noti
 
 ## Personal Mode Defaults
 
-Personal mode is the default onboarding path: one paired owner identity, `observe + approve` enabled, and `converse` opt-in. Team roles, workspace/session ACL, TTL, and audit controls are progressive disclosure. Group-chat control is disabled by default and is not a supported sensitive-action surface.
+Personal mode is the default onboarding path: one paired owner identity, `observe + approve` enabled, and `converse` opt-in. Team roles, workspace/session ACL, TTL, and audit controls are progressive disclosure. Group ingress control is always rejected before identity or routing, including stored team-mode flags; there is no positive group-control capability. Outbound notification protocols remain compatible.
 
 ## WeChat iLink Scope
 

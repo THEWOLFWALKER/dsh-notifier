@@ -4,7 +4,7 @@
 
 ## 当前工作
 
-v0.15 收口：Native 配置导入导出、Cloudflare 部署、Telegram 一键网关，以及文档重整。当前发布状态和检查结果以 [HANDOFF.md](HANDOFF.md) 为准。
+v0.15 Stage 3：账户隔离的当前任务、实例世代、可恢复 Cloud 任务、私聊准入、Native v2 删除收口，以及故障和容量证据。当前发布状态和检查结果以 [HANDOFF.md](HANDOFF.md) 为准。
 
 ## 修改代码前
 

@@ -676,112 +676,15 @@ spec 条目，并为每条标注**旧代码 oracle**（现有 `test/` 或 `src/`
 
 ---
 
-## 八、Native 控制面（T18：保存/测试/加载状态）
+## 八、Native v2 public behavior
 
-Native 视图（`client.js`）是**表现层**：它不持有第二写者，只把共享 authority 的 receipt 与查询结果
-映射成用户能正确理解的状态。这一节固定 U01–U04/U08/U09/U12 的行为，oracle 是**真实 React DOM**
-（`test/dom/`，独立于 `npm test` 的零依赖 glob）。
+The single daily page is Notify & Private chat. Channel rail/strip/mobile selector all select channels within it. The private-chat wizard confirms the owner, chooses a task through `native.selectTask`, and offers a trial. Questions and confirmations appear in a contextual pending banner. Sessions, bindings and member administration are no longer daily Native pages. Secondary settings and help are reached through More; the advanced console opens only its recovery/support page.
 
-### UX-01 · 保存 receipt 与详情刷新分离（U01）
+`NativeDirectionForm` renders declared fields. Secret values never return to the browser: keep/replace/clear are explicit. Save and test are separate. A committed save remains saved when the following read fails; user input and focus survive polling. Tests use saved settings and are unavailable with dirty fields. Accepted delivery is never described as confirmed; unknown/partial delivery does not imply safe replay. A channel switch with a dirty form requires an explicit choice.
 
-- **分类**：MUST_PRESERVE
-- **事实 owner**：`client.js` controller `saveChannel`；durable 事实在 `src/control-surface`
-- **输入/前置状态**：commit 成立，但随后的 `channels.get` 刷新失败
-- **公开执行入口**：Native 保存按钮
-- **结果**：仍显示「已保存」；刷新失败只降级为提示，**绝不**改写为「保存失败」
-- **durable diff**：只有 `channels.save` 的既有落盘；刷新不写盘
-- **effect trace**：一次保存 RPC + 一次读 RPC
-- **禁止动作**：不得把已提交的保存报成失败；不得因刷新失败丢弃草稿或阻止完成向导
-- **证据链接**：`test/dom/ui-dom-t18.test.mjs`（T18/U01）；`ui-dom.test.mjs:181`（同类，Members）
-- **矩阵**：**U01**
+Behavior evidence: `test/dom/ui-dom-s2-shell.test.mjs`, `ui-dom-s3-account.test.mjs`, `ui-dom-s4-private-pending.test.mjs`, `ui-dom-s5-more.test.mjs`, and `ui-dom-release.test.mjs`. They render the actual React components and drive public actions. Deleted page tests are recorded in [the deletion ledger](v015-deletion-ledger.md).
 
-### UX-02 · 保存与测试解耦、测试只针对已保存配置（U03/U12）
-
-- **分类**：MUST_PRESERVE
-- **事实 owner**：`client.js` `SetupFlow` / `ChannelDetailView`
-- **输入/前置状态**：表单有未保存修改 / 无账号、离线
-- **结果**：保存成立即可「完成」；测试完全可选；有未保存修改时测试禁用并说明原因，**绝不静默 save+send**
-- **禁止动作**：不得把保存按钮做成「保存并测试」；不得在测试前隐式提交
-- **证据链接**：`test/dom/ui-dom-t18.test.mjs`（T18/U03）；`ui-dom.test.mjs:63`（U12 可完成）
-- **矩阵**：**U03**、**U12**
-
-### UX-03 · 列表三态：loading / error / empty（+stale 标注）（U04）
-
-- **分类**：MUST_PRESERVE
-- **事实 owner**：`client.js` `listBody`
-- **输入/前置状态**：查询在途 / 查询失败或能力缺失 / 查询返回空 / 数据为 stale
-- **结果**：在途显示 loading（不伪装「暂无」）；失败显示不可用（不伪装成空）；stale 保留但标注更新时间
-- **禁止动作**：不得把「尚无响应」或「服务失败」渲染成空态；不得伪装实时
-- **证据链接**：`test/dom/ui-dom-t18.test.mjs`（T18/U04）；`ui-dom.test.mjs:224`（失败不空）
-- **矩阵**：**U04**
-
-### UX-04 · 投递证据分级：accepted / delivered / unknown（U08/U09）
-
-- **分类**：MUST_PRESERVE
-- **事实 owner**：`client.js` `testOutcome`（证据来自 `src/delivery-evidence.mjs`）
-- **结果**：accepted 显示「已接收，未确认送达」（绝不是「已送达」）；unknown 显示「无法确认」（绝不是「失败可重发」）
-- **禁止动作**：不得把 accepted 显示成成功送达；不得给 unknown 默认重发的暗示
-- **证据链接**：`test/dom/ui-dom-t18.test.mjs`（T18/U08、T18/U09）
-- **矩阵**：**U08**、**U09**
-
-### UX-05 · 稳定组件：连续输入不丢焦点 / caret（U05）
-
-- **分类**：MUST_PRESERVE
-- **事实 owner**：`client.js` 模块级 `ChannelDirectionSection` / `SchemaField`
-- **输入/前置状态**：用户正在输入，同时父级轮询/状态更新触发重渲染
-- **结果**：输入节点的 **DOM 身份不变**，`focus` 与 `caret` 保留；本地草稿不被投影覆盖
-- **禁止动作**：不得在父组件内部定义方向表单组件（会导致类型变化 → 整棵子树 remount）
-- **证据链接**：`test/dom/ui-dom-t19.test.mjs`（T19/U05）；`ui-dom.test.mjs`（通用受控输入）
-- **矩阵**：**U05**
-
-### UX-06 · 按声明渲染控件，secret 从不回显（U06）
-
-- **分类**：MUST_PRESERVE
-- **事实 owner**：`client.js` `SchemaField`；控件类型来自 `src/control-surface/channels.mjs` `fieldViews`
-- **输入/前置状态**：字段声明 `type`（boolean/enum/number/list）/ `secret` + `configured`
-- **结果**：bool → 开关、enum → 选择、number → 数字输入、list → 多行输入、其余 → 文本；已配置 secret 显示「保留 / 替换 / 清除」，**绝不渲染明文值**
-- **禁止动作**：不得把掩码或旧值当值回填；不得为未声明类型的字段猜测控件
-- **证据链接**：`test/dom/ui-dom-t19.test.mjs`（T19/U06）；`src/config.mjs` 字段声明
-- **矩阵**：**U06**
-
-### UX-07 · 未保存离开需显式确认，可取消（U07）
-
-- **分类**：MUST_PRESERVE
-- **事实 owner**：`client.js` `SetupFlow` / `ChannelDetailView`
-- **输入/前置状态**：表单有未保存修改时点击「返回」；非 secret 草稿存于 sessionStorage（随标签页关闭失效）
-- **结果**：弹出确认对话框；「留在本页」取消并保留草稿，「放弃修改并离开」才丢弃并导航
-- **禁止动作**：不得静默丢弃草稿；不得把 secret 明文写入任何 Web 存储 / 日志 / 支持报告
-- **证据链接**：`test/dom/ui-dom-t19.test.mjs`（T19/U07）
-- **矩阵**：**U07**
-
-### UX-08 · 复制配对码 + 手动 fallback（U10）
-
-- **分类**：MUST_PRESERVE
-- **事实 owner**：`client.js` `copyText` / `PairingCodesView`
-- **输入/前置状态**：刚生成的配对码（只在本次响应出现一次）；剪贴板可用 / 不可用
-- **结果**：可用 → 复制成功并报「已复制」；不可用 → 明确提示**手动选中复制**并选中码面，**绝不假装成功**
-- **禁止动作**：不得在没有剪贴板能力时报成功；不得把配对码写入持久层
-- **证据链接**：`test/dom/ui-dom-t19.test.mjs`（T19/U10）
-- **矩阵**：**U10**
-
-### UX-09 · 导航分层：日常一步可达，管理独立分组（U11）
-
-- **分类**：MUST_PRESERVE
-- **事实 owner**：`client.js` `HomeView`（`NAV_DAILY` / `NAV_MANAGE`）
-- **结果**：日常（提问/任务/渠道/活动）在常用组一步可达；管理（成员/待确认/配对码/会话/诊断）在独立分组，仍全部在 Native 内可达
-- **禁止动作**：不得把管理能力隐藏到 Recovery；不得在两组重复同一入口
-- **证据链接**：`test/dom/ui-dom-t19.test.mjs`（T19/U11）
-- **矩阵**：**U11**
-
-### UX-10 · 破坏性操作显示影响并二次确认（U13）
-
-- **分类**：MUST_PRESERVE
-- **事实 owner**：`client.js` `ConfirmButton`（`impact`）/ `MemberRow`
-- **输入/前置状态**：降权 / 移除成员等破坏性操作
-- **结果**：首次点击只「武装」，显示**具体对象与后果**，须再点确认才写入；取消或 4 秒无操作则回落
-- **禁止动作**：不得一次点击即执行破坏性写入；不得省略影响说明
-- **证据链接**：`test/dom/ui-dom-t19.test.mjs`（T19/U13）
-- **矩阵**：**U13**
+Account selection is persisted only by `routing/current-task.mjs` under `bind:<channel>:<accountId>:<userId>`. Legacy selection migrates only for a uniquely proven configured account, otherwise the owner must select again. Instance replacement advances generation once; observations do not. Retired generations cannot update current health. Cloud claims persist checkpoints before side effects and resume by named-resource readback. Deployment metadata/job rows hold fingerprints and secret references, never another token. See [fault evidence and limits](v015-fault-capacity.md).
 
 ---
 

@@ -203,7 +203,7 @@ window.__ModuleLoader__.load({
       importAdd: 'New (inactive)', importPatch: 'Add fields', importConflict: 'Replace existing fields',
       importSkip: 'No changes', importUnsupported: 'Unsupported', importMissing: 'Required',
       importFields: 'Changed fields', importConfigure: 'Complete setup', importEmpty: 'No pending channels',
-      exportFailed: 'Download failed. Copy the content below.', cloudflare: 'Cloudflare deploy',
+      exportFailed: 'Download failed. Copy the content below.', cloudflare: 'Cloudflare setup',
       nativeTitle: 'Notify & Private chat',
       nativeIntro: 'Send important events to your device, and reply from your phone.',
       more: 'More',
@@ -2605,7 +2605,7 @@ window.__ModuleLoader__.load({
         error || data?.error ? h('p', { role: 'alert', className: 'dn-error' }, error?.message || data.error) : null,
         h('label', { className: 'dn-field' }, words('账号', 'Account'), h('select', { 'aria-label': 'Cloudflare account', value: account, disabled, onChange: e => setAccount(e.target.value) }, h('option', { value: '' }, '—'), ...(data?.accounts ?? []).map(a => h('option', { key: a.id, value: a.id }, a.name)))),
         h('label', { className: 'dn-field' }, words('服务', 'Service'), h('select', { 'aria-label': 'Cloudflare service', value: type, disabled, onChange: e => setType(e.target.value) }, h('option', { value: 'telegram' }, 'Telegram Fallback connection'), h('option', { value: 'bark' }, 'Bark'))),
-        type === 'telegram' ? h('label', { className: 'dn-field' }, 'Bot Token', h('input', { type: 'password', autoComplete: 'off', 'aria-label': 'Bot Token', value: botToken, disabled, placeholder: words('已配置可留空', 'Leave blank to keep the current token'), onChange: e => setBotToken(e.target.value) })) : h('label', { className: 'dn-field dn-field--check' }, h('input', { type: 'checkbox', checked: enrollment, disabled, onChange: e => setEnrollment(e.target.checked) }), words('允许 Bark App 注册设备（添加设备后取消并重新设置）', 'Allow Bark App registration (turn off and redeploy after enrollment)')),
+        type === 'telegram' ? h('label', { className: 'dn-field' }, 'Bot Token', h('input', { type: 'password', autoComplete: 'off', 'aria-label': 'Bot Token', value: botToken, disabled, placeholder: words('已配置可留空', 'Leave blank to keep the current token'), onChange: e => setBotToken(e.target.value) })) : h('label', { className: 'dn-field dn-field--check' }, h('input', { type: 'checkbox', checked: enrollment, disabled, onChange: e => setEnrollment(e.target.checked) }), words('允许 Bark App 注册设备（添加设备后取消并重新设置）', 'Allow Bark App registration (turn off and set up again after adding devices)')),
         type === 'telegram' ? h('div', null,
           h('label', { className: 'dn-field' }, words('接收者（已配置可留空）', 'Recipient (leave blank to reuse)'), h('input', { 'aria-label': 'Fallback connection recipient', value: chatId, disabled, onChange: e => setChatId(e.target.value) })),
           h('label', { className: 'dn-field dn-field--check' }, h('input', { type: 'checkbox', checked: activate, disabled, onChange: e => setActivate(e.target.checked) }), words('设置后自动填写并保存 TG 配置', 'Automatically fill and save Telegram settings')),
@@ -2726,7 +2726,8 @@ window.__ModuleLoader__.load({
       .dn-field--check input{width:auto;height:auto;max-width:none;flex:0 0 auto}
       .dn-field--secret{display:flex;flex-direction:column;gap:6px;border:.5px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-md);padding:10px 12px;margin:12px 0}
       .dn-secretModes{display:flex;gap:12px;flex-wrap:wrap}
-      .dn-radio{display:inline-flex;gap:6px;align-items:center;font-size:13px}
+      .dn-radio{display:inline-flex;gap:6px;align-items:center;font-size:13px;white-space:nowrap}
+      .dn-field .dn-radio input{width:auto;flex:none}
       .dn-leaveGuard{border:.5px solid var(--dsw-alias-state-warn-primary);border-radius:var(--dsw-radius-md);background:var(--dsw-alias-bg-layer-1);padding:12px 14px;margin:12px 0}
       .dn-leaveGuard p{margin:6px 0 10px}
       .dn-page :focus-visible{outline:2px solid var(--dsw-alias-state-business-primary);outline-offset:2px}

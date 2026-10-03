@@ -7,7 +7,7 @@ This project has had version-split incidents before. The rule is now: one engine
 1. `package.json.version` is the semantic version authority.
 2. `CHANGELOG.md` must contain the matching `## [version]` entry.
 3. `src/admin/ui.mjs` must display the same version.
-4. README badges/body, `docs/developer/HANDOFF.md`, and `dshQuality.testCount` must agree on the published release baseline; unreleased development counts are documented separately and must not change the release guard count.
+4. README badges/body, `docs/developer/HANDOFF.md`, and `dshQuality.testCount` must agree on the current engineering tree. `dshQuality.testCount` is the actual Node TAP leaf count, including nested tests but excluding suite/file containers; it is not the historical published count.
 5. `package.json.files` defines the npm payload. The engineering archive is not the npm payload.
 
 `node scripts/verify-release.mjs` checks these invariants. A release is blocked when it fails.

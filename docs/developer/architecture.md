@@ -6,7 +6,7 @@ The system is designed around the user's task, not around an internal feature in
 
 All implementation work follows a written plan and an adversarial review loop: plan the smallest useful slice, implement it, challenge assumptions and failure paths, revise the code, then validate focused behavior and the full contract. Long-range roadmap items stay staged and evidence-driven; do not build speculative infrastructure ahead of a demonstrated need.
 
-The sub-agent console and any admin-facing GUI are part of DSH, not a separate product. They must reuse the visual tokens, density, navigation, feedback states, responsive behavior, and interaction grammar already established in `src/admin/ui.mjs`. New screens may add domain-specific information architecture, but they must not create a competing visual language or decorative dashboard style.
+The sub-agent console and any admin-facing GUI are part of DSH, not a separate product. They must reuse the visual tokens, density, navigation, feedback states, responsive behavior, and interaction grammar provided by the DSH Host, as consumed by `client.js`. New screens may add domain-specific information architecture, but they must not create a competing visual language or decorative dashboard style.
 
 The approved future product direction is documented in `docs/developer/architecture-roadmap.md`: a personal-mode-first cross-IM control plane with a unified control core and native channel renderers. That roadmap is planning state only; current runtime behavior remains defined by `src/` and tests.
 
@@ -41,8 +41,9 @@ Cordis context
 ```text
 provider payload
   -> normalizeInbound / channel-specific authentication
+  -> shared private-chat admission (reject group events before identity/routing)
   -> inbound bus deduplication
-  -> identity allows(channel, userId)
+  -> identity allows(channel, userId, accountId)
   -> command / approval / question / conversation consumer
   -> token or trusted reply validation
   -> first-arrival settlement
@@ -67,10 +68,10 @@ Each control domain has one shared application service. The Native surface and t
 | --- | --- | --- |
 | Outbound channels | `createChannelControlService` (`src/control-plane/channels.mjs`), `createOutboundConfigService` (`src/control-surface/outbound-config.mjs`) | validate → durable write → atomic `OutboundSource.replace`; credential merge stays in the inbound port |
 | Inbound credentials | inbound port `mergeAccount` (`src/inbound/channel-config.mjs`) | read-merge-commit inside one `store.transact` |
-| Members / pairing / pending | `createMembersControlService` (`src/control-plane/members.mjs`) | identity + pairing lifecycle; backs Native Members / Pending identities / Pairing codes |
+| Members / pairing / pending | `createMembersControlService` (`src/control-plane/members.mjs`) | identity + pairing lifecycle; backs the Native private-chat wizard and pending banner |
 | Sessions / routing / bindings | `createRoutingControlService` (`src/control-plane/sessions.mjs`) | writes `route:*` through the router transaction, never a direct table write |
-| Questions settlement | `createQuestionsControlService` (`src/control-plane/questions.mjs`) | delegates to the Control Core bridge; backs the Native Questions Inbox |
-| Diagnostics | `createDiagnosticsService` (`src/control-surface/diagnostics.mjs`) | read-only redacted snapshot; backs the Native Diagnostics Center + support report |
+| Questions settlement | `createQuestionsControlService` (`src/control-plane/questions.mjs`) | delegates to the Control Core bridge; backs Native pending items |
+| Diagnostics | `createDiagnosticsService` (`src/control-surface/diagnostics.mjs`) | read-only redacted snapshot; backs support reports and the recovery console |
 
 Cross-field credential merges and session-overlay updates run inside a single `store.transact()` (read the latest draft → field-level merge → durable commit) so a concurrent sibling-field write is preserved instead of overwritten — the v0.14 session-overlay TOCTOU fix.
 
@@ -91,6 +92,6 @@ The server is a zero-dependency `node:http` wrapper around `admin/api.mjs`. It i
 - Add fixed HTTP notification channels to `src/adapters/spec-channels.mjs` plus a fixture; use a code adapter only for token exchange or multi-step control flow.
 - Keep the adapter contract `resolve(cfg) -> resolved` and `send(resolved, msg) -> Promise`.
 - Inbound channels implement the shared contract and may expose optional action/question card methods; callers must always retain text/number fallbacks. The QQ transport uses explicit `INTERACTION_CREATE` key/token callbacks for single-chat cards; group targets remain text-only. Approval/question decisions stay in the shared Control Core, and `approval.parallel` is an explicit opt-in (default off) with fail-closed rejection handling.
-- QQ single-chat native buttons and QQ group text fallback are contract-tested only; QQ/WeChat iLink/DingTalk image envelopes are wired and contract-tested, while real provider payload/device behavior remains unverified. The loopback Web/admin surface now offers a 阶段 2A `ask_user` settlement entry (choose/reject through Control Core, masked snapshot, Bearer-gated; see `src/questions/router.mjs` facade); desktop still has none, so dual-end sharing is not claimed.
+- QQ single-chat native buttons and outbound group notification fallback are contract-tested only; QQ/WeChat iLink/DingTalk image envelopes are wired and contract-tested, while real provider payload/device behavior remains unverified. The loopback Web/admin surface now offers a 阶段 2A `ask_user` settlement entry (choose/reject through Control Core, masked snapshot, Bearer-gated; see `src/questions/router.mjs` facade); desktop still has none, so dual-end sharing is not claimed.
 - Other plugins consume the injected `notifier` service and `dsh-notifier/sent` event; they must declare static injection and must not push from a sent-event handler.
 - Future bidirectional channels must keep transport, control semantics, and native rendering separate. External SDKs are optional and lazy-loaded only after license, maintenance, security, and dependency review; unlicensed or `UNLICENSED` code is not copied.

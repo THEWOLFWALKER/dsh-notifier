@@ -19,3 +19,6 @@
 - P2: common pre-routing private admission; six provider negative cases; copy gate expanded; focused 92/92 and DOM 41/41.
 
 - P3: fault/capacity focused 166/166; real rename contention, runtime disposal/caps, 1000 local HTTP sends, 500 private events, Cloud restart and receipt failure; external account evidence BLOCKED (documented).
+
+- P3: 845699b pushed.
+- P4: current React Native screenshots (desktop/mobile/channel/private), removed six obsolete screenshots, updated allowlist/forbidden scan and owner/behavior/current handoff docs. Focused 47/47, DOM 41/41; pack 222 files, forbidden paths 0. DOM assembly exposed early disposer registration; moved registration after disposers initialization and verified restart smoke.

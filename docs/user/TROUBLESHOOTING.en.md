@@ -6,7 +6,7 @@ Check that dsh-notifier appears in the DSH plugin page. Restart DSH and refresh 
 
 ## Messages do not arrive
 
-Send a test, read the result and check your phone. Confirm the recipient and app notification permissions. Replace invalid credentials. For Telegram connection problems, open its **Connection help** and choose **Enable fallback connection**.
+Send a test, read the result and check your phone. Confirm the recipient and app notification permissions. Replace invalid credentials. For Telegram connection problems, open its **Connection help** and choose **Prepare a fallback connection**.
 
 ## Notifications arrive but replies do not work
 

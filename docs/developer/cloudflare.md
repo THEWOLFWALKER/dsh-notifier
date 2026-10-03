@@ -1,8 +1,7 @@
 # Cloudflare deployment and Telegram forwarding
 
 `src/cloudflare/deployment.mjs` owns deployment metadata. `wrangler-runner.mjs` lazily
-installs and invokes Wrangler 4.119.0. Plugin startup performs no tool installation,
-login, account discovery or cloud IO.
+installs and invokes Wrangler 4.119.0. A fresh installation performs no tool installation, login, account discovery or cloud IO. Restarting with unfinished durable jobs resumes those claims by readback; it does not start a new deployment.
 
 ## Telegram
 
@@ -40,12 +39,13 @@ readback and health checks. A failed verification does not erase cloud ownership
 For Telegram the default workflow deploys, obtains the address, checks the service,
 and saves local channel settings automatically. Canonical outbound/inbound plans
 merge in the same durable transaction. If local saving fails, prior channel settings
-remain and the deployed service can be linked later. Cancellation stops the current
-job; disposal aborts the active subprocess. Resources are never deleted automatically.
+remain and the deployed service can be linked later. Jobs persist under `cloud:job:<id>` with exact account/resource identity, checkpoints, revision, receipts and recovery state. The deployment row references the canonical configuration secret; neither job nor deployment stores a token. Cancellation persists intent before abort; disposal aborts the active subprocess. Resources are never deleted automatically.
 
 Unbind restores the previous transport settings only while this deployment is still
-selected. Later manual endpoint edits survive. Cloud resources remain owned by the
+selected. Later manual endpoint or credential edits survive. Backups contain only public endpoint settings. Cloud resources remain owned by the
 user and are removed through their Cloudflare account if desired.
+
+Terminal jobs are swept on startup to 64 rows / seven days. Unfinished jobs are retained and resumed serially. If an ambiguous remote result has no readback endpoint and no durable receipt, recovery stays pending instead of repeating creation. This public-account edge remains an external evidence gap; see [fault evidence](v015-fault-capacity.md).
 
 ## Bark and APNs
 
