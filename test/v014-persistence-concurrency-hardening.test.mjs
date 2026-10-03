@@ -20,6 +20,7 @@ import { join } from 'node:path'
 
 import { createStore } from '../src/inbound/store.mjs'
 import { createChannelControlService } from '../src/control-plane/channels.mjs'
+import { createNativeActions } from '../src/native/actions.mjs'
 import { createOutboundConfigService } from '../src/control-surface/outbound-config.mjs'
 import { createOutboundSource } from '../src/runtime/outbound-source.mjs'
 import { createInboundChannelConfigPort } from '../src/inbound/channel-config.mjs'
@@ -297,17 +298,18 @@ test('S13 late async completion: a slow channel test never regresses revision or
     outboundConfig,
     channelTest: () => new Promise((resolve) => { releaseTest = () => resolve({ ok: true }) }),
   })
-  const surface = makeSurface({ revision, channelControl, activity })
+  // Stage 4（S402）：daily 通话面已无 channels.test/channels.save——改用 native 窄动作。
+  const actions = createNativeActions({ channelControl, revision, activity, health: createSurfaceHealth() })
 
-  const testPromise = surface.call('channels.test', { type: 'bark' }) // 在飞行中
+  const testPromise = actions.testChannel({ type: 'bark' }) // 在飞行中
   const revisionAtStart = revision.current().revision
-  const saved = await surface.call('channels.save', { type: 'bark', direction: 'outbound', patch: { barkUrl: 'https://self.example' } })
-  assert.equal(saved.ok, true, '更新的写入必须在晚到的测试完成前落地')
+  const saved = actions.saveChannel({ type: 'bark', patch: { barkUrl: 'https://self.example' } })
+  assert.equal(saved.saved, true, '更新的写入必须在晚到的测试完成前落地')
   assert.ok(revision.current().revision > revisionAtStart, '更新的一代推进 revision')
 
   releaseTest() // 晚到完成
   const late = await testPromise
-  assert.equal(late.ok, true)
+  assert.ok(late !== null && typeof late === 'object' && typeof late.kind === 'string', '晚到测试返回用户话术回执')
   assert.ok(revision.current().revision >= revisionAtStart, '晚到完成绝不回退 revision')
   assert.deepEqual(
     store.get('channel:bark:outbound'),

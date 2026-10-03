@@ -1,6 +1,11 @@
-// v0.3.3 测试：admin/server（HTTP 级）——鉴权 / 路由 / body 限制 / 错误映射 / 生命周期。
-// 全部用 fake api 对象（每方法返回固定对象，按需抛 ApiError/普通 Error）+ verifyToken 只认 'secret'；
-// 不 import src/admin/api.mjs（并行开发解耦）。真实临时端口 server + 本机 fetch。
+// v0.15 Stage 4（S403）：admin/server（HTTP 级）——Recovery-only 后端：
+//   GET  /                          只读管理台单页
+//   POST /api/auth/exchange-ticket  启动票据兑换短会话
+//   GET  /api/diagnostics           只读 canonical 诊断快照
+// 覆盖：鉴权 / 路由 / body 限制 / 错误映射 / 生命周期 / Origin-Host 之外的未知路由 404。
+// 旧日常写/读路由（bindings/sessions/channels/members/pairing/questions/tasks/host/scan/events）
+// 必须**不在路由表**——见文末 S403 路由缺失矩阵（能力不存在，而不是 UI 不可见）。
+// 全部用 fake api 对象（仅 getDiagnostics）+ verifyToken 只认 'secret'；不 import src/admin/api.mjs。
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
@@ -16,41 +21,17 @@ function apiError(status, message) {
   return error
 }
 
-/**
- * fake api：十个方法全部记录调用并返回固定对象；overrides 按名替换（抛错/改返回值）。
- * @returns {{ api: object, calls: Array<{ name: string, args: unknown[] }> }}
- */
+/** fake api：Recovery 只读面只暴露 getDiagnostics（记录调用，overrides 可抛错/改返回）。 */
 function makeApi(overrides = {}, { latencyMs = 0 } = {}) {
   const calls = []
-  const api = {}
-  const results = {
-    overview: { via: 'overview', sessions: 3 },
-    getBindings: { via: 'getBindings' },
-    putBindings: { via: 'putBindings', saved: true },
-    getSessions: { via: 'getSessions', sessions: [] },
-    patchSession: { via: 'patchSession', patched: true },
-    patchSessionControl: { via: 'patchSessionControl', control: { mode: 'team' } },
-    getChannels: { via: 'getChannels', channels: [] },
-    putChannel: { via: 'putChannel', written: true },
-    testChannel: { via: 'testChannel', healthy: true },
-    scanChannel: { via: 'scanChannel', qr: 'QR-CONTENT' },
-    getAudit: { via: 'getAudit', entries: [] },
-    getMembers: { via: 'getMembers', guided: false, members: [], pending: [], pairingCodes: [] },
-    putMember: { via: 'putMember', saved: true },
-    deleteMember: { via: 'deleteMember', deleted: true },
-    confirmPendingMember: { via: 'confirmPendingMember', confirmed: true },
-    dismissPendingMember: { via: 'dismissPendingMember', dismissed: true },
-    mintPairingCode: { via: 'mintPairingCode', id: 'abcd1234', code: 'ABCDEFGH', expiresAt: 0 },
-    revokePairingCode: { via: 'revokePairingCode', revoked: true },
-  }
-  for (const [name, result] of Object.entries(results)) {
-    api[name] = async (...args) => {
-      calls.push({ name, args })
+  const api = {
+    getDiagnostics: async (...args) => {
+      calls.push({ name: 'getDiagnostics', args })
       if (latencyMs > 0) await tick(latencyMs)
-      const override = overrides[name]
+      const override = overrides.getDiagnostics
       if (override !== undefined) return override(...args)
-      return result
-    }
+      return { via: 'getDiagnostics', process: { epoch: 'e1', revision: 3 } }
+    },
   }
   return { api, calls }
 }
@@ -105,7 +86,7 @@ test('start：port 0 → 随机端口生效；address 必须是 127.0.0.1（永�
     assert.ok(rig.info.port > 0, 'port 0 应被替换为内核分配的随机端口')
     assert.equal(rig.info.address, '127.0.0.1', '管理台只许绑本机回环')
     assert.equal(rig.server.port, rig.info.port, 'port getter 返回实际监听端口')
-    assert.equal((await call(rig, '/api/overview')).status, 200, '随机端口真实可访问')
+    assert.equal((await call(rig, '/api/diagnostics')).status, 200, '随机端口真实可访问')
   })
 })
 
@@ -121,7 +102,7 @@ test('stop：幂等（二次调用不抛）；停止后端口不再响应；port
   await server.stop()
   await server.stop() // 幂等：不抛
   assert.equal(server.port, null)
-  await assert.rejects(() => fetch(`http://127.0.0.1:${info.port}/api/overview`))
+  await assert.rejects(() => fetch(`http://127.0.0.1:${info.port}/api/diagnostics`))
 })
 
 // ---------------------------------------------------------------- GET /（ui 静态页）
@@ -151,7 +132,7 @@ test('Issue #10/#13：入口查询串不回显也不能充当 token，API 仍只
     const page = await call(rig, `/?token=${encodeURIComponent(urlToken)}`, { token: null })
     assert.equal(page.status, 200)
     assert.equal((await textOf(page)).includes(urlToken), false, '入口页不得回显 URL 中的 token')
-    const api = await call(rig, `/api/overview?token=${encodeURIComponent('secret')}`, { token: null })
+    const api = await call(rig, `/api/diagnostics?token=${encodeURIComponent('secret')}`, { token: null })
     assert.equal(api.status, 401, '查询串 token 绝不替代 Bearer 鉴权')
   })
 })
@@ -176,48 +157,37 @@ test('C8：一次性启动票据兑换为 HttpOnly 短会话；Bearer 仍保留�
     assert.match(cookie ?? '', /SameSite=Strict/)
     assert.match(cookie ?? '', /Max-Age=\d+/)
 
-    const viaCookie = await call(rig, '/api/overview', { token: null, cookie })
+    const viaCookie = await call(rig, '/api/diagnostics', { token: null, cookie })
     assert.equal(viaCookie.status, 200, 'HttpOnly 会话应可访问 API')
-    const viaBadCookie = await call(rig, '/api/overview', { token: null, cookie: 'dsh_notifier_session=wrong' })
+    const viaBadCookie = await call(rig, '/api/diagnostics', { token: null, cookie: 'dsh_notifier_session=wrong' })
     assert.equal(viaBadCookie.status, 401)
-    assert.equal((await call(rig, '/api/overview')).status, 200, 'Bearer 恢复路径不得被短会话替换')
+    assert.equal((await call(rig, '/api/diagnostics')).status, 200, 'Bearer 恢复路径不得被短会话替换')
 
     const replay = await call(rig, '/api/auth/exchange-ticket', {
       method: 'POST', token: null, body: { ticket: 'launch-ticket' },
     })
     assert.equal(replay.status, 401, '启动票据仍然只能兑换一次')
+
+    const badTicket = await call(rig, '/api/auth/exchange-ticket', {
+      method: 'POST', token: null, body: { ticket: 'nope' },
+    })
+    assert.equal(badTicket.status, 401, '无效票据 401')
   })
 })
 
-// §5.3 修补验收（最小静态断言）：fields 驱动建单 / editable 只读行 / 审计 detail 归一 /
-// 扫码 error 分支 / 凭证热更新提示——UI 是纯静态串，关键字在即可，交互留给浏览器。
-test('ADMIN_UI_HTML：含 fields 建单与 editable 只读的关键字（§5.3 五缺口最小断言）', () => {
-  for (const keyword of [
-    'c.fields',          // 缺口 1：空配置通道按 fields 渲染新建表单
-    'data-req',          // 缺口 1：必填字段标记（required）
-    'c.editable',        // 缺口 2：editable=false 只读行判定
-    'YAML bootstrap',    // 缺口 2：只读提示文案
-    'JSON.stringify',    // 缺口 3：审计 detail 对象归一展示
-    '扫码失败：',         // 缺口 4：scanChannel 终态 error 分支
-    '下次启动',           // 缺口 5：store 凭证热更新边界提示
-    'plain(r).saved === false', // 缺口 5：saved=false 写入失败分支（不只看成功路径）
-  ]) {
-    assert.ok(ADMIN_UI_HTML.includes(keyword), `ADMIN_UI_HTML 应包含关键字 ${keyword}`)
-  }
-})
-
-test('ADMIN_UI_HTML: recovery report replaces the old notification page', () => {
+test('ADMIN_UI_HTML: recovery report replaces the old daily pages', () => {
   assert.ok(ADMIN_UI_HTML.includes('id="tab-diagnostics"'))
   assert.ok(!ADMIN_UI_HTML.includes('id="tab-notify"'))
   assert.ok(!ADMIN_UI_HTML.includes('id="setup"'))
+  for (const id of ['tab-channels', 'tab-members', 'tab-bindings', 'tab-sessions']) {
+    assert.ok(!ADMIN_UI_HTML.includes(`id="${id}"`), `recovery UI 不得含旧日常页 ${id}`)
+  }
 })
 
-test('ADMIN_UI_HTML：移动端适配关键字（v0.5 特性 D，≤768px 纯 CSS 增量）', () => {
+test('ADMIN_UI_HTML：移动端适配关键字（≤768px 纯 CSS 增量）', async () => {
   for (const keyword of [
     '@media (max-width: 768px)', // 断点块整体存在
     'nav { flex-wrap: nowrap; overflow-x: auto', // 导航标签横滚
-    'table { display: block; overflow-x: auto', // 宽表横向滚动
-    'label.fld { flex-direction: column', // 表单字段单列（标签上移）
     'button { min-height: 44px', // 触控目标 ≥44px
     'font-size: 16px', // iOS 聚焦不自动缩放
     'viewport', // 视口 meta（移动端渲染前提）
@@ -230,7 +200,7 @@ test('ADMIN_UI_HTML：移动端适配关键字（v0.5 特性 D，≤768px 纯 CS
 
 test('401：缺 Authorization 头 → 401 + 中文 error（不区分缺/错，防探测）', async () => {
   await withServer({}, async (rig) => {
-    const response = await call(rig, '/api/overview', { token: null })
+    const response = await call(rig, '/api/diagnostics', { token: null })
     assert.equal(response.status, 401)
     assert.equal(response.headers.get('content-type'), 'application/json; charset=utf-8')
     assert.deepEqual(await jsonOf(response), { error: '鉴权失败：缺少或错误的 Bearer token' })
@@ -240,17 +210,17 @@ test('401：缺 Authorization 头 → 401 + 中文 error（不区分缺/错，�
 
 test('401：错误 token → 401', async () => {
   await withServer({}, async (rig) => {
-    assert.equal((await call(rig, '/api/overview', { token: 'wrong' })).status, 401)
-    assert.equal((await call(rig, '/api/audit', { token: '' })).status, 401)
+    assert.equal((await call(rig, '/api/diagnostics', { token: 'wrong' })).status, 401)
+    assert.equal((await call(rig, '/api/diagnostics', { token: '' })).status, 401)
   })
 })
 
 test('401：Bearer 格式错误（裸 token / Basic / 无空格 / 双空格错位）→ 401', async () => {
   await withServer({}, async (rig) => {
-    assert.equal((await call(rig, '/api/overview', { rawAuth: 'secret' })).status, 401, '缺 Bearer 前缀')
-    assert.equal((await call(rig, '/api/overview', { rawAuth: 'Basic secret' })).status, 401, '非 Bearer scheme')
-    assert.equal((await call(rig, '/api/overview', { rawAuth: 'Bearersecret' })).status, 401, '缺空格')
-    assert.equal((await call(rig, '/api/overview', { rawAuth: 'Bearer  secret' })).status, 401, '双空格 → token 带 lead space')
+    assert.equal((await call(rig, '/api/diagnostics', { rawAuth: 'secret' })).status, 401, '缺 Bearer 前缀')
+    assert.equal((await call(rig, '/api/diagnostics', { rawAuth: 'Basic secret' })).status, 401, '非 Bearer scheme')
+    assert.equal((await call(rig, '/api/diagnostics', { rawAuth: 'Bearersecret' })).status, 401, '缺空格')
+    assert.equal((await call(rig, '/api/diagnostics', { rawAuth: 'Bearer  secret' })).status, 401, '双空格 → token 带 lead space')
   })
 })
 
@@ -262,117 +232,16 @@ test('401 优先于 404：未鉴权探测未知 /api 路径也只回 401（不�
   })
 })
 
-// ---------------------------------------------------------------- 只读路由
+// ---------------------------------------------------------------- 只读路由（diag）
 
-test('GET /api/overview：Bearer secret → 200 JSON，api.overview() 结果透传', async () => {
+test('GET /api/diagnostics：Bearer secret → 200 JSON，api.getDiagnostics() 结果透传', async () => {
   await withServer({}, async (rig) => {
-    const response = await call(rig, '/api/overview')
+    const response = await call(rig, '/api/diagnostics')
     assert.equal(response.status, 200)
     assert.equal(response.headers.get('content-type'), 'application/json; charset=utf-8')
     assert.ok(Number(response.headers.get('content-length')) > 0, 'JSON 响应也带 Content-Length')
-    assert.deepEqual(await jsonOf(response), { via: 'overview', sessions: 3 })
-    assert.deepEqual(rig.calls, [{ name: 'overview', args: [] }])
-  })
-})
-
-test('GET /api/bindings / sessions / channels / audit：全部 200 且各调对应 api 方法', async () => {
-  await withServer({}, async (rig) => {
-    for (const [path, name, expected] of [
-      ['/api/bindings', 'getBindings', { via: 'getBindings' }],
-      ['/api/sessions', 'getSessions', { via: 'getSessions', sessions: [] }],
-      ['/api/channels', 'getChannels', { via: 'getChannels', channels: [] }],
-      ['/api/audit', 'getAudit', { via: 'getAudit', entries: [] }],
-    ]) {
-      const response = await call(rig, path)
-      assert.equal(response.status, 200, path)
-      assert.deepEqual(await jsonOf(response), expected)
-      assert.equal(rig.calls.at(-1).name, name)
-    }
-    assert.equal(rig.calls.length, 4)
-  })
-})
-
-// ---------------------------------------------------------------- 写路由（body 透传）
-
-test('PUT /api/bindings：body 解析后透传 api.putBindings(body)', async () => {
-  await withServer({}, async (rig) => {
-    const response = await call(rig, '/api/bindings', { method: 'PUT', body: { agents: { dsh: { channels: ['bark'] } } } })
-    assert.equal(response.status, 200)
-    assert.deepEqual(await jsonOf(response), { via: 'putBindings', saved: true })
-    assert.deepEqual(rig.calls, [{ name: 'putBindings', args: [{ agents: { dsh: { channels: ['bark'] } } }] }])
-  })
-})
-
-test('PUT /api/bindings：空 body 当 {} 传入（契约）', async () => {
-  await withServer({}, async (rig) => {
-    const response = await call(rig, '/api/bindings', { method: 'PUT', body: '' })
-    assert.equal(response.status, 200)
-    assert.deepEqual(rig.calls[0].args, [{}])
-  })
-})
-
-test('PATCH /api/sessions/:id：路径参数与 body 一起透传 api.patchSession(id, body)', async () => {
-  await withServer({}, async (rig) => {
-    const response = await call(rig, '/api/sessions/sess-abc-123', { method: 'PATCH', body: { outbound: { quiet: true } } })
-    assert.equal(response.status, 200)
-    assert.deepEqual(await jsonOf(response), { via: 'patchSession', patched: true })
-    assert.deepEqual(rig.calls, [{ name: 'patchSession', args: ['sess-abc-123', { outbound: { quiet: true } }] }])
-  })
-})
-
-test('PUT /api/channels/:type：body.config 优先；无 config 键时整个 body 直传', async () => {
-  await withServer({}, async (rig) => {
-    await call(rig, '/api/channels/telegram', { method: 'PUT', body: { config: { botToken: 'T1' } } })
-    assert.deepEqual(rig.calls[0], { name: 'putChannel', args: ['telegram', { botToken: 'T1' }] })
-
-    await call(rig, '/api/channels/bark', { method: 'PUT', body: { deviceKey: 'K' } })
-    assert.deepEqual(rig.calls[1], { name: 'putChannel', args: ['bark', { deviceKey: 'K' }] })
-  })
-})
-
-test('PATCH /api/sessions/:id/control：专属路由透传 api.patchSessionControl(id, body)', async () => {
-  await withServer({}, async (rig) => {
-    const response = await call(rig, '/api/sessions/sess-abc-123/control', { method: 'PATCH', body: { mode: 'team', owner: 'u1' } })
-    assert.equal(response.status, 200)
-    assert.deepEqual(await jsonOf(response), { via: 'patchSessionControl', control: { mode: 'team' } })
-    assert.deepEqual(rig.calls, [{ name: 'patchSessionControl', args: ['sess-abc-123', { mode: 'team', owner: 'u1' }] }])
-  })
-})
-
-test('PATCH /api/sessions/:id/control：来源字段 body → api 抛 422 映射为 HTTP 422', async () => {
-  await withServer({ apiOverrides: { patchSessionControl: () => { throw apiError(422, '"channel" 是会话来源字段') } } }, async (rig) => {
-    const response = await call(rig, '/api/sessions/sess-abc-123/control', { method: 'PATCH', body: { channel: 'telegram' } })
-    assert.equal(response.status, 422)
-    assert.deepEqual(await jsonOf(response), { error: '"channel" 是会话来源字段' })
-  })
-})
-
-test('PATCH /api/sessions/:id/control：未鉴权 401 优先于路由；错方法 405', async () => {
-  await withServer({}, async (rig) => {
-    assert.equal((await call(rig, '/api/sessions/x/control', { method: 'PATCH', token: null })).status, 401)
-    assert.equal((await call(rig, '/api/sessions/x/control', { method: 'PATCH', token: 'wrong' })).status, 401)
-    assert.equal((await call(rig, '/api/sessions/x/control', { method: 'GET' })).status, 405)
-  })
-})
-
-test('POST /api/channels/:type/test → api.testChannel(type)；带 JSON body 也放行', async () => {
-  await withServer({}, async (rig) => {
-    const response = await call(rig, '/api/channels/telegram/test', { method: 'POST' })
-    assert.equal(response.status, 200)
-    assert.deepEqual(await jsonOf(response), { via: 'testChannel', healthy: true })
-    assert.deepEqual(rig.calls, [{ name: 'testChannel', args: ['telegram'] }])
-
-    assert.equal((await call(rig, '/api/channels/wxpusher/test', { method: 'POST', body: {} })).status, 200)
-    assert.deepEqual(rig.calls[1].args, ['wxpusher'])
-  })
-})
-
-test('POST /api/scan/:channel → api.scanChannel(channel)', async () => {
-  await withServer({}, async (rig) => {
-    const response = await call(rig, '/api/scan/qq', { method: 'POST' })
-    assert.equal(response.status, 200)
-    assert.deepEqual(await jsonOf(response), { via: 'scanChannel', qr: 'QR-CONTENT' })
-    assert.deepEqual(rig.calls, [{ name: 'scanChannel', args: ['qq'] }])
+    assert.deepEqual(await jsonOf(response), { via: 'getDiagnostics', process: { epoch: 'e1', revision: 3 } })
+    assert.deepEqual(rig.calls, [{ name: 'getDiagnostics', args: [] }])
   })
 })
 
@@ -388,23 +257,20 @@ test('404：未知 /api 路径 → { error: "接口不存在：<method> <path>" 
   })
 })
 
-test('段匹配精确性：:type 只吞单段（/api/channels/telegram/test 只认 POST）；多余段/尾斜杠 → 404', async () => {
+test('段匹配精确性：尾斜杠产生空段不命中 → 404', async () => {
   await withServer({}, async (rig) => {
-    // 该路径存在（POST .../test），PUT 属方法不符 → 405，而非被 :type 吞成 putChannel('telegram/test')
-    assert.equal((await call(rig, '/api/channels/telegram/test', { method: 'PUT', body: {} })).status, 405)
-    assert.equal((await call(rig, '/api/channels/telegram/test/x', { method: 'PUT', body: {} })).status, 404, '5 段路径无路由')
-    assert.equal((await call(rig, '/api/overview/')).status, 404, '尾斜杠产生空段，不命中')
+    assert.equal((await call(rig, '/api/diagnostics/')).status, 404, '尾斜杠产生空段，不命中')
     assert.equal(rig.calls.length, 0, '以上皆不触达 api')
   })
 })
 
-test('405：路径存在但方法不符 → { error: "方法不允许：<method>" }（多个角度）', async () => {
+test('405：路径存在但方法不符 → { error: "方法不允许：<method>" }', async () => {
   await withServer({}, async (rig) => {
-    assert.deepEqual(await jsonOf(await call(rig, '/api/bindings', { method: 'DELETE' })), { error: '方法不允许：DELETE' })
-    assert.equal((await call(rig, '/api/overview', { method: 'POST' })).status, 405)
-    assert.equal((await call(rig, '/api/sessions/abc', { method: 'PUT' })).status, 405)
+    assert.equal((await call(rig, '/api/diagnostics', { method: 'POST' })).status, 405)
     assert.equal((await call(rig, '/', { method: 'POST', token: null })).status, 405, 'GET / 存在 → POST / 405')
-    assert.equal((await call(rig, '/api/channels/telegram/test', { method: 'GET' })).status, 405)
+    // /api/* 401 优先于 405（不泄露路由存在性）：public 路由方法不符也必须先过 Bearer。
+    assert.equal((await call(rig, '/api/auth/exchange-ticket', { method: 'GET', token: null })).status, 401)
+    assert.equal((await call(rig, '/api/auth/exchange-ticket', { method: 'GET' })).status, 405, 'GET 该路径存在（POST）→ 已鉴权则 405')
     assert.equal(rig.calls.length, 0, '405 绝不触达 api')
   })
 })
@@ -412,8 +278,11 @@ test('405：路径存在但方法不符 → { error: "方法不允许：<method>
 // ---------------------------------------------------------------- body 解析与上限
 
 test('400：非 JSON body → { error: "请求体不是合法 JSON" }', async () => {
-  await withServer({}, async (rig) => {
-    const response = await call(rig, '/api/bindings', { method: 'PUT', body: 'not-json{' })
+  await withServer({
+    verifyLaunchTicket: () => true,
+    createSession: () => ({ token: 's', expiresAt: Date.now() + 1000 }),
+  }, async (rig) => {
+    const response = await call(rig, '/api/auth/exchange-ticket', { method: 'POST', token: null, body: 'not-json{' })
     assert.equal(response.status, 400)
     assert.deepEqual(await jsonOf(response), { error: '请求体不是合法 JSON' })
     assert.equal(rig.calls.length, 0)
@@ -421,15 +290,18 @@ test('400：非 JSON body → { error: "请求体不是合法 JSON" }', async ()
 })
 
 test('413：请求体超过 1MB 上限 → 请求被拒（413 或平台 fetch 抛错），绝不进 api', async () => {
-  await withServer({}, async (rig) => {
+  await withServer({
+    verifyLaunchTicket: () => true,
+    createSession: () => ({ token: 's', expiresAt: Date.now() + 1000 }),
+  }, async (rig) => {
     let response
     try {
-      response = await call(rig, '/api/bindings', { method: 'PUT', body: 'x'.repeat(1024 * 1024 + 1) })
+      response = await call(rig, '/api/auth/exchange-ticket', { method: 'POST', token: null, body: 'x'.repeat(1024 * 1024 + 1) })
     } catch (error) {
       assert.match(error.message, /fetch failed/, '客户端对超限 body 只能被拒（fetch failed）或拿到 413，不能成功')
     }
     if (response) {
-      assert.equal(response.status, 413, '拿到响应则必须是 413（Linux 下原有断言保留）')
+      assert.equal(response.status, 413, '拿到响应则必须是 413')
       const payload = await jsonOf(response)
       assert.match(payload.error, /1MB/)
     }
@@ -439,35 +311,25 @@ test('413：请求体超过 1MB 上限 → 请求被拒（413 或平台 fetch �
 
 // ---------------------------------------------------------------- 错误映射
 
-test('ApiError 透传：422 / 404 / 501 原样回 status + { error: message }', async () => {
+test('ApiError 透传：422 / 501 原样回 status + { error: message }', async () => {
   await withServer({
     apiOverrides: {
-      putBindings: () => { throw apiError(422, '绑定矩阵格式不合法') },
-      patchSession: () => { throw apiError(404, '会话不存在') },
-      scanChannel: () => { throw apiError(501, '该通道不支持扫码授权') },
+      getDiagnostics: () => { throw apiError(501, '诊断快照未装配') },
     },
   }, async (rig) => {
-    const unprocessable = await call(rig, '/api/bindings', { method: 'PUT', body: { bad: 1 } })
-    assert.equal(unprocessable.status, 422)
-    assert.deepEqual(await jsonOf(unprocessable), { error: '绑定矩阵格式不合法' })
-
-    const missing = await call(rig, '/api/sessions/gone', { method: 'PATCH', body: {} })
-    assert.equal(missing.status, 404)
-    assert.deepEqual(await jsonOf(missing), { error: '会话不存在' })
-
-    const unsupported = await call(rig, '/api/scan/bark', { method: 'POST' })
+    const unsupported = await call(rig, '/api/diagnostics')
     assert.equal(unsupported.status, 501)
-    assert.deepEqual(await jsonOf(unsupported), { error: '该通道不支持扫码授权' })
+    assert.deepEqual(await jsonOf(unsupported), { error: '诊断快照未装配' })
   })
 })
 
 test('api 普通异常 → 500 { error: "内部错误" }；堆栈/原始消息绝不泄给客户端；logger warn 落日志', async () => {
   await withServer({
     apiOverrides: {
-      getAudit: () => { throw new Error('state.json 读取失败: EACCES at /secret/path') },
+      getDiagnostics: () => { throw new Error('state.json 读取失败: EACCES at /secret/path') },
     },
   }, async (rig) => {
-    const response = await call(rig, '/api/audit')
+    const response = await call(rig, '/api/diagnostics')
     assert.equal(response.status, 500)
     const payload = await jsonOf(response)
     assert.deepEqual(payload, { error: '内部错误' })
@@ -479,7 +341,7 @@ test('api 普通异常 → 500 { error: "内部错误" }；堆栈/原始消息�
 
 test('verifyToken 抛异常按未授权处理（绝不冒泡崩请求）', async () => {
   await withServer({ verifyToken: () => { throw new Error('state 损坏') } }, async (rig) => {
-    const response = await call(rig, '/api/overview')
+    const response = await call(rig, '/api/diagnostics')
     assert.equal(response.status, 401)
     assert.deepEqual(await jsonOf(response), { error: '鉴权失败：缺少或错误的 Bearer token' })
   })
@@ -489,21 +351,12 @@ test('verifyToken 抛异常按未授权处理（绝不冒泡崩请求）', async
 
 test('并发：10 个并发请求（带 api 延迟）全部 200 且 body 各自正确', async () => {
   await withServer({ latencyMs: 8 }, async (rig) => {
-    const plan = [
-      ['/api/overview', 'overview'],
-      ['/api/bindings', 'getBindings'],
-      ['/api/sessions', 'getSessions'],
-      ['/api/channels', 'getChannels'],
-      ['/api/audit', 'getAudit'],
-    ]
-    const responses = await Promise.all(
-      Array.from({ length: 10 }, (_, i) => call(rig, plan[i % plan.length][0])),
-    )
+    const responses = await Promise.all(Array.from({ length: 10 }, () => call(rig, '/api/diagnostics')))
     assert.equal(responses.length, 10)
     for (let i = 0; i < responses.length; i += 1) {
       assert.equal(responses[i].status, 200, `第 ${i} 个请求`)
       const payload = await jsonOf(responses[i])
-      assert.equal(payload.via, plan[i % plan.length][1], `第 ${i} 个请求 body 指向正确的 api 方法`)
+      assert.equal(payload.via, 'getDiagnostics')
     }
     assert.equal(rig.calls.length, 10)
   })
@@ -529,27 +382,38 @@ test('XSS 回归：用户可控内容只进 JSON 体（application/json），绝
 })
 
 test('XSS 回归：UI 渲染层 esc() 行为与覆盖面（innerHTML 拼接必须全部过转义）', () => {
-  // 1) 行为断言：从 ui 串提取 esc() 求值，注入 payload 必须被五类字符转义
   const match = ADMIN_UI_HTML.match(/function esc\(v\) \{[\s\S]*?\n\}/)
   assert.ok(match !== null, 'ui 内必须存在 esc() 转义函数')
   const esc = new Function(`return (${match[0]})`)()
   assert.equal(esc('<img src=x onerror=alert(1)>'), '&lt;img src=x onerror=alert(1)&gt;')
   assert.equal(esc('"\'&'), '&quot;&#39;&amp;')
-  // 2) 覆盖面断言：所有 innerHTML 拼接点（渲染函数族）保持 esc() 使用密度——
-  //    未来重构若新增裸拼接（丢 esc），该下限断言立即红
   const uses = (ADMIN_UI_HTML.match(/esc\(/g) ?? []).length
   assert.ok(uses >= 30, `esc() 调用密度不足（实际 ${uses} 次，下限 30）——检查新增渲染路径是否漏转义`)
-  // 3) 关键渲染点抽查：审计行/事件行/卡片/会话行的动态插值均以 esc( 包裹
   for (const probe of ['esc(fmtTime(r.time))', 'esc(row.title)', "esc(c.type)", 'esc(id)']) {
     assert.ok(ADMIN_UI_HTML.includes(probe), `渲染层必须包含 ${probe}`)
   }
 })
 
-// ---------------------------------------------------------------- v0.7 成员/配对码路由（鉴权 + 参数透传 + 错误映射）
+// ---------------------------------------------------------------- S403：旧日常路由必须不存在
 
-test('v0.7 路由：成员与配对码七条路由全挂载，鉴权先行（无 token 401，错误 token 401）', async () => {
+test('S403：旧日常管理路由（读+写）已从 Recovery 后端删除（能力不存在）', async () => {
   await withServer({}, async (rig) => {
-    const routes = [
+    const removed = [
+      { method: 'GET', path: '/api/overview' },
+      { method: 'GET', path: '/api/bindings' },
+      { method: 'PUT', path: '/api/bindings', body: { agents: {} } },
+      { method: 'GET', path: '/api/sessions' },
+      { method: 'PATCH', path: '/api/sessions/sess-1', body: {} },
+      { method: 'PATCH', path: '/api/sessions/sess-1/control', body: {} },
+      { method: 'GET', path: '/api/channels' },
+      { method: 'PUT', path: '/api/channels/telegram', body: { config: {} } },
+      { method: 'POST', path: '/api/channels/telegram/test' },
+      { method: 'PUT', path: '/api/channels/outbound/telegram', body: { config: {} } },
+      { method: 'DELETE', path: '/api/channels/outbound/telegram' },
+      { method: 'POST', path: '/api/channels/outbound/telegram/test' },
+      { method: 'PUT', path: '/api/channels/inbound/feishu', body: { config: {} } },
+      { method: 'DELETE', path: '/api/channels/inbound/feishu' },
+      { method: 'POST', path: '/api/scan/qq' },
       { method: 'GET', path: '/api/members' },
       { method: 'PUT', path: '/api/members/feishu%3Aou_1', body: { label: 'x' } },
       { method: 'DELETE', path: '/api/members/feishu%3Aou_1' },
@@ -557,68 +421,17 @@ test('v0.7 路由：成员与配对码七条路由全挂载，鉴权先行（无
       { method: 'POST', path: '/api/members/feishu%3Aou_1/dismiss' },
       { method: 'POST', path: '/api/pairing', body: { ttlMin: 10 } },
       { method: 'DELETE', path: '/api/pairing/abcd1234' },
+      { method: 'GET', path: '/api/questions' },
+      { method: 'POST', path: '/api/questions/q1/settle', body: {} },
+      { method: 'GET', path: '/api/audit' },
+      { method: 'GET', path: '/api/tasks' },
+      { method: 'GET', path: '/api/host' },
+      { method: 'GET', path: '/api/events' },
     ]
-    for (const route of routes) {
-      assert.equal((await call(rig, route.path, { method: route.method, body: route.body, token: null })).status, 401,
-        `${route.method} ${decodeURIComponent(route.path)} 无 token 必 401`)
-      assert.equal((await call(rig, route.path, { method: route.method, body: route.body, token: 'wrong' })).status, 401,
-        `${route.method} ${decodeURIComponent(route.path)} 错 token 必 401`)
-    }
-    // 正确 token：全部 200 且命中对应 api 方法
-    for (const route of routes) {
+    for (const route of removed) {
       const response = await call(rig, route.path, { method: route.method, body: route.body })
-      assert.equal(response.status, 200, `${route.method} ${decodeURIComponent(route.path)} 正确 token 应 200`)
+      assert.equal(response.status, 404, `${route.method} ${decodeURIComponent(route.path)} 必须 404（能力不存在）`)
     }
-    const names = rig.calls.map((entry) => entry.name)
-    assert.deepEqual(names.sort(), [
-      'confirmPendingMember', 'deleteMember', 'dismissPendingMember', 'getMembers',
-      'mintPairingCode', 'putMember', 'revokePairingCode',
-    ])
-  })
-})
-
-test('v0.7 路由：:key/:id 参数解码透传（URL 编码的复合键与配对码 id）', async () => {
-  await withServer({}, async (rig) => {
-    await call(rig, '/api/members/feishu%3Aou_user01', { method: 'PUT', body: { role: 'owner' } })
-    assert.deepEqual(rig.calls.at(-1).args, ['feishu:ou_user01', { role: 'owner' }], '复合键解码后透传')
-
-    await call(rig, '/api/pairing/abcd1234', { method: 'DELETE' })
-    assert.deepEqual(rig.calls.at(-1).args, ['abcd1234'])
-
-    await call(rig, '/api/pairing', { method: 'POST', body: { ttlMin: 30, label: '新成员' } })
-    assert.deepEqual(rig.calls.at(-1).args, [{ ttlMin: 30, label: '新成员' }], 'JSON body 解析后透传')
-  })
-})
-
-test('v0.7 路由：ApiError status 映射（422/404/501）与错误形状 { error }', async () => {
-  const statusOf = (status) => async (...args) => { throw apiError(status, `boom-${args.length}`) }
-  await withServer({ apiOverrides: {
-    putMember: statusOf(422),
-    deleteMember: statusOf(404),
-    mintPairingCode: statusOf(501),
-    confirmPendingMember: statusOf(409),
-  } }, async (rig) => {
-    const cases = [
-      { method: 'PUT', path: '/api/members/k', body: {}, expected: 422 },
-      { method: 'DELETE', path: '/api/members/k', expected: 404 },
-      { method: 'POST', path: '/api/pairing', body: {}, expected: 501 },
-      { method: 'POST', path: '/api/members/k/confirm', expected: 409 },
-    ]
-    for (const item of cases) {
-      const response = await call(rig, item.path, { method: item.method, body: item.body })
-      assert.equal(response.status, item.expected)
-      const body = await jsonOf(response)
-      assert.match(body.error, /^boom-/)
-    }
-  })
-})
-
-test('v0.7 路由：路径段数不匹配 404（/api/members/:key/confirm 后再多一段不命中任何路由）', async () => {
-  await withServer({}, async (rig) => {
-    assert.equal((await call(rig, '/api/members/a/b/c/d')).status, 404)
-    assert.equal((await call(rig, '/api/pairing/abc/extra')).status, 404)
-    assert.equal((await call(rig, '/api/members/feishu%3Aou_1/reject', { method: 'POST' })).status, 404,
-      '未知子动作 reject 不是路由')
-    assert.equal(rig.calls.length, 0, '未命中路由不触碰 api 层')
+    assert.equal(rig.calls.length, 0, '删除的旧路由绝不触达任何 api 方法')
   })
 })

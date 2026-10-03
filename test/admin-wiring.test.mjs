@@ -12,7 +12,6 @@ import { mkdtempSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createServer } from 'node:net'
-import { get } from 'node:http'
 
 import { apply, createStore } from '../src/index.mjs'
 
@@ -247,8 +246,8 @@ test('token 显式（YAML admin.token）：以其为准、哈希同步 state、s
       admin: { enabled: true, port, token: 'explicit-tok-1' },
     })
     assert.ok(await waitHttp(port))
-    assert.equal((await authGet(port, '/api/overview', 'explicit-tok-1')).status, 200)
-    assert.equal((await authGet(port, '/api/overview', 'wrong-tok')).status, 401)
+    assert.equal((await authGet(port, '/api/diagnostics', 'explicit-tok-1')).status, 200)
+    assert.equal((await authGet(port, '/api/diagnostics', 'wrong-tok')).status, 401)
     assert.equal(storeOf(dir).get('admin:token-hash'), sha256Hex('explicit-tok-1'), '哈希同步到 state')
     assert.ok(!readFileSync(join(dir, 'state.json'), 'utf8').includes('explicit-tok-1'), '明文绝不落盘')
     assert.ok(rig.infos.some((line) => /Web 管理台已就绪/.test(line)))
@@ -270,8 +269,8 @@ test('token 自动生成（首启）：打印一次、HTTP 可用、state 只存
     assert.ok(await waitHttp(port))
     const printed = rig.infos.map((line) => TOKEN_PRINT.exec(line)?.[1]).find((t) => t !== undefined)
     assert.ok(printed !== undefined, '首启必须打印 token（仅此一次）')
-    assert.equal((await authGet(port, '/api/overview', printed)).status, 200)
-    assert.equal((await authGet(port, '/api/overview', 'guessed')).status, 401)
+    assert.equal((await authGet(port, '/api/diagnostics', printed)).status, 200)
+    assert.equal((await authGet(port, '/api/diagnostics', 'guessed')).status, 401)
     const hash = storeOf(dir).get('admin:token-hash')
     assert.match(hash, /^[0-9a-f]{64}$/)
     assert.equal(hash, sha256Hex(printed), '哈希与打印的 token 对应')
@@ -293,7 +292,7 @@ test('token 沿用既有哈希（第二次启动）：不重发明文，首启 t
     })
     assert.ok(await waitHttp(port))
     assert.ok(rig.infos.every((line) => !TOKEN_PRINT.test(line)), '既有哈希时不得重发 token 明文')
-    assert.equal((await authGet(port, '/api/overview', 'kept-secret-token')).status, 200)
+    assert.equal((await authGet(port, '/api/diagnostics', 'kept-secret-token')).status, 200)
     assert.equal(storeOf(dir).get('admin:token-hash'), sha256Hex('kept-secret-token'), '哈希原样不重写')
   } finally {
     await rig.cleanup()
@@ -434,9 +433,9 @@ test('stop() 进 disposers：cleanup 后端口不再监听（连接拒绝）', a
       admin: { enabled: true, port, token: 'close-tok' },
     })
     assert.ok(await waitHttp(port))
-    assert.equal((await authGet(port, '/api/overview', 'close-tok')).status, 200)
+    assert.equal((await authGet(port, '/api/diagnostics', 'close-tok')).status, 200)
     await rig.cleanup()
-    await assert.rejects(() => fetch(`http://127.0.0.1:${port}/api/overview`, { headers: { Authorization: 'Bearer close-tok' } }))
+    await assert.rejects(() => fetch(`http://127.0.0.1:${port}/api/diagnostics`, { headers: { Authorization: 'Bearer close-tok' } }))
   } finally {
     await rig.cleanup()
   }
@@ -444,7 +443,7 @@ test('stop() 进 disposers：cleanup 后端口不再监听（连接拒绝）', a
 
 // ———————— HTTP 集成冒烟 ————————
 
-test('HTTP 集成：GET / 返回内嵌 UI，/api/channels 行带 fields/editable（含脱敏 config）', async () => {
+test('HTTP 集成：GET / 返回内嵌 UI；Recovery-only 下 /api/channels 等日常写/读路由已不存在', async () => {
   const dir = tempDir({ 'bark:account': { key: 'k' } })
   const rig = bootCtx()
   const port = await freePort()
@@ -460,14 +459,11 @@ test('HTTP 集成：GET / 返回内嵌 UI，/api/channels 行带 fields/editable
     assert.match(page.headers.get('content-type') ?? '', /text\/html/)
     assert.ok((await page.text()).includes('dsh-notifier 管理台'))
 
-    const channels = await (await authGet(port, '/api/channels', 'ui-tok')).json()
-    const bark = channels.find((row) => row.type === 'bark' && row.direction === 'outbound')
-    // 合并视图：YAML/出站 resolve 产物（endpoint/timeoutMs）⊕ store 账号（key）——均脱敏
-    assert.deepEqual(bark.config, { endpoint: '***', key: '***', timeoutMs: 5000 })
-    assert.ok(Object.keys(bark.fields).length > 0, 'fields 字段表随行返回（零 YAML 建单数据源）')
-    const feishuOut = channels.find((row) => row.type === 'feishu' && row.direction === 'outbound')
-    // 零配置首访：新出站键域 admin:channel:feishu:outbound 使双域出站可网页编辑（旧只读契约废止）
-    assert.equal(feishuOut.editable, true, '双域出站可经新出站键网页配置')
+    // Stage 4（S403）：Advanced Console 后端只剩 Recovery 只读面——旧日常路由必须 404（能力不存在）。
+    assert.equal((await authGet(port, '/api/channels', 'ui-tok')).status, 404, 'channel CRUD 读路由已删除')
+    assert.equal((await authGet(port, '/api/members', 'ui-tok')).status, 404, 'member 读路由已删除')
+    assert.equal((await authGet(port, '/api/overview', 'ui-tok')).status, 404, 'surface overview 已删除')
+    assert.equal((await authGet(port, '/api/diagnostics', 'ui-tok')).status, 200, '唯一保留的只读诊断路由可用')
   } finally {
     await rig.cleanup()
   }
@@ -586,7 +582,7 @@ test('§5.5 wxpusher 凭证链尾：admin 开 + store appToken（无 YAML）→ 
   }
 })
 
-test('v0.8.7 B1 引导码文件终态删除：管理台撤销 bootstrap 码 → onAudit 钩子删掉码文件（A2）', async () => {
+test('Stage 4（S403）Recovery-only：引导码撤销路由已从管理台删除（404），不再有 pairing 写入口', async () => {
   const dir = tempDir({ 'wxpusher:account': { appToken: 'AT_revoke' } })
   const rig = bootCtx()
   const port = await freePort()
@@ -598,18 +594,14 @@ test('v0.8.7 B1 引导码文件终态删除：管理台撤销 bootstrap 码 → 
     })
     assert.ok(await waitHttp(port), '前置：管理台就绪')
     const codePath = join(dir, 'bootstrap-paircode.txt')
-    assert.ok(existsSync(codePath), '前置：引导态码文件存在')
-    // 经真 HTTP 面拿在铸 bootstrap 码 id（脱敏视图，无码面），再撤销
-    const members = await (await authGet(port, '/api/members', 'revoke-tok')).json()
-    const bootstrapCode = members.pairingCodes.find((entry) => entry.origin === 'bootstrap')
-    assert.ok(bootstrapCode !== undefined, `管理台应看到在铸引导码（实际：${JSON.stringify(members.pairingCodes)}）`)
-    assert.ok(!JSON.stringify(members).includes(readFileSync(codePath, 'utf8').trim()),
-      '管理台 API 响应绝不含码面（只有哈希前缀 id）')
-    const revoked = await fetch(`http://127.0.0.1:${port}/api/pairing/${bootstrapCode.id}`, {
+    assert.ok(existsSync(codePath), '前置：引导态码文件存在（码面交付契约不变）')
+    // 引导码终态删除的 onAudit 契约仍在 index 装配层；撤销能力已移出 Recovery 面 →
+    // 旧 members/pairing 路由必须 404（能力不存在，不是 UI 不可见）。
+    assert.equal((await authGet(port, '/api/members', 'revoke-tok')).status, 404, 'member 读路由已删除')
+    assert.equal(await fetch(`http://127.0.0.1:${port}/api/pairing/x`, {
       method: 'DELETE', headers: { Authorization: 'Bearer revoke-tok' },
-    })
-    assert.equal(revoked.status, 200, '撤销应成功')
-    assert.ok(!existsSync(codePath), '撤销后码文件必须被 onAudit 钩子删除（不留码面残渣）')
+    }).then((r) => r.status), 404, 'pairing 撤销写路由已删除')
+    assert.ok(existsSync(codePath), 'Recovery 面已无撤销入口，码文件不被该路径改动')
   } finally {
     await rig.cleanup()
   }
@@ -674,65 +666,7 @@ test('v0.7 密径持久化：显式 webhookPath 配置仍是用户意志（不�
   }
 })
 
-// ———————— v0.4.0 SSE 事件流接线 ————————
-
-test('v0.4.0 SSE 接线：notify 工具广播 → onSend → hub → GET /api/events 实时收到', async () => {
-  const dir = tempDir()
-  const rig = bootCtx()
-  const port = await freePort()
-  try {
-    apply(rig.ctx, {
-      channels: [{ type: 'webhook', url: 'http://127.0.0.1:1/hook' }], // 送达必失败——onSend 照发（failed 结果也落事件）
-      inbound: { stateDir: dir },
-      admin: { enabled: true, port, token: 'sse-tok' },
-    })
-    assert.ok(await waitHttp(port))
-    // 真 HTTP 客户端打开事件流，累积文本（fetch 一次性读不适合流式断言）
-    let text = ''
-    let resolveTarget = null
-    let resolveFn = null
-    const req = get({
-      host: '127.0.0.1', port, path: '/api/events',
-      headers: { authorization: 'Bearer sse-tok' },
-    }, (res) => {
-      res.setEncoding('utf8')
-      res.on('data', (chunk) => {
-        text += chunk
-        if (resolveTarget !== null && text.includes(resolveTarget)) {
-          const fn = resolveFn
-          resolveTarget = null
-          resolveFn = null
-          fn()
-        }
-      })
-    })
-    req.on('error', () => { /* abort 属预期 */ })
-    const until = (target) => new Promise((resolve, reject) => {
-      if (text.includes(target)) return resolve()
-      resolveTarget = target
-      resolveFn = resolve
-      setTimeout(() => {
-        if (resolveTarget === target) {
-          resolveTarget = null
-          resolveFn = null
-          reject(new Error(`SSE 等待超时: ${target}（已收到: ${JSON.stringify(text)}）`))
-        }
-      }, 4000)
-    })
-    try {
-      await until(': connected')
-      // 触发一次真实广播：notify 工具无 channel = notifyAll → onSend → hub.publish
-      const notifyTool = rig.defs.find((def) => def.name === 'notify')
-      assert.ok(notifyTool !== undefined, 'notify 工具已注册')
-      await notifyTool.execute({ message: 'SSE 接线验证' })
-      await until('SSE 接线验证')
-      assert.ok(text.includes('"replay":false'), '实时事件（非缓冲重放）')
-      assert.ok(text.includes('"seq":1'), '事件带序号')
-      assert.ok(text.includes('webhook'), '送达结果随事件透出')
-    } finally {
-      req.destroy()
-    }
-  } finally {
-    await rig.cleanup()
-  }
-})
+// ———————— v0.4.0 SSE 事件流接线 ————
+// Stage 4（S403）：Recovery-only 后端已删除 GET /api/events（SSE）。
+// 「notify → onSend → hub.publish → 订阅者收到」的事件总线契约仍由 admin-events.test.mjs
+// 在函数层覆盖；这里不再有 HTTP 事件流路由可断言。

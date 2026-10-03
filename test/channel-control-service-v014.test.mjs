@@ -51,10 +51,15 @@ test('S01: Native 与 Admin 共用同一 ChannelControlService，写入同一 ca
   })
   const admin = createAdminApi({ store, outboundConfig, channelControl, channelsEnabled: () => source.types() })
 
-  // Native 先写，Admin 后写：两者都落在同一个 canonical 键上，没有第二套事实。
-  const native = await surface.call('channels.save', { type: 'bark', direction: 'outbound', patch: { key: 'from-native' } })
-  assert.equal(native.ok, true)
-  assert.equal(native.value.saved, true)
+  // Stage 4（S402）：daily 通话面已无 channels.save——即便注入了 channelControl 也必须被拒。
+  const legacy = await surface.call('channels.save', { type: 'bark', direction: 'outbound', patch: { key: 'from-surface' } })
+  assert.equal(legacy.ok, false)
+  assert.equal(legacy.error.code, 'dsh-notifier/not-supported')
+  assert.equal(store.get('channel:bark:outbound'), undefined, '被拒的写入绝不落盘')
+
+  // Native 权威现在是 native.saveChannel → channelControl；Admin 经同一 service。二者写同一 canonical 键。
+  const native = channelControl.saveOutbound('bark', { key: 'from-native' })
+  assert.equal(native.saved, true)
   assert.deepEqual(store.get('channel:bark:outbound'), { key: 'from-native' })
   assert.equal(store.get('admin:channel:bark:outbound'), undefined, 'canonical 写入绝不双写 legacy 键')
 
@@ -63,9 +68,9 @@ test('S01: Native 与 Admin 共用同一 ChannelControlService，写入同一 ca
   assert.deepEqual(store.get('channel:bark:outbound'), { key: 'from-admin' })
   assert.deepEqual(outboundConfig.raw('bark'), { key: 'from-admin' })
 
-  // 交替写入不产生 stale 覆盖：再回写 Native 仍是单键字段级合并（barkUrl 与 key 并存）。
-  const again = await surface.call('channels.save', { type: 'bark', direction: 'outbound', patch: { barkUrl: 'https://self.example' } })
-  assert.equal(again.ok, true)
+  // 交替写入不产生 stale 覆盖：再回写仍是单键字段级合并（barkUrl 与 key 并存）。
+  const again = channelControl.saveOutbound('bark', { barkUrl: 'https://self.example' })
+  assert.equal(again.saved, true)
   assert.deepEqual(store.get('channel:bark:outbound'), { key: 'from-admin', barkUrl: 'https://self.example' })
   revision.dispose()
 })

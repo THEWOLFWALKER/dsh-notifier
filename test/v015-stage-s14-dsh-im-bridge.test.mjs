@@ -204,12 +204,8 @@ function surfaceRig({ dshIm }) {
   const activity = { record: () => {}, list: () => [] }
   const service = createControlSurfaceService({
     revision,
-    channels: { list: () => [], get: () => null },
-    outboundConfig: { describe: () => ({ configured: false }) },
-    tasks: { list: () => [] },
-    questions: { list: () => [], settle: () => ({ ok: true }) },
-    members: null,
-    health: { recordTest: () => {} },
+    // Stage 4：daily 应用入口 = Native 面；此处只需一个存根证明「桥缺失不影响核心路径」。
+    native: { call: async (method) => ({ ok: true, value: { method } }) },
     activity,
     dshIm,
   })
@@ -246,12 +242,13 @@ test('wiring: no dsh-im host service → status reports unavailable, not an empt
   assert.equal(bots.error.code, 'dsh-notifier/host-unavailable')
 })
 
-test('D01: a missing bridge/service never breaks the core notifier path (bridge lives beside channels)', async () => {
+test('D01: a missing bridge/service never breaks the core notifier path (bridge lives beside the native surface)', async () => {
   // The bridge is a sibling of the existing surfaces; its absence only degrades the
-  // dsh-im endpoints, not channels/tasks/questions.
+  // dsh-im endpoints, not the native daily surface or the local remote-URL validation.
   const surface = surfaceRig({ dshIm: null })
-  const home = await surface.call('surface.home')
-  assert.equal(home.ok, true)
-  const channels = await surface.call('channels.list')
-  assert.equal(channels.ok, true)
+  const native = await surface.call('native.snapshot', {})
+  assert.equal(native.ok, true)
+  assert.equal(native.value.method, 'native.snapshot')
+  const remote = await surface.call('remote.validate', { url: 'https://example.com/' })
+  assert.equal(remote.ok, true)
 })

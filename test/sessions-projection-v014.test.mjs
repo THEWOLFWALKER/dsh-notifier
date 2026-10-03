@@ -103,7 +103,7 @@ test('S08: 服务缺失 → 空表 / not-supported（fail-closed，不伪造会�
   assert.throws(() => projection.patch({ id: 's1', diff: { quiet: true } }), (error) => error.code === 'not-supported')
 })
 
-test('S08: control-surface sessions.* 经投影记账 revision/activity；未装配 → bad-request', async () => {
+test('Stage 4（S402）：legacy sessions.* 已从 daily control-surface 删除（能力不存在）', async () => {
   const { store, service } = rig({
     state: { 'route:sessions': { s1: { workspace: 'ws-a', lastActiveAt: 1 } } },
     active: ['s1'],
@@ -130,32 +130,16 @@ test('S08: control-surface sessions.* 经投影记账 revision/activity；未装
   const surface = build(projection)
   const before = revision.current().revision
 
-  const list = await surface.call('sessions.list', {})
-  assert.equal(list.ok, true)
-  assert.equal(list.value.sessions.length, 1)
-  assert.equal(list.value.canPatch, true)
-
-  const patched = await surface.call('sessions.patch', { id: 's1', diff: { quiet: true } })
-  assert.equal(patched.ok, true)
-  assert.deepEqual(patched.value, { id: 's1', outbound: { quiet: true } })
-  assert.deepEqual(store.get('route:sessions').s1.outbound, { quiet: true })
-
-  assert.ok(revision.current().revision > before, '会话写入推进 revision')
-  assert.ok(activity.list().some((item) => item.title.en === 'Session notification override saved'))
-
-  // 未知会话经 RPC 映射为 not-found，且不回写成功
-  const missing = await surface.call('sessions.patch', { id: 'missing', diff: { quiet: true } })
-  assert.equal(missing.ok, false)
-  assert.equal(missing.error.code, 'dsh-notifier/not-found')
-
-  // 非法 diff → bad-request
-  const bad = await surface.call('sessions.patch', { id: 's1', diff: { channels: ['nope'] } })
-  assert.equal(bad.ok, false)
-  assert.equal(bad.error.code, 'dsh-notifier/bad-request')
-
-  // 未装配 sessions 投影 → 未知方法（bad-request），绝不静默成功
-  const bare = build(undefined)
-  const unknown = await bare.call('sessions.list', {})
-  assert.equal(unknown.ok, false)
-  assert.equal(unknown.error.code, 'dsh-notifier/bad-request')
+  // 即便装配了 sessions 投影，daily 通话面也不再暴露 sessions.*（白名单外 → not-supported）。
+  for (const [method, payload] of [
+    ['sessions.list', {}],
+    ['sessions.patch', { id: 's1', diff: { quiet: true } }],
+  ]) {
+    const result = await surface.call(method, payload)
+    assert.equal(result.ok, false, `${method} 必须被拒`)
+    assert.equal(result.error.code, 'dsh-notifier/not-supported', `${method} 是能力不存在`)
+  }
+  assert.equal(store.get('route:sessions').s1.outbound, undefined, '被拒的写入绝不落盘')
+  assert.equal(revision.current().revision, before, '拒绝的调用绝不推进 revision')
+  assert.deepEqual(activity.list(), [], '拒绝的调用绝不记 activity')
 })

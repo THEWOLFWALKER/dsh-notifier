@@ -103,7 +103,7 @@ test('S09: 真实落盘失败 → storage-failed（绝不假成功）；服务�
   assert.throws(() => bare.put({ agents: { 'ws-a': { quiet: true } } }), (error) => error.code === 'not-supported')
 })
 
-test('S09: control-surface bindings.* 经投影记账 revision/activity；未装配 → bad-request', async () => {
+test('Stage 4（S402）：legacy bindings.* 已从 daily control-surface 删除（能力不存在，非 bad-request 兜底）', async () => {
   const { service } = rig()
   const projection = createBindingsProjection({ service })
   const revision = createSurfaceRevision()
@@ -123,26 +123,14 @@ test('S09: control-surface bindings.* 经投影记账 revision/activity；未装
     adminLocation: () => null,
   })
 
+  // 即便装配了 bindings 投影，daily 通话面也不再暴露 bindings.*（白名单外 → not-supported）。
   const surface = build(projection)
   const before = revision.current().revision
-
-  const got = await surface.call('bindings.get', {})
-  assert.equal(got.ok, true)
-  assert.deepEqual(got.value.agents, {})
-  assert.equal(got.value.canEdit, true)
-
-  const put = await surface.call('bindings.put', { agents: { 'ws-a': { channels: ['bark'] } } })
-  assert.equal(put.ok, true)
-  assert.deepEqual(put.value.agents, { 'ws-a': { channels: ['bark'] } })
-  assert.ok(revision.current().revision > before, '绑定写入推进 revision')
-  assert.ok(activity.list().some((item) => item.title.en === 'Routing bindings replaced'))
-
-  const bad = await surface.call('bindings.put', { agents: { 'ws-a': { channels: ['nope'] } } })
-  assert.equal(bad.ok, false)
-  assert.equal(bad.error.code, 'dsh-notifier/bad-request')
-
-  const bare = build(undefined)
-  const unknown = await bare.call('bindings.get', {})
-  assert.equal(unknown.ok, false)
-  assert.equal(unknown.error.code, 'dsh-notifier/bad-request')
+  for (const method of ['bindings.get', 'bindings.put']) {
+    const result = await surface.call(method, { agents: { 'ws-a': { channels: ['bark'] } } })
+    assert.equal(result.ok, false, `${method} 必须被拒`)
+    assert.equal(result.error.code, 'dsh-notifier/not-supported', `${method} 是能力不存在，而非参数错误`)
+  }
+  assert.equal(revision.current().revision, before, '拒绝的调用绝不推进 revision')
+  assert.deepEqual(activity.list(), [], '拒绝的调用绝不记 activity')
 })

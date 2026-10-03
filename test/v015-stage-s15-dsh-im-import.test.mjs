@@ -223,24 +223,20 @@ function surfaceRig({ dshImImport }) {
   const activity = { record: () => {}, list: () => [] }
   const service = createControlSurfaceService({
     revision,
-    channels: { list: () => [], get: () => null },
-    outboundConfig: { describe: () => ({ configured: false }) },
-    tasks: { list: () => [] },
-    questions: { list: () => [], settle: () => ({ ok: true }) },
-    members: null,
-    health: { recordTest: () => {} },
+    // Stage 4：daily 应用入口 = Native 面；存根仅证明「导入器缺失不影响核心路径」。
+    native: { call: async (method) => ({ ok: true, value: { method } }) },
     activity,
     dshImImport,
   })
   return service
 }
 
-test('wiring: dshIm.import.preview via the surface; unassembled importer fails closed', async () => {
+test('wiring: dshIm.import.* 已从 daily 控制面删除（Stage 4 白名单），即便装配了导入器也不可达', async () => {
   const r = rig()
   const surface = surfaceRig({ dshImImport: r.importer })
   const res = await surface.call('dshIm.import.preview', { text: doc('telegram', { bots: [{ name: 'TG', botToken: 't', chatId: 'c' }] }) })
-  assert.equal(res.ok, true)
-  assert.equal(res.value.dshIm.format, 'telegram')
+  assert.equal(res.ok, false, 'legacy dshIm.import.* 不再可达')
+  assert.equal(res.error.code, 'dsh-notifier/not-supported')
 
   const unassembled = surfaceRig({ dshImImport: null })
   const missing = await unassembled.call('dshIm.import.preview', { text: doc('telegram', { bots: [] }) })
@@ -250,6 +246,6 @@ test('wiring: dshIm.import.preview via the surface; unassembled importer fails c
 
 test('wiring: a missing importer never breaks the core notifier path', async () => {
   const surface = surfaceRig({ dshImImport: null })
-  assert.equal((await surface.call('surface.home')).ok, true)
-  assert.equal((await surface.call('channels.list')).ok, true)
+  assert.equal((await surface.call('native.snapshot', {})).ok, true)
+  assert.equal((await surface.call('remote.validate', { url: 'https://example.com/' })).ok, true)
 })

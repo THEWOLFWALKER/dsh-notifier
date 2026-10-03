@@ -12,9 +12,9 @@ import assert from 'node:assert/strict'
 import { request as httpRequest } from 'node:http'
 import { createAdminServer } from '../src/admin/server.mjs'
 
-/** 最小 api 桩：overview 可用即可（本套件只关心闸与状态码，不测 api 语义）。 */
+/** 最小 api 桩：Recovery 只读 diagnostics 可用即可（本套件只关心闸与状态码，不测 api 语义）。 */
 function makeApi() {
-  return { overview: async () => ({ ok: true }) }
+  return { getDiagnostics: async () => ({ ok: true }) }
 }
 
 /** 起一台随机端口回环 admin server；fn 结束后 finally 里必 stop。 */
@@ -72,9 +72,9 @@ function rawCall(rig, path, { method = 'GET', token = 'secret', origin, host } =
 
 test('S-06 回环默认白名单：无 Origin（curl 形态）+ 正确 Host → 闸放行，鉴权照常', async () => {
   await withServer({}, async (rig) => {
-    const ok = await call(rig, '/api/overview')
+    const ok = await call(rig, '/api/diagnostics')
     assert.equal(ok.status, 200, '无 Origin + Host=127.0.0.1:port 放行')
-    const noToken = await call(rig, '/api/overview', { token: null })
+    const noToken = await call(rig, '/api/diagnostics', { token: null })
     assert.equal(noToken.status, 401, '闸放行后鉴权照常兜底')
   })
 })
@@ -87,7 +87,7 @@ test('S-06 回环 Origin 三形态（127.0.0.1/localhost/[::1]，http 与 https�
       `https://127.0.0.1:${rig.port}`, // 本机反代 TLS 终止是合法形态
       `https://localhost:${rig.port}`,
     ]) {
-      const response = await call(rig, '/api/overview', { origin })
+      const response = await call(rig, '/api/diagnostics', { origin })
       assert.equal(response.status, 200, `Origin ${origin} 应放行`)
     }
   })
@@ -96,26 +96,26 @@ test('S-06 回环 Origin 三形态（127.0.0.1/localhost/[::1]，http 与 https�
 test('S-06 跨站 Origin → 403；且先于鉴权（无 token 也是 403 不是 401）', async () => {
   await withServer({}, async (rig) => {
     for (const origin of ['https://evil.example.com', 'http://127.0.0.1.evil.example.com', 'null']) {
-      const response = await call(rig, '/api/overview', { origin })
+      const response = await call(rig, '/api/diagnostics', { origin })
       assert.equal(response.status, 403, `Origin ${origin} 应被闸拒绝`)
       const body = await response.json()
       assert.match(body.error, /Origin\/Host/)
     }
-    const unauth = await call(rig, '/api/overview', { origin: 'https://evil.example.com', token: null })
+    const unauth = await call(rig, '/api/diagnostics', { origin: 'https://evil.example.com', token: null })
     assert.equal(unauth.status, 403, '闸先于鉴权：403 优先于 401')
   })
 })
 
 test('S-06 端口不匹配的 Origin（127.0.0.1:其它端口）→ 403', async () => {
   await withServer({}, async (rig) => {
-    const response = await call(rig, '/api/overview', { origin: `http://127.0.0.1:${rig.port + 1}` })
+    const response = await call(rig, '/api/diagnostics', { origin: `http://127.0.0.1:${rig.port + 1}` })
     assert.equal(response.status, 403, '回环 Origin 必须带实际监听端口（或无端口形态）')
   })
 })
 
 test('S-06 Host 白名单：跨站 Host → 403（DNS rebinding 面）；无 Origin 时 Host 闸单独生效', async () => {
   await withServer({}, async (rig) => {
-    const response = await rawCall(rig, '/api/overview', { host: 'attacker.example.com' })
+    const response = await rawCall(rig, '/api/diagnostics', { host: 'attacker.example.com' })
     assert.equal(response.status, 403, '伪造 Host（rebinding 载荷）拒绝')
     assert.match(response.body, /Origin\/Host/)
     assert.ok(rig.lines.some((line) => line.includes('闸拒绝') && line.includes('host')), '拒绝原因进 warn 日志')
@@ -126,11 +126,11 @@ test('S-06 allowedOrigins/allowedHosts 显式扩展：公网反代形态放行�
   await withServer(
     { allowedOrigins: ['https://admin.example.com'], allowedHosts: ['admin.example.com'] },
     async (rig) => {
-      const ok = await rawCall(rig, '/api/overview', { origin: 'https://admin.example.com', host: 'admin.example.com' })
+      const ok = await rawCall(rig, '/api/diagnostics', { origin: 'https://admin.example.com', host: 'admin.example.com' })
       assert.equal(ok.status, 200, '显式登记的反代 Origin/Host 放行')
-      const stillEvil = await rawCall(rig, '/api/overview', { origin: 'https://evil.example.com', host: 'admin.example.com' })
+      const stillEvil = await rawCall(rig, '/api/diagnostics', { origin: 'https://evil.example.com', host: 'admin.example.com' })
       assert.equal(stillEvil.status, 403, '未登记的跨站 Origin 仍拒')
-      const otherHost = await rawCall(rig, '/api/overview', { origin: 'https://admin.example.com', host: 'other.example.net' })
+      const otherHost = await rawCall(rig, '/api/diagnostics', { origin: 'https://admin.example.com', host: 'other.example.net' })
       assert.equal(otherHost.status, 403, '未登记的 Host 仍拒')
     },
   )

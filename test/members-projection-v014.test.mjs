@@ -15,9 +15,6 @@ import { createIdentity } from '../src/inbound/identity.mjs'
 import { createPairing } from '../src/inbound/pairing.mjs'
 import { createStore } from '../src/inbound/store.mjs'
 import { createControlSurfaceService } from '../src/control-surface/service.mjs'
-import { createSurfaceRevision } from '../src/control-surface/revision.mjs'
-import { createSurfaceActivity } from '../src/control-surface/activity.mjs'
-import { createSurfaceHealth } from '../src/control-surface/health.mjs'
 
 const rig = ({ withPairing = false } = {}) => {
   const dir = mkdtempSync(join(tmpdir(), 'dsh-v014-members-projection-'))
@@ -74,59 +71,18 @@ test('S06: 服务缺失 → 空表 / not-supported（fail-closed，不伪造成�
   assert.throws(() => projection.remove({ key: 'feishu:ou_owner' }), (error) => error.code === 'not-supported')
 })
 
-test('S06: control-surface members.* 经投影记账 revision/activity；未装配 → bad-request', async () => {
-  const { service } = rig()
+test('S402: legacy members.* 已从 daily RPC 删除（能力不存在，不是 UI 不可见）', async () => {
+  const { service, projection } = rig()
   service.addMember({ channel: 'feishu', userId: 'ou_owner' })
-  service.addMember({ channel: 'qq', userId: 'qqmember01' })
-  const projection = createMembersProjection({ service })
-  const revision = createSurfaceRevision()
-  const activity = createSurfaceActivity()
-  const health = createSurfaceHealth()
+  const surface = createControlSurfaceService({ native: { call: async () => ({ ok: true, value: {} }) }, members: projection })
 
-  const build = (members) => createControlSurfaceService({
-    revision,
-    channels: { list: () => [], get: () => null },
-    outboundConfig: {},
-    tasks: { list: () => [] },
-    questions: { list: () => [], settle: () => ({ settled: false }) },
-    ...(members === undefined ? {} : { members }),
-    activity,
-    health,
-    launchTickets: { mint: () => ({ ticket: 'x', expiresAt: 1 }) },
-    adminLocation: () => null,
-  })
-
-  const surface = build(projection)
-  const before = revision.current().revision
-
-  const list = await surface.call('members.list', {})
-  assert.equal(list.ok, true)
-  assert.equal(list.value.members.length, 2)
-  assert.equal(list.value.canUpdate, true)
-  assert.equal(list.value.canRemove, true)
-
-  const updated = await surface.call('members.update', { key: 'qq:qqmember01', role: 'owner' })
-  assert.equal(updated.ok, true)
-  assert.deepEqual(updated.value, { key: 'qq:qqmember01', saved: true })
-
-  const removed = await surface.call('members.remove', { key: 'feishu:ou_owner' })
-  assert.equal(removed.ok, true)
-  assert.deepEqual(removed.value, { key: 'feishu:ou_owner', deleted: true })
-
-  assert.ok(revision.current().revision > before, '成员写入推进 revision')
-  assert.ok(activity.list().some((item) => item.title.en === 'Member updated'))
-  assert.ok(activity.list().some((item) => item.title.en === 'Member removed'))
-
-  // 末位守卫经 RPC 映射为 conflict，且不回写成功
-  const lastOwner = await surface.call('members.update', { key: 'qq:qqmember01', role: 'member' })
-  assert.equal(lastOwner.ok, false)
-  assert.equal(lastOwner.error.code, 'dsh-notifier/conflict')
-
-  // 未装配 members 投影 → 未知方法（bad-request），绝不静默成功
-  const bare = build(undefined)
-  const unknown = await bare.call('members.list', {})
-  assert.equal(unknown.ok, false)
-  assert.equal(unknown.error.code, 'dsh-notifier/bad-request')
+  for (const method of ['members.list', 'members.pending', 'members.update', 'members.remove', 'members.approve', 'members.dismiss']) {
+    const result = await surface.call(method, { key: 'feishu:ou_owner', role: 'owner' })
+    assert.equal(result.ok, false, `${method} 必须被拒绝`)
+    assert.equal(result.error.code, 'dsh-notifier/not-supported', `${method} 应返回 not-supported`)
+  }
+  // 拒绝路径零副作用：成员仍在
+  assert.equal(projection.list().length, 1)
 })
 
 // ————————————————————————— v0.14 S07：待确认身份 + 配对码 —————————————————————————
@@ -196,56 +152,14 @@ test('S07: 配对层未装配 → 空列表 / not-supported（fail-closed）', (
   assert.throws(() => projection.revokeCode({ id: 'x' }), (error) => error.code === 'not-supported')
 })
 
-test('S07: control-surface pending/pairing.* 经投影记账 revision/activity', async () => {
-  const { service } = rig({ withPairing: true })
-  service.addPending({ channel: 'qq', userId: 'u9' })
-  const projection = createMembersProjection({ service })
-  const revision = createSurfaceRevision()
-  const activity = createSurfaceActivity()
-  const health = createSurfaceHealth()
+test('S402: legacy pairing.* 已从 daily RPC 删除（能力不存在）', async () => {
+  const { projection } = rig({ withPairing: true })
+  const surface = createControlSurfaceService({ native: { call: async () => ({ ok: true, value: {} }) }, members: projection })
 
-  const surface = createControlSurfaceService({
-    revision,
-    channels: { list: () => [], get: () => null },
-    outboundConfig: {},
-    tasks: { list: () => [] },
-    questions: { list: () => [], settle: () => ({ settled: false }) },
-    members: projection,
-    activity,
-    health,
-    launchTickets: { mint: () => ({ ticket: 'x', expiresAt: 1 }) },
-    adminLocation: () => null,
-  })
-
-  const pending = await surface.call('members.pending', {})
-  assert.equal(pending.ok, true)
-  assert.equal(pending.value.pending.length, 1)
-  assert.equal(pending.value.canApprove, true)
-  assert.equal(pending.value.canDismiss, true)
-
-  const approved = await surface.call('members.approve', { key: 'qq:u9' })
-  assert.equal(approved.ok, true)
-  assert.deepEqual(approved.value, { key: 'qq:u9', saved: true })
-
-  const minted = await surface.call('pairing.mint', { label: 'laptop' })
-  assert.equal(minted.ok, true)
-  assert.equal(typeof minted.value.code, 'string')
-
-  const list = await surface.call('pairing.list', {})
-  assert.equal(list.value.codes.length, 1)
-  assert.equal(list.value.canMint, true)
-  assert.equal(list.value.canRevoke, true)
-
-  const revoked = await surface.call('pairing.revoke', { id: minted.value.id })
-  assert.equal(revoked.ok, true)
-  assert.deepEqual(revoked.value, { id: minted.value.id, revoked: true })
-
-  assert.ok(activity.list().some((item) => item.title.en === 'Pending identity approved'))
-  assert.ok(activity.list().some((item) => item.title.en === 'Pairing code minted'))
-  assert.ok(activity.list().some((item) => item.title.en === 'Pairing code revoked'))
-
-  // 非法 id → bad-request；未装配投影方法 → 未知方法绝不静默成功
-  const bad = await surface.call('pairing.revoke', { id: '' })
-  assert.equal(bad.ok, false)
-  assert.equal(bad.error.code, 'dsh-notifier/bad-request')
+  for (const method of ['pairing.list', 'pairing.mint', 'pairing.revoke']) {
+    const result = await surface.call(method, { label: 'laptop', id: 'x' })
+    assert.equal(result.ok, false, `${method} 必须被拒绝`)
+    assert.equal(result.error.code, 'dsh-notifier/not-supported', `${method} 应返回 not-supported`)
+  }
+  assert.equal(projection.listCodes().length, 0, '拒绝路径不得铸造任何配对码')
 })

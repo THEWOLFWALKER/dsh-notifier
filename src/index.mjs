@@ -940,53 +940,16 @@ export function apply(ctx, config = {}) {
     resolveUserId: (id) => nativeReadModel.memberKeyOf(id),
   })
   const nativeService = createNativeSurfaceService({ readModel: nativeReadModel, actions: nativeActions })
+  // Stage 4（S405）：daily surface 只装配 Native 窄动作表 + 显式 secondary allowlist 所需的依赖。
+  // 旧 compatibility switch 已删除——通道/成员/会话/路由的写入权威只剩 Native 动作表。
   const surfaceService = createControlSurfaceService({
     native: nativeService,
     cloudflare: surfaceCloudflare,
     revision: surfaceRevision,
-    channels: surfaceChannels,
-    outboundConfig: outboundConfigService,
-    channelControl,
-    saveInbound: async (type, patch) => {
-      if (typeof surfaceAdminApi?.putInboundChannel !== 'function') {
-        const error = new Error('入站配置写入能力不可用')
-        error.code = 'not-supported'
-        throw error
-      }
-      return surfaceAdminApi.putInboundChannel(type, patch)
-    },
-    channelTest: (type, raw) => runChannelTest({ type, rawConfig: raw, strings }),
-    tasks: surfaceTasks,
-    questions: surfaceQuestions,
-    members: surfaceMembers,
-    sessions: surfaceSessions,
-    bindings: surfaceBindings,
     diagnostics: surfaceDiagnostics,
     portability: surfacePortability,
     dshIm: surfaceDshIm,
-    dshImImport: surfaceDshImImport,
     activity: surfaceActivity,
-    health: surfaceHealth,
-    storageStatus: () => {
-      const boot = typeof store.bootStatus === 'function' ? store.bootStatus() : { readFailed: false }
-      const migrated = Array.isArray(configMigration.migrated) ? configMigration.migrated.length : 0
-      const status = configMigration.ok !== true
-        ? 'failed'
-        : configMigration.deferred === true
-          ? 'deferred'
-          : configMigration.already === true
-            ? 'already-complete'
-            : 'complete'
-      return {
-        ...boot,
-        migration: {
-          status,
-          migratedCount: migrated,
-          backupCreated: typeof configMigration.backupPath === 'string' && configMigration.backupPath !== '',
-          ...(configMigration.reason ? { reason: String(configMigration.reason).slice(0, 80) } : {}),
-        },
-      }
-    },
     launchTickets,
     adminLocation: () => adminListenInfo,
   })
@@ -1102,7 +1065,7 @@ export function apply(ctx, config = {}) {
         host: '127.0.0.1', // 红线：永不绑公网（§0.5-6，config.mjs 已写死不可配）
         port: resolved.admin.port,
         ui: createAdminUiHtml(resolved.lang),
-        events: eventHub, // v0.4.0 通知事件流（GET /api/events，SSE）
+        // Stage 4（S403）：Recovery-only——不再注入 events（GET /api/events SSE 已删除）。
         logger,
       })
       adminServer.start()

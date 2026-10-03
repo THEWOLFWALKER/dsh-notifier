@@ -110,14 +110,12 @@ test('getHostCapabilities: ctx 抛错代理也不冒泡（查询方法红线：�
   assert.equal(snap.host.version, 'unknown')
 })
 
-// ———————— HTTP 层：只读路由鉴权 + 分发 ————————
-
-const tick = (ms = 0) => new Promise((resolve) => setTimeout(resolve, ms))
+// ———————— HTTP 层：旧 /api/tasks 与 /api/host 已从 Recovery 路由表删除 ————————
+// Stage 4（S403）：Advanced Console 后端收成 Recovery-only，日常管理读路由不再存在。
 
 async function withServer(overrides = {}, fn) {
   const api = {
-    getTasks: async () => ({ count: 1, activitySorted: true, tasks: [{ taskRef: 'sid-a' }] }),
-    getHostCapabilities: async () => ({ host: { version: '0.1.0' } }),
+    getDiagnostics: async () => ({ host: { version: '0.1.0' } }),
     ...overrides,
   }
   const server = createAdminServer({
@@ -136,20 +134,10 @@ async function withServer(overrides = {}, fn) {
   }
 }
 
-test('GET /api/tasks 与 /api/host：鉴权通过返回 200 + api 结果；缺 token 401', async () => {
+test('S403: 旧 GET /api/tasks 与 /api/host 已从 Recovery 后端删除（能力不存在）', async () => {
   await withServer({}, async ({ base }) => {
     const auth = { Authorization: 'Bearer secret' }
-    const tasksRes = await fetch(`${base}/api/tasks`, { headers: auth })
-    assert.equal(tasksRes.status, 200)
-    assert.equal((await tasksRes.json()).count, 1)
-
-    const hostRes = await fetch(`${base}/api/host`, { headers: auth })
-    assert.equal(hostRes.status, 200)
-    assert.deepEqual(await hostRes.json(), { host: { version: '0.1.0' } })
-
-    // 没 token：/api/* 一律 401（对探测者只回 401，不泄露路由存在性）
-    const noAuth = await fetch(`${base}/api/tasks`)
-    assert.equal(noAuth.status, 401)
-    await tick(0)
+    assert.equal((await fetch(`${base}/api/tasks`, { headers: auth })).status, 404)
+    assert.equal((await fetch(`${base}/api/host`, { headers: auth })).status, 404)
   })
 })

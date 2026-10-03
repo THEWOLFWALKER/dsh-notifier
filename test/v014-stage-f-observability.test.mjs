@@ -16,6 +16,7 @@ import { join } from 'node:path'
 
 import { createStore } from '../src/inbound/store.mjs'
 import { createChannelControlService } from '../src/control-plane/channels.mjs'
+import { createNativeActions } from '../src/native/actions.mjs'
 import { createOutboundConfigService } from '../src/control-surface/outbound-config.mjs'
 import { createOutboundSource } from '../src/runtime/outbound-source.mjs'
 import { createControlSurfaceService } from '../src/control-surface/service.mjs'
@@ -70,13 +71,18 @@ test('F1 outbound save advances revision and records activity exactly once (sing
     ...wireDomainEvents({ revision, activity }),
   })
   const channelControl = createChannelControlService({ outboundConfig })
+  const actions = createNativeActions({ channelControl, revision, activity })
+
+  // Stage 4（S402）：daily 通话面已无 channels.save——出站保存唯一入口是 native.saveChannel。
   const surface = makeSurface({ revision, activity, channelControl })
+  const rejected = await surface.call('channels.save', { type: 'bark', direction: 'outbound', patch: { key: 'k' } })
+  assert.equal(rejected.ok, false)
+  assert.equal(rejected.error.code, 'dsh-notifier/not-supported', '旧 channels.save 已删除')
 
   const revisionBefore = revision.current().revision
   const activityBefore = activity.list().length
-  const saved = await surface.call('channels.save', { type: 'bark', direction: 'outbound', patch: { key: 'k' } })
-  assert.equal(saved.ok, true)
-  assert.equal(saved.value.saved, true)
+  const saved = actions.saveChannel({ type: 'bark', patch: { key: 'k' } })
+  assert.equal(saved.saved, true)
 
   assert.equal(revision.current().revision, revisionBefore + 1, '一次出站保存只推进一代 revision')
   assert.equal(activity.list().length, activityBefore + 1, '一次出站保存只记一条 activity')
@@ -86,13 +92,13 @@ test('F1 outbound save advances revision and records activity exactly once (sing
   // 重复保存（含 unchanged 早退分支）仍各只记一次，不叠加。
   const revisionAgain = revision.current().revision
   const activityAgain = activity.list().length
-  await surface.call('channels.save', { type: 'bark', direction: 'outbound', patch: { key: 'k' } })
+  actions.saveChannel({ type: 'bark', patch: { key: 'k' } })
   assert.equal(revision.current().revision, revisionAgain + 1, '重复保存同样只推进一代')
   assert.equal(activity.list().length, activityAgain + 1, '重复保存同样只记一条')
   revision.dispose()
 })
 
-test('F2 inbound save is recorded once by the surface (no domain event owner)', async () => {
+test('F2 inbound save is recorded once by the native action (no domain event owner)', async () => {
   const { file } = tempState()
   const store = createStore(file)
   const source = createOutboundSource([])
@@ -103,20 +109,20 @@ test('F2 inbound save is recorded once by the surface (no domain event owner)', 
     store, yamlRows: new Map(), source, allowLegacy: false,
     ...wireDomainEvents({ revision, activity }),
   })
-  // 入站没有 domain event：surface 自持记账，但仍经共享 ChannelControlService 落盘。
+  // 入站没有 domain event：native action 自持记账，但仍经共享 ChannelControlService 落盘。
   const channelControl = createChannelControlService({
     outboundConfig,
     saveInbound: async (type) => { putCount += 1; return { saved: true, type, direction: 'inbound', configRevision: putCount } },
   })
-  const surface = makeSurface({ revision, activity, channelControl })
+  const actions = createNativeActions({ channelControl, revision, activity })
 
   const revisionBefore = revision.current().revision
   const activityBefore = activity.list().length
-  const saved = await surface.call('channels.save', { type: 'telegram', direction: 'inbound', patch: { botToken: 'x' } })
-  assert.equal(saved.ok, true)
+  const saved = await actions.saveInboundChannel({ type: 'telegram', patch: { botToken: 'x' } })
+  assert.equal(saved.saved, true)
   assert.equal(putCount, 1)
-  assert.equal(revision.current().revision, revisionBefore + 1, '入站保存由 surface 唯一记账一次 revision')
-  assert.equal(activity.list().length, activityBefore + 1, '入站保存由 surface 唯一记账一次 activity')
+  assert.equal(revision.current().revision, revisionBefore + 1, '入站保存由 native action 唯一记账一次 revision')
+  assert.equal(activity.list().length, activityBefore + 1, '入站保存由 native action 唯一记账一次 activity')
   assert.equal(activity.list()[0].category, 'configuration')
   assert.match(activity.list()[0].title.zh, /telegram/)
   revision.dispose()

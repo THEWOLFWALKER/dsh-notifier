@@ -199,9 +199,9 @@ test('S10: control-surface diagnostics.snapshot 只读，不 touch revision / �
   assert.equal(revision.current().revision, before, '只读查询不得碰 revision')
   assert.deepEqual(activity.list({ limit: 5 }), [], '只读查询不得记 activity')
 
-  // 未装配 diagnostics：退回未知方法 → bad-request。
+  // 未装配 diagnostics：能力不存在 → not-supported（Stage 4：白名单内方法未装配 = 能力缺失）。
   const bare = createControlSurfaceService({ revision: createSurfaceRevision(), channels: { list: () => [] }, activity: createSurfaceActivity(), health: createSurfaceHealth() })
   const missing = await bare.call('diagnostics.snapshot')
   assert.equal(missing.ok, false)
-  assert.equal(missing.error.code, 'dsh-notifier/bad-request')
+  assert.equal(missing.error.code, 'dsh-notifier/not-supported')
 })

@@ -119,12 +119,8 @@ function surfaceRig() {
   const activity = { record: () => {}, list: () => [] }
   const service = createControlSurfaceService({
     revision,
-    channels: { list: () => [], get: () => null },
-    outboundConfig: { describe: () => ({ configured: false }) },
-    tasks: { list: () => [] },
-    questions: { list: () => [], settle: () => ({ ok: true }) },
-    members: null,
-    health: { recordTest: () => {} },
+    // Stage 4：daily 应用入口 = Native 面；存根仅证明「远程能力缺失不影响核心路径」。
+    native: { call: async (method) => ({ ok: true, value: { method } }) },
     activity,
   })
   return { service, revision }
@@ -148,7 +144,6 @@ test('wiring: remote.validate surfaces a stable rejection message for a credenti
 
 test('wiring: a missing remote capability never breaks the core notifier path', async () => {
   const { service } = surfaceRig()
-  assert.equal((await service.call('surface.home')).ok, true)
-  assert.equal((await service.call('channels.list')).ok, true)
+  assert.equal((await service.call('native.snapshot', {})).ok, true)
   assert.equal((await service.call('remote.validate', { url: 'https://example.com/' })).ok, true)
 })
