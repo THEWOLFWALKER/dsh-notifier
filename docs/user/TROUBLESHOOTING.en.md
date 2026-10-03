@@ -6,7 +6,7 @@ Check that dsh-notifier appears in the DSH plugin page. Restart DSH and refresh 
 
 ## Messages do not arrive
 
-Send a test, read the result and check your phone. Confirm the recipient and app notification permissions. Replace invalid credentials. For Telegram connection problems, open its **Connection help** and choose **Enable gateway**.
+Send a test, read the result and check your phone. Confirm the recipient and app notification permissions. Replace invalid credentials. For Telegram connection problems, open its **Connection help** and choose **Enable fallback connection**.
 
 ## Notifications arrive but replies do not work
 
@@ -16,9 +16,9 @@ Configure incoming messages and restart if prompted. Open the channel's **Privat
 
 Confirmation codes expire and are single-use. Make a new one and use the corresponding bot's private chat. For an expired question or approval, return to the task on your computer.
 
-## Gateway deployment fails
+## Fallback connection deployment fails
 
-Check your Cloudflare login, account selection and connectivity, then retry. Existing resources remain. After changing the bot token, enable the gateway again.
+Check your Cloudflare login, account selection and connectivity, then retry. Existing resources remain. After changing the bot token, enable the fallback connection again.
 
 ## Imported channels are inactive
 

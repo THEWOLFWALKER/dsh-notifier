@@ -319,7 +319,7 @@ const FIELD_LABELS = Object.freeze({
   appKey: { en: 'App Key', zh: 'App Key' },
   appToken: { en: 'App Token', zh: 'App Token' },
   botToken: { en: 'Bot Token', zh: 'Bot Token' },
-  gatewayKey: { en: 'Gateway key', zh: '网关密钥' },
+  gatewayKey: { en: 'Connection key', zh: '连接凭证' },
   apiBase: { en: 'Server address', zh: '服务地址' },
   chatId: { en: 'Recipient ID', zh: '接收者 ID' },
   accountId: { en: 'Account name', zh: '账号名' },

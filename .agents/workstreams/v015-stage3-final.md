@@ -14,3 +14,6 @@
 
 - P0: 6f33b87 pushed; 2510 full leaves (5 obsolete assertions updated), focused 56/56 green.
 - P1: deleted 26 old Native components, 212 unused locale entries, isolated compatibility dispatch, recovery console report-only.
+
+- P1: afb069a pushed; focused 52/52, release/private DOM 17/17.
+- P2: common pre-routing private admission; six provider negative cases; copy gate expanded; focused 92/92 and DOM 41/41.

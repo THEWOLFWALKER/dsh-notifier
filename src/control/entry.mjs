@@ -4,7 +4,7 @@
 // canonicalize -> normalize -> paired/source/policy check -> settle.
 
 import { normalizeControlEvent, makeReceipt } from './contract.mjs'
-import { createSessionArbiter, normalizeControlOverlay, normalizeSessionPolicy } from './session-arbiter.mjs'
+import { createSessionArbiter, privateControlAdmission, normalizeControlOverlay, normalizeSessionPolicy } from './session-arbiter.mjs'
 import { createHandledEvents } from './handled-events.mjs'
 
 const text = (value) => typeof value === 'string' && value.trim() !== '' ? value.trim() : null
@@ -135,6 +135,8 @@ export function createControlEntry({ policy = {}, identity = null, now = Date.no
 
   const handle = (input = {}) => {
     if (disposed) return makeReceipt('desktop_fallback', input, 'disposed')
+    const admission = privateControlAdmission(input)
+    if (!admission.ok) return makeReceipt('rejected', input, admission.reason)
     const command = text(input.command)
     if (!COMMANDS.has(command)) return makeReceipt('rejected', input, 'unknown_command')
     const spec = handlers.get(command)
@@ -159,6 +161,8 @@ export function createControlEntry({ policy = {}, identity = null, now = Date.no
       audit({ status: 'normalize_failed', command, error })
       return makeReceipt('rejected', input, 'malformed')
     }
+    const candidateAdmission = privateControlAdmission(candidate)
+    if (!candidateAdmission.ok) return makeReceipt('rejected', candidate, candidateAdmission.reason)
     const normalized = normalizeControlEvent(candidate, now())
     if (!normalized.ok) return makeReceipt(normalized.reason === 'expired' ? 'expired' : 'rejected', candidate, normalized.reason)
     const event = normalized.event

@@ -159,7 +159,7 @@ test('Personal mode: capabilities cannot be expanded by overlay', () => {
   const policy = normalizeSessionPolicy({ channel: 'telegram', accountId: 'tg' }, 100)
   // Personal mode: converse=false, groupChatControl=false
   assert.equal(policy.capabilities.converse, false)
-  assert.equal(policy.capabilities.groupChatControl, false)
+  assert.equal('groupChatControl' in policy.capabilities, false)
   // Overlay tries to set mode=team but personal mode caps stay
   const overlay = normalizeControlOverlay({ mode: 'team' })
   assert.ok(overlay, 'overlay normalized')

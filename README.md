@@ -26,11 +26,11 @@ For notifications, that is all you need. To reply from your phone, configure inc
 
 You can also [ask an assistant to install it](docs/user/AI_INSTALL.en.md).
 
-## One-click Telegram gateway
+## One-click Telegram fallback connection
 
-If Telegram cannot connect, choose **Enable gateway** in its settings. Log in to Cloudflare and select an account. The plugin deploys the gateway, obtains its address, and fills and saves the settings automatically. It reuses your bot token.
+If Telegram cannot connect, choose **Enable fallback connection** in its settings. Log in to Cloudflare and select an account. The plugin prepares the connection and saves its address automatically. It reuses your bot token.
 
-Already have a gateway? Choose **Custom gateway address** and enter its root address. [Steps](docs/user/cloudflare.en.md).
+Already have a fallback connection? Choose **Custom fallback connection address** and enter its root address. [Steps](docs/user/cloudflare.en.md).
 
 ## Move your settings
 

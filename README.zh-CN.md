@@ -26,11 +26,11 @@ dsh plugin add dsh-notifier@latest --profile <profile名>
 
 也可以请助手[帮忙安装](docs/user/AI_INSTALL.md)。
 
-## Telegram 一键网关
+## Telegram 一键备用连接
 
-Telegram 连接不通时，在渠道配置里点击「一键开启网关」。登录 Cloudflare、选择账号后，插件会部署反代、获取地址，并自动填写保存。沿用原来的机器人凭证，无需另管一把密钥。
+Telegram 连接不通时，在渠道配置里点击「一键开启备用连接」。登录 Cloudflare、选择账号后，插件会准备连接并自动填写保存。沿用原来的机器人凭证，无需另管一把密钥。
 
-已有网关时，选择「自定义网关地址」并填入地址即可。[查看步骤](docs/user/cloudflare.md)。
+已有备用连接时，选择「自定义地址」并填入地址即可。[查看步骤](docs/user/cloudflare.md)。
 
 ## 换电脑也方便
 

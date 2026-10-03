@@ -1,19 +1,19 @@
-# Telegram gateway and self-hosted Bark
+# Telegram fallback connection and self-hosted Bark
 
-## Enable a Telegram gateway
+## Enable a Telegram fallback connection
 
-1. Open the Telegram channel and choose **Enable gateway** under **Connection help**.
+1. Open the Telegram channel and choose **Enable fallback connection** under **Connection help**.
 2. Choose **Log in to Cloudflare** and complete authorization.
 3. Select your account. Leave the bot token and recipient blank to reuse existing settings; fill them in for first-time setup.
-4. Keep **Automatically fill and save Telegram settings** selected and choose **Enable gateway**.
+4. Keep **Automatically fill and save Telegram settings** selected and choose **Enable fallback connection**.
 
 The plugin deploys the service, obtains its address and saves your connection settings. Select **Also receive messages** if needed, then restart DSH when prompted.
 
-The gateway reuses the bot token. After changing that token, enable the gateway again to update both sides.
+The fallback connection reuses the bot token. After changing that token, enable the fallback connection again to update both sides.
 
-## Use an existing gateway
+## Use an existing fallback connection
 
-Choose **Custom gateway address** under the Telegram channel's **Connection help** and enter its root address. Ordinary Telegram reverse proxies and this plugin's gateway are supported. Save to apply. Choose **Direct** and save to stop using the gateway.
+Choose **Custom fallback connection address** under the Telegram channel's **Connection help** and enter its root address. Ordinary Telegram reverse proxies and this plugin's fallback connection are supported. Save to apply. Choose **Direct** and save to stop using the fallback connection.
 
 ## Self-host Bark
 

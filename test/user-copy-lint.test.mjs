@@ -19,11 +19,11 @@ const FORBIDDEN_EN = [
   'configured', 'runtime', 'epoch', 'revision', 'claim', 'settle', 'binding',
   'principal', 'control plane', 'rpc', 'projection', 'authority', 'ledger',
   'state machine', 'durable', 'fail-closed', 'transaction', 'rmw', 'd1',
-  'webhook', 'provider evidence',
+  'webhook', 'provider evidence', 'gateway', 'provider', 'evidence', 'worker', 'diagnostics', 'session',
 ]
 const FORBIDDEN_ZH = [
   '运行时', '世代', '修订号', '占位', '终态', '账本', '投影', '权威源',
-  '控制面', '事务', '持久化结论', '接线', '适配层',
+  '控制面', '事务', '持久化结论', '接线', '适配层', '网关', '绑定', '会话', '诊断',
 ]
 
 /** Platform-official field names the user genuinely has to copy verbatim. */
@@ -202,4 +202,10 @@ test('user copy lint — the server-side user-word table stays in user words', (
     for (const word of FORBIDDEN_ZH) if (text.includes(word)) offenders.push(`"${value}" (${word})`)
   }
   assert.deepEqual(offenders, [], `projected user words must stay in user words:\n${offenders.join('\n')}`)
+})
+
+test('user copy lint — inline connection setup text uses plain words', () => {
+  const source = readFileSync(new URL('../client.js', import.meta.url), 'utf8')
+  const labels = [...source.matchAll(/words\('([^']*)', '([^']*)'\)/g)].flatMap(m => [m[1], m[2]])
+  assert.deepEqual(labels.flatMap(label => findForbidden(label).map(word => `${label}: ${word}`)), [])
 })

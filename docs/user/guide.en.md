@@ -16,7 +16,7 @@ Restart DSH and refresh the page. Open **Notify & Private chat** in the sidebar.
 
 Open **Notify & Private chat**, add a channel you use, enter its settings and save. Select **Test** and check your phone. This is enough if you only want task notifications.
 
-If Telegram cannot connect, open its **Connection help** to enter a custom gateway address or choose **Enable gateway**. The plugin can deploy it to your Cloudflare account and fill in the settings automatically. See [gateway setup](cloudflare.en.md).
+If Telegram cannot connect, open its **Connection help** to enter a custom fallback connection address or choose **Enable fallback connection**. The plugin sets up the connection in your Cloudflare account. See [fallback connection setup](cloudflare.en.md).
 
 ## Reply from your phone
 

@@ -8,7 +8,7 @@ const teamPolicy = (extra = {}) => policy({ mode: 'team', capabilities: { approv
 
 test('personal defaults are safe and group/conversation are off', () => {
   const p = normalizeSessionPolicy({}, 100)
-  assert.deepEqual(p.capabilities, { observe: true, approve: true, stop: true, converse: false, groupChatControl: false })
+  assert.deepEqual(p.capabilities, { observe: true, approve: true, stop: true, converse: false })
   assert.deepEqual(p.approvalMembers, [])
   assert.equal(p.mode, 'personal')
   assert.equal(canAcceptCommand(p, event()).reason, 'stale_policy')

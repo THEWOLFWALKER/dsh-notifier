@@ -81,7 +81,7 @@
     "test:dom": "node test/dom/run.mjs"
   },
   "dshQuality": {
-    "testCount": 2501
+    "testCount": 2514
   },
   "dsh": {
     "bundle": {

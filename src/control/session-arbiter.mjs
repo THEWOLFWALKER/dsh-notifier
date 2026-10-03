@@ -76,9 +76,7 @@ export function normalizeSessionPolicy(input = {}, now = Date.now()) {
     approve: input.capabilities?.approve !== false,
     stop: input.capabilities?.stop !== false,
     converse: input.capabilities?.converse === true,
-    groupChatControl: input.capabilities?.groupChatControl === true,
   }
-  if (mode === 'personal') capabilities.groupChatControl = false
   const policyVersion = text(input.policyVersion) ?? '1'
   const expiresAt = input.expiresAt === undefined || input.expiresAt === null ? null : Number(input.expiresAt)
   return Object.freeze({
@@ -139,6 +137,13 @@ function isGroupChat(event) {
   return chatId.startsWith('oc_') || chatId.startsWith('group_') || chatId.startsWith('grp_')
 }
 
+// Shared admission for messages, pairing, approvals and questions. Deny before routing.
+export function privateControlAdmission(event = {}) {
+  if (isGroupChat(event)) return { ok: false, reason: 'group_chat_disabled' }
+  if (String(event.channel ?? '').toLowerCase() === 'qq' && chatScopeOf(event) === 'unknown') return { ok: false, reason: 'source_chat_type_unknown' }
+  return { ok: true }
+}
+
 /**
  * Decide whether a normalized event may settle approval/question-answer under the
  * policy object (which must already be a normalized snapshot). Pure; exported for
@@ -188,12 +193,7 @@ export function canAcceptCommand(policy, event, now = Date.now()) {
     return { ok: false, reason: 'source_chat_type_unknown' }
   }
   const caps = policy.capabilities ?? {}
-  // QQ group control is intentionally never enabled by policy. Group
-  // notifications remain valid, while callbacks/text are receipt-only.
-  if (String(event.channel ?? '').toLowerCase() === 'qq' && chatScope === 'group') {
-    return { ok: false, reason: 'group_chat_disabled' }
-  }
-  if (isGroupChat(event) && caps.groupChatControl !== true) return { ok: false, reason: 'group_chat_disabled' }
+  if (!privateControlAdmission(event).ok) return privateControlAdmission(event)
   if (event.command === 'stop' && caps.stop !== true) return { ok: false, reason: 'stop_disabled' }
   if (event.command === 'approval' && caps.approve !== true) return { ok: false, reason: 'approval_disabled' }
   if (event.command === 'question-answer' && caps.approve !== true) return { ok: false, reason: 'approval_disabled' }

@@ -120,7 +120,7 @@ test('Native Cloudflare deploy/link/unbind goes through real authority and prese
   await flush()
   try {
     typeInput(v.container.querySelector('input[aria-label="Bot Token"]'), '123:secret')
-    click(v.container.querySelector('input[type=checkbox]')); click(buttonByText(v.container, 'Enable gateway')); await flush()
+    click(v.container.querySelector('input[type=checkbox]')); click(buttonByText(v.container, 'Enable fallback connection')); await flush()
     // Explicit refresh read; the job runs outside React and is polled in the product.
     for (let i = 0; r.cloud.status().job && i < 100; i++) await new Promise(resolve => setImmediate(resolve))
     click(buttonByText(v.container, 'refresh')); await flush(); await actAsync(() => new Promise(resolve => setTimeout(resolve, 1550))); await flush()
@@ -141,7 +141,7 @@ test('Native one-click gateway deploy fills address and reuses token without a m
   await flush()
   try {
     assert.equal(v.container.querySelector('input[type=checkbox]').checked, true)
-    click(buttonByText(v.container, 'Enable gateway')); await flush()
+    click(buttonByText(v.container, 'Enable fallback connection')); await flush()
     for (let i = 0; r.cloud.status().job && i < 100; i++) await new Promise(resolve => setImmediate(resolve))
     assert.equal(r.cloud.status().deployments[0].state, 'bound')
     const row = r.outbound.raw('telegram')

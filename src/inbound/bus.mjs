@@ -16,6 +16,7 @@
 
 import { createCommandHandler, getChannelName, parseCommand } from './commands.mjs'
 import { stringsOf } from '../strings.mjs'
+import { privateControlAdmission } from '../control/session-arbiter.mjs'
 import { setDurable } from './store.mjs'
 
 const DEFAULT_DEDUP_WINDOW_MS = 24 * 60 * 60 * 1000
@@ -209,6 +210,8 @@ export function createInboundBus(options = {}) {
      *   reply 存在时由 adapter 调本通道 sendText 回执（节流后吞掉的回执无 reply 字段）
      */
     accept(envelope) {
+      const admission = privateControlAdmission(envelope)
+      if (!admission.ok) return { ...admission, reply: '请私聊操作' }
       if (isDuplicate(envelope)) {
         warn(`跳过重复入站消息：${envelope.channel}:${envelope.messageId}`)
         return { ok: false, reason: 'duplicate' }

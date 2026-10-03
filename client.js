@@ -22,9 +22,7 @@ window.__ModuleLoader__.load({
       importAdd: '新增（暂不启用）', importPatch: '补充字段', importConflict: '覆盖已有字段',
       importSkip: '配置相同', importUnsupported: '不支持', importMissing: '需补充',
       importFields: '变更字段', importConfigure: '补充配置', importEmpty: '暂无待配置渠道',
-      exportFailed: '下载失败，请复制下方内容。', cloudflare: 'Cloudflare 部署',
-      title: '通知与控制',
-      // v0.15（Stage 1 / S2）：Native v2 外壳——单一「通知与私聊」页 + 左侧已添加渠道。
+      exportFailed: '下载失败，请复制下方内容。', cloudflare: 'Cloudflare 设置',
       nativeTitle: '通知与私聊',
       nativeIntro: '把重要事件发到你的设备，也能用手机回话。',
       more: '更多',
@@ -51,8 +49,6 @@ window.__ModuleLoader__.load({
       pickerEmpty: '没有找到这个渠道',
       pickerClose: '关闭',
       accountMore: '更多设置',
-      running: '正在运行',
-      // v0.15（Stage 1 / S3）：账号卡——基础/更多两段、secret 三态、测试人话、备用连接按需出现。
       accountBasic: '基础设置',
       accountExpand: '展开设置',
       accountCollapse: '收起设置',
@@ -126,7 +122,6 @@ window.__ModuleLoader__.load({
       control: '远程控制',
       ready: '可用',
       restartPending: '等待重启',
-      disabled: '已停用',
       unavailable: '不可用',
       runningOk: '运行正常',
       needsAction: '需要处理',
@@ -136,14 +131,9 @@ window.__ModuleLoader__.load({
       tasks: '任务',
       questions: '待处理提问',
       members: '成员',
-      owner: '所有者',
-      remove: '移除',
-      pendingIdentities: '待确认身份',
       approve: '转正',
-      dismiss: '忽略',
-      revoke: '撤销',
-      sessions: '会话',
-      bindings: '路由绑定',
+      sessions: '任务记录',
+      bindings: '发送设置',
       viewRawIdentifiers: '查看原始标识',
       cancelAction: '取消',
       // v0.14（Stage E / P1-10）：Session Detail（路由 / 出站 / 静默 / 控制 / 绑定）。
@@ -160,18 +150,14 @@ window.__ModuleLoader__.load({
       startSetup: '开始设置',
       pluginReady: '通知已就绪',
       openControl: '打开通知与控制',
-      pluginAdvanced: '独立管理台用于成员、路由、会话策略以及故障恢复。',
+      pluginAdvanced: '仅用于故障恢复。',
       unknownError: '发生未知错误',
       staleData: '连接中断，当前显示的是上次成功读取的数据。',
-      renderFailed: '通知与控制界面发生错误',
-      evidenceNone: '无投递证据',
-      evidenceAccepted: '已发送到提供方',
-      evidenceConfirmed: '已确认送达',
       yes: '是',
       no: '否',
       supportReport: '支持报告',
-      reportIntro: '生成诊断报告',
-      reportNotBackup: '诊断报告不包含密钥。',
+      reportIntro: '生成支持报告',
+      reportNotBackup: '支持报告不包含密钥。',
       generateReport: '生成支持报告',
       copiedOk: '已复制到剪贴板',
       downloadedOk: '已下载报告文件',
@@ -218,8 +204,6 @@ window.__ModuleLoader__.load({
       importSkip: 'No changes', importUnsupported: 'Unsupported', importMissing: 'Required',
       importFields: 'Changed fields', importConfigure: 'Complete setup', importEmpty: 'No pending channels',
       exportFailed: 'Download failed. Copy the content below.', cloudflare: 'Cloudflare deploy',
-      title: 'Notify & Control',
-      // v0.15（Stage 1 / S2）：Native v2 shell — one "Notify & Private chat" page + added channels.
       nativeTitle: 'Notify & Private chat',
       nativeIntro: 'Send important events to your device, and reply from your phone.',
       more: 'More',
@@ -246,8 +230,6 @@ window.__ModuleLoader__.load({
       pickerEmpty: 'No channel matches that',
       pickerClose: 'Close',
       accountMore: 'More settings',
-      running: 'Running',
-      // v0.15 (Stage 1 / S3): account cards — basic/more split, secret tri-state, plain-language test, on-demand fallback.
       accountBasic: 'Basic settings',
       accountExpand: 'Expand settings',
       accountCollapse: 'Collapse settings',
@@ -307,7 +289,7 @@ window.__ModuleLoader__.load({
       testReasonAuth: 'Credential or permission rejected',
       testReasonTimeout: 'Request timed out',
       testReasonNetwork: 'Network unreachable',
-      testReasonProvider: 'Provider returned an error',
+      testReasonProvider: 'The service returned an error',
       unknownNoRetry: 'Send result unknown',
       secretConfiguredKeep: 'Set up (kept by default)',
       secretNotShown: 'The saved value is never shown, for safety',
@@ -321,7 +303,6 @@ window.__ModuleLoader__.load({
       control: 'Remote control',
       ready: 'Ready',
       restartPending: 'Restart pending',
-      disabled: 'Disabled',
       unavailable: 'Unavailable',
       runningOk: 'Running normally',
       needsAction: 'Needs attention',
@@ -331,12 +312,7 @@ window.__ModuleLoader__.load({
       tasks: 'Tasks',
       questions: 'Questions',
       members: 'Members',
-      owner: 'Owner',
-      remove: 'Remove',
-      pendingIdentities: 'Pending identities',
       approve: 'Approve',
-      dismiss: 'Dismiss',
-      revoke: 'Revoke',
       sessions: 'Sessions',
       bindings: 'Routing bindings',
       viewRawIdentifiers: 'View raw identifiers',
@@ -355,13 +331,9 @@ window.__ModuleLoader__.load({
       startSetup: 'Start setup',
       pluginReady: 'Notifications are ready',
       openControl: 'Open Notify & Control',
-      pluginAdvanced: 'The advanced console is for members, routing, session policy, and recovery.',
+      pluginAdvanced: 'Use this page only to recover from a problem.',
       unknownError: 'An unknown error occurred',
       staleData: 'Connection interrupted; showing the last successfully loaded data.',
-      renderFailed: 'Notify & Control could not render',
-      evidenceNone: 'No delivery evidence',
-      evidenceAccepted: 'Sent to provider',
-      evidenceConfirmed: 'Delivery confirmed',
       yes: 'Yes',
       no: 'No',
       supportReport: 'Support report',
@@ -1407,20 +1379,7 @@ window.__ModuleLoader__.load({
     // 旧实现把它定义在 ChannelDetailView 内部，每次父轮询/状态更新都会产生新的组件类型，
     // React 因此整棵子树 remount：输入框 DOM 被替换，focus 与 caret 丢失（U05）。
     // 现在类型身份稳定，输入节点原地更新，连续输入不丢焦点。
-    function TelegramConnection({ ctx, controller, value, onChange, onDirect, hasGatewayKey, disabled, enableDisabled = disabled }) {
-      const words = (zh, en) => String(ctx?.locale?.current ?? 'zh').startsWith('en') ? en : zh
-      const [custom, setCustom] = useState(!!value && value !== 'https://api.telegram.org')
-      useEffect(() => { if (value && value !== 'https://api.telegram.org') setCustom(true) }, [value])
-      return h('div', { className: 'dn-field' },
-        h('label', null, words('连接方式', 'Connection'), h('select', {
-          'aria-label': 'Telegram connection', value: custom ? 'custom' : 'direct', disabled,
-          onChange: e => { const next = e.target.value === 'custom'; setCustom(next); if (!next) onDirect() },
-        }, h('option', { value: 'direct' }, words('直连', 'Direct')), h('option', { value: 'custom' }, words('自定义网关地址', 'Custom gateway address')))),
-        custom ? h('label', null, words('网关地址', 'Gateway address'), h('input', { type: 'url', 'aria-label': 'Telegram gateway address', value: value ?? '', placeholder: 'https://…', disabled, onChange: e => onChange(e.target.value) })) : null,
-        custom && hasGatewayKey ? h('p', { className: 'dn-note' }, words('已使用自建网关。更换机器人凭证后，请重新开启网关。', 'Using a private gateway. Enable it again after changing the bot token.')) : null,
-        h(Button, { disabled: enableDisabled, onClick: () => controller.navigate({ kind: 'cloudflare', type: 'telegram', activate: true }) }, words('一键开启网关', 'Enable gateway')),
-        enableDisabled ? h('p', { className: 'dn-note' }, words('先保存当前修改，再开启网关。', 'Save your changes before enabling the gateway.')) : null)
-    }
+
 
     function PageHead({ title, intro, actions }) {
       return h('header', { className: 'dn-pageHead' },
@@ -2285,11 +2244,7 @@ window.__ModuleLoader__.load({
     // v0.14（Stage E / P1-10）：Session Detail。只做投影与「写入口」编排——路由写权威在
     // agent-router、控制归一在 session-arbiter、生命周期在 session-registry，本视图不另造 authority。
 
-    function evidenceText(t, value) {
-      return value === 'confirmed' ? t('evidenceConfirmed')
-        : value === 'accepted' ? t('evidenceAccepted')
-          : t('evidenceNone')
-    }
+
 
     // v0.15（Stage 1 / S5）：帮助页。只讲用户能做的动作（现象 → 做什么），
     // 不再暴露 Host / Storage / Capabilities 等运行时细节；需要深入时生成一份不含密钥的摘要。
@@ -2637,10 +2592,10 @@ window.__ModuleLoader__.load({
         finally { if (alive.current) setBusy(false) }
       }
       const disabled = busy || !!data?.job
-      const steps = { preparing: words('准备工具', 'Preparing tools'), login: words('等待登录', 'Awaiting login'), database: words('准备 Bark 服务', 'Preparing Bark'), migration: words('配置 Bark 服务', 'Configuring Bark'), deploy: words('部署服务', 'Deploying service'), verify: words('检查服务', 'Checking service') }
+      const steps = { preparing: words('准备工具', 'Preparing tools'), login: words('等待登录', 'Awaiting login'), database: words('准备 Bark 服务', 'Preparing Bark'), migration: words('配置 Bark 服务', 'Configuring Bark'), deploy: words('设置服务', 'Setting up connection'), verify: words('检查服务', 'Checking service') }
       return h('div', { className: 'dn-page' },
         h('button', { className: 'dn-link', onClick: () => controller.navigate({ kind: 'native' }) }, `← ${t('back')}`),
-        h(PageHead, { title: t('cloudflare'), intro: words('把 Bark 或 Telegram 网关部署到你的 Cloudflare 账号。', 'Deploy Bark or a Telegram gateway to your Cloudflare account.') }),
+        h(PageHead, { title: t('cloudflare'), intro: words('把 Bark 或 Telegram 备用连接设置到你的 Cloudflare 账号。', 'Set up Bark or a backup Telegram connection.') }),
         h('div', { className: 'dn-formActions' },
           h(Button, { disabled, onClick: () => call('loginDevice') }, words('登录 Cloudflare', 'Log in to Cloudflare')),
           h(Button, { disabled, onClick: () => call('refresh') }, t('refresh')),
@@ -2649,24 +2604,24 @@ window.__ModuleLoader__.load({
         data?.job ? h('p', { role: 'status', className: 'dn-note' }, steps[data.job.step] || t('loading')) : null,
         error || data?.error ? h('p', { role: 'alert', className: 'dn-error' }, error?.message || data.error) : null,
         h('label', { className: 'dn-field' }, words('账号', 'Account'), h('select', { 'aria-label': 'Cloudflare account', value: account, disabled, onChange: e => setAccount(e.target.value) }, h('option', { value: '' }, '—'), ...(data?.accounts ?? []).map(a => h('option', { key: a.id, value: a.id }, a.name)))),
-        h('label', { className: 'dn-field' }, words('服务', 'Service'), h('select', { 'aria-label': 'Cloudflare service', value: type, disabled, onChange: e => setType(e.target.value) }, h('option', { value: 'telegram' }, 'Telegram Gateway'), h('option', { value: 'bark' }, 'Bark'))),
-        type === 'telegram' ? h('label', { className: 'dn-field' }, 'Bot Token', h('input', { type: 'password', autoComplete: 'off', 'aria-label': 'Bot Token', value: botToken, disabled, placeholder: words('已配置可留空', 'Leave blank to reuse configured token'), onChange: e => setBotToken(e.target.value) })) : h('label', { className: 'dn-field dn-field--check' }, h('input', { type: 'checkbox', checked: enrollment, disabled, onChange: e => setEnrollment(e.target.checked) }), words('允许 Bark App 注册设备（添加设备后取消并重新部署）', 'Allow Bark App registration (turn off and redeploy after enrollment)')),
+        h('label', { className: 'dn-field' }, words('服务', 'Service'), h('select', { 'aria-label': 'Cloudflare service', value: type, disabled, onChange: e => setType(e.target.value) }, h('option', { value: 'telegram' }, 'Telegram Fallback connection'), h('option', { value: 'bark' }, 'Bark'))),
+        type === 'telegram' ? h('label', { className: 'dn-field' }, 'Bot Token', h('input', { type: 'password', autoComplete: 'off', 'aria-label': 'Bot Token', value: botToken, disabled, placeholder: words('已配置可留空', 'Leave blank to keep the current token'), onChange: e => setBotToken(e.target.value) })) : h('label', { className: 'dn-field dn-field--check' }, h('input', { type: 'checkbox', checked: enrollment, disabled, onChange: e => setEnrollment(e.target.checked) }), words('允许 Bark App 注册设备（添加设备后取消并重新设置）', 'Allow Bark App registration (turn off and redeploy after enrollment)')),
         type === 'telegram' ? h('div', null,
-          h('label', { className: 'dn-field' }, words('接收者（已配置可留空）', 'Recipient (leave blank to reuse)'), h('input', { 'aria-label': 'Gateway recipient', value: chatId, disabled, onChange: e => setChatId(e.target.value) })),
-          h('label', { className: 'dn-field dn-field--check' }, h('input', { type: 'checkbox', checked: activate, disabled, onChange: e => setActivate(e.target.checked) }), words('部署后自动填写并保存 TG 配置', 'Automatically fill and save Telegram settings')),
+          h('label', { className: 'dn-field' }, words('接收者（已配置可留空）', 'Recipient (leave blank to reuse)'), h('input', { 'aria-label': 'Fallback connection recipient', value: chatId, disabled, onChange: e => setChatId(e.target.value) })),
+          h('label', { className: 'dn-field dn-field--check' }, h('input', { type: 'checkbox', checked: activate, disabled, onChange: e => setActivate(e.target.checked) }), words('设置后自动填写并保存 TG 配置', 'Automatically fill and save Telegram settings')),
           h('label', { className: 'dn-field dn-field--check' }, h('input', { type: 'checkbox', checked: inbound, disabled, onChange: e => setInbound(e.target.checked) }), words('也用于接收消息（完成后重启 DSH）', 'Also receive messages (restart DSH afterwards)'))) : null,
-        h(Button, { kind: 'primary', disabled: disabled || !account, onClick: () => call('deploy', { type, accountId: account, botToken, enrollment, activate: type === 'telegram' && activate, chatId, inbound }) }, type === 'telegram' ? words('一键开启', 'Enable gateway') : words('部署 / 重试', 'Deploy / retry')),
+        h(Button, { kind: 'primary', disabled: disabled || !account, onClick: () => call('deploy', { type, accountId: account, botToken, enrollment, activate: type === 'telegram' && activate, chatId, inbound }) }, type === 'telegram' ? words('一键开启', 'Enable fallback connection') : words('设置 / 重试', 'Set up / retry')),
         h(TunnelSettings, { ctx, controller, data: data?.tunnel, disabled, onRead: read }),
-        receipt ? h('p', { role: 'status', className: 'dn-successText' }, receipt.unbound ? words('已解除本地绑定，云资源保留。', 'Local binding removed. Cloud resources retained.') : receipt.results?.some(r => r.applied === false) ? t('restartPending') : t('savedOk')) : null,
-        ...(data?.deployments ?? []).map(r => h(Section, { key: r.type, title: r.type === 'telegram' ? 'Telegram Gateway' : 'Bark' },
-          h('p', { className: 'dn-note' }, r.endpoint || words('尚未完成部署', 'Deployment pending')),
-          h('p', { className: 'dn-note' }, r.state === 'bound' ? words('已绑定', 'Linked') : words('未绑定', 'Not linked')),
+        receipt ? h('p', { role: 'status', className: 'dn-successText' }, receipt.unbound ? words('已解除本地连接，云资源保留。', 'Original connection restored. Your online service is kept.') : receipt.results?.some(r => r.applied === false) ? t('restartPending') : t('savedOk')) : null,
+        ...(data?.deployments ?? []).map(r => h(Section, { key: r.type, title: r.type === 'telegram' ? 'Telegram Fallback connection' : 'Bark' },
+          h('p', { className: 'dn-note' }, r.endpoint || words('尚未完成设置', 'Setup incomplete')),
+          h('p', { className: 'dn-note' }, r.state === 'bound' ? words('已连接', 'Linked') : words('未连接', 'Not linked')),
           r.type === 'telegram' ? h('div', null,
             h('label', { className: 'dn-field' }, 'Chat ID', h('input', { 'aria-label': 'Chat ID', value: chatId, disabled, onChange: e => setChatId(e.target.value) })),
             h('label', { className: 'dn-field dn-field--check' }, h('input', { type: 'checkbox', checked: inbound, disabled, onChange: e => setInbound(e.target.checked) }), words('同时用于入站控制（保存后重启 DSH）', 'Also use for inbound control (restart DSH after saving)'))) : h('label', { className: 'dn-field' }, 'Bark Key', h('input', { type: 'password', autoComplete: 'off', 'aria-label': 'Bark Key', value: barkKey, disabled, placeholder: words('在 Bark App 添加服务器后取得', 'Available after adding the server in Bark App'), onChange: e => setBarkKey(e.target.value) })),
           h('div', { className: 'dn-formActions' },
-            h(Button, { disabled: disabled || r.health !== 'ready', onClick: () => call('link', { type: r.type, chatId, barkKey, directions: r.type === 'telegram' && inbound ? ['outbound', 'inbound'] : ['outbound'] }) }, words('绑定渠道', 'Link channel')),
-            r.state === 'bound' ? h(Button, { disabled, onClick: () => call('unbind', { type: r.type }) }, words('解除绑定', 'Unbind')) : null))))
+            h(Button, { disabled: disabled || r.health !== 'ready', onClick: () => call('link', { type: r.type, chatId, barkKey, directions: r.type === 'telegram' && inbound ? ['outbound', 'inbound'] : ['outbound'] }) }, words('使用此连接', 'Link channel')),
+            r.state === 'bound' ? h(Button, { disabled, onClick: () => call('unbind', { type: r.type }) }, words('恢复原连接', 'Unbind')) : null))))
     }
 
     function SidebarIcon({ size = 18, active = false }) {
