@@ -177,12 +177,12 @@ test('resolveOutbound：diff channels=[] 显式空集合 → 不回落上游，c
 test('resolveInbound：L1 显式 bind 命中（优先级最高，不做活跃过滤）', () => {
   const { router } = makeRouter({
     state: {
-      'bind:telegram:default:42': 's-9', // s-9 不在 agentsList（已结束会话）：resume 语义仍命中
+      'bind:telegram:tg-app:42': 's-9', // s-9 不在 agentsList（已结束会话）：resume 语义仍命中
       'route:channels': { telegram: { defaultAgent: 'a-2' } },
     },
     agents: [{ id: 'a-1' }, { id: 'a-2' }],
   })
-  assert.deepEqual(router.resolveInbound('telegram', '42', { latestSessionId: 'a-1' }), {
+  assert.deepEqual(router.resolveInbound('telegram', '42', 'tg-app'), {
     sessionId: 's-9',
     source: 'bind',
     ambiguous: false,
@@ -191,7 +191,7 @@ test('resolveInbound：L1 显式 bind 命中（优先级最高，不做活跃过
 
 test('resolveInbound：bind 值损坏（非字符串）→ 跳过 bind 层；无显式选择即无处可投', () => {
   const { router } = makeRouter({
-    state: { 'bind:telegram:default:42': { sid: 's-9' } },
+    state: { 'bind:telegram:tg-app:42': { sid: 's-9' } },
     agents: [{ id: 'a-1' }],
   })
   // R1：损坏的 bind 不再回落到唯一 agent，必须由用户重新显式选择

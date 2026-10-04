@@ -8,7 +8,7 @@ import { PUBLIC_API_VERSION } from '../src/public.mjs'
 
 test('testing fake: version mirrors the public notifier API version', () => {
   const fake = createFakeNotifier()
-  assert.equal(fake.version, '0.7')
+  assert.equal(fake.version, '0.8')
   assert.equal(fake.version, PUBLIC_API_VERSION, 'fake 与真 facade 必须同一公共面版本')
   assert.equal(typeof fake.push, 'function')
   assert.equal(typeof fake.flush, 'function')
@@ -20,8 +20,8 @@ test('testing fake: a normal push records the call and reports the fake channel'
   const fake = createFakeNotifier({ now: () => 1234 })
   const result = await fake.push({ title: 'T', content: 'C', level: 'timeSensitive' }, { sourceName: 'consumer-demo' })
   assert.deepEqual(result, {
-    ok: true,
-    delivered: ['fake'],
+    accepted: ['fake'],
+    confirmed: [], unknown: [],
     skipped: [],
     failed: [],
     source: { kind: 'plugin', name: 'consumer-demo' },
@@ -41,8 +41,8 @@ test('testing fake: the public source kind is plugin, never dsh-notifier', async
 
 test('testing fake: title-only and content-only are valid pushes', async () => {
   const fake = createFakeNotifier()
-  assert.deepEqual((await fake.push({ title: 'only title' })).delivered, ['fake'])
-  assert.deepEqual((await fake.push({ content: 'only content' })).delivered, ['fake'])
+  assert.deepEqual((await fake.push({ title: 'only title' })).accepted, ['fake'])
+  assert.deepEqual((await fake.push({ content: 'only content' })).accepted, ['fake'])
   assert.equal(fake.calls.length, 2)
 })
 
@@ -50,34 +50,32 @@ test('testing fake: a double-empty (or non-string) message is malformed but stil
   const fake = createFakeNotifier()
   const malformed = await fake.push({ title: 42, content: null })
   assert.deepEqual(malformed, {
-    ok: true,
-    delivered: [],
-    skipped: ['(malformed)'],
+    accepted: [], confirmed: [], unknown: [],
+    skipped: [{ channel: '(request)', reason: 'malformed' }],
     failed: [],
     source: { kind: 'plugin', name: 'anonymous' },
   })
-  assert.deepEqual((await fake.push()).skipped, ['(malformed)'])
+  assert.deepEqual((await fake.push()).skipped, [{ channel: '(request)', reason: 'malformed' }])
   assert.deepEqual(fake.calls[0].message, { title: '', content: '' })
 })
 
 test('testing fake: every simulate branch maps to its skipped marker', async () => {
   const fake = createFakeNotifier()
   for (const [simulate, marker] of [
-    ['rate-limited', '(rate-limited)'],
-    ['disabled', '(disabled)'],
-    ['budget', '(budget)'],
-    ['busy', '(busy)'],
+    ['rate-limited', 'rate-limited'],
+    ['disabled', 'disabled'],
+    ['budget', 'budget'],
+    ['busy', 'busy'],
   ]) {
     const result = await fake.push({ content: 'x' }, { simulate })
-    assert.deepEqual(result.skipped, [marker], `${simulate} must map to ${marker}`)
-    assert.equal(result.ok, true)
+    assert.deepEqual(result.skipped, [{ channel: '(request)', reason: marker }], `${simulate} must map to ${marker}`)
     assert.equal(fake.calls.at(-1).options.simulate, simulate)
   }
 })
 
 test('testing fake: an unknown simulate value behaves like a normal success', async () => {
   const result = await createFakeNotifier().push({ content: 'x' }, { simulate: 'nonsense' })
-  assert.deepEqual(result.delivered, ['fake'])
+  assert.deepEqual(result.accepted, ['fake'])
   assert.deepEqual(result.skipped, [])
 })
 
@@ -110,10 +108,10 @@ test('testing fake: calls is copy-on-write (later input mutation cannot rewrite 
   assert.equal(entry.options.sourceName, 'mine')
 })
 
-test('testing fake: flush resolves undefined and stays idempotent', async () => {
+test('testing fake: flush reports drained and stays idempotent', async () => {
   const fake = createFakeNotifier()
-  assert.equal(await fake.flush(), undefined)
-  assert.equal(await fake.flush(), undefined)
+  assert.deepEqual(await fake.flush(), { drained: true })
+  assert.deepEqual(await fake.flush(), { drained: true })
 })
 
 test('testing fake: hostile Proxy/getter input never rejects', async () => {
@@ -125,27 +123,26 @@ test('testing fake: hostile Proxy/getter input never rejects', async () => {
   const fake = createFakeNotifier()
   // 读取全部走防御 helper：抛错的 get 按缺失处理 → 双空 malformed，push 仍 resolve（never-reject）。
   const bombed = await fake.push(throwing, throwing)
-  assert.equal(bombed.ok, true)
-  assert.deepEqual(bombed.skipped, ['(malformed)'])
+  assert.deepEqual(bombed.skipped, [{ channel: '(request)', reason: 'malformed' }])
   assert.deepEqual(bombed.source, { kind: 'plugin', name: 'anonymous' })
 
   const hostileMessage = {}
   Object.defineProperty(hostileMessage, 'title', { get() { throw new Error('title bomb') }, enumerable: true })
   const guarded = await fake.push(hostileMessage, { sourceName: 'ok' })
-  assert.deepEqual(guarded.skipped, ['(malformed)'], '抛错的 getter 按非字符串处理，不炸')
+  assert.deepEqual(guarded.skipped, [{ channel: '(request)', reason: 'malformed' }], '抛错的 getter 按非字符串处理，不炸')
   assert.deepEqual(guarded.source, { kind: 'plugin', name: 'ok' })
 
   const hostileOptions = {}
   Object.defineProperty(hostileOptions, 'sourceName', { get() { throw new Error('source bomb') }, enumerable: true })
   const optionBomb = await fake.push({ content: 'x' }, hostileOptions)
-  assert.deepEqual(optionBomb.delivered, ['fake'], 'options 读取抛错回落缺省 sourceName')
+  assert.deepEqual(optionBomb.accepted, ['fake'], 'options 读取抛错回落缺省 sourceName')
   assert.deepEqual(optionBomb.source, { kind: 'plugin', name: 'anonymous' })
 })
 
 test('testing fake: a throwing clock never rejects push', async () => {
   const fake = createFakeNotifier({ now: () => { throw new Error('clock bomb') } })
   const result = await fake.push({ content: 'x' })
-  assert.deepEqual(result.delivered, ['fake'])
+  assert.deepEqual(result.accepted, ['fake'])
   assert.equal(fake.calls[0].at, undefined)
 })
 

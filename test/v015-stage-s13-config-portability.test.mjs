@@ -313,6 +313,45 @@ test('Gate2B: a concurrent change to a selected field refuses the commit as stal
   assert.equal(target.outboundConfig.raw('telegram').chatId, 'new-chat', 'the retained token still commits')
 })
 
+test('Gate2B: explicit credential clear is stale if the credential changed after preview', () => {
+  const target = rig()
+  target.outboundConfig.save('telegram', { botToken: 'credential-at-preview', chatId: 'old-chat' })
+  const source = rig()
+  source.outboundConfig.save('telegram', { botToken: SECRET, chatId: 'new-chat' })
+  const preview = target.portability.previewImport({ text: exportText(source) })
+
+  target.outboundConfig.save('telegram', { botToken: 'credential-changed-later' })
+  const before = JSON.stringify(target.store.keys().map((key) => [key, target.store.get(key)]))
+  assert.throws(
+    () => target.portability.commitImport({
+      token: preview.token,
+      selections: [{ direction: 'outbound', type: 'telegram', action: 'apply', clear: ['botToken'] }],
+    }),
+    (error) => error.code === 'stale-preview' && error.entry?.field === 'botToken',
+  )
+  assert.equal(JSON.stringify(target.store.keys().map((key) => [key, target.store.get(key)])), before)
+  assert.equal(target.outboundConfig.raw('telegram').botToken, 'credential-changed-later')
+})
+
+test('Gate2B: post-commit apply error reports an observation gap and never asks for a repeat commit', () => {
+  const source = rig()
+  source.outboundConfig.save('telegram', { botToken: SECRET, chatId: 'new-chat' })
+  const target = rig()
+  target.outboundConfig.save('telegram', { botToken: 'existing-token', chatId: 'old-chat' })
+  const preview = target.portability.previewImport({ text: exportText(source) })
+  target.outboundConfig.applyCommitted = () => { throw new Error('runtime observation unavailable') }
+
+  const result = target.portability.commitImport({
+    token: preview.token,
+    selections: [{ direction: 'outbound', type: 'telegram', action: 'apply' }],
+  })
+  assert.equal(target.outboundConfig.raw('telegram').chatId, 'new-chat', 'the canonical commit is durable')
+  assert.deepEqual(result.results[0], {
+    direction: 'outbound', type: 'telegram', action: 'observation-gap', committed: true, applied: false, applyMode: 'unknown',
+  })
+  assert.throws(() => target.portability.commitImport({ token: preview.token, selections: [] }), (error) => error.code === 'not-found')
+})
+
 test('Gate2B: a channel that appears after the preview is stale for an add selection (zero write)', () => {
   const source = rig()
   source.outboundConfig.save('bark', { key: 'bark-secret', device: 'phone' })

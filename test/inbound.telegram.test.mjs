@@ -11,7 +11,7 @@ import { createTokenVault } from '../src/inbound/tokens.mjs'
 import { createStore } from '../src/inbound/store.mjs'
 import { createActionDispatcher } from '../src/actions.mjs'
 import { buildActionPayload } from '../src/inbound/_contract.mjs'
-import { createInboundBus } from '../src/inbound/bus.mjs'
+import { createPrivateTestBus as createInboundBus } from './helpers/private-bus.mjs'
 
 function tempPath() {
   return join(mkdtempSync(join(tmpdir(), 'dsh-notifier-tg-')), 'state.json')
@@ -36,7 +36,7 @@ function makeFetch(script = {}, { delayMs = 5 } = {}) {
   return { fetchImpl, calls }
 }
 
-const CONFIG = { botToken: 'T0KEN', notifyChatIds: [100] }
+const CONFIG = { botToken: 'T0KEN', accountId: 'telegram-test', notifyChatIds: [100] }
 
 function makeBus(spy = {}) {
   return {
@@ -266,7 +266,7 @@ test('v0.6.2 短引用点击链：审批卡 ref 展开 → bus.decide 收到完�
   await tg.stop()
 
   assert.equal(decisions.length, 2, '批准 + 拒绝各决策一次；重复点击同 ref 不再决策')
-  assert.deepEqual(decisions[0], { approvalKey: 'ap:rm:1', decision: 'allowed-once', token, via: 'telegram', accountId: 'default', userId: 42, chatId: 100 })
+  assert.deepEqual(decisions[0], { approvalKey: 'ap:rm:1', decision: 'allowed-once', token, via: 'telegram', accountId: 'telegram-test', userId: 42, chatId: 100 })
   assert.equal(decisions[1].decision, 'rejected')
   const answers = calls.filter((call) => call.method === 'answerCallbackQuery')
   assert.equal(answers.length, 3)
@@ -301,7 +301,7 @@ test('v0.6.2 短引用点击链：动作卡 ac: 负载经 ref 展开 → actions
   await tg.stop()
 
   assert.equal(dispatched.length, 1)
-  assert.deepEqual(dispatched[0], { actionKey: 'act:turn/cancel:ws-abcdef12', token, via: 'telegram:action', accountId: 'default', userId: 42, chatId: 100 })
+  assert.deepEqual(dispatched[0], { actionKey: 'act:turn/cancel:ws-abcdef12', token, via: 'telegram:action', accountId: 'telegram-test', userId: 42, chatId: 100 })
 })
 
 // v0.8.3 SEC-1 提问按钮链：aq 短引用展开 → questions.decide 收到点击会话 chatId；
@@ -337,7 +337,7 @@ test('v0.8.3 SEC-1 提问短引用：chatId 透传 questions.decide；转发拒�
   const answers = calls.filter((call) => call.method === 'answerCallbackQuery')
   assert.match(answers[0].body.text, /请到原会话操作/, '转发点击收到拒绝回执')
   assert.equal(verdicts.length, 1, '转发点击不进入 questions.decide')
-  assert.deepEqual(verdicts[0], { qKey: 'aq:abc123', optIdx: '0', token, via: 'telegram', accountId: 'default', userId: 42, chatId: 100 })
+  assert.deepEqual(verdicts[0], { qKey: 'aq:abc123', optIdx: '0', token, via: 'telegram', accountId: 'telegram-test', userId: 42, chatId: 100 })
 })
 
 // v0.8.3 SEC-1 转发拒绝：同一 ref 的按钮被转到别的 chat 点击 → 回执拒绝且不消费引用，
@@ -375,7 +375,7 @@ test('v0.8.3 SEC-1 短引用转发拒绝：跨 chat 点击回执拒绝，引用�
   const answers = calls.filter((call) => call.method === 'answerCallbackQuery')
   assert.match(answers[0].body.text, /请到原会话操作/, '转发点击收到拒绝回执')
   assert.equal(decisions.length, 1, '转发点击不进入裁决分支')
-  assert.deepEqual(decisions[0], { approvalKey: 'ap:rm:2', decision: 'allowed-once', token, via: 'telegram', accountId: 'default', userId: 42, chatId: 100 })
+  assert.deepEqual(decisions[0], { approvalKey: 'ap:rm:2', decision: 'allowed-once', token, via: 'telegram', accountId: 'telegram-test', userId: 42, chatId: 100 })
 })
 
 // ------------------------------------------------ C1（P1-4）来源比对缺数据 fail-closed
@@ -417,7 +417,7 @@ test('C1 TG 来源比对：origin 在场但回调缺 message.chat → fail-close
   ], { logger })
   assert.match(answers[0].body.text, /请到原会话操作/, '缺点击会话必须收到拒绝回执')
   assert.equal(decisions.length, 1, '缺点击会话不得进入裁决分支')
-  assert.deepEqual(decisions[0], { approvalKey: 'ap:c1:1', decision: 'allowed-once', token, via: 'telegram', accountId: 'default', userId: 42, chatId: 100 })
+  assert.deepEqual(decisions[0], { approvalKey: 'ap:c1:1', decision: 'allowed-once', token, via: 'telegram', accountId: 'telegram-test', userId: 42, chatId: 100 })
   assert.ok(logger.lines.some((line) => /缺少点击会话/.test(line)), `拒绝必须 warn 出声（实际：${logger.lines.join(' | ')}）`)
 })
 
@@ -454,8 +454,7 @@ test('C1 TG 来源比对：chatId === 0 的合法点击必须放行（不得被�
   assert.equal(decisions[0].chatId, 0)
 })
 
-// 旧卡兼容半边（PLAN §C1(b) 显式保留）：origin 无 chatId → warn + 放行，窗口由 ref TTL 封顶。
-test('C1 TG 来源比对：origin 缺 chatId（旧卡）→ 兼容放行 + 显式 warn', async () => {
+test('C1 TG 来源比对：没有可证明的私聊目标时不发送控制卡片', async () => {
   const logger = { lines: [], warn: (prefix, message) => logger.lines.push(`${prefix} ${message}`) }
   const decisions = []
   const bus = { accept: () => {}, decide: (p) => { decisions.push(p); return { ok: true } } }
@@ -469,17 +468,10 @@ test('C1 TG 来源比对：origin 缺 chatId（旧卡）→ 兼容放行 + 显�
     getUpdates: () => ({ ok: true, result: queue.splice(0, 3) }),
   })
   const tg = createTelegramInbound({ config: CONFIG, bus, vault, fetchImpl, errorBackoffMs: 10, logger })
-  // 发卡时无 chatId（origin.chatId === undefined，等价升级前在途卡片的元数据缺失面）
-  await tg.sendApprovalCard({ title: 't', content: 'c', approvalKey: 'ap:c1:9', token })
-  const ref = calls.find((call) => call.method === 'sendMessage').body.reply_markup.inline_keyboard[0][0].callback_data
-  // 任意会话点击 → 兼容放行（不因来源不明拒绝历史卡），但必须 warn 出声
-  queue.push({ update_id: 1, callback_query: { id: 'c1l', from: { id: 42 }, message: { chat: { id: 777 }, message_id: 9 }, data: ref } })
-  tg.start()
-  await new Promise((resolve) => setTimeout(resolve, 100))
-  await tg.stop()
-  assert.equal(decisions.length, 1, 'origin 缺 chatId 的旧卡维持兼容放行（PLAN §C1(b)）')
-  assert.equal(decisions[0].chatId, 777)
-  assert.ok(logger.lines.some((line) => /缺少来源会话元数据/.test(line)), `兼容放行必须 warn（实际：${logger.lines.join(' | ')}）`)
+  const card = await tg.sendApprovalCard({ title: 't', content: 'c', approvalKey: 'ap:c1:9', token })
+  assert.equal(card, null)
+  assert.equal(calls.some((call) => call.method === 'sendMessage'), false)
+  assert.equal(decisions.length, 0)
 })
 
 // v0.6.2 注册表单元：单次核销 / TTL / 容量拒绝（时钟注入，零真实等待）
@@ -569,7 +561,7 @@ test('长轮询：message 文本走 bus.accept（白名单+去重由 bus 负责�
   await tg.stop()
   assert.equal(accepted.length, 1)
   assert.deepEqual(accepted[0], {
-    channel: 'telegram', accountId: 'default', userId: '42', chatId: '42', chatType: 'private', messageId: 'msg:5:42', text: '在吗',
+    channel: 'telegram', accountId: 'telegram-test', userId: '42', chatId: '42', chatType: 'private', messageId: 'msg:5:42', text: '在吗',
   })
   const updates = calls.filter((call) => call.method === 'getUpdates')
   assert.ok(updates.length >= 1)
@@ -940,13 +932,20 @@ function memoryActionStore() {
     get: (key, fallback) => (data.has(key) ? data.get(key) : fallback),
     set: (key, value) => { data.set(key, value) },
     delete: (key) => { data.delete(key) },
+    transact: (mutator) => {
+      const draft = Object.fromEntries([...data].map(([key, value]) => [key, structuredClone(value)]))
+      const value = mutator(draft)
+      data.clear()
+      for (const [key, row] of Object.entries(draft)) data.set(key, row)
+      return { committed: true, durable: true, value }
+    },
   }
 }
 
 function acCallback(chatId, data, id = 'cbq9') {
   return {
     update_id: 1,
-    callback_query: { id, from: { id: 42 }, message: { chat: { id: chatId }, message_id: 15 }, data },
+    callback_query: { id, from: { id: 42 }, message: { chat: { id: chatId, type: 'private' }, message_id: 15 }, data },
   }
 }
 
@@ -991,7 +990,7 @@ test('F-08 ac: 回调：转发到其他会话 → dispatch 拒绝，不执行', 
   assert.match(rolling.calls.filter((c) => c.method === 'answerCallbackQuery')[0].body.text, /原会话/)
 })
 
-test('F-08 ac: 回调：legacy 老卡（无来源元数据）→ 兼容放行 + 显式 warn', async () => {
+test('F-08 ac: 回调：legacy 老卡（无来源元数据）→ fail-closed + 显式 warn', async () => {
   const vault = createTokenVault({ secret: 'k' })
   const loggerLines = []
   const dispatcher = createActionDispatcher({ vault, store: memoryActionStore(), logger: { warn: (p, m) => loggerLines.push(`${p} ${m}`) } })
@@ -1001,7 +1000,7 @@ test('F-08 ac: 回调：legacy 老卡（无来源元数据）→ 兼容放行 + 
   const data = buildActionPayload(minted.key, minted.token)
 
   await runSingleAcCallback(dispatcher, acCallback(9999, data), vault)
-  assert.equal(executed.length, 1, '老卡兼容放行执行')
+  assert.equal(executed.length, 0, '来源元数据缺失的老卡不得执行')
   assert.ok(loggerLines.some((line) => /srcChats/.test(line)), `应显式 warn 来源缺失（实际：${loggerLines.join(' | ')}）`)
 })
 

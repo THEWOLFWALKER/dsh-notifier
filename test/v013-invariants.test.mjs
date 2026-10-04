@@ -37,8 +37,7 @@ test('v0.13 invariant skeleton: CI runs dev and cancels stale runs', () => {
 
 // v0.15 RC（Gate 3）：根 runner 显式排除 test/dom，DOM 套件必须在 CI 中单独安装并执行，
 // 否则真实-React 覆盖会在 CI 里静默缺失。
-test('v0.15 Gate3: CI installs and runs the isolated DOM workspace suite', () => {
-  assert.match(workflow, /cd test\/dom/)
-  assert.match(workflow, /npm install --ignore-scripts --no-package-lock/)
-  assert.match(workflow, /npm test/)
+test('v0.15 Gate3: CI uses the root lockfile and runs the isolated DOM suite', () => {
+  assert.match(workflow, /npm ci --ignore-scripts/)
+  assert.match(workflow, /run: npm run test:dom/)
 })

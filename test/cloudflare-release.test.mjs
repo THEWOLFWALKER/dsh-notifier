@@ -247,8 +247,12 @@ test('F03/F04: deployment survives verification failure and process restart with
     assert.doesNotMatch(JSON.stringify(job), /fixture_token|gatewayKey|botToken/)
     assert.doesNotMatch(JSON.stringify(r.store.get('cloudflare:deployment:telegram')), /fixture_token|gatewayKey|botToken/)
     r.runner.readDeployment = async () => [{ versions: [{ version_id: 'v1', percentage: 100 }] }]
-    recovered = r.reopen(); await new Promise(setImmediate); await idle(recovered)
+    recovered = r.reopen(); await new Promise(setImmediate)
     assert.equal(r.counts().deployed, 1)
+    assert.equal(recovered.status().recoveries.length, 1, 'restart reports recovery but performs no external work')
+    await logged(recovered)
+    recovered.deploy({ type: 'telegram', accountId: ACCOUNT, botToken: BOT, activate: true, chatId: '42' }); await idle(recovered)
+    assert.equal(r.counts().deployed, 1, 'explicit recovery reads back rather than redeploying')
     assert.equal(recovered.status().deployments[0].state, 'bound')
     assert.equal(createStore(join(r.root, 'state.json')).get(r.store.keys('cloud:job:')[0]).state, 'done')
   } finally { recovered?.dispose(); r.cleanup() }
@@ -260,12 +264,15 @@ test('F05: cancel during verification persists cancellation and retains created 
     r.runner.readDeployment = () => new Promise(resolve => { release = resolve })
     r.service.deploy({ type: 'telegram', accountId: ACCOUNT, botToken: BOT })
     for (let i = 0; i < 200 && !release; i++) await new Promise(setImmediate)
-    r.service.cancel(); release([{ versions: [{ version_id: 'v1', percentage: 100 }] }]); await idle(r.service)
+    const cancelling = r.service.cancel()
+    release([{ versions: [{ version_id: 'v1', percentage: 100 }] }])
+    await cancelling
     const job = r.store.get(r.store.keys('cloud:job:')[0])
     assert.equal(job.cancelRequested, true)
+    assert.equal(job.state, 'recovery-required', 'cancel after external work keeps an explicit recovery state')
     assert.ok(r.store.get('cloudflare:deployment:telegram').endpoint)
     recovered = r.reopen(); await new Promise(setImmediate)
-    assert.equal(recovered.status().job, null); assert.equal(r.counts().deployed, 1)
+    assert.equal(recovered.status().job, null); assert.equal(recovered.status().recoveries.length, 1); assert.equal(r.counts().deployed, 1)
   } finally { recovered?.dispose(); r.cleanup() }
 })
 test('Cloud remote creation with lost response resumes from exact resource readback, never blind create', async () => {
@@ -276,7 +283,10 @@ test('Cloud remote creation with lost response resumes from exact resource readb
     r.service.deploy({ type: 'telegram', accountId: ACCOUNT, botToken: BOT }); await idle(r.service)
     const record = r.store.get('cloudflare:deployment:telegram')
     r.runner.readDeployment = async () => [{ endpoint: `https://${record.name}.account.workers.dev`, versions: [{ version_id: 'remote-v1', percentage: 100 }] }]
-    recovered = r.reopen(); await new Promise(setImmediate); await idle(recovered)
+    recovered = r.reopen(); await new Promise(setImmediate)
+    assert.equal(calls, 1, 'construction performs no external recovery')
+    await logged(recovered)
+    recovered.deploy({ type: 'telegram', accountId: ACCOUNT, botToken: BOT }); await idle(recovered)
     assert.equal(calls, 1); assert.equal(recovered.status().deployments[0].health, 'ready')
   } finally { recovered?.dispose(); r.cleanup() }
 })
@@ -295,7 +305,10 @@ test('P3 remote create succeeds but receipt write fails: restart reads exact res
     }
     r.service.deploy({ type: 'telegram', accountId: ACCOUNT, botToken: BOT }); await idle(r.service)
     assert.equal(r.store.get('cloudflare:deployment:telegram').endpoint, undefined)
-    recovered = r.reopen(); await new Promise(setImmediate); await idle(recovered)
+    recovered = r.reopen(); await new Promise(setImmediate)
+    assert.equal(r.counts().deployed, 1, 'restart does not repeat deployment')
+    await logged(recovered)
+    recovered.deploy({ type: 'telegram', accountId: ACCOUNT, botToken: BOT }); await idle(recovered)
     assert.equal(r.counts().deployed, 1); assert.equal(recovered.status().deployments[0].health, 'ready')
   } finally { r.store.transact = original; recovered?.dispose(); r.cleanup() }
 })
@@ -316,7 +329,11 @@ for (const step of ['prepare', 'database', 'migration', 'create', 'verify', 'app
       r.service.deploy({ type: 'bark', accountId: ACCOUNT }); await idle(r.service)
       const key = r.store.keys('cloud:job:')[0]
       r.store.transact(draft => { draft[key] = { ...draft[key], state: 'running', step } })
-      recovered = r.reopen(); await new Promise(setImmediate); await idle(recovered)
+      recovered = r.reopen(); await new Promise(setImmediate)
+      assert.deepEqual(r.counts(), { created: 1, deployed: 1 })
+      assert.equal(recovered.status().recoveries.length, 1)
+      await logged(recovered)
+      recovered.deploy({ type: 'bark', accountId: ACCOUNT }); await idle(recovered)
       assert.deepEqual(r.counts(), { created: 1, deployed: 1 })
       assert.equal(createStore(join(r.root, 'state.json')).get(key).state, 'done')
     } finally { recovered?.dispose(); r.cleanup() }
@@ -330,8 +347,10 @@ test('P3 apply failure after durable settings resumes without another remote dep
     r.service.deploy({ type: 'telegram', accountId: ACCOUNT, botToken: BOT, activate: true, chatId: '42' }); await idle(r.service)
     assert.equal(r.store.get(r.store.keys('cloud:job:')[0]).step, 'apply')
     assert.ok(r.outboundConfig.raw('telegram').apiBase)
-    recovered = r.reopen(); await new Promise(setImmediate); await idle(recovered)
+    recovered = r.reopen(); await new Promise(setImmediate)
     assert.equal(r.counts().deployed, 1)
+    await logged(recovered)
+    recovered.deploy({ type: 'telegram', accountId: ACCOUNT, botToken: BOT, activate: true, chatId: '42' }); await idle(recovered)
     assert.equal(recovered.status().deployments[0].state, 'bound')
   } finally { recovered?.dispose(); r.cleanup() }
 })

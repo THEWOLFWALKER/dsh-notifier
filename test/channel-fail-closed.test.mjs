@@ -4,7 +4,7 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { chatScopeOf, canAcceptCommand, normalizeSessionPolicy, normalizeControlOverlay } from '../src/control/session-arbiter.mjs'
+import { chatScopeOf, privateControlAdmission, canAcceptCommand, normalizeSessionPolicy, normalizeControlOverlay } from '../src/control/session-arbiter.mjs'
 import { normalizeInbound } from '../src/inbound/_contract.mjs'
 import { capabilitiesOf, displayNameOf } from '../src/inbound/capability-matrix.mjs'
 
@@ -17,10 +17,20 @@ test('QQ: chatScopeOf classifies group/private/unknown correctly', () => {
   assert.equal(chatScopeOf({ channel: 'qq', chatType: '2' }), 'group')
   assert.equal(chatScopeOf({ channel: 'qq', chatType: '' }), 'unknown')
   assert.equal(chatScopeOf({ channel: 'qq', chatType: undefined }), 'unknown')
-  // Pre-chatType C2C: chatId === userId → private
-  assert.equal(chatScopeOf({ channel: 'qq', chatType: '', chatId: 'u1', userId: 'u1' }), 'private')
-  // Pre-chatType with mismatched chatId/userId → unknown
+  // Shape equality cannot replace provider scope evidence.
+  assert.equal(chatScopeOf({ channel: 'qq', chatType: '', chatId: 'u1', userId: 'u1' }), 'unknown')
   assert.equal(chatScopeOf({ channel: 'qq', chatType: '', chatId: 'g1', userId: 'u1' }), 'unknown')
+})
+
+test('private admission rejects missing or unrecognized chatType for every channel', () => {
+  for (const channel of ['telegram', 'feishu', 'qq', 'dingtalk', 'wxpusher', 'wechat']) {
+    const result = privateControlAdmission({ channel, accountId: 'a', userId: 'u', chatId: 'c' })
+    assert.deepEqual(result, { ok: false, reason: 'source_chat_type_unknown' }, `${channel} without provider scope`)
+  }
+  assert.deepEqual(privateControlAdmission({ channel: 'telegram', chatType: 'private', accountId: 'a', userId: 'u', chatId: 'c' }), { ok: true })
+  assert.deepEqual(privateControlAdmission({ channel: 'feishu', chatType: 'p2p', accountId: 'a', userId: 'u', chatId: 'c' }), { ok: true })
+  assert.deepEqual(privateControlAdmission({ channel: 'telegram', chatType: 'supergroup', accountId: 'a', userId: 'u', chatId: '-100' }), { ok: false, reason: 'group_chat_disabled' })
+  assert.deepEqual(privateControlAdmission({ channel: 'telegram', chatType: 'private', userId: 'u', chatId: 'c' }), { ok: false, reason: 'source_missing_accountId' })
 })
 
 test('QQ group: all commands fail-closed regardless of policy capabilities', () => {
@@ -129,13 +139,13 @@ test('All channels: source binding is exact for channel/accountId/userId/chatId/
       channel, accountId: `${channel}-app`, userId: 'owner-1',
       chatId: 'chat-1', sessionId: 'session-1', owner: 'owner-1',
     }, 100)
-    // Correct source → ok (QQ needs chatType=private to avoid unknown)
+    // Correct source → ok only with the channel's explicit private marker.
     const eventBase = {
       sessionId: 'session-1', channel, accountId: `${channel}-app`,
       userId: 'owner-1', chatId: 'chat-1', policyVersion: '1', command: 'stop',
       createdAt: 10, expiresAt: 200,
     }
-    if (channel === 'qq') eventBase.chatType = 'private'
+    eventBase.chatType = ({ telegram: 'private', feishu: 'p2p', qq: 'private', wxpusher: 'private', wechat: 'private', dingtalk: '1' })[channel]
     const ok = canAcceptCommand(policy, { eventId: 'ok', ...eventBase })
     assert.equal(ok.ok, true, `${channel}: correct source accepted`)
     // Wrong channel → rejected
@@ -143,7 +153,7 @@ test('All channels: source binding is exact for channel/accountId/userId/chatId/
       eventId: 'wc', ...eventBase, channel: 'other',
     })
     assert.equal(wrongChan.ok, false, `${channel}: wrong channel rejected`)
-    assert.equal(wrongChan.reason, 'source_mismatch_channel')
+    assert.ok(['source_mismatch_channel', 'source_chat_type_unknown'].includes(wrongChan.reason))
     // Wrong account → rejected
     const wrongAcc = canAcceptCommand(policy, {
       eventId: 'wa', ...eventBase, accountId: 'evil',

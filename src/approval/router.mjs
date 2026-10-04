@@ -267,7 +267,7 @@ export function registerApprovalHandler(deps, strings) {
           && (target.userId === undefined || String(target.userId) === event.userId)
         ))
         if (input.trusted !== true) return exact
-        return exact || isAuthorizedDecider(identity, event.channel, event.userId)
+        return exact || isAuthorizedDecider(identity, event.channel, event.accountId, event.userId)
       },
       settle: (input) => settleThroughLedger(input),
     })
@@ -493,7 +493,7 @@ export function registerApprovalHandler(deps, strings) {
     if (pending === null) return false
     // CRACK-003 归属闸：exact（卡片发本人）直接放行；onChannel/intended 属他人卡片或
     // 广播兜底——仅 owner 可代决。identity 缺失/异常一律 fail-closed 拒绝。
-    const allowed = pending.evidence === 'exact' || isAuthorizedDecider(identity, envelope.channel, envelope.userId)
+    const allowed = pending.evidence === 'exact' || isAuthorizedDecider(identity, envelope.channel, envelope.accountId, envelope.userId)
     if (!allowed) {
       warn(`编号回复归属拒绝 ${pending.key}（evidence=${pending.evidence}，user ${envelope.userId} 非 owner）`)
       const inbound = interactiveByChannel.get(envelope.channel)
@@ -529,9 +529,14 @@ export function registerApprovalHandler(deps, strings) {
   const disposeMessage = bus.onMessage(handleNumberedReply, { priority: MESSAGE_PRIORITY.numberedReply })
 
   /** CRACK-003：编号回复代决资格——仅该渠道绑定的 owner 可代决他人卡片；identity 缺失/异常 fail-closed。 */
-  function isAuthorizedDecider(identity, channel, userId) {
+  function isAuthorizedDecider(identity, channel, accountId, userId) {
     if (!identity) return false
-    try { return identity.list(channel).some((r) => String(r.userId) === String(userId) && r.role === 'owner') } catch { return false }
+    const account = String(accountId ?? '').trim()
+    if (account === '') return false
+    try {
+      return identity.list(channel).some((r) => r.accountId !== undefined && String(r.accountId) === account
+        && String(r.userId) === String(userId) && r.role === 'owner')
+    } catch { return false }
   }
 
   const handler = async (request, next) => {

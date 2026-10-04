@@ -38,7 +38,7 @@ function memoryStore(initial = {}) {
 const rowOf = (rows, type) => rows.find((row) => row.type === type)
 
 test('R6：入站 configured=true 绝不推 active=true——无 runtime 时 active=false/restartPending=true', () => {
-  const store = memoryStore({ 'feishu:account': { appId: 'a', appSecret: 's' } })
+  const store = memoryStore({ 'feishu:account': { appId: 'a', appSecret: 's' }, 'private-chat:feishu:enabled': true })
   const port = createInboundChannelConfigPort({ store })
 
   const feishu = rowOf(port.rows(), 'feishu')
@@ -55,7 +55,7 @@ test('R6：入站 configured=true 绝不推 active=true——无 runtime 时 act
 })
 
 test('R6：runtime 注入后 active 才跟随真实 lifecycle（在线/离线两个方向）', () => {
-  const store = memoryStore({ 'feishu:account': { appId: 'a', appSecret: 's' } })
+  const store = memoryStore({ 'feishu:account': { appId: 'a', appSecret: 's' }, 'private-chat:feishu:enabled': true })
   let state = { state: 'connected', active: true, restartPending: false }
   const port = createInboundChannelConfigPort({ store, runtime: () => state })
 
@@ -68,7 +68,7 @@ test('R6：runtime 注入后 active 才跟随真实 lifecycle（在线/离线两
 })
 
 test('R6：runtime 查询抛错必须 fail-closed 成未在线，绝不外泄异常', () => {
-  const store = memoryStore({ 'feishu:account': { appId: 'a' } })
+  const store = memoryStore({ 'feishu:account': { appId: 'a', appSecret: 's' }, 'private-chat:feishu:enabled': true })
   const port = createInboundChannelConfigPort({ store, runtime: () => { throw new Error('probe exploded') } })
   const feishu = rowOf(port.rows(), 'feishu')
   assert.equal(feishu.active, false)
@@ -76,7 +76,7 @@ test('R6：runtime 查询抛错必须 fail-closed 成未在线，绝不外泄异
 })
 
 test('R6：Native 投影 control.active 取运行时真值，不再取 persisted enabled', () => {
-  const store = memoryStore({ 'feishu:account': { appId: 'a', appSecret: 's' } })
+  const store = memoryStore({ 'feishu:account': { appId: 'a', appSecret: 's' }, 'private-chat:feishu:enabled': true })
   const offline = createInboundChannelConfigPort({ store })
   const projection = createChannelProjection({
     inboundConfig: offline,

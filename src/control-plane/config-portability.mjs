@@ -33,6 +33,7 @@ import { INBOUND_FIELDS } from '../inbound/channel-config.mjs'
 import { INBOUND_CHANNELS, INBOUND_CHANNEL_SET } from '../inbound/channels-registry.mjs'
 import { toInboundChannelName } from '../inbound/capability-matrix.mjs'
 import { transactDurable } from '../inbound/store.mjs'
+import { createHash } from 'node:crypto'
 import { isPublicExposure } from '../security/exposure.mjs'
 import { splitSecretPatch } from '../security/secret-patch.mjs'
 
@@ -428,6 +429,21 @@ export function createConfigPortabilityService({
     return { missing, present }
   }
 
+  // Keep an in-memory one-way baseline for secrets. This detects a credential
+  // change after preview without exposing its value in preview data or state.
+  function secretFingerprintsOf(direction, type) {
+    const raw = direction === 'outbound' ? (plain(outboundConfig?.raw?.(type)) ?? {}) : inboundRawOf(type)
+    const secretKeys = direction === 'outbound' ? outboundSecretKeys(type) : inboundSecretKeys(type)
+    const fingerprints = {}
+    for (const key of secretKeys) {
+      const value = raw[key]
+      fingerprints[key] = value === undefined || value === null || value === ''
+        ? null
+        : createHash('sha256').update(String(value)).digest('hex')
+    }
+    return fingerprints
+  }
+
   function planFor(entry, index, externalReferences = []) {
     const current = currentPublicOf(entry.direction, entry.type)
     const secrets = secretStateOf(entry.direction, entry.type)
@@ -463,7 +479,12 @@ export function createConfigPortabilityService({
       currentEnabled: current.enabled === true,
       // Gate 2B：预览时点基线——commit 时只比较「本次 selection 涉及的字段」，
       // 判断目标是否在预览后被并发改动（stale-preview）。绝不放进预览响应投影。
-      baseline: { config: clone(current.config), configured: current.configured === true, enabled: current.enabled === true },
+      baseline: {
+        config: clone(current.config),
+        secretFingerprints: secretFingerprintsOf(entry.direction, entry.type),
+        configured: current.configured === true,
+        enabled: current.enabled === true,
+      },
       importEnabled: entry.enabled === true,
       importEnabledEffect: decision === 'add' ? false : current.enabled === true,
       changes,
@@ -591,13 +612,17 @@ export function createConfigPortabilityService({
    * A mismatch means a concurrent write changed the target since the preview; the
    * commit is refused with zero writes and the token is kept for a fresh preview.
    */
-  function staleFieldOf(entry, patch) {
+  function staleFieldOf(entry, patch, clear) {
     const current = currentPublicOf(entry.direction, entry.type)
     if (entry.decision === 'add') return current.configured ? 'configured' : null
     for (const key of Object.keys(patch)) {
       const before = entry.baseline?.config?.[key]
       const now = current.config[key]
       if (JSON.stringify(before) !== JSON.stringify(now)) return key
+    }
+    const currentSecrets = secretFingerprintsOf(entry.direction, entry.type)
+    for (const key of clear) {
+      if ((entry.baseline?.secretFingerprints?.[key] ?? null) !== (currentSecrets[key] ?? null)) return key
     }
     return null
   }
@@ -648,7 +673,7 @@ export function createConfigPortabilityService({
         continue
       }
       const { patch, clear } = resolveSelection(entry, selection)
-      const stale = staleFieldOf(entry, patch)
+      const stale = staleFieldOf(entry, patch, clear)
       if (stale !== null) {
         // Zero writes; the token stays cached so the caller can re-preview or cancel.
         const error = new Error(`预览已过期：${entry.direction}:${entry.type} 的 "${stale}" 在预览后被改动，请重新导入`)
@@ -711,7 +736,13 @@ export function createConfigPortabilityService({
         continue
       }
       if (entry.direction === 'outbound') {
-        const applied = outboundConfig.applyCommitted(entry.type, committedCanonical.get(`${entry.direction}:${entry.type}`))
+        let applied
+        try {
+          applied = outboundConfig.applyCommitted(entry.type, committedCanonical.get(`${entry.direction}:${entry.type}`))
+        } catch {
+          results.push({ direction: 'outbound', type: entry.type, action: 'observation-gap', committed: true, applied: false, applyMode: 'unknown' })
+          continue
+        }
         results.push({
           direction: 'outbound',
           type: entry.type,
@@ -721,7 +752,13 @@ export function createConfigPortabilityService({
           enabled: currentPublicOf('outbound', entry.type).enabled === true,
         })
       } else {
-        const applied = inboundConfig.applyCommitted(entry.type)
+        let applied
+        try {
+          applied = inboundConfig.applyCommitted(entry.type)
+        } catch {
+          results.push({ direction: 'inbound', type: entry.type, action: 'observation-gap', committed: true, applied: false, applyMode: 'unknown' })
+          continue
+        }
         results.push({
           direction: 'inbound',
           type: entry.type,

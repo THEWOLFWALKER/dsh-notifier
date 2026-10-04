@@ -11,21 +11,6 @@ import { randomBytes } from 'node:crypto'
 import { stringsOf } from './strings.mjs'
 import { createInteractionLedger } from './interaction/ledger.mjs'
 
-// CRACK-001（破甲轮 P0）：缺来源元数据的动作卡的升级迁移宽限窗，上界对齐 token TTL
-// （tokens.mjs 默认 10min）——升级瞬间在途的旧卡本就只剩 ≤10min 生命期，窗外一律
-// fail-closed，绝不产生永久免检卡。
-const LEGACY_SOURCE_GRACE_MS = 10 * 60 * 1000
-
-/**
- * CRACK-001：仅「缺来源元数据」（srcChats 为 undefined/null）且带可核时间戳的
- * 升级在途卡适用宽限；新卡（有 srcChats）绝不进此路径，仍走严校验。
- */
-function graceSourceAllowed(row) {
-  if (row.srcChats !== undefined && row.srcChats !== null) return false
-  if (typeof row.createdAt !== 'number') return false
-  return Date.now() - row.createdAt <= LEGACY_SOURCE_GRACE_MS
-}
-
 // strings 未接线时的 zh 兜底（逐字节等于原字面量；wiring 统一传 stringsOf(lang) 后可移除）。
 const ZH_FALLBACK = stringsOf()
 
@@ -55,8 +40,8 @@ export function createActionDispatcher({ vault = null, store = null, logger = nu
    * uncertain 证据（见 dispatch 的 row.status==='claimed' 分支），故此处只审计
    * `terminal-persist-failed`，绝不伪装已落盘、也不额外写恢复标记（避免多余写盘）。
    */
-  const finalizeAction = (actionKey, outcome, extra = {}) => {
-    const result = ledger.resolve(actionKey, outcome, extra, { claimedSettle: true })
+  const finalizeAction = (actionKey, outcome, extra = {}, executionId = undefined) => {
+    const result = ledger.resolve(actionKey, outcome, extra, executionId === undefined ? {} : { executionId })
     if (result === 'storage-failed') {
       warn(`动作 ${actionKey} 终态未落盘（terminal-persist-failed），重启后按 uncertain 诊断，不重执行`)
       return { ok: false, uncertain: true }
@@ -172,9 +157,7 @@ export function createActionDispatcher({ vault = null, store = null, logger = nu
      * 核销并执行动作（通道回调入口）。
      * @param {object} [opts.chatId] - v0.8.4 F-08 点击所在的会话（通道回调透传）。
      *   账本已记录来源会话（srcChats）时：点击会话必须在该通道允许集合内，否则拒绝
-     *   （source-chat-mismatch）；缺点击会话（新卡必须带）→ 拒绝。缺来源元数据的
-     *   升级在途旧卡（undefined/null）→ 仅升级宽限窗内放行（CRACK-001，10min 上界
-     *   = token TTL），窗外 fail-closed 拒绝；放行与拒绝均显式 warn，绝不静默。
+     *   （source-chat-mismatch）；缺点击会话或缺来源记录均拒绝。
      * @param {object} [opts.accountId] - v0.8.7 本地账号标识（通道 resolver 注入，如
      *   telegram/feishu 的 resolved accountId）。必须原样转发进 Control Core 的 'stop'
      *   载荷——缺失时按 missing_accountId fail-closed，绝不回退 channel 名。
@@ -239,8 +222,7 @@ export function createActionDispatcher({ vault = null, store = null, logger = nu
           return { ok: false, reason: 'already-resolved', message: t.actions.alreadyHandled }
         }
         // v0.8.4 F-08：来源会话校验（对齐 SEC-1 / questions.decide 的 chatId 比对）。
-        // 账本无来源元数据（undefined/null）→ CRACK-001 fail-closed：仅升级宽限窗内
-        // 放行且显式 warn，窗外拒绝；绝不静默——每条路径都告警。新卡（有 srcChats）必须校验。
+        // 缺来源记录无法证明目标私聊，不根据时间或旧 schema 自动放行。
         const srcChats = (row.srcChats !== null && typeof row.srcChats === 'object' && !Array.isArray(row.srcChats))
           ? row.srcChats
           : null
@@ -256,14 +238,8 @@ export function createActionDispatcher({ vault = null, store = null, logger = nu
             return { ok: false, reason: 'source-chat-mismatch', message: t.actions.useOriginalChat }
           }
         } else {
-          // CRACK-001：缺来源元数据(undefined/null)或异常形状（数组等）一律 fail-closed，
-          // 仅升级宽限窗内对 undefined/null 放行（createdAt 有效且 <=10min）；窗外/异常形状拒绝。
-          if (graceSourceAllowed(row)) {
-            warn(`动作 ${actionKey} 缺来源会话元数据(srcChats)，按升级宽限窗口放行(仅限升级后10min内)`)
-          } else {
-            warn(`动作 ${actionKey} 缺来源会话元数据(srcChats)，拒绝(fail-closed: 无来源授权)`)
-            return { ok: false, reason: 'source-chat-mismatch', message: t.actions.useOriginalChat }
-          }
+          warn(`动作 ${actionKey} 缺来源会话元数据(srcChats)，拒绝(fail-closed: 无来源授权)`)
+          return { ok: false, reason: 'source-chat-mismatch', message: t.actions.useOriginalChat }
         }
         const handler = handlers.get(row.kind)
         if (handler === undefined) {
@@ -285,12 +261,12 @@ export function createActionDispatcher({ vault = null, store = null, logger = nu
             : (ok ? t.actions.executed : t.actions.notEffective)
           // claim 后的终局落地只允许同一执行显式完成；落盘失败会标记 uncertain，
           // 供重启后的不确定诊断使用，不再自动执行。
-          finalizeAction(actionKey, ok ? 'done' : 'handler-declined', { via })
+          finalizeAction(actionKey, ok ? 'done' : 'handler-declined', { via }, claim.executionId)
           warn(`动作 ${actionKey} 裁决 via ${via}（user ${userId}）: ${ok ? 'done' : 'handler-declined'}`)
           return { ok: true, message }
         } catch (error) {
           const reason = error instanceof Error ? error.message : String(error)
-          finalizeAction(actionKey, 'handler-error', { via })
+          finalizeAction(actionKey, 'handler-error', { via }, claim.executionId)
           warn(`动作 handler 异常（已核销）: ${reason}`)
           return { ok: true, message: t.actions.handlerErrorReceipt }
         }

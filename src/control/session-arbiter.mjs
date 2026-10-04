@@ -13,6 +13,14 @@ const MAX_APPROVAL_MEMBERS = 64
 /** Per-session control overlay string bound (owner / member ids): far above any real id, bounds garbage. */
 const MAX_OVERLAY_STRING = 128
 const GLOBAL_IDS = new Set(['*', 'all', 'everyone', 'anyone'])
+const PRIVATE_CHAT_TYPES = Object.freeze({
+  telegram: new Set(['private']),
+  feishu: new Set(['p2p']),
+  qq: new Set(['private', 'p2p', '1']),
+  dingtalk: new Set(['1']),
+  wxpusher: new Set(['private']),
+  wechat: new Set(['private']),
+})
 const looksGlobal = (value) => value.includes('*') || GLOBAL_IDS.has(String(value).toLowerCase())
 
 function normalizeApprovalMembers(input) {
@@ -111,20 +119,12 @@ function bound(value) {
   return text(value)
 }
 
-/** Classify provider-neutral chat scope, keeping QQ legacy compatibility narrow. */
+/** Classify only chat scopes explicitly reported by the provider adapter. */
 export function chatScopeOf(event) {
+  const channel = String(event?.channel ?? '').trim().toLowerCase()
   const type = String(event?.chatType ?? '').trim().toLowerCase()
-  if (String(event?.channel ?? '').trim().toLowerCase() === 'qq') {
-    if (type === 'group' || type === 'supergroup' || type === '2' || type === 'chat') return 'group'
-    if (type === 'private' || type === 'p2p' || type === '1') return 'private'
-    // Pre-chatType C2C envelopes are safe to retain only when the provider
-    // shape itself proves a one-to-one user/chat binding. A group_openid
-    // cannot pass this compatibility path because it differs from userId.
-    if (type === '' && bound(event?.chatId) !== null && bound(event?.userId) !== null && bound(event.chatId) === bound(event.userId)) return 'private'
-    return 'unknown'
-  }
-  if (type === 'group' || type === 'supergroup' || type === '2' || type === 'chat') return 'group'
-  return 'private'
+  if (type === 'group' || type === 'supergroup' || type === '2' || type === 'chat' || type === 'topic') return 'group'
+  return PRIVATE_CHAT_TYPES[channel]?.has(type) === true ? 'private' : 'unknown'
 }
 
 function isGroupChat(event) {
@@ -139,8 +139,12 @@ function isGroupChat(event) {
 
 // Shared admission for messages, pairing, approvals and questions. Deny before routing.
 export function privateControlAdmission(event = {}) {
-  if (isGroupChat(event)) return { ok: false, reason: 'group_chat_disabled' }
-  if (String(event.channel ?? '').toLowerCase() === 'qq' && chatScopeOf(event) === 'unknown') return { ok: false, reason: 'source_chat_type_unknown' }
+  const scope = chatScopeOf(event)
+  if (scope === 'group' || isGroupChat(event)) return { ok: false, reason: 'group_chat_disabled' }
+  if (scope !== 'private') return { ok: false, reason: 'source_chat_type_unknown' }
+  for (const field of ['channel', 'accountId', 'userId', 'chatId']) {
+    if (bound(event[field]) === null) return { ok: false, reason: `source_missing_${field}` }
+  }
   return { ok: true }
 }
 

@@ -133,7 +133,7 @@ export function summarizeChannels(rows) {
 }
 
 /** 能力摘要：只回答可用性与计数，缺失/抛错一律 unavailable/unknown，绝不谎报可用。 */
-export function capabilitiesSnapshot({ questions, sessions, bindings, members, advancedConsole } = {}) {
+export function capabilitiesSnapshot({ questions, sessions, bindings, members } = {}) {
   const pending = safeCall(questions?.list, null)
   const sessionRows = safeCall(sessions?.list, null)
   return {
@@ -153,9 +153,6 @@ export function capabilitiesSnapshot({ questions, sessions, bindings, members, a
       available: typeof members?.list === 'function',
       removable: members?.canRemove === true,
     },
-    advancedConsole: advancedConsole === 'available' || advancedConsole === 'unavailable'
-      ? advancedConsole
-      : 'unknown',
   }
 }
 
@@ -181,11 +178,11 @@ export function recentFailures(items) {
  * 任一项读取抛错都只降级该项，绝不让整个快照失败。
  */
 export function buildDiagnosticsSnapshot(deps = {}) {
-  const { version, revision, hostCapabilities, storage, channels, questions, sessions, bindings, members, activity, advancedConsole, now = Date.now } = deps
+  const { version, revision, hostCapabilities, storage, channels, questions, sessions, bindings, members, activity, now = Date.now } = deps
   const current = safeCall(revision?.current, { epoch: 'unknown', revision: 0, at: null })
   const storageView = storageSnapshot(safeCall(storage, {}))
   const channelSummary = summarizeChannels(safeCall(channels?.list, []))
-  const capabilities = capabilitiesSnapshot({ questions, sessions, bindings, members, advancedConsole })
+  const capabilities = capabilitiesSnapshot({ questions, sessions, bindings, members })
   const activityRows = safeCall(() => activity?.list?.({ limit: 50 }), [])
   const failures = recentFailures(activityRows)
   const host = safeCall(hostCapabilities, null)

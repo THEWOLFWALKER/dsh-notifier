@@ -9,7 +9,7 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { registerConversationRouter } from '../src/inbound/conversation.mjs'
-import { createInboundBus } from '../src/inbound/bus.mjs'
+import { createPrivateFlowBus as createInboundBus } from './helpers/private-flow-bus.mjs'
 import { createStore } from '../src/inbound/store.mjs'
 import { createAgentRouter } from '../src/routing/agent-router.mjs'
 import { createSessionRegistry } from '../src/routing/session-registry.mjs'
@@ -36,7 +36,7 @@ function makeAgent(id = SID, status = 'idle') {
 
 function makeRig({ agents = [], downloadImageBytes, attachments, bind } = {}) {
   const store = createStore(tempPath())
-  const bus = createInboundBus({ allowUsers: ['42'], store })
+  const bus = createInboundBus({ store })
   const handlers = {}
   const agentMap = new Map(agents.map((a) => [a.id, a]))
   const ctx = {
@@ -63,7 +63,7 @@ function makeRig({ agents = [], downloadImageBytes, attachments, bind } = {}) {
   const dispose = registerConversationRouter(deps)
   const userSays = (payload) => {
     const { userId = '42', chatId = userId, text = '', image } = payload
-    bus.accept({ channel: 'telegram', userId, chatId, messageId: `m${Math.random()}`, text, ...(image === undefined ? {} : { image }) })
+    bus.accept({ channel: 'telegram', accountId: 'tg-app', userId, chatId, chatType: 'private', messageId: `m${Math.random()}`, text, ...(image === undefined ? {} : { image }) })
   }
   const flush = async (payload) => { userSays(payload); await sleep(FLUSH_MS + 10) }
   const fire = (event, p) => (handlers[event] ?? []).forEach((h) => h(p))

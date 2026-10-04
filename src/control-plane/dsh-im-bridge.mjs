@@ -16,15 +16,11 @@ function bridgeError(message, code) {
   error.code = code
   return error
 }
-function stableValue(value) {
-  if (Array.isArray(value)) return value.map(stableValue)
-  if (!isRecord(value)) return value
-  return Object.fromEntries(Object.keys(value).sort().map(key => [key, stableValue(value[key])]))
-}
-/** SHA-256(UTF-8 JSON({kind,route})), with object keys sorted. */
+/** SHA-256(UTF-8 JSON({kind,route})); sort only route's own keys, as upstream does. */
 export function expectedTargetDigest(target) {
   if (!isRecord(target) || !str(target.kind) || !isRecord(target.route)) return null
-  return createHash('sha256').update(JSON.stringify({ kind: str(target.kind), route: stableValue(target.route) }), 'utf8').digest('hex')
+  const route = Object.fromEntries(Object.entries(target.route).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0))
+  return createHash('sha256').update(JSON.stringify({ kind: str(target.kind), route }), 'utf8').digest('hex')
 }
 function errorCode(error) { return str(error?.code).replace(/^dsh-im\//, '').toLowerCase() }
 function looksUncertain(error) {
@@ -97,14 +93,18 @@ export function createDshImBridge({ readService = null, ctx = null, warn = null,
     const botId = str(raw.botId ?? raw.id ?? description.botId)
     if (!botId) return null
     const channel = str(description.channel ?? raw.channel)
-    const label = str(description.label ?? description.name ?? raw.label ?? raw.name) || botId
-    const accountFingerprint = str(description.accountFingerprint ?? description.fingerprint)
+    const label = str(description.label ?? description.name ?? description.account?.name ?? raw.label ?? raw.name) || botId
+    // dsh-im contract v1 returns `{ version: 1, account: { fingerprint, name? } }`.
+    // Do not accept guessed flat aliases: they can make a stale/local mock look verified.
+    const accountFingerprint = str(description.account?.fingerprint)
     const capabilities = Array.isArray(description.capabilities) ? description.capabilities : []
     return {
       botId, ...(channel ? { channel } : {}), label,
       ...(isFingerprint(accountFingerprint) ? { accountFingerprint } : {}),
       connected: description.connected === true,
-      checked: capabilities.includes('proactive-text-checked') && isFingerprint(accountFingerprint),
+      checked: description.version === 1
+        && capabilities.includes('proactive-text-checked')
+        && isFingerprint(accountFingerprint),
     }
   }
   const findBot = async (service, botId, signal) => {
@@ -147,7 +147,10 @@ export function createDshImBridge({ readService = null, ctx = null, warn = null,
     const raw = await withDeadline(() => service.listTargets(bot.botId), { timeoutMs: readTimeoutMs, signal })
     const rows = Array.isArray(raw) ? raw : Array.isArray(raw?.targets) ? raw.targets : []
     return rows.flatMap(target => {
-      if (!isRecord(target)) return []
+      // dsh-notifier only permits private targets. dsh-im's v1 Feishu target
+      // contract calls these `user`; `group` is a valid upstream target, but
+      // outside this product's outbound scope.
+      if (!isRecord(target) || target.kind !== 'user') return []
       const targetId = str(target.targetId ?? target.id)
       const digest = expectedTargetDigest(target)
       if (!targetId || !digest) return []
@@ -172,6 +175,7 @@ export function createDshImBridge({ readService = null, ctx = null, warn = null,
       const targets = Array.isArray(rawTargets) ? rawTargets : Array.isArray(rawTargets?.targets) ? rawTargets.targets : []
       const target = targets.find(row => isRecord(row) && str(row.targetId ?? row.id) === targetId)
       if (!target) return rejected('unknown-target')
+      if (target.kind !== 'user') return rejected('private-target-required')
       if (expectedTargetDigest(target) !== targetDigest) return rejected('target-changed')
       if (observe() !== service) return unknown('service-replaced')
       const startEpoch = epoch

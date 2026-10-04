@@ -14,7 +14,7 @@
 // 码级 locked 态保留，由管理台显式锁定（可疑活动人工处置）触达。
 
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
-import { bindingKey, principalKey } from './identity.mjs'
+import { principalKey } from './identity.mjs'
 import { setDurable, transactDurable, transactOutcome } from './store.mjs'
 
 const KEY_CODES = 'inbound:pairing'
@@ -24,10 +24,9 @@ const KEY_LOCKOUT = 'inbound:pairing:lockout'
  * binding/principal 键规则同源——默认账号沿用旧复合键 `<channel>:<userId>`（存量锁出记录
  * 因此天然只作用于 default，不会被误扩散到其它账号），非默认账号用 `<channel>:<accountId>:<userId>`。
  */
-const DEFAULT_ACCOUNT_ID = 'default'
 function principalUserKey(channel, accountId, userId) {
-  const account = String(accountId ?? '').trim() || DEFAULT_ACCOUNT_ID
-  if (account === DEFAULT_ACCOUNT_ID) return bindingKey(channel, userId)
+  const account = String(accountId ?? '').trim()
+  if (account === '' || account === 'default') return ''
   return principalKey(channel, account, userId)
 }
 /** 31 字符字母表：剔除 I/L/O/0/1 手机手输易混字符；8 位 ≈ 39.6 bit 熵。 */
@@ -399,11 +398,12 @@ export function createPairing(options = {}) {
      * C4 application transaction：配对成功路径把 code、binding、lockout 清理放进
      * 同一个 detached state draft。bindInDraft 只能改 draft，不能自行写盘。
      */
-    redeemAndBind(code, { channel, accountId = DEFAULT_ACCOUNT_ID, userId, label = '', now = Date.now() } = {}, bindInDraft) {
+    redeemAndBind(code, { channel, accountId, userId, label = '', now = Date.now() } = {}, bindInDraft) {
       if (store === null || typeof bindInDraft !== 'function') {
         return { ok: false, reason: 'transaction-unavailable' }
       }
       const userKey = principalUserKey(channel, accountId, userId)
+      if (userKey === '') return { ok: false, reason: 'invalid-account' }
       const normalized = String(code ?? '').trim().toUpperCase()
       const outcome = { ok: false, reason: 'invalid-code' }
       const audits = []
@@ -473,8 +473,9 @@ export function createPairing(options = {}) {
      * @param {{ channel: string, accountId?: string, userId: string, label?: string, now?: number }} who
      * @returns {{ ok: boolean, reason?: string, entry?: object }}
      */
-    redeem(code, { channel, accountId = DEFAULT_ACCOUNT_ID, userId, label = '', now = Date.now() } = {}) {
+    redeem(code, { channel, accountId, userId, label = '', now = Date.now() } = {}) {
       const userKey = principalUserKey(channel, accountId, userId)
+      if (userKey === '') return { ok: false, reason: 'invalid-account' }
       const normalized = String(code ?? '').trim().toUpperCase()
       const settled = { ok: false, reason: 'invalid-code' }
       const audits = []
@@ -579,8 +580,9 @@ export function createPairing(options = {}) {
     },
 
     /** 诊断用：用户是否处于锁出期（accountId 缺省 = default 账号，与旧调用兼容）。 */
-    isLockedOut(channel, userId, now = Date.now(), accountId = DEFAULT_ACCOUNT_ID) {
-      return isLockedOut(principalUserKey(channel, accountId, userId), now)
+    isLockedOut(channel, userId, now = Date.now(), accountId) {
+      const key = principalUserKey(channel, accountId, userId)
+      return key !== '' && isLockedOut(key, now)
     },
   }
 }

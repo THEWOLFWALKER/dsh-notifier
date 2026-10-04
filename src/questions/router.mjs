@@ -270,7 +270,7 @@ export function createQuestionBridge(deps, strings) {
         ))
         if (input.trusted !== true) return exact
         if (accountBound) return exact
-        return exact || isAuthorizedDeciderQ(identity, event.channel, event.userId)
+        return exact || isAuthorizedDeciderQ(identity, event.channel, event.accountId, event.userId)
       },
       settle: (input) => input.trusted === true
         ? settle(input.qKey ?? input.key, ledger.get(input.qKey ?? input.key), input.optIdxes, input.via, input.userId)
@@ -332,7 +332,7 @@ export function createQuestionBridge(deps, strings) {
           multiSelect: isMulti,
         })
         if (card !== null) {
-          pushedTo.push({ channel: inbound.channel, ...(inbound.accountId === undefined ? {} : { accountId: String(inbound.accountId ?? '') }), chatId: target.chatId, userId: target.userId, messageId: card.messageId, kind: 'aq' })
+          pushedTo.push({ channel: inbound.channel, ...(inbound.accountId === undefined ? {} : { accountId: String(inbound.accountId ?? '') }), chatId: target.chatId, userId: target.userId, chatType: target.chatType ?? inbound.privateChatType ?? ({ feishu: 'p2p', dingtalk: '1', qq: 'private', telegram: 'private', wxpusher: 'private', wechat: 'private' }[inbound.channel]), messageId: card.messageId, kind: 'aq' })
           const targetKey = `${inbound.channel}\u0000${target.chatId}\u0000${target.userId}`
           if (!escalationTargetKeys.has(targetKey)) {
             escalationTargetKeys.add(targetKey)
@@ -758,7 +758,9 @@ export function createQuestionBridge(deps, strings) {
       via: 'admin:web',
       channel: String(target.channel ?? ''),
       accountId: String(target.accountId ?? ''),
+      userId: String(target.userId ?? ''),
       chatId: String(target.chatId ?? ''),
+      chatType: target.chatType,
       // 终端动作仍走问题桥既有裁决核心（settle/decline），由 Control Core onSettle 调起；
       // 捕获真实首达结果供下面区分 already-handled 与「本侧胜出」。
       settle: () => {
@@ -792,7 +794,7 @@ export function createQuestionBridge(deps, strings) {
     }
     if (reason === 'source_mismatch_channel' || reason === 'source_mismatch_chatId' || reason === 'source_mismatch_accountId'
       || reason === 'source_mismatch_userId' || reason === 'not_paired' || reason === 'source_policy_rejected' || reason === 'owner_only') {
-      return { ok: false, handled: false, reason: 'unauthorized', message: '管理台不满足该问题的来源/身份授权（无法确证 owner/admin）' }
+      return { ok: false, handled: false, reason: 'unauthorized', message: '当前 Native 来源不满足该问题的身份授权（无法确证 owner）' }
     }
     return { ok: false, handled: false, reason: 'not_available', message: '该问题结算当前不可用（Control Core 未接线或已拒绝）' }
   }
@@ -909,7 +911,7 @@ export function createQuestionBridge(deps, strings) {
     // CRACK-004 归属闸：exact 已是当事人级命中（同 user 同 chat），直接放行；
     // hint 属广播兜底——仅该渠道绑定的 owner 可代答。identity 缺失/异常一律 fail-closed。
     // 拒绝语义：消费裸编号（不进对话路由）+ 回执提示，问题保持待决，原提问者仍可作答。
-    const allowed = pending.evidence === 'exact' || isAuthorizedDeciderQ(identity, envelope.channel, envelope.userId)
+    const allowed = pending.evidence === 'exact' || isAuthorizedDeciderQ(identity, envelope.channel, envelope.accountId, envelope.userId)
     if (!allowed) {
       warn(`提问编号越权拒绝 ${pending.key}（evidence=${pending.evidence}，user ${envelope.userId} 非 owner）`)
       sendFeedback(t.notAuthorizedToAnswer)
@@ -945,9 +947,14 @@ export function createQuestionBridge(deps, strings) {
   }
 
   /** CRACK-004：hint 编号兜底代答资格——仅该渠道绑定的 owner 可代答；identity 缺失/异常 fail-closed。 */
-  function isAuthorizedDeciderQ(identity, channel, userId) {
+  function isAuthorizedDeciderQ(identity, channel, accountId, userId) {
     if (!identity) return false
-    try { return identity.list(channel).some((r) => String(r.userId) === String(userId) && r.role === 'owner') } catch { return false }
+    const account = String(accountId ?? '').trim()
+    if (account === '') return false
+    try {
+      return identity.list(channel).some((r) => r.accountId !== undefined && String(r.accountId) === account
+        && String(r.userId) === String(userId) && r.role === 'owner')
+    } catch { return false }
   }
 
   let disposeMessage = null

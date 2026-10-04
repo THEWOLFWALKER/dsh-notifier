@@ -27,8 +27,8 @@ test('plugins docs: H2 and H3 counts match between zh and en', () => {
 })
 
 test('plugins docs: required sections are present in both languages', () => {
-  const zhRequired = ['30 秒上手', '服务获取', 'push API', '限流', 'sent 事件', 'flush', '三态语义', '版本与兼容', '完整示例', 'dsh-notifier/testing', 'dsh-notifier/types', '真机验证记录', 'FAQ']
-  const enRequired = ['quick start', 'Getting the service', 'push API', 'Rate limiting', 'sent event', 'flush', 'Three-state', 'Version and compatibility', 'Full example', 'dsh-notifier/testing', 'dsh-notifier/types', 'On-device verification', 'FAQ']
+  const zhRequired = ['30 秒上手', '服务获取', 'push API', '限流', 'sent 事件', 'flush', '服务状态与推送结果', '版本与兼容', '完整示例', 'dsh-notifier/testing', 'dsh-notifier/types', '真机验证记录', 'FAQ']
+  const enRequired = ['quick start', 'Getting the service', 'push API', 'Rate limiting', 'sent event', 'flush', 'Service state and push results', 'Version and compatibility', 'Full example', 'dsh-notifier/testing', 'dsh-notifier/types', 'On-device verification', 'FAQ']
   for (const heading of zhRequired) assert.equal(headings(zh, 2).some((h) => h.includes(heading)), true, `zh missing section: ${heading}`)
   for (const heading of enRequired) assert.equal(headings(en, 2).some((h) => h.includes(heading)), true, `en missing section: ${heading}`)
 })
@@ -47,7 +47,7 @@ test('plugins docs: table parity between zh and en', () => {
 test('plugins docs: en carries the current public API facts', () => {
   assert.match(en, /dsh-notifier\/testing/)
   assert.match(en, /dsh-notifier\/types/)
-  assert.match(en, /'0\.7'/, 'en must state the 0.7 public-surface version')
+  assert.match(en, /'0\.8'/, 'en must state the 0.8 public-surface version')
   assert.match(en, /metadata-only/, 'en must state the sent event is metadata-only')
 })
 

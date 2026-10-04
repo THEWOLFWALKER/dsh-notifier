@@ -31,17 +31,17 @@ void notifier.push(
   { title: 'Consumer demo', content: 'Hello from another plugin.' },
   { sourceName: 'consumer-demo' }, // 进账本与 sent 事件，便于审计
 ).then((result) => {
-  if (!result.ok) ctx.logger?.warn?.('push failed', result.failed)
+  ctx.logger?.debug?.('push evidence', result)
 })
 ```
 
-`push` **永不 reject**；返回 `{ ok, delivered, skipped, failed, source }`。`skipped` 常见值 `(malformed)` / `(disabled)` / `(rate-limited)` / `(quiet)`。
+`push` **永不 reject**；返回 `{ accepted, confirmed, unknown, failed, skipped, source }`。五类结果互斥；`unknown` 结果不确定且不能自动重试。非成功数组的每项都有 `{ channel, reason }`。`flush()` 返回 `{ drained: boolean }`。
 
 ## 4. 订阅 `sent`：metadata-only
 
 ```js
 ctx.on?.('dsh-notifier/sent', (record) => {
-  // record: { time, ok, delivered, skipped, failed, source, channel,
+  // record: { time, accepted, confirmed, unknown, skipped, failed, source, channel,
   //   titleLength, contentLength, titleBytes, contentBytes, hasContent }
   // 只有长度与字节数——永久不含 title/content/审批文本/原始错误正文。
 })
@@ -58,7 +58,7 @@ import { createFakeNotifier } from 'dsh-notifier/testing'
 
 const fake = createFakeNotifier({ sourceName: 'consumer-demo', now: () => 0 })
 const result = await fake.push({ title: 'T', content: 'C' }, { sourceName: 'consumer-demo' })
-// fake.version === '0.7'，fake.calls 为只读深拷贝
+// fake.version === '0.8'，fake.calls 为只读深拷贝
 ```
 
 fake `push` 同样永不 reject；`options.simulate: 'rate-limited' | 'disabled' | 'budget' | 'busy'` 可回放失败分支。

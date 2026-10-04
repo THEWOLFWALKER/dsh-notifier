@@ -16,20 +16,23 @@ import { setDurable } from '../inbound/store.mjs'
  * 解析六通道入站启用信号与 resolved 配置（不含微信 resolve——它在 apply 的
  * guided 装配块内晚绑定 resolveWechatInboundConfig；这里只出 wanted/raw 信号）。
  * @param {{ inboundRaw: object, approvalRaw: object, resolved: object, store: object,
- *           adminEnabled: boolean, warn: (msg: string) => void }} deps
+ *           warn: (msg: string) => void }} deps
  */
-export function resolveInboundSignals({ inboundRaw, approvalRaw, resolved, store, adminEnabled, warn }) {
-  // 阶段 4：inbound 白名单（allowUsers 为空 = 整栈不启动，默认全拒）。
-  const allowUsers = (Array.isArray(inboundRaw.allowUsers) ? inboundRaw.allowUsers : [])
-    .map((id) => String(id).trim())
-    .filter((id) => id !== '')
+export function resolveInboundSignals({ inboundRaw, approvalRaw, resolved, store, warn, privateChatEnabled = null }) {
+  const privateEnabled = (type) => {
+    if (typeof privateChatEnabled !== 'function') return true
+    try { return privateChatEnabled(type) === true } catch { return false }
+  }
   const tgRaw = (inboundRaw.telegram !== null && typeof inboundRaw.telegram === 'object') ? inboundRaw.telegram : {}
   // 便捷回退：未显式配置 inbound.telegram 时，复用出站 telegram 渠道的 botToken/chatId；
   // v0.3.3：admin 下再回落 store 的 telegram:account（UI/手写产物；出站 overlay 已含同源凭证，
   // 这里是 overlay resolve 失败时的兜底链尾）。
   const tgOutbound = resolved.channels.find((entry) => entry.type === 'telegram')
-  const tgAccount = adminEnabled ? accountOf(store, 'telegram:account') : null
-  const inboundBotToken = String(tgRaw.botToken ?? tgOutbound?.config?.botToken ?? tgAccount?.botToken ?? '').trim()
+  const tgAccount = (typeof privateChatEnabled === 'function' && privateEnabled('telegram'))
+    ? accountOf(store, 'telegram:account') : null
+  const inboundBotToken = privateEnabled('telegram')
+    ? String(tgRaw.botToken ?? tgOutbound?.config?.botToken ?? tgAccount?.botToken ?? '').trim()
+    : ''
   const notifyChatIds = Array.isArray(tgRaw.notifyChatIds) && tgRaw.notifyChatIds.length > 0
     ? tgRaw.notifyChatIds.map(String)
     : (tgOutbound != null && String(tgOutbound.config.chatId ?? '') !== ''
@@ -44,7 +47,7 @@ export function resolveInboundSignals({ inboundRaw, approvalRaw, resolved, store
   // 网页扫码授权后无需再改 YAML（inbound.feishu: {} 语义的自然延伸）。
   // 注意门槛是「显式提供了对象」而非「对象非空」——扫码授权的承诺就是 inbound.feishu: {} 即启用。
   const fsExplicit = inboundRaw.feishu !== null && typeof inboundRaw.feishu === 'object'
-  const fsWanted = fsExplicit || (adminEnabled && accountOf(store, 'feishu:account') !== null)
+  const fsWanted = privateEnabled('feishu') && (fsExplicit || accountOf(store, 'feishu:account') !== null)
   const fsRaw = fsExplicit ? inboundRaw.feishu : {}
   const feishuResolved = fsWanted
     ? resolveFeishuInboundConfig(resolveEnvRefs(fsRaw), { credentials: store.get('feishu:account') })
@@ -57,7 +60,7 @@ export function resolveInboundSignals({ inboundRaw, approvalRaw, resolved, store
   // v0.3.1：凭证缺省回落扫码 CLI 落盘的 qq:account（config 显式配置优先）。
   // v0.3.3：admin 开启时，store 存在 qq:account 本身即启用信号（同 feishu）。
   const qqExplicit = inboundRaw.qq !== null && typeof inboundRaw.qq === 'object'
-  const qqWanted = qqExplicit || (adminEnabled && accountOf(store, 'qq:account') !== null)
+  const qqWanted = privateEnabled('qq') && (qqExplicit || accountOf(store, 'qq:account') !== null)
   const qqRaw = qqExplicit ? inboundRaw.qq : {}
   const qqResolved = qqWanted
     ? resolveQqInboundConfig(resolveEnvRefs(qqRaw), { credentials: store.get('qq:account') })
@@ -69,7 +72,7 @@ export function resolveInboundSignals({ inboundRaw, approvalRaw, resolved, store
   // 或空对象走扫码落盘凭证）时启用；Stream 裸协议长连接，审批走编号回复。
   // v0.3.3：admin 开启时，store 存在 dingtalk:account 本身即启用信号（同 feishu）。
   const dtExplicit = inboundRaw.dingtalk !== null && typeof inboundRaw.dingtalk === 'object'
-  const dtWanted = dtExplicit || (adminEnabled && accountOf(store, 'dingtalk:account') !== null)
+  const dtWanted = privateEnabled('dingtalk') && (dtExplicit || accountOf(store, 'dingtalk:account') !== null)
   const dtRaw = dtExplicit ? inboundRaw.dingtalk : {}
   const dingtalkResolved = dtWanted
     ? resolveDingtalkInboundConfig(resolveEnvRefs(dtRaw), { credentials: store.get('dingtalk:account') })
@@ -84,7 +87,8 @@ export function resolveInboundSignals({ inboundRaw, approvalRaw, resolved, store
   // 在装配层做字段级合并（YAML 显式键优先覆盖 store）。
   const wxExplicit = (inboundRaw.wxpusher !== null && typeof inboundRaw.wxpusher === 'object')
     ? inboundRaw.wxpusher : {}
-  const wxAccount = adminEnabled ? accountOf(store, 'wxpusher:account') : null
+  const wxAccount = (typeof privateChatEnabled === 'function' && privateEnabled('wxpusher'))
+    ? accountOf(store, 'wxpusher:account') : null
   const wxMerged = { ...wxAccount, ...wxExplicit }
   // v0.7 密径持久化：webhookPath 未显式配置时复用 store 首铸密径——缺省每次启动
   // 随机换路径，用户已填进 WxPusher 控制台的回调 URL 立即失效（真机事故：每次
@@ -98,7 +102,7 @@ export function resolveInboundSignals({ inboundRaw, approvalRaw, resolved, store
       wxPathPersistNeeded = true // 本次 resolve 生成新随机密径，成功后落盘复用
     }
   }
-  const wxResolved = (Object.keys(wxExplicit).length > 0 || wxAccount !== null)
+  const wxResolved = privateEnabled('wxpusher') && (Object.keys(wxExplicit).length > 0 || wxAccount !== null)
     ? resolveWxpusherInboundConfig(resolveEnvRefs(wxMerged))
     : null
   if (wxResolved !== null && !wxResolved.ok) warn(`inbound.wxpusher 跳过: ${wxResolved.reason}`)
@@ -118,11 +122,10 @@ export function resolveInboundSignals({ inboundRaw, approvalRaw, resolved, store
   // v0.3.3：admin 开启时，store 的 wechat:account 本身即启用信号（同 feishu；
   // 凭证链不变——resolve 内部已回落 credentials）。
   const wechatExplicit = inboundRaw.wechat !== null && typeof inboundRaw.wechat === 'object'
-  const wechatWanted = wechatExplicit || (adminEnabled && accountOf(store, 'wechat:account') !== null)
+  const wechatWanted = privateEnabled('wechat') && (wechatExplicit || accountOf(store, 'wechat:account') !== null)
   const wechatRaw = wechatExplicit ? inboundRaw.wechat : {}
 
   return {
-    allowUsers, // 空 = 整栈不启动，默认全拒
     tgRaw: { ...tgOutbound?.config, ...tgAccount, ...tgRaw }, // 入站 telegram 原始行（装载块 config.apiBase 晚用）
     inboundBotToken,
     notifyChatIds,

@@ -220,12 +220,12 @@ test('R5：动作终态落盘失败 → 审计 terminal-persist-failed，handler
   let runs = 0
   dispatcher.register('turn/cancel', () => { runs += 1; return { ok: true } })
 
-  const card = dispatcher.mintAction('turn/cancel', { sessionId: 'a' })
+  const card = dispatcher.mintAction('turn/cancel', { sessionId: 'a' }, { channel: 'telegram', accountId: 'telegram', userId: '42', chatId: '10001' })
   assert.ok(card !== null)
   // 只让终局 resolve（outcome 'done'）失败，claim 照常成功。
   sabotageWrite(store, { keyPrefix: 'act:', decision: 'done', field: 'outcome' })
 
-  const click = dispatcher.dispatch({ actionKey: card.key, token: card.token, via: 'telegram:action', userId: 42, chatId: '10001' })
+  const click = dispatcher.dispatch({ actionKey: card.key, token: card.token, via: 'telegram:action', accountId: 'telegram', userId: 42, chatId: '10001', chatType: 'private' })
   assert.equal(click.ok, true)
   assert.equal(runs, 1, 'handler 只执行一次')
   assert.ok(logs.some((line) => /terminal-persist-failed/.test(line)), '终局落盘失败必须审计')
@@ -236,7 +236,7 @@ test('R5：动作终态落盘失败 → 审计 terminal-persist-failed，handler
   // 重启：新 dispatcher 看到 claimed 只报告 uncertain，绝不重跑 handler。
   const restarted = createActionDispatcher({ vault, store, logger: { warn() {} } })
   restarted.register('turn/cancel', () => { runs += 1; return { ok: true } })
-  const again = restarted.dispatch({ actionKey: card.key, token: card.token, via: 'telegram:action', userId: 42, chatId: '10001' })
+  const again = restarted.dispatch({ actionKey: card.key, token: card.token, via: 'telegram:action', accountId: 'telegram', userId: 42, chatId: '10001', chatType: 'private' })
   assert.equal(again.ok, false)
   assert.equal(again.reason, 'uncertain')
   assert.equal(runs, 1, '重启后绝不自动重执行')

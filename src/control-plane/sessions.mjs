@@ -1,9 +1,8 @@
-// dsh-notifier v0.14 — sessions / routing control application service.
+// Sessions and routing control application service.
 //
 // Single orchestration entry for the bindings snapshot, binding replacement, the
 // session list projection and the per-session outbound/control overlays, shared by
-// the Native control surface (future S08/S09) and the Advanced Console adapter
-// (src/admin/api.mjs). It owns *orchestration / projection only*.
+// the Native control surface. It owns orchestration and projection only.
 //
 // It deliberately does NOT merge the three routing authorities into one god
 // object — those are three distinct business facts (I1) and stay where they are:

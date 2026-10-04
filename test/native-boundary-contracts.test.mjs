@@ -74,7 +74,7 @@ const MEMBER_ROWS = [
     label: '我', role: 'owner', origin: 'paired', pairedAt: 1, lastSeenAt: 2,
   },
   {
-    key: 'telegram:owner-2', channel: 'telegram', userId: '987654321',
+    key: 'telegram:tg-app:owner-2', channel: 'telegram', accountId: 'tg-app', userId: '987654321',
     label: '', role: 'member', origin: 'confirmed', pairedAt: 3, lastSeenAt: 4,
   },
 ]
@@ -179,15 +179,15 @@ test('账号卡保留真实 accountId，且不拿 channel 顶替', () => {
   const view = createChannelView({ channels: makeChannels(), members: makeMembers() })
   const detail = view.detail('telegram')
   const ids = detail.accounts.map((account) => account.id).sort()
-  assert.deepEqual(ids, ['telegram:default', 'telegram:work'].sort(), 'default 账号与显式 accountId 都要出现')
+  assert.deepEqual(ids, ['telegram:tg-app', 'telegram:work'].sort(), '配置中声明的账号与显式 accountId 都要出现')
 
   const work = detail.accounts.find((account) => account.id === 'telegram:work')
   assert.equal(work.accountId, 'work', 'accountId 必须原样保留')
   assert.equal(work.displayName, 'work')
   assert.equal(work.maskedIdentity, '12•••89', '身份只给掩码')
 
-  const fallback = detail.accounts.find((account) => account.id === 'telegram:default')
-  assert.equal(fallback.accountId, 'default', '无 accountId 归入 default，不丢账号维度')
+  const fallback = detail.accounts.find((account) => account.id === 'telegram:tg-app')
+  assert.equal(fallback.accountId, 'tg-app', '列表中的稳定 accountId 原样保留')
   assert.notEqual(fallback.id, fallback.accountId, '账号 id 带渠道维度，不拿 channel 顶替账号')
   assert.match(fallback.id, /^telegram:/, '账号 id 以渠道为前缀，与私聊视图的 channel.id 同口径')
 })
@@ -196,7 +196,7 @@ test('账号卡保留真实 accountId，且不拿 channel 顶替', () => {
 
 test('账号卡把出站字段拆成「基础 / 更多」，且基础段只放必填字段', () => {
   const view = createChannelView({ channels: makeChannels(), members: makeMembers() })
-  const account = view.detail('telegram').accounts.find((row) => row.id === 'telegram:default')
+  const account = view.detail('telegram').accounts.find((row) => row.id === 'telegram:tg-app')
 
   const basicKeys = account.basicFields.map((field) => field.key)
   const moreKeys = account.moreFields.map((field) => field.key)
@@ -217,7 +217,7 @@ test('账号卡把出站字段拆成「基础 / 更多」，且基础段只放�
 
 test('支持私聊的渠道给账号卡一份入站字段与公共值；secret 结构上不出现', () => {
   const view = createChannelView({ channels: makeChannels(), members: makeMembers() })
-  const telegram = view.detail('telegram').accounts.find((row) => row.id === 'telegram:default')
+  const telegram = view.detail('telegram').accounts.find((row) => row.id === 'telegram:tg-app')
   const pc = telegram.privateChat
   assert.ok(pc, '支持私聊的渠道要带上私聊字段')
   assert.equal(pc.enabled, true)
@@ -229,8 +229,7 @@ test('支持私聊的渠道给账号卡一份入站字段与公共值；secret �
   assert.doesNotMatch(JSON.stringify(pc), /SECRET-BOT-TOKEN-VALUE|\*\*\*/, '私聊投影不泄漏任何密钥材料')
 
   // 不支持私聊的渠道不编造私聊段。
-  const bark = view.detail('bark').accounts[0]
-  assert.equal(bark.privateChat, undefined, '没有入站能力就没有私聊段')
+  assert.deepEqual(view.detail('bark').accounts, [], '没有已配对身份时不编造渠道账号')
 })
 
 // ————————————————————— 4. 渠道四态用户词 ————————————————————————
@@ -328,7 +327,7 @@ test('私聊摘要只给不透明使用者 id 与用户词权限', () => {
 
 test('待处理项给标题/来源/时间/可选项，不给 ledger 行', () => {
   const view = createPrivateChatView({
-    members: makeMembers({ pending: [{ key: 'feishu:ou_x', channel: 'feishu', userId: 'ou_x', origin: 'learned', at: Date.now() }] }),
+    members: makeMembers({ pending: [{ key: 'feishu:fs-app:ou_x', channel: 'feishu', accountId: 'fs-app', userId: 'ou_x', origin: 'learned', at: Date.now() }] }),
     questions: makeQuestions(),
     tasks: makeTasks(),
   })
@@ -344,7 +343,7 @@ test('待处理项给标题/来源/时间/可选项，不给 ledger 行', () => 
 test('首次启用向导：步骤派生不落盘，候选任务去重有界，待确认身份用不透明 id', () => {
   // 派生规则（R1）：未确认本人 → confirm；已确认但**无显式选择** → task；已确认且有显式选择 → ready。
   const noOwner = createPrivateChatView({
-    members: { list: () => [{ key: 'telegram:member-1', channel: 'telegram', userId: '1', role: 'member' }], listPending: () => [] },
+    members: { list: () => [{ key: 'telegram:tg-app:member-1', channel: 'telegram', accountId: 'fs-app', userId: '1', role: 'member' }], listPending: () => [] },
     tasks: makeTasks(),
   })
   assert.equal(noOwner.summary().setup.step, 'confirm', '没有本人 → 先确认本人')
@@ -365,7 +364,7 @@ test('首次启用向导：步骤派生不落盘，候选任务去重有界，�
 
   // 待确认身份只给不透明 id，不给成员键。
   const withPending = createPrivateChatView({
-    members: makeMembers({ pending: [{ key: 'feishu:ou_x', channel: 'feishu', userId: 'ou_x', at: 1 }] }),
+    members: makeMembers({ pending: [{ key: 'feishu:fs-app:ou_x', channel: 'feishu', accountId: 'fs-app', userId: 'ou_x', at: 1 }] }),
     tasks: makeTasks(),
   })
   const identity = withPending.summary().setup.pendingIdentities[0]

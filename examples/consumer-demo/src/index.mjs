@@ -17,7 +17,7 @@ export function apply(ctx) {
       sourceName: 'consumer-demo',
     },
   ).then((result) => {
-    if (!result.ok) ctx.logger?.warn?.('push failed', result.failed)
+    ctx.logger?.debug?.('push evidence', result)
   })
 
   // `dsh-notifier/sent` 的记录是 metadata-only（无 title/content/原始错误正文）。

@@ -6,7 +6,6 @@ import { createCloudflareDeploymentService } from './cloudflare/deployment.mjs'
 import { chmodSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { CHANNEL_TYPES, resolveConfig } from './config.mjs'
 import { composeOutboundChannels, accountOf } from './assembly/outbound.mjs'
-import { resolveAdminToken } from './assembly/admin-token.mjs'
 import { resolveInboundSignals } from './assembly/inbound-signals.mjs'
 import { createNotifier } from './notify.mjs'
 import { createEventListener } from './event-listener.mjs'
@@ -39,13 +38,6 @@ import { createSessionRegistry } from './routing/session-registry.mjs'
 import { createCurrentTaskAuthority } from './routing/current-task.mjs'
 // v0.10 移动任务选择（歧义前置）：多活跃任务无绑定先下发选择卡；待决状态经 store 持久化
 import { createTaskSelection } from './routing/task-selection.mjs'
-// v0.3.3：Web 管理台（HTTP 壳 + API 函数层 + 单文件 UI + 扫码流机 + 连通性自检）
-import { createAdminApi, INBOUND_CHANNELS } from './admin/api.mjs'
-// v0.4.0：通知事件 hub（SSE 数据源）
-import { createEventHub } from './admin/events.mjs'
-import { createAdminServer } from './admin/server.mjs'
-import { createAdminUiHtml } from './admin/ui.mjs'
-import { createScanHandlers } from './admin/scan.mjs'
 import { runChannelTest } from './health.mjs'
 import { createOutboundSource } from './runtime/outbound-source.mjs'
 import { createRuntimeChannelManager } from './runtime/channel-manager.mjs'
@@ -55,7 +47,6 @@ import { createSurfaceRevision } from './control-surface/revision.mjs'
 import { createSurfaceActivity } from './control-surface/activity.mjs'
 import { createSurfaceHealth } from './control-surface/health.mjs'
 import { createOutboundConfigService } from './control-surface/outbound-config.mjs'
-import { migrateCanonicalChannelConfig } from './control-surface/channel-config-migration.mjs'
 import { createChannelProjection } from './control-surface/channels.mjs'
 import { createTaskProjection } from './control-surface/tasks.mjs'
 import { createQuestionProjection } from './control-surface/questions.mjs'
@@ -64,8 +55,6 @@ import { createSessionsProjection } from './control-surface/sessions.mjs'
 import { createBindingsProjection } from './control-surface/bindings.mjs'
 import { createDiagnosticsService } from './control-surface/diagnostics.mjs'
 import { createHostCapabilitySnapshot } from './host/capability.mjs'
-import { createLaunchTickets } from './control-surface/launch-ticket.mjs'
-import { createAdminSessions } from './control-surface/admin-session.mjs'
 import { createControlSurfaceService } from './control-surface/service.mjs'
 // v0.15（Stage 1 / S1–S2）：Native v2 用户边界——只读 read model + 窄动作表，经同一路由委派。
 import { createNativeReadModel } from './native/read-model.mjs'
@@ -97,16 +86,7 @@ export function apply(ctx, config = {}) {
     // logger 双写」做法，warn 必须双写 stderr——宁可测试输出多几行，不可部署黑盒。
     try { console.error('[dsh-notifier]', message) } catch { /* 控制台不可用（极少数宿主）不致命 */ }
   }
-  // v0.3.3：info 级输出（admin token/管理台地址）。宿主 logger 缺 .info 时回落
-  // console——token 明文只在首启打印一次，绝不能因日志通道缺失而静默丢失。
-  const info = (message) => {
-    const viaLogger = typeof logger?.info === 'function'
-    if (viaLogger) {
-      try { logger.info('[dsh-notifier]', message) } catch { /* 日志失败绝不致命 */ }
-    } else {
-      try { console.info('[dsh-notifier]', message) } catch { /* 控制台不可用（极少数宿主）不致命 */ }
-    }
-  }
+
 
   // v0.6 服务注入（spike 验证 2026-08-16，DSH 0.1.0-rc.6）：宿主为 cordis 强制契约，
   // 直接 ctx.notifier = facade 会被拦截（cannot set property "notifier" without provide），
@@ -196,7 +176,7 @@ export function apply(ctx, config = {}) {
     ledger = createLedger({ dir: ledgerDir, maxEntries: digestRaw.maxEntries })
   }
 
-  // 阶段 4/5：inbound 回传栈。白名单（inbound.allowUsers）为空 = 整栈不启动（默认全拒）。
+  // 阶段 4/5：inbound 回传栈。旧 allowUsers 不授予身份或投递目标。
   // inboundRaw / approvalRaw / store 已随 v0.3.3 出站凭证回退前移到 notifier 之前。
   const inboundRaw = resolved.inbound ?? {}
   const approvalRaw = resolved.approval ?? {}
@@ -204,12 +184,18 @@ export function apply(ctx, config = {}) {
   // 扫码凭证回退在 resolve 阶段就要读 store；必须先于下方各通道的 resolve 块
   // （TDZ：声明前引用会 ReferenceError，v0.3.1 首版曾把创建放在 resolve 之后，已修）。
   // v0.3.2：进一步前移到事件监听/工具注册之前——路由引擎（router/registry）也以它为持久层。
-  // v0.3.3：再前移到 notifier 之前——出站凭证 state 回退（admin.enabled 时）要在
+  // Initialize the fresh outbound schema before notifier assembly.
   // createNotifier 前合并完成（§5「YAML 只做 bootstrap，运行时可变状态写 state」）。
   const stateDir = typeof inboundRaw.stateDir === 'string' && inboundRaw.stateDir.trim() !== ''
     ? inboundRaw.stateDir.trim()
     : defaultStateDir()
   const store = createStore(`${stateDir}/state.json`)
+  const freshState = store.initializeFreshSchema()
+  if (freshState.ok !== true) {
+    warn(`v0.15 新状态初始化未完成（${freshState.reason ?? 'unknown'}），旧状态已隔离，本次启动按无持久状态运行`)
+  } else if (freshState.hadLegacyState === true) {
+    warn(`已备份旧状态并建立全新 v0.15 状态。首次打开 Native 时，请重新设置渠道凭证、私聊身份与任务选择；旧资料仅可离线手工查看${freshState.backupPath ? `：${freshState.backupPath}` : ''}`)
+  }
   // v0.15 Stage 2（R1）：当前任务 authority 实例。conversation 与 Native 读模型共用同一实例，
   // 保证「显式选择」这一事实只有一个写入者、一个读投影，杜绝多源写入与隐式推导。
   const currentTaskAuthority = createCurrentTaskAuthority({ store, logger })
@@ -217,22 +203,8 @@ export function apply(ctx, config = {}) {
   // 日志聚合（journald/Loki/ELK）不再承载 owner 级凭证。
   const BOOTSTRAP_CODE_FILE = `${stateDir}/bootstrap-paircode.txt`
 
-  // v0.3.3 出站凭证 state 回退（设计稿 §5）+ 连通性测试 rawConfig 来源：维护批 3 阶段 1
-  // 抽到 src/assembly/outbound.mjs composeOutboundChannels/accountOf（纯移动，行为零变；
-  // 详注见模块头）。admin 关闭时零执行——存量用户行为逐字节不变（§6 兼容红线）。
-  const adminEnabled = resolved.admin?.enabled === true
-  const configMigration = migrateCanonicalChannelConfig({
-    store,
-    channelTypes: CHANNEL_TYPES,
-    adminEnabled,
-    warn,
-  })
-  // Once v0.13 has taken the migration decision, runtime config is
-  // canonical-only.  A failed/deferred migration remains fail-closed rather
-  // than silently reviving an old overlay on the next restart.
-  if (configMigration.ok !== true) {
-    warn('出站通道配置迁移未完成，运行期不会回退读取 legacy state')
-  }
+  // v0.15 reads only the fresh canonical outbound schema. Legacy state has
+  // already been backed up and isolated by initializeFreshSchema().
   const yamlRowOf = new Map()
   for (const row of (Array.isArray(config.channels) ? config.channels : [])) {
     if (row === null || typeof row !== 'object' || row.enabled === false) continue // 显式禁用是用户意图，不回退
@@ -243,9 +215,7 @@ export function apply(ctx, config = {}) {
     channels: resolved.channels,
     yamlRows: yamlRowOf,
     store,
-    adminEnabled,
     warn,
-    allowLegacy: false,
   })
   const outboundSource = createRuntimeChannelManager({
     source: createOutboundSource(overlay.channels, {
@@ -254,16 +224,12 @@ export function apply(ctx, config = {}) {
     initial: overlay.channels,
   })
   resolved.channels = outboundSource.snapshot()
-  const testRawConfigOf = overlay.testRawConfigOf
   const resolvedOutboundRows = new Map(overlay.channels.map((entry) => [entry.type, entry.config]))
 
   const surfaceRevision = createSurfaceRevision()
   const surfaceActivity = createSurfaceActivity()
   const surfaceHealth = createSurfaceHealth()
-  const launchTickets = createLaunchTickets()
-  const adminSessions = createAdminSessions()
-  let adminListenInfo = null
-  // v0.12.1（P1-03）：Native inbound 读写不再依赖 admin.enabled。
+  // Inbound channel projection reads canonical configuration directly.
   // v0.13（C11.5 / R6）：运行时真值查询在 channelRegistry 装配完成后注入（惰性闭包），
   // 未装配/未启动时返回 null → active=false / restartPending=true（绝不冒充已在线）。
   let inboundRuntimeOf = null
@@ -271,20 +237,15 @@ export function apply(ctx, config = {}) {
     store,
     warn: (message) => warn(`[dsh-notifier/inbound-config] ${message}`),
     runtime: (type) => (inboundRuntimeOf === null ? null : inboundRuntimeOf(type)),
+    yamlConfigOf: (type) => inboundRaw?.[type],
   })
-  let surfaceAdminApi = {
-    getChannels: () => inboundConfigPort.rows(),
-    putInboundChannel: (type, patch) => inboundConfigPort.put(type, patch),
-    deleteInboundChannel: (type) => inboundConfigPort.remove(type),
-  }
+  const inboundProjectionApi = { getChannels: () => inboundConfigPort.rows() }
 
   const outboundConfigService = createOutboundConfigService({
     store,
     yamlRows: yamlRowOf,
     resolvedRows: resolvedOutboundRows,
     source: outboundSource,
-    adminEnabled,
-    allowLegacy: false,
     onChange: (topic) => surfaceRevision.touch(topic),
     onAudit: (topic, detail) => surfaceActivity.record('configuration', topic, {
       channel: detail?.type,
@@ -294,17 +255,8 @@ export function apply(ctx, config = {}) {
     }),
   })
 
-  // v0.4.0 通知事件 hub（A 路线「管理台通知页」）：admin 开启时 notifier.onSend 旁路进
-  // hub，GET /api/events 以 SSE 实时推给浏览器（系统通知数据源）。admin 关闭零开销——
-  // hub 不创建、onSend 维持 v0.3.3 的账本单挂语义（存量行为逐字节不变）。
-  // notify.mjs 已把 onSend 调用包在 try/catch：账本/hub 任一异常绝不影响推送主链路。
-  const eventHub = adminEnabled ? createEventHub() : null
-  // v0.6 组合器化（设计稿 §3.4）：账本/hub/emit 三挂逐项隔离——甲抛错乙照跑（结构保证，
-  // 取代旧 if/else 依赖「append 与 publish 各自永不抛」的碰巧等价）。全空 → undefined，
-  // 保持 v0.5「digest 关 + admin 关 + emit 关 → onSend=undefined」边界语义不变。
   const onSend = composeOnSend([
     ledger === null ? null : (record) => ledger.append(record),
-    eventHub === null ? null : (record) => eventHub.publish(record),
     (record) => {
       surfaceHealth.recordSend(record)
       surfaceActivity.recordDelivery(record)
@@ -392,10 +344,6 @@ export function apply(ctx, config = {}) {
     currentTask: currentTaskAuthority,
     agentsList: () => { try { return ctx.agents.list() } catch { return [] } },
   })
-  try {
-    const migrated = registry.migrateLegacyBinds()
-    if (migrated > 0) warn(`route:sessions 迁移：为旧 bind 绑定补建 ${migrated} 条会话记录`)
-  } catch { /* 迁移失败静默：绝不弄崩启动 */ }
   disposers.push(() => registry.dispose())
   // v0.10 任务选择状态机（歧义前置）：候选惰性过滤为「仍活跃会话」，待决经 store 持久化
   // （taskselect:* 键域，重启不丢）。dispose 只清内存态（盘上待决由 TTL 惰性回收）。
@@ -423,7 +371,7 @@ export function apply(ctx, config = {}) {
   let busRef = null
   let questionsBridge = null
   let nativeBridge = null
-  // v0.14（S04）：远程提问结算契约共享单例（Native RPC 投影 / Admin HTTP / 宿主原生桥共用）。
+  // v0.14（S04）：远程提问结算契约由 Native RPC 与宿主原生桥共用。
   // 桥未装配时为「无桥」服务（待决空表 / 结算 fail-closed）；桥装配后重新绑定同一实例。
   let questionsControl = createQuestionsControlService()
   // v0.10 提交7：宿主事件 registrar 快照（管理台 /host 的 events.received 视图）
@@ -472,7 +420,6 @@ export function apply(ctx, config = {}) {
   // src/assembly/inbound-signals.mjs resolveInboundSignals（原样搬移，行为零变；
   // 详注随模块走）。inboundRaw / approvalRaw / store 已随 v0.3.2 路由装配前移到 notifier 之后创建。
   const {
-    allowUsers, // 空 = 整栈不启动，默认全拒
     tgRaw, // 入站 telegram 原始行（装载块 config.apiBase 晚用）
     inboundBotToken,
     notifyChatIds,
@@ -482,16 +429,29 @@ export function apply(ctx, config = {}) {
     dingtalkResolved, dingtalkOk,
     wxResolved, wxOk,
     wechatWanted, wechatRaw, // 微信 resolve 在 guided 装配块内晚绑定 resolveWechatInboundConfig
-  } = resolveInboundSignals({ inboundRaw, approvalRaw, resolved, store, adminEnabled, warn })
+  } = resolveInboundSignals({
+    inboundRaw, approvalRaw, resolved, store, warn,
+    privateChatEnabled: (type) => inboundConfigPort.privateChatAllowed(type)
+      && (inboundConfigPort.privateChatEnabled(type) || inboundRaw?.[type]?.enabled === true),
+  })
+  const privateChatRuntimeEnabled = (type) => {
+    if (inboundConfigPort.privateChatAllowed(type) !== true) return false
+    return ({
+      telegram: String(inboundBotToken ?? '').trim() !== ''
+        && String(inboundRaw?.telegram?.accountId ?? '').trim() !== ''
+        && (inboundConfigPort.privateChatEnabled(type) || inboundRaw?.telegram?.enabled === true),
+      feishu: feishuOk && (inboundConfigPort.privateChatEnabled(type) || inboundRaw?.feishu?.enabled === true),
+      qq: qqOk && (inboundConfigPort.privateChatEnabled(type) || inboundRaw?.qq?.enabled === true),
+      dingtalk: dingtalkOk && (inboundConfigPort.privateChatEnabled(type) || inboundRaw?.dingtalk?.enabled === true),
+      wxpusher: wxOk && String(inboundRaw?.wxpusher?.accountId ?? '').trim() !== ''
+        && (inboundConfigPort.privateChatEnabled(type) || inboundRaw?.wxpusher?.enabled === true),
+      wechat: wechatWanted && (inboundConfigPort.privateChatEnabled(type) || inboundRaw?.wechat?.enabled === true),
+    })[type] === true
+  }
 
-  // v0.7 身份层（计划书 §3.1/§3.2）：绑定表一等公民。YAML allowUsers 启动播撒为
-  // 绑定记录（origin:'migrated'，幂等、只增不减——删减权收归管理台单一入口）；
-  // 绑定表与 YAML 均空 = 引导态：六通道凭证就绪即启动，仅开放注册面（/pair 等）。
-  // identity/pairing 提升到外层作用域：admin（成员页/配对码）与 inbound 共用同一实例。
-  // 配对审计晚绑定：管理台在 inbound 之后装配，先入内存队（有界），装配后转发 admin-audit.jsonl；
-  // admin 未启用则排队丢弃（审计文件属管理台，不存在静默丢审记的口径问题）。
-  let pairingAuditSink = null
-  const pairingAuditBacklog = []
+  // v0.15: identity rows are created only by an explicit private pairing action.
+  // Legacy YAML allowUsers is not migrated into authorization state.
+  // Identity and pairing authorities are shared by private admission and Native controls.
 
   // v0.8.7 引导码文件写入辅助（方案A）：码面写本机 0600 文件，不流经 warn/stderr。
   const writeBootstrapCodeFile = (code) => {
@@ -505,7 +465,7 @@ export function apply(ctx, config = {}) {
       return true
     } catch (error) {
       // 失败只报路径与原因，绝不回退把码面印进日志（LEAK-2 的修复点就在这）
-      warn(`引导码文件写入失败: ${error instanceof Error ? error.message : String(error)}（引导码无法文件交付，请使用管理台铸码）`)
+      warn(`引导码文件写入失败: ${error instanceof Error ? error.message : String(error)}（引导码无法文件交付，请到宿主 Native 界面的「成员」页铸码）`)
       return false
     }
   }
@@ -525,6 +485,7 @@ export function apply(ctx, config = {}) {
     policy: inboundRaw.control ?? {},
     identity,
     logger,
+    privateChatEnabled: privateChatRuntimeEnabled,
     policyForSession: (sessionId) => {
       try { return registry?.getControl?.(sessionId) ?? null } catch { return null }
     },
@@ -539,39 +500,19 @@ export function apply(ctx, config = {}) {
         clearBootstrapCodeFile()
       }
       try {
-        if (pairingAuditSink !== null) pairingAuditSink(`pairing:${event}`, detail)
-        else if (pairingAuditBacklog.length < 200) pairingAuditBacklog.push([`pairing:${event}`, detail])
+        surfaceActivity.record('pairing', `pairing:${event}`, { channel: detail?.channel })
       } catch { /* 审计失败不致命 */ }
     },
   })
-  // wechat 不进迁移通道表：其凭证 resolve 在 inbound 块内才做（首启播撒到死通道会产生
-  // 永不生效的成员行；一次性迁移下首启正是唯一播撒机会——宁可少播，/pair 补齐）
-  const enabledInboundChannels = [
-    inboundBotToken !== '' ? 'telegram' : '',
-    feishuOk ? 'feishu' : '',
-    qqOk ? 'qq' : '',
-    wxOk ? 'wxpusher' : '',
-    dingtalkOk ? 'dingtalk' : '',
-  ].filter((name) => name !== '')
-  try {
-    const migrated = identity.migrate(allowUsers, enabledInboundChannels)
-    // info 助手带 console 回落（R5 审查 R5-2-P3-6：裸 logger?.info?. 在无 info 通道的宿主零可见）
-    if (migrated.added > 0) info(`白名单迁移：${migrated.added} 条绑定落盘（渠道：${enabledInboundChannels.join('/') || '无'}）`)
-    else if (migrated.skipped === true) info('白名单迁移：已标记完成（YAML 不再播撒，增删以管理台为准）')
-  } catch (error) {
-    warn(`身份绑定迁移失败（继续以既有绑定表运行）: ${error instanceof Error ? error.message : String(error)}`)
-  }
-  const guidedBoot = identity.isEmpty() && allowUsers.length === 0
+  const guidedBoot = identity.isEmpty()
   // v0.8.7 (A2)：非引导态清理陈旧引导码文件（重启后引导态已结束，旧码面不该残留）。
   if (!guidedBoot) clearBootstrapCodeFile()
 
-  // v0.7 启动门（修审查 #1）：通道凭证就绪即启动——白名单不再拦启动；空名单进入引导态
-  // （业务面照旧全拒，仅注册面开放，红线不降级）。v0.6 兼容分支：无通道凭证但
-  // approval 已配且名单非空时照旧注册（裁决无人应答超时回落桌面，行为与 0.6 一致）；
-  // 名单与绑定表全空且无通道 → 不启动（引导提示）。
-  const anyChannelReady = inboundBotToken !== '' || feishuOk || qqOk || wxOk || wechatWanted || dingtalkOk
+  // Transport credentials and legacy allowUsers never create a principal. The guided
+  // private pairing command is the only path that grants an identity row.
+  const anyChannelReady = ['telegram', 'feishu', 'qq', 'dingtalk', 'wxpusher', 'wechat']
+    .some((type) => privateChatRuntimeEnabled(type))
   const inboundReady = anyChannelReady
-    || (approvalWanted && (allowUsers.length > 0 || identity.size() > 0))
   if (inboundReady) {
     // v0.8.7 引导码文件交付（LEAK-2）：码面写本机 0600 文件，stderr 只印路径+ID——
     // 日志聚合不再承载 owner 级凭证。绑定表非空后不再铸造。
@@ -580,7 +521,7 @@ export function apply(ctx, config = {}) {
         if (minted?.reason === 'storage-failed') {
           // 配对码未持久化时绝不展示码面；仍给出与文件交付失败一致的可操作指引。
           warn('引导码文件写入失败（配对码未持久化，请勿使用未落盘码面）')
-          warn('【引导配对码】文件写入失败，请使用管理台铸码')
+          warn('【引导配对码】文件写入失败，请到宿主 Native 界面的「成员」页铸码')
         }
         return
       }
@@ -588,14 +529,14 @@ export function apply(ctx, config = {}) {
       if (writeBootstrapCodeFile(minted.code)) {
         warn(`【引导配对码】已写入 ${BOOTSTRAP_CODE_FILE}（${minutes} 分钟内有效，仅本机用户可读）\n  在任意已启用通道私聊机器人发送：/pair <配对码>\n  查看配对码：cat ${BOOTSTRAP_CODE_FILE}`)
       } else {
-        warn(`【引导配对码】文件写入失败，请使用管理台铸码（${minutes} 分钟内有效）`)
+        warn(`【引导配对码】文件写入失败，请到宿主 Native 界面的「成员」页铸码（${minutes} 分钟内有效）`)
       }
     }
     if (guidedBoot) {
       try {
         showBootstrap(pairing.mint({ origin: 'bootstrap', mintedBy: 'system:boot' }))
       } catch (error) {
-        warn(`bootstrap 引导码铸造失败（注册面仍可用，管理台可补铸）: ${error instanceof Error ? error.message : String(error)}`)
+        warn(`bootstrap 引导码铸造失败（注册面仍可用，可到宿主 Native 界面的「成员」页补铸）: ${error instanceof Error ? error.message : String(error)}`)
       }
     }
 
@@ -605,12 +546,12 @@ export function apply(ctx, config = {}) {
         : undefined,
     })
     const bus = createInboundBus({
-      allowUsers,
       identity,
       pairing,
       store,
       vault,
       logger,
+      privateChatEnabled: privateChatRuntimeEnabled,
       strings, // lang 文案表：身份命令回执（/pair /whoami /unpair）经 bus 传入 commandHandler
       // 引导码过期后首个 /pair 触发重铸（自愈：用户迟到不必重启宿主），stderr 再展示
       onBootstrapRemint: showBootstrap,
@@ -666,7 +607,6 @@ export function apply(ctx, config = {}) {
       questions: questionsForChannels,
       control,
       strings, // lang 文案表：透传给各渠道适配器（回执/卡片文案随 lang）
-      allowUsers,
       guidedBoot,
       telegramReadyMessage: () => `inbound 已启动：telegram 长轮询（绑定 ${identity.size()} 人${guidedBoot ? '，引导态：等待 /pair 配对' : ''}；审批模式 ${approvalRaw.mode === 'answer' ? 'answer（远程可决）' : approvalWanted ? 'observe（只旁观）' : '未配置'}）`,
       logger,
@@ -742,7 +682,7 @@ export function apply(ctx, config = {}) {
         nativeBridge = createNativeQuestionBridge({
           ctx,
           questionBridge: questionsBridge,
-          questionsControl, // v0.14（S04）：待决/结算与 Native/Admin 同一入口
+          questionsControl, // Pending questions and settlement share one entry point
           logger,
           canDeliver: () => Array.isArray(interactiveRaw) && interactiveRaw.length > 0,
         })
@@ -816,39 +756,39 @@ export function apply(ctx, config = {}) {
     },
   })
   // v0.14（S04）：Native `questions.list`/`questions.settle` 走共享提问控制服务
-  // （与 Admin / 宿主原生桥同一结算入口）；本层只做 RPC 形态映射。
+  // Shared question settlement; this layer only maps RPC shapes.
   const surfaceQuestions = createQuestionProjection({ service: questionsControl })
   const surfaceChannels = {
     list: () => createChannelProjection({
       outboundSource,
       outboundConfig: outboundConfigService,
       inboundConfig: inboundConfigPort,
-      adminApi: surfaceAdminApi,
+      adminApi: inboundProjectionApi,
       health: surfaceHealth,
     }).list(),
     get: (type) => createChannelProjection({
       outboundSource,
       outboundConfig: outboundConfigService,
       inboundConfig: inboundConfigPort,
-      adminApi: surfaceAdminApi,
+      adminApi: inboundProjectionApi,
       health: surfaceHealth,
     }).get(type),
   }
-  // v0.14（S01）：Native 与 Advanced Console 共用的通道写入编排单例。
+  // v0.14（S01）：Native channel write orchestration。
   // 两个适配器都只调用它，谁都不再持有第二套写入/测试编排逻辑（I1 / I9）。
   const channelControl = createChannelControlService({
     outboundConfig: outboundConfigService,
     inboundConfig: inboundConfigPort,
     channelTest: (type, raw) => runChannelTest({ type, rawConfig: raw, strings }),
   })
-  // v0.14（S02）：Native 与 Advanced Console 共用的成员/配对编排单例。
+  // v0.14（S02）：Native membership and pairing orchestration。
   // 谁都不再直接持有成员/配对写入编排（I1 / I9）；实例在装配处创建，非 admin 私有，
   // 后续 S06/S07 Native surface 可直接复用同一实例。
   const membersControl = createMembersControlService({ identity, pairing })
-  // v0.14（S06）：Native 成员面与 Admin 共用同一 MembersControlService（S02）实例；
+  // v0.14（S06）：Native member view uses the shared MembersControlService（S02）实例；
   // 本层只做 `members.*` 的 RPC 形态映射。
   const surfaceMembers = createMembersProjection({ service: membersControl })
-  // v0.14（S03/S08）：Native 与 Advanced Console 共用的会话/路由编排单例。两个适配器都只调用它，
+  // v0.14（S03/S08）：Native session and routing orchestration. The adapter calls this service,
   // 谁都不再持有第二套会话投影 / 路由覆盖写入编排（I1 / I9）。
   const routingControl = createRoutingControlService({ router, registry, store, warn })
   const surfaceSessions = createSessionsProjection({
@@ -887,7 +827,6 @@ export function apply(ctx, config = {}) {
     bindings: surfaceBindings,
     members: surfaceMembers,
     activity: surfaceActivity,
-    advancedConsole: () => (adminListenInfo?.port ? 'available' : 'unavailable'),
   })
   // v0.15（T21）：本地配置导出 / 导入。导入走 canonical 权威（outboundConfig / inboundConfigPort），
   // 新渠道只落 disabled 暂存（装配永不读取该键域），绝不自动启用或发测试。
@@ -918,6 +857,7 @@ export function apply(ctx, config = {}) {
       const boot = typeof store.bootStatus === 'function' ? store.bootStatus() : { readFailed: false }
       return boot
     },
+    setupStatus: () => store.get('state:setup', null),
   })
   const nativeActions = createNativeActions({
     currentTask: currentTaskAuthority,
@@ -961,130 +901,9 @@ export function apply(ctx, config = {}) {
   hostLifetime.inject(['connection', 'webServer'], (webCtx) => mountSurfaceRpc(webCtx), { label: 'connection,webServer' })
   disposers.push(() => {
     surfaceRevision.dispose()
-    launchTickets.dispose()
-    adminSessions.dispose()
   })
 
-  // v0.3.3 Web 管理台装配（设计稿 §5 + §0.5-6）：admin.enabled 开启时起 HTTP 壳 + API
-  // 函数层 + 扫码流机。admin 缺省 false → 整块零执行，存量用户行为逐字节不变（§6 兼容红线）。
-  // 军规：管理台起不来只 warn 绝不弄崩宿主插件（对齐「空配置绝不弄崩启动」家训）。
-  // apply() 保持同步（全部既有测试与宿主按同步签名调用）：server.start() 即发即忘，
-  // 失败走 catch warn；stop() 已进 disposers（内部等待未完成的 listen 后再关，天然收敛）。
-  if (adminEnabled) {
-    try {
-      // token 策略（§0.5-6）：维护批 3 阶段 2 抽到 src/assembly/admin-token.mjs
-      // resolveAdminToken（纯函数：显式/复用/首启生成 + verifyToken；详注见模块头）。
-      // 零配置首访：generated 分支额外拿到 launchToken（本次进程内有效的明文 token），
-      // 在 server 启动取得真实端口后拼接 fragment 启动链接打印；显式/复用路径恒 null。
-      const { tokenMode, launchToken, verifyToken } = resolveAdminToken({
-        store,
-        explicitToken: typeof resolved.admin.token === 'string' ? resolved.admin.token : '',
-        info,
-      })
 
-      // API 函数层（UI/CLI 共用）：注入 v0.3.2 的 router/registry、store、notifier 与
-      // 出站渠道快照（outboundConfigs 取 resolved.channels——含 store overlay 后的最终态；
-      // putChannel 运行时新写的 store 字段要到下次启动才进快照，即「重启生效」语义）。
-      const scanHandlers = createScanHandlers({ store, logger })
-      const adminApi = createAdminApi({
-        router,
-        registry,
-        store,
-        notifier,
-        channelsEnabled: () => outboundSource.types(),
-        outboundConfigs: () => Object.fromEntries(outboundSource.snapshot().map((entry) => [entry.type, entry.config])),
-        outboundConfig: outboundConfigService,
-        channelControl,
-        // 零配置首访：channelTest 支持第二参 rawConfig——共享服务 testOutbound 传入 canonical
-        // raw（YAML ⊕ store overlay）后即时真测，保存后无需重启；旧 testChannel(type) 单参路径
-        // 不变，仍用启动快照 testRawConfigOf。v0.14（S12）：不再注入 yamlRawConfigs——
-        // 即时测试统一由 canonical outbound service 解析 raw。
-        channelTest: (type, rawConfig) => runChannelTest({
-          type,
-          rawConfig: rawConfig !== undefined && rawConfig !== null ? rawConfig : testRawConfigOf(type),
-          strings,
-        }),
-        scanHandlers,
-        identity, // v0.7 成员页：与 inbound 共用同一实例（store 读收敛 → 写入半秒内热生效）
-        pairing, // v0.7 配对码铸造/撤销
-        membersControl, // v0.14（S02）：成员/配对编排共享单例（装配处创建，非 admin 私有）
-        routingControl, // v0.14（S03/S08）：会话/路由编排共享单例（Native sessions.* 同一实例）
-        guidedProbe: () => identity.isEmpty() && allowUsers.length === 0, // 与 bus.isGuided 同口径（R5-2-P2-2）
-        stateDir,
-        logger,
-        inboundConfig: inboundConfigPort,
-        questions: questionsBridge, // 路线图阶段 2A：远程提问管理台裁决（脱敏查询 + 受保护结算）
-        questionsControl, // v0.14（S04）：共享提问结算契约单例（与 Native / 宿主桥同一入口）
-        control, // 结算必须经 Control Core 唯一裁决（注入同一实例，缺线即 fail-closed）
-        // v0.10 提交7：暴露 DSH 连接与任务状态——宿主上下文 + 任务投影关注判定 + 宿主
-        // 事件 registrar 快照 + 会话/提问/图片能力信号（全只读，装配期惰性闭包）。
-        ctx,
-        attentionOf,
-        hostSnapshot: () => (hostEventsRegistrar !== null ? hostEventsRegistrar.snapshot() : null),
-        questionsFallbackEnabled: questionsBridge !== null, // 插件自有 ask_user 工具已注册
-        webLocal: 'available', // 管理台本机回环（此 API 自身已在本机运行）
-        imageInput: conversationRouterActive ? 'available' : 'unknown', // 图片入站随会话路由装配
-        // v0.15（T20）：Recovery 只读诊断读同一 canonical 实例（无 Native 时诊断仍可用；
-        // 不复制采集逻辑、不新增写路径、不重放 interaction）。
-        diagnostics: surfaceDiagnostics,
-      })
-      surfaceAdminApi = adminApi
-      adminApi.testOutboundChannel = async (type) => {
-        const raw = outboundConfigService.raw(type)
-        if (raw === null || Object.keys(raw).length === 0) {
-          const error = new Error('渠道未配置')
-          error.status = 501
-          throw error
-        }
-        const result = await runChannelTest({ type, rawConfig: raw, strings })
-        surfaceHealth.recordTest(type, result)
-        surfaceRevision.touch('health')
-        return result
-      }
-      // v0.7：接通配对审计晚绑定（inbound 阶段积压的事件此刻转发 admin-audit.jsonl）
-      try {
-        pairingAuditSink = (action, detail) => adminApi.appendAudit(action, detail)
-        for (const [action, detail] of pairingAuditBacklog.splice(0)) adminApi.appendAudit(action, detail)
-      } catch { /* 审计接线失败不致命（配对功能不受影响） */ }
-      const adminServer = createAdminServer({
-        api: adminApi,
-        verifyToken,
-        verifyLaunchTicket: (ticket) => launchTickets.consume(ticket),
-        createSession: () => adminSessions.mint(),
-        verifySession: (token) => adminSessions.verify(token),
-        port: resolved.admin.port,
-        ui: createAdminUiHtml(resolved.lang),
-        // Stage 4（S403）：Recovery-only——不再注入 events（GET /api/events SSE 已删除）。
-        logger,
-      })
-      adminServer.start()
-        .then(({ port, address }) => {
-          adminListenInfo = { port, address }
-          // mnt 批 1：就绪行永远给出 URL/端口/token 获取方式（不再出现「重启后不知 token 从哪来」）
-          const acquireHint = tokenMode === 'explicit'
-            ? 'token 用 YAML 显式配置的 admin.token'
-            : (tokenMode === 'reused'
-                ? 'token 沿用首启打印的旧值（见首次启动日志或删 admin:token-hash 后重启再生成）'
-                : 'token 已打印到上方日志（仅此一次，请妥善保存）')
-          info(`Web 管理台已就绪: http://${address}:${port}（仅本机回环；${acquireHint}）`)
-          // 零配置首访：仅首启生成的 launchToken 拼 fragment 启动链接（token 在 # 后，
-          // 不进 query / Referer / 服务器访问日志；浏览器端验证后即清地址栏并只存
-          // sessionStorage）。端口用真实监听端口（端口冲突回退后仍指向正确实例）。
-          if (typeof launchToken === 'string' && launchToken !== '') {
-            info(`零配置启动链接（点开即入管理台，仅此一次有效输出）: http://${address}:${port}/#token=${encodeURIComponent(launchToken)}`)
-          }
-        })
-        .catch((error) => {
-          const detail = error?.code === 'EADDRINUSE'
-            ? `端口 ${resolved.admin.port} 已被占用（调整 admin.port 或释放占用进程后重启）`
-            : (error instanceof Error ? error.message : String(error))
-          warn(`Web 管理台启动失败，已跳过（插件其余功能不受影响）: ${detail}`)
-        })
-      disposers.push(() => adminServer.stop())
-    } catch (error) {
-      warn(`Web 管理台装配失败，已跳过（插件其余功能不受影响）: ${error instanceof Error ? error.message : String(error)}`)
-    }
-  }
 
   ctx.effect(() => () => {
     // 聚合可 await 的清理（事件监听的 flush、通道和管理台 stop 都在此收敛）。

@@ -83,7 +83,7 @@ const READY_PRIVATE_CHAT = {
   channel: { id: 'telegram:default', name: 'Telegram', accountName: 'default' },
   currentTask: { id: 'task-1', title: 'dsh-notifier' },
   users: [{ id: 'u_owner', displayName: 'Me', permissionText: 'can manage' }],
-  setup: { step: 'ready', pendingIdentities: [], tasks: [] },
+  setup: { step: 'ready', pendingIdentities: [], owners: [{ id: 'u_owner', displayName: 'Me', channelName: 'Telegram', currentTask: { id: 'task-1', title: 'dsh-notifier' } }], tasks: [] },
 }
 
 function snapshotValue({ pending = [], privateChat } = {}) {
@@ -272,7 +272,7 @@ test('S4 private — the first-run wizard walks confirm -> task -> try and mints
 
 test('S4 private — once confirmed, the page shows the current channel, task and people with a close action', async () => {
   const { ctx, calls } = shellContext({
-    handlers: { 'native.removeChannel': () => ({ ok: true, value: { removed: true } }) },
+    handlers: { 'native.setPrivateChatEnabled': () => ({ ok: true, value: { enabled: false } }) },
   })
   const { view } = mountShell(ctx)
   await flush()
@@ -284,20 +284,20 @@ test('S4 private — once confirmed, the page shows the current channel, task an
   assert.match(view.container.textContent, /dsh-notifier/, 'the current task is shown')
   assert.match(view.container.textContent, /privatePeople/, 'the people count is shown')
 
-  // Closing private chat is a destructive action: it asks once, then removes the inbound config.
+  // Closing private chat asks once and revokes admission while retaining the saved credentials.
   await actAsync(async () => { click(buttonByText(view.container, 'privateClose')) })
   await flush()
   assert.ok(view.container.querySelector('[role="alertdialog"]'), 'closing asks for confirmation first')
-  assert.equal(calls.filter((call) => call.endpoint === 'native.removeChannel').length, 0, 'nothing is removed before confirming')
+  assert.equal(calls.filter((call) => call.endpoint === 'native.setPrivateChatEnabled').length, 0, 'nothing changes before confirming')
 
   const dialog = view.container.querySelector('[role="alertdialog"]')
   await actAsync(async () => { click(buttonByText(dialog, 'privateClose')) })
   await flush()
 
-  const remove = calls.find((call) => call.endpoint === 'native.removeChannel')
-  assert.ok(remove, 'confirming removes the private-chat channel')
-  assert.deepEqual(remove.payload, { type: 'telegram', direction: 'inbound' },
-    'removal targets the inbound side of the current channel')
+  const toggle = calls.find((call) => call.endpoint === 'native.setPrivateChatEnabled')
+  assert.ok(toggle, 'confirming disables private-chat admission')
+  assert.deepEqual(toggle.payload, { type: 'telegram', enabled: false },
+    'the toggle targets the current private-chat channel and retains credentials')
 })
 
 test('S4 private — choosing a task moves the wizard to the try step', async () => {
@@ -306,7 +306,7 @@ test('S4 private — choosing a task moves the wizard to the try step', async ()
     verified: true,
     verifiedText: 'verifiedYes',
     users: [],
-    setup: { step: 'task', pendingIdentities: [], tasks: [{ id: 'task-9', title: 'payments-api' }] },
+    setup: { step: 'task', pendingIdentities: [], owners: [{ id: 'u_owner', displayName: 'Me', channelName: 'Telegram' }], tasks: [{ id: 'task-9', title: 'payments-api' }] },
   }
   const { ctx, calls } = shellContext({ snapshot: { privateChat: wizard } })
   const { view } = mountShell(ctx)
@@ -322,5 +322,31 @@ test('S4 private — choosing a task moves the wizard to the try step', async ()
 
   assert.match(view.container.textContent, /privateStepTry/, 'picking a task advances to the try step')
   assert.match(view.container.textContent, /payments-api/, 'the picked task is reflected')
-  assert.deepEqual(calls.find(call => call.endpoint === 'native.selectTask')?.payload, { taskRef: 'task-9' })
+  assert.deepEqual(calls.find(call => call.endpoint === 'native.selectTask')?.payload, { taskRef: 'task-9', ownerId: 'u_owner' })
+})
+
+test('S4 private — multiple owners must select whose current task is being changed', async () => {
+  const wizard = {
+    enabled: true,
+    verified: true,
+    verifiedText: 'verifiedYes',
+    users: [],
+    setup: {
+      step: 'task', pendingIdentities: [],
+      owners: [
+        { id: 'u_one', displayName: 'One', channelName: 'Telegram' },
+        { id: 'u_two', displayName: 'Two', channelName: 'Feishu' },
+      ],
+      tasks: [{ id: 'task-9', title: 'payments-api' }],
+    },
+  }
+  const { ctx, calls } = shellContext({ snapshot: { privateChat: wizard } })
+  const { view } = mountShell(ctx)
+  await flush()
+  await actAsync(async () => { click(buttonByText(view.container, 'privateView')) })
+  await flush()
+  await actAsync(async () => { click(view.container.querySelectorAll('button[aria-pressed]')[1]) })
+  await actAsync(async () => { click(buttonByText(view.container, 'privateTaskUse')) })
+  await flush()
+  assert.deepEqual(calls.find(call => call.endpoint === 'native.selectTask')?.payload, { taskRef: 'task-9', ownerId: 'u_two' })
 })

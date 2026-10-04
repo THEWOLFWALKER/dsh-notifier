@@ -10,6 +10,10 @@ import { isConfirmedReceipt, normalizeDeliveryEvidence } from '../src/delivery-e
 import { createSurfaceHealth, healthState } from '../src/control-surface/health.mjs'
 import { createSurfaceActivity } from '../src/control-surface/activity.mjs'
 import { createNotifier } from '../src/notify.mjs'
+import './helpers/urlguard-public.mjs'
+import { __setRequestImplForTests } from '../src/security/network-policy.mjs'
+
+__setRequestImplForTests((target, init) => globalThis.fetch(target.url.href, { ...init, redirect: 'manual' }))
 import { resolveConfig } from '../src/config.mjs'
 
 // ---------------------------------------------------------------- 词汇权威
@@ -85,6 +89,18 @@ test('R4：activity——失败不进 accepted/confirmed，动作归类 delivery
   assert.equal(row.action, 'delivery-failed')
   assert.deepEqual(row.detail.accepted, [])
   assert.deepEqual(row.detail.confirmed, [])
+})
+
+test('R11: activity keeps unknown separate and warns against blind retries', () => {
+  const activity = createSurfaceActivity({ now: () => Date.parse('2026-09-26T00:00:00Z') })
+  const row = activity.recordDelivery({
+    ok: false, accepted: [], confirmed: [], unknown: ['telegram'],
+    failed: [{ channel: 'telegram', uncertain: true }],
+  })
+  assert.equal(row.action, 'delivery-unknown')
+  const view = activity.list()[0]
+  assert.equal(view.level, 'warn')
+  assert.match(view.title.en, /unclear.*check before retrying/)
 })
 
 // ---------------------------------------------------------------- notifyAll 形状

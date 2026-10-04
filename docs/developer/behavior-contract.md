@@ -1,3 +1,5 @@
+> Review-baseline behavior evidence only. New private-only requirements are in `rebuild-v015/DECISIONS.md`; old behavior in this file is not a target contract.
+
 # 行为契约索引（v0.15 core distillation）
 
 本文件是 **T02「行为契约与旧 oracle」** 的交付物：把**现有系统**已经成立的行为固化成可索引的
@@ -516,7 +518,7 @@ spec 条目，并为每条标注**旧代码 oracle**（现有 `test/` 或 `src/`
 - **durable diff**：—
 - **effect trace**：—
 - **禁止动作**：**不得**在无外部证据下写成「真机支持」或上调为 MUST_PRESERVE
-- **证据链接**：`docs/developer/v0.14-evidence-matrix.md`（QQ keyboard 行 = `external-evidence-pending`）；
+- **证据链接**：`docs/developer/rebuild-v015/RELEASE_READINESS.md`（QQ keyboard 行 = `external-evidence-pending`）；
   issue #26
 - **旧 test 映射**：无（仅有 contract 级 mock）
 - **矩阵**：**—（外部证据缺口）**
@@ -682,7 +684,7 @@ The single daily page is Notify & Private chat. Channel rail/strip/mobile select
 
 `NativeDirectionForm` renders declared fields. Secret values never return to the browser: keep/replace/clear are explicit. Save and test are separate. A committed save remains saved when the following read fails; user input and focus survive polling. Tests use saved settings and are unavailable with dirty fields. Accepted delivery is never described as confirmed; unknown/partial delivery does not imply safe replay. A channel switch with a dirty form requires an explicit choice.
 
-Behavior evidence: `test/dom/ui-dom-s2-shell.test.mjs`, `ui-dom-s3-account.test.mjs`, `ui-dom-s4-private-pending.test.mjs`, `ui-dom-s5-more.test.mjs`, and `ui-dom-release.test.mjs`. They render the actual React components and drive public actions. Deleted page tests are recorded in [the deletion ledger](v015-deletion-ledger.md).
+Behavior evidence: `test/dom/ui-dom-s2-shell.test.mjs`, `ui-dom-s3-account.test.mjs`, `ui-dom-s4-private-pending.test.mjs`, `ui-dom-s5-more.test.mjs`, and `ui-dom-release.test.mjs`. They render the actual React components and drive public actions. Deleted page tests are recorded in [the rebuild decision record](rebuild-v015/DECISIONS.md).
 
 Account selection is persisted only by `routing/current-task.mjs` under `bind:<channel>:<accountId>:<userId>`. Legacy selection migrates only for a uniquely proven configured account, otherwise the owner must select again. Instance replacement advances generation once; observations do not. Retired generations cannot update current health. Cloud claims persist checkpoints before side effects and resume by named-resource readback. Deployment metadata/job rows hold fingerprints and secret references, never another token. See [fault evidence and limits](v015-fault-capacity.md).
 
@@ -840,7 +842,7 @@ oracle 是真实 Admin API + 真实 HTTP server（`test/v015-stage-s12-recovery-
 - `PRV-05`（QQ C2C 键盘真机）、`HST-04`（alpha.2/rc.1 真机走查）**无仓内 oracle**，保持 `UNKNOWN`。
 - 矩阵中 `C03/C04/C05`（epoch/状态机切换）、`P04`（飞书 ACK/钉钉重连）、`H01` 的
   「旧 listener 清理」等，现有 oracle 为 contract 级；真实 provider/真机证据见
-  `docs/developer/v0.14-evidence-matrix.md`，标 `external-evidence-pending`，本文件不下沉为等价结论。
+  `docs/developer/rebuild-v015/RELEASE_READINESS.md`，标 `external-evidence-pending`，本文件不下沉为等价结论。
 
 ---
 

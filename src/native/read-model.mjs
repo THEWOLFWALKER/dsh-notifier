@@ -47,6 +47,7 @@ export function createNativeReadModel({
   selectedTaskRef = null,
   revision = null,
   storageStatus = null,
+  setupStatus = null,
 } = {}) {
   const channelView = createChannelView({ channels, members })
   const privateChatView = createPrivateChatView({
@@ -57,7 +58,7 @@ export function createNativeReadModel({
     isEnabled: () => {
       try {
         const rows = typeof channels?.list === 'function' ? channels.list() : []
-        return (Array.isArray(rows) ? rows : []).some((row) => row?.control?.configured === true)
+        return (Array.isArray(rows) ? rows : []).some((row) => row?.control?.enabled === true)
       } catch { return false }
     },
   })
@@ -94,6 +95,14 @@ export function createNativeReadModel({
     return { canSave: !readonly, text: pick(readonly ? STORAGE_TEXT.readonly : STORAGE_TEXT.ok, lang) }
   }
 
+  const setupView = () => {
+    let value = null
+    try { value = typeof setupStatus === 'function' ? setupStatus() : setupStatus } catch { value = null }
+    return value?.status === 'reconfigure'
+      ? { reconfigurationRequired: true, legacyBackupAvailable: value.legacyBackupAvailable === true }
+      : null
+  }
+
   return {
     /** 只读能力标志（供 RPC 层 fail-closed 判定；用用户无关的能力名，不泄漏内部概念）。 */
     capabilities() {
@@ -119,6 +128,7 @@ export function createNativeReadModel({
         privateChat: privateChatView.summary(lang),
         pending: pending.slice(0, PENDING_CAP),
         storage: storageView(lang),
+        setup: setupView(),
         truncated: {
           rail: rail.length > RAIL_CAP,
           channels: all.length > CHANNEL_CAP,

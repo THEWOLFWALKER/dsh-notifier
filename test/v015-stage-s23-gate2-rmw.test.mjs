@@ -117,17 +117,17 @@ test('Gate 2C：notify 在发送开始捕获 epoch（不在结束时查询当前
 test('Gate 2D identity：addBinding 事务内 fresh read——并发写者的兄弟绑定不被吞', () => {
   const store = makeStaleReadStore()
   const identity = createIdentity({ store, logger: quiet })
-  identity.addBinding({ channel: 'telegram', userId: '1' })
+  identity.addBinding({ channel: 'telegram', accountId: 'tg-app', userId: '1' })
   // 另一个写者并发提交 qq:9（真值更新，get() 快照仍是旧的）。
   store.externalCommit('inbound:bindings', {
-    'telegram:1': { channel: 'telegram', userId: '1', label: '', role: 'owner', pairedAt: 0, lastSeenAt: 0, origin: 'paired' },
-    'qq:9': { channel: 'qq', userId: '9', label: '', role: 'member', pairedAt: 0, lastSeenAt: 0, origin: 'paired' },
+    'telegram:tg-app:1': { channel: 'telegram', accountId: 'tg-app', userId: '1', label: '', role: 'owner', pairedAt: 0, lastSeenAt: 0, origin: 'paired' },
+    'qq:qq-app:9': { channel: 'qq', accountId: 'qq-app', userId: '9', label: '', role: 'member', pairedAt: 0, lastSeenAt: 0, origin: 'paired' },
   })
-  assert.equal(identity.addBinding({ channel: 'telegram', userId: '2' }).ok, true)
+  assert.equal(identity.addBinding({ channel: 'telegram', accountId: 'tg-app', userId: '2' }).ok, true)
   const table = store.snapshot()['inbound:bindings']
-  assert.ok(table['qq:9'], '并发提交的兄弟绑定必须存活（旧实现锁外读 + 整表覆写会吞掉它）')
-  assert.ok(table['telegram:1'])
-  assert.ok(table['telegram:2'])
+  assert.ok(table['qq:qq-app:9'], '并发提交的兄弟绑定必须存活（旧实现锁外读 + 整表覆写会吞掉它）')
+  assert.ok(table['telegram:tg-app:1'])
+  assert.ok(table['telegram:tg-app:2'])
 })
 
 test('Gate 2D routing：setAgentBinding 事务内 fresh map——并发兄弟键不被旧快照覆盖', () => {

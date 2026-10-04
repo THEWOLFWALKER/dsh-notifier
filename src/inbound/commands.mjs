@@ -1,4 +1,5 @@
 import { stringsOf } from '../strings.mjs'
+import { chatScopeOf } from '../control/session-arbiter.mjs'
 // dsh-notifier v0.7 inbound/commands.mjs
 // 注册面命令（v0.7 计划书 §3.2/§3.3）：/help /whoami /pair /unpair。
 // 命名决议（评审发现）：会话路由已有 /bind /unbind（conversation.mjs，绑定 agent 会话），
@@ -80,36 +81,12 @@ export function stripLeadingMention(text) {
 }
 
 /**
- * 私聊判定（/pair 仅私聊受理——群里发码会被同群所有人看见，单次核销下先到先得）。
- * 判定不了的通道按渠道默认形态处理并 warn（计划书 §3.3）。
+ * 私聊判定（/pair 仅接收 provider 明确标记的私聊来源）。
  * @param {object} envelope - { channel, userId, chatId, chatType? }
  * @returns {boolean}
  */
 export function isPrivateChat(envelope) {
-  const channel = String(envelope?.channel ?? '')
-  const userId = String(envelope?.userId ?? '')
-  const chatId = String(envelope?.chatId ?? '')
-  const chatType = String(envelope?.chatType ?? '')
-  switch (channel) {
-    case 'telegram':
-      // chat.type 由 adapter 透传；缺省回落 chat.id === from.id（TG 私聊恒等）
-      return chatType === 'private' || (chatType === '' && chatId === userId)
-    case 'feishu':
-      // message.chat_type: 'p2p' | 'group'；oc_ 会话 id 与 ou_ open_id 形态不同，不能比等
-      return chatType === 'p2p'
-    case 'dingtalk':
-      // conversationType: '1' 单聊 | '2' 群聊
-      return chatType === '1'
-    case 'qq':
-      // qq-gw：私聊 envelope chatId 即 userId；群聊 chatId 是群号
-      return chatId === userId
-    case 'wxpusher':
-    case 'wechat':
-      // 订阅/单聊形态通道，无群概念
-      return true
-    default:
-      return false
-  }
+  return chatScopeOf(envelope) === 'private'
 }
 
 /**
@@ -143,12 +120,12 @@ export function createCommandHandler(options = {}, strings) {
     }
     const minted = pairing.mint({ origin: 'bootstrap', mintedBy: 'system:guided' })
     if (!minted.ok) {
-      warn(`引导码重铸失败: ${minted.reason ?? 'unknown'}（管理台可补铸）`)
+      warn(`引导码重铸失败: ${minted.reason ?? 'unknown'}（可到宿主 Native 界面的「成员」页补铸）`)
       return null
     }
     lastBootstrapMint = now
     try { options.onBootstrapRemint?.(minted) } catch (e) {
-      warn(`onBootstrapRemint 回调异常: ${e?.message ?? ''}（码已铸，引导码文件可能未写入，请检查管理台）`)
+      warn(`onBootstrapRemint 回调异常: ${e?.message ?? ''}（码已铸，引导码文件可能未写入，请检查宿主 Native 界面）`)
     }
     return minted
   }
@@ -156,9 +133,9 @@ export function createCommandHandler(options = {}, strings) {
   const whoamiText = (envelope, bound) => {
     const head = t.commands.whoamiHead(getChannelName(envelope.channel, strings), envelope.userId)
     if (!bound) return t.commands.whoamiUnbound(head)
-    const accountId = String(envelope.accountId ?? 'default').trim() || 'default'
+    const accountId = String(envelope.accountId ?? '').trim()
     const record = identity.list(envelope.channel).find((item) => String(item.userId) === String(envelope.userId)
-      && String(item.accountId ?? 'default') === accountId)
+      && accountId !== '' && String(item.accountId ?? '') === accountId)
     const label = record !== undefined && record.label !== '' ? t.commands.labelSuffix(record.label) : ''
     return t.commands.whoamiBound(head, label, record?.role ?? 'member')
   }
@@ -240,9 +217,9 @@ export function createCommandHandler(options = {}, strings) {
       return t.commands.unpairNotBound
     }
     if (identity.ownerCount() <= 1) {
-      const accountId = String(envelope.accountId ?? 'default').trim() || 'default'
+      const accountId = String(envelope.accountId ?? '').trim()
       const record = identity.list(envelope.channel).find((item) => String(item.userId) === String(envelope.userId)
-        && String(item.accountId ?? 'default') === accountId)
+        && accountId !== '' && String(item.accountId ?? '') === accountId)
       if (record?.role === 'owner') {
         return t.commands.unpairLastOwner
       }

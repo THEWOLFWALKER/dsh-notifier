@@ -97,13 +97,13 @@ function normalizeOptions(options) {
  * @param {ReturnType<typeof import('../questions/router.mjs').createQuestionBridge>} deps.questionBridge
  *   - 已装配的远程提问桥，承载 aq: 账本、推送、首达采纳与 askQuestions 循环
  * @param {ReturnType<typeof import('../control-plane/questions.mjs').createQuestionsControlService>} [deps.questionsControl]
- *   - v0.14（S04）远程提问结算契约共享单例；注入时待决/结算走它（与 Native / Admin 同一入口），
+ *   - v0.14（S04）远程提问结算契约共享单例；注入时待决/结算走它（与 Native 同一入口），
  *     缺失时用 questionBridge 构造等价服务
  * @param {object} [deps.logger]
  */
 export function createNativeQuestionBridge(deps = {}) {
   const { ctx, questionBridge } = deps
-  // v0.14（S04）：待决/结算统一走共享提问控制服务（与 Native / Admin 同一结算入口）。
+  // v0.14（S04）：待决/结算统一走共享提问控制服务（与 Native 同一结算入口）。
   // 装配层注入共享实例；未注入时用既有 questionBridge 构造等价服务（旧调用方行为不变）。
   const questionsControl = deps.questionsControl ?? createQuestionsControlService({ bridge: questionBridge })
   const logger = deps.logger ?? null

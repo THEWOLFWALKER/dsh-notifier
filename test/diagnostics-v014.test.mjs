@@ -63,18 +63,15 @@ test('S10: capabilitiesSnapshot 只回答可用性与计数，缺失即 unavaila
     sessions: { list: () => [{}] },
     bindings: { get: () => ({}), canEdit: true },
     members: { list: () => [], canRemove: false },
-    advancedConsole: 'available',
   })
   assert.deepEqual(caps.questions, { available: true, pending: 2 })
   assert.deepEqual(caps.sessions, { available: true, count: 1 })
   assert.deepEqual(caps.bindings, { available: true, editable: true })
   assert.deepEqual(caps.members, { available: true, removable: false })
-  assert.equal(caps.advancedConsole, 'available')
   // 无注入：available 全 false，计数不出现（unknown != 0）。
   const empty = capabilitiesSnapshot({})
   assert.equal(empty.questions.available, false)
   assert.equal('pending' in empty.questions, false)
-  assert.equal(empty.advancedConsole, 'unknown')
 })
 
 test('S10: recentFailures 只取 error 级、有界且脱敏', () => {
@@ -102,7 +99,6 @@ test('S10: throwing getters 全降级，快照永不抛，unknown 不制造 atte
     bindings: { get: boom },
     members: { list: boom },
     activity: { list: boom },
-    advancedConsole: boom,
   })
   assert.equal(snapshot.version, 'unknown')
   assert.equal(snapshot.process.epoch, 'unknown')
@@ -110,7 +106,6 @@ test('S10: throwing getters 全降级，快照永不抛，unknown 不制造 atte
   assert.equal(snapshot.storage.state, 'unknown')
   assert.deepEqual(snapshot.host, { version: 'unknown', eventsMode: 'unknown', questionsMode: 'unknown', mediaImageInput: 'unknown' })
   assert.equal(snapshot.channels.total, 0)
-  assert.equal(snapshot.capabilities.advancedConsole, 'unknown')
   assert.deepEqual(snapshot.recentFailures, [])
   // unknown != failed：读取全失败不产生 attention（不谎报故障）。
   assert.equal(snapshot.attention.required, false)
@@ -151,7 +146,6 @@ test('S10: 快照脱敏——secret/webhook 全文/principal 不出现', () => {
     sessions: { list: () => [] },
     bindings: { get: () => ({}), canEdit: true },
     members: { list: () => [], canRemove: true },
-    advancedConsole: 'available',
     now: () => 1_700_000_000_000,
   })
   const text = JSON.stringify(snapshot)

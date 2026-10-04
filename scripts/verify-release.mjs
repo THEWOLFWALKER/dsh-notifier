@@ -51,23 +51,19 @@ for (const failure of hostCompatFailures(root)) failures.push(failure)
 const changelog = read('CHANGELOG.md')
 const readme = read('README.md')
 const readmeZh = read('README.zh-CN.md')
-const handoff = read('docs/developer/HANDOFF.md')
+const progress = read('docs/developer/rebuild-v015/PROGRESS.md')
 
 check(changelog.includes(`## [${version}]`), `CHANGELOG.md has no [${version}] heading`)
-// 零配置首访起 ui.mjs 只做组合（theme/markup/client 三件套拆分）——版本角标检查
-// 必须落在「实际 served 的组合 HTML」上，而不是某个具体源文件（再重构也不会漏检）。
-let uiHtml = ''
-try {
-  const { pathToFileURL } = await import('node:url')
-  const mod = await import(pathToFileURL(resolve(root, 'src/admin/ui.mjs')).href)
-  uiHtml = String(mod.ADMIN_UI_HTML ?? '')
-} catch (error) {
-  check(false, `src/admin/ui.mjs import failed: ${error instanceof Error ? error.message : String(error)}`)
-}
-check(uiHtml.includes(`v${version}`), `admin UI composed HTML does not contain v${version}`)
+// The standalone Admin Console is retired. Check the shipped Native client source for the
+// current version marker and the product's default page instead of importing a deleted UI.
+const nativeClient = read('client.js')
+const nativeVocabulary = read('src/native/vocabulary.mjs')
+const nativeContractVersion = version.split('.').slice(0, 2).join('.')
+check(nativeVocabulary.includes(`v${nativeContractVersion}`), `Native vocabulary has no v${nativeContractVersion} marker`)
+check(nativeClient.includes("nativeTitle: '通知与私聊'"), 'Native client default title is missing')
 
 const documentedCounts = [
-  one(handoff, /\|\s*测试\s*\|[^\n]*`npm test`[^\n]*\*\*(\d+) tests?/, 'HANDOFF test row'),
+  one(progress, /\|\s*Node\s*\|[^\n]*`npm test`[^\n]*\*\*(\d+)\//, 'PROGRESS Node gate row'),
 ]
 const expectedCount = String(actualTestCount ?? qualityCount)
 for (const [index, count] of documentedCounts.entries()) {
@@ -186,8 +182,8 @@ check(!examplesCovered, 'package.json files must not cover examples/ (consumer d
 
 if (existsSync(resolve(root, '.git'))) {
   try {
-    const trackedForbidden = execFileSync('git', ['ls-files', 'node_modules', 'package-lock.json'], { cwd: root, encoding: 'utf8' }).trim()
-    check(trackedForbidden === '', `forbidden tracked release files: ${trackedForbidden}`)
+    const trackedForbidden = execFileSync('git', ['ls-files', 'node_modules'], { cwd: root, encoding: 'utf8' }).trim()
+    check(trackedForbidden === '', `forbidden tracked dependency directory: ${trackedForbidden}`)
   } catch (error) {
     check(false, `git ls-files check failed: ${error instanceof Error ? error.message : String(error)}`)
   }

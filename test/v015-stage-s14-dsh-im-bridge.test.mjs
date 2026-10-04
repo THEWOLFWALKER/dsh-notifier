@@ -7,13 +7,13 @@ import { createDshImBridge, expectedTargetDigest } from '../src/control-plane/ds
 import { createControlSurfaceService } from '../src/control-surface/service.mjs'
 
 const FP = 'a'.repeat(64)
-const target = (route = { chatId: 'private-1' }) => ({ targetId: 't1', kind: 'private', route, label: 'Private chat' })
+const target = (route = { openId: 'ou_private_1' }) => ({ targetId: 't1', kind: 'user', route, label: 'Private chat' })
 function makeService(overrides = {}) {
   const calls = { listBots: 0, describeBot: [], listTargets: [], checked: [], ordinary: 0 }
   const service = {
     contractVersion: 1,
     listBots: async () => { calls.listBots++; return [{ botId: 'b1', label: 'Listed label', credential: 'secret' }] },
-    describeBot: async id => { calls.describeBot.push(id); return { botId: id, channel: 'telegram', label: 'Safe bot', accountFingerprint: FP, connected: true, capabilities: ['proactive-text-checked'], credentials: { token: 'secret' } } },
+    describeBot: async id => { calls.describeBot.push(id); return { version: 1, botId: id, channel: 'feishu', label: 'Safe bot', account: { fingerprint: FP, name: 'Verified account' }, connected: true, capabilities: ['proactive-text-checked'], credentials: { token: 'secret' } } },
     listTargets: async id => { calls.listTargets.push(id); return [target()] },
     send: async () => { calls.ordinary++; return { sent: true } },
     sendChecked: async (...args) => { calls.checked.push(args); return { sent: true } },
@@ -35,12 +35,32 @@ test('discovery requires describeBot and projects only safe v1 fields', async ()
   const { service, calls } = makeService()
   const bridge = createDshImBridge({ readService: () => service })
   const bots = await bridge.listBots()
-  assert.deepEqual(bots, [{ botId: 'b1', channel: 'telegram', label: 'Safe bot', accountFingerprint: FP, connected: true, checked: true }])
+  assert.deepEqual(bots, [{ botId: 'b1', channel: 'feishu', label: 'Safe bot', accountFingerprint: FP, connected: true, checked: true }])
   assert.deepEqual(calls.describeBot, ['b1'])
   assert.doesNotMatch(JSON.stringify(bots), /secret|credentials/)
 
-  service.describeBot = async id => ({ botId: id, channel: 'telegram', accountFingerprint: FP, connected: true, capabilities: ['plain-text'] })
+  service.describeBot = async id => ({ version: 1, botId: id, channel: 'feishu', account: { fingerprint: FP }, connected: true, capabilities: ['plain-text'] })
   assert.equal((await bridge.listBots())[0].checked, false)
+})
+
+test('upstream v1 nested account fingerprint is required; flat guessed aliases do not verify', async () => {
+  const { service } = makeService()
+  const bridge = createDshImBridge({ readService: () => service })
+  assert.equal((await bridge.listBots())[0].checked, true)
+
+  service.describeBot = async id => ({
+    version: 1, botId: id, channel: 'feishu', fingerprint: FP,
+    accountFingerprint: FP, connected: true, capabilities: ['proactive-text-checked'],
+  })
+  const bot = (await bridge.listBots())[0]
+  assert.equal(bot.checked, false)
+  assert.equal(bot.accountFingerprint, undefined)
+
+  service.describeBot = async id => ({
+    version: 1, botId: id, channel: 'feishu', account: { fingerprint: FP, name: 'Account name' },
+    connected: true, capabilities: ['proactive-text-checked'],
+  })
+  assert.equal((await bridge.listBots())[0].label, 'Account name')
 })
 
 test('missing describeBot capability cannot be treated as a checked bot', async () => {
@@ -54,10 +74,23 @@ test('target discovery returns opaque digest and never returns route data', asyn
   const { service } = makeService()
   const bridge = createDshImBridge({ readService: () => service })
   const targets = await bridge.listTargets('b1')
-  const expected = createHash('sha256').update(JSON.stringify({ kind: 'private', route: { chatId: 'private-1' } }), 'utf8').digest('hex')
-  assert.deepEqual(targets, [{ targetId: 't1', label: 'Private chat', kind: 'private', expectedTargetDigest: expected }])
-  assert.doesNotMatch(JSON.stringify(targets), /private-1|route/)
-  assert.equal(expectedTargetDigest(target({ z: 2, a: 1 })), expectedTargetDigest(target({ a: 1, z: 2 })))
+  const expected = createHash('sha256').update(JSON.stringify({ kind: 'user', route: { openId: 'ou_private_1' } }), 'utf8').digest('hex')
+  assert.deepEqual(targets, [{ targetId: 't1', label: 'Private chat', kind: 'user', expectedTargetDigest: expected }])
+  assert.doesNotMatch(JSON.stringify(targets), /ou_private_1|route/)
+  assert.equal(expectedTargetDigest({ kind: 'user', route: { z: 2, a: 1 } }), expectedTargetDigest({ kind: 'user', route: { a: 1, z: 2 } }))
+})
+
+test('target digest sorts only route top-level keys, matching the pinned upstream algorithm', () => {
+  const first = { kind: 'user', route: { z: { b: 2, a: 1 }, a: 'x' } }
+  const sameOuterOrder = { kind: 'user', route: { a: 'x', z: { b: 2, a: 1 } } }
+  const nestedOrderChanged = { kind: 'user', route: { a: 'x', z: { a: 1, b: 2 } } }
+  const upstreamDigest = value => createHash('sha256').update(JSON.stringify({
+    kind: value.kind,
+    route: Object.fromEntries(Object.entries(value.route).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)),
+  }), 'utf8').digest('hex')
+  assert.equal(expectedTargetDigest(first), upstreamDigest(first))
+  assert.equal(expectedTargetDigest(first), expectedTargetDigest(sameOuterOrder))
+  assert.notEqual(expectedTargetDigest(first), expectedTargetDigest(nestedOrderChanged))
 })
 
 test('send revalidates fingerprint and route, then calls sendChecked only', async () => {
@@ -78,7 +111,7 @@ test('fingerprint change after discovery is rejected before SDK start', async ()
   const { service, calls } = makeService()
   const bridge = createDshImBridge({ readService: () => service })
   const digest = (await bridge.listTargets('b1'))[0].expectedTargetDigest
-  service.describeBot = async id => ({ botId: id, channel: 'telegram', accountFingerprint: 'b'.repeat(64), connected: true, capabilities: ['proactive-text-checked'] })
+  service.describeBot = async id => ({ version: 1, botId: id, channel: 'feishu', account: { fingerprint: 'b'.repeat(64) }, connected: true, capabilities: ['proactive-text-checked'] })
   const result = await bridge.send({ botId: 'b1', targetId: 't1', text: 'hello', expectedFingerprint: FP, expectedTargetDigest: digest })
   assert.deepEqual({ rejected: result.rejected, reason: result.reason }, { rejected: true, reason: 'account-changed' })
   assert.equal(calls.checked.length, 0)
@@ -89,11 +122,25 @@ test('target route change after discovery is rejected before SDK start', async (
   const { service, calls } = makeService()
   const bridge = createDshImBridge({ readService: () => service })
   const digest = (await bridge.listTargets('b1'))[0].expectedTargetDigest
-  service.listTargets = async () => [target({ chatId: 'different-private-chat' })]
+  service.listTargets = async () => [target({ openId: 'ou_other_user' })]
   const result = await bridge.send({ botId: 'b1', targetId: 't1', text: 'hello', expectedFingerprint: FP, expectedTargetDigest: digest })
   assert.deepEqual({ rejected: result.rejected, reason: result.reason }, { rejected: true, reason: 'target-changed' })
   assert.equal(calls.checked.length, 0)
   assert.equal(calls.ordinary, 0)
+})
+
+test('group targets are hidden from discovery and rejected if submitted directly', async () => {
+  const group = { targetId: 'g1', kind: 'group', route: { chatId: 'oc_group' }, label: 'Group' }
+  const { service, calls } = makeService({ listTargets: async () => [target(), group] })
+  const bridge = createDshImBridge({ readService: () => service })
+  const targets = await bridge.listTargets('b1')
+  assert.deepEqual(targets.map(row => row.targetId), ['t1'])
+  const result = await bridge.send({
+    botId: 'b1', targetId: 'g1', text: 'private-only', expectedFingerprint: FP,
+    expectedTargetDigest: expectedTargetDigest(group),
+  })
+  assert.deepEqual({ rejected: result.rejected, reason: result.reason }, { rejected: true, reason: 'private-target-required' })
+  assert.equal(calls.checked.length, 0)
 })
 
 test('missing sendChecked and missing checked capability never fall back to send', async () => {
@@ -106,7 +153,7 @@ test('missing sendChecked and missing checked capability never fall back to send
   await assert.rejects(bridgeA.send({ botId: 'b1', targetId: 't1', text: 'x', expectedFingerprint: FP, expectedTargetDigest: digestA }), e => e.code === 'not-supported')
   assert.equal(a.calls.ordinary, 0)
 
-  const b = makeService({ describeBot: async id => ({ botId: id, accountFingerprint: FP, connected: true, capabilities: [] }) })
+  const b = makeService({ describeBot: async id => ({ version: 1, botId: id, account: { fingerprint: FP }, connected: true, capabilities: [] }) })
   const bridgeB = createDshImBridge({ readService: () => b.service })
   const result = await bridgeB.send({ botId: 'b1', targetId: 't1', text: 'x', expectedFingerprint: FP, expectedTargetDigest: digestA })
   assert.equal(result.rejected, true)

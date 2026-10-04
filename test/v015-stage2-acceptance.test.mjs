@@ -54,23 +54,24 @@ test('A01: the conversation-bindings fact has exactly one writer authority', () 
   assert.match(currentTask, /\bdeleteDurable\s*\(/)
 
   // The key has one constructor, used by both the writer and the readers.
-  assert.equal(currentTaskKey('telegram', '42'), 'bind:telegram:default:42')
-  assert.equal(currentTaskKey('  TELEGRAM ', ' 42 '), 'bind:telegram:default:42', 'key components are normalized')
+  assert.equal(currentTaskKey('telegram', '42', 'tg-app'), 'bind:telegram:tg-app:42')
+  assert.equal(currentTaskKey('  TELEGRAM ', ' 42 ', 'tg-app'), 'bind:telegram:tg-app:42', 'key components are normalized')
   assert.equal(currentTaskKey('', '42'), null, 'a missing component is not a valid principal')
 })
 
 test('A01: the current-task authority round-trips through the durable store', () => {
   const store = createStore(tempState())
   const authority = createCurrentTaskAuthority({ store })
-  assert.equal(authority.get({ channel: 'telegram', userId: '42' }), null, 'no explicit choice → nothing')
-  assert.deepEqual(authority.select({ channel: 'telegram', userId: '42' }, 'task-1'), { ok: true, taskRef: 'task-1' })
-  assert.equal(authority.get({ channel: 'telegram', userId: '42' }), 'task-1')
+  const principal = { channel: 'telegram', accountId: 'tg-app', userId: '42' }
+  assert.equal(authority.get(principal), null, 'no explicit choice → nothing')
+  assert.deepEqual(authority.select(principal, 'task-1'), { ok: true, taskRef: 'task-1' })
+  assert.equal(authority.get(principal), 'task-1')
   // A restart reads the same durable fact (no in-memory shadow).
   const restarted = createCurrentTaskAuthority({ store })
-  assert.equal(restarted.get({ channel: 'telegram', userId: '42' }), 'task-1')
-  assert.deepEqual(restarted.clear({ channel: 'telegram', userId: '42' }), { ok: true, existed: true })
-  assert.equal(restarted.get({ channel: 'telegram', userId: '42' }), null)
-  assert.deepEqual(restarted.select({ channel: 'telegram', userId: '42' }, '  '), { ok: false, reason: 'invalid' },
+  assert.equal(restarted.get(principal), 'task-1')
+  assert.deepEqual(restarted.clear(principal), { ok: true, existed: true })
+  assert.equal(restarted.get(principal), null)
+  assert.deepEqual(restarted.select(principal, '  '), { ok: false, reason: 'invalid' },
     'an empty ref is a rejection, not a silent clear')
 })
 
@@ -87,7 +88,7 @@ test('A02: the router never selects a current task implicitly', () => {
 
 test('A02: the private-chat view shows no current task without an explicit selection', () => {
   const view = createPrivateChatView({
-    members: { list: () => [{ key: 'telegram:o', channel: 'telegram', userId: '1', role: 'owner' }], listPending: () => [] },
+    members: { list: () => [{ key: 'telegram:default:o', channel: 'telegram', accountId: 'tg-app', userId: '1', role: 'owner' }], listPending: () => [] },
     tasks: { list: () => [{ taskRef: 'task-1', workspace: 'dsh-notifier', attention: true }] },
   })
   const summary = view.summary()
@@ -116,14 +117,17 @@ test('I01: a claimed interaction is not re-executed after a restart', () => {
   ledger.add('act:1', { kind: 'deploy' })
 
   const first = ledger.claim('act:1', { by: 'owner' })
-  assert.deepEqual(first, { ok: true, claimed: true }, 'the first claim wins durably')
+  assert.equal(first.ok, true, 'the first claim wins durably')
+  assert.equal(first.claimed, true)
+  assert.equal(typeof first.executionId, 'string')
 
   // Crash + restart: a fresh ledger over the same durable store must not re-claim.
   const restarted = createInteractionLedger({ keyPrefix: 'act:', store, decisionField: 'outcome' })
   assert.deepEqual(restarted.claim('act:1', { by: 'owner' }), { ok: false, reason: 'uncertain' },
     'a claimed row is uncertain, never re-executed')
-  assert.equal(restarted.resolve('act:1', 'done'), 'already-claimed',
-    'a claimed row cannot be settled by a second path without the explicit claimedSettle door')
+  assert.equal(restarted.resolve('act:1', 'done', {}, { executionId: 'forged-execution' }), 'already-claimed',
+    'a claimed row can only be settled by its original execution id')
+  assert.equal(restarted.resolve('act:1', 'done'), 'already-claimed')
 })
 
 // ——————————————————————————— R01 ———————————————————————————

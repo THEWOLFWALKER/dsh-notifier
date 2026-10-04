@@ -37,6 +37,7 @@ function failingStore({ initial = {} } = {}) {
     set: (key, value) => { memory.set(key, value); return false },
     delete: (key) => memory.delete(key),                    // existed 语义（R1：不得改）
     deleteDurable: (key) => ({ existed: memory.delete(key), durable: false }),
+    transact: () => ({ committed: false, durable: false, code: 'STATE_WRITE_FAILED' }),
     keys: (prefix = '') => [...memory.keys()].filter((key) => key.startsWith(prefix)),
     _memory: memory,
   }
@@ -50,6 +51,13 @@ function workingStore({ initial = {} } = {}) {
     set: (key, value) => { memory.set(key, value); return true },
     delete: (key) => memory.delete(key),
     deleteDurable: (key) => ({ existed: memory.delete(key), durable: true }),
+    transact: (mutator) => {
+      const draft = Object.fromEntries([...memory].map(([key, value]) => [key, structuredClone(value)]))
+      const value = mutator(draft)
+      memory.clear()
+      for (const [key, row] of Object.entries(draft)) memory.set(key, row)
+      return { committed: true, durable: true, value }
+    },
     keys: (prefix = '') => [...memory.keys()].filter((key) => key.startsWith(prefix)),
     _memory: memory,
   }
@@ -191,12 +199,12 @@ test('P0-04：ledger 既有返回语义未被破坏（缺失行 false / 已决 a
 
 // ───────────────────────── 不变量守卫（I9） ─────────────────────────
 
-test('I9：遗留 mock store 的 set() 返回 undefined 必须当作成功，不得判成写失败', () => {
+test('I9：遗留 mock store 的 set() 返回 undefined 仍可写入；缺事务的生命周期结算 fail-closed', () => {
   const store = legacyMockStore({ initial: { 'aq:1': { status: 'pending' } } })
   const ledger = createInteractionLedger({ keyPrefix: 'aq:', store })
 
   assert.equal(ledger.add('aq:2', {}), true, 'mock store 下 add 必须报成功，否则打挂既有测试')
-  assert.equal(ledger.resolve('aq:1', 'answered'), true, 'mock store 下 resolve 必须报成功')
+  assert.equal(ledger.resolve('aq:1', 'answered'), 'storage-failed', '缺少事务 API 时生命周期结算不得伪报成功')
 
   const { config, source } = outboundRig(store)
   assert.equal(config.save('bark', { key: 'k1' }).saved, true, 'mock store 下 save 必须报成功')

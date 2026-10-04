@@ -1,7 +1,7 @@
 // dsh-notifier inbound/bus.mjs
 // 入站总线：所有回传能力的汇合点。
 // 安全红线：
-//  - 白名单默认全拒（绑定表与 allowUsers 均空 → 引导态：业务面仍全拒，只开放注册面）
+//  - 仅完整的 `(channel, accountId, userId)` principal 可通过；缺账号或缺绑定一律拒绝
 //  - 持久化去重 + 内存 FIFO 双层（轮询 cursor 不落盘时，重启后全靠它防重复消费）
 //  - 审批裁决先到先得；无等待者（已处理/超时）的裁决返回 already-resolved，绝不二次生效
 //  - 静默永不批准：引导态/未绑定用户的一切消息（含伪造审批回复）不触审批
@@ -50,7 +50,6 @@ export const MESSAGE_PRIORITY = Object.freeze({
 /**
  * 创建入站总线。
  * @param {object} options
- * @param {string[]} [options.allowUsers] - v0.6 白名单（identity 未注入时的准入依据；注入后仅参与引导态判定）
  * @param {import('./identity.mjs').createIdentity} [options.identity] - v0.7 身份绑定层（推荐注入）
  * @param {import('./pairing.mjs').createPairing} [options.pairing] - v0.7 配对码状态机（/pair 受理用）
  * @param {import('./store.mjs').store} [options.store] - 持久化 store（去重跨重启）
@@ -62,11 +61,11 @@ export const MESSAGE_PRIORITY = Object.freeze({
  * @param {() => void} [options.onBootstrapRemint] - 引导码重铸回调（stderr 展示）
  */
 export function createInboundBus(options = {}) {
-  const allow = new Set((Array.isArray(options.allowUsers) ? options.allowUsers : []).map(String))
   const identity = options.identity ?? null
   const pairing = options.pairing ?? null
   const store = options.store ?? null
   const vault = options.vault ?? null
+  const strings = options.strings ?? stringsOf()
   const dedupWindowMs = options.dedupWindowMs ?? DEFAULT_DEDUP_WINDOW_MS
   const syntheticDedupWindowMs = options.syntheticDedupWindowMs ?? DEFAULT_SYNTHETIC_DEDUP_WINDOW_MS
   const globalWaiterCap = Math.max(1, Math.min(MAX_GLOBAL_WAITERS, Number(options.maxWaiters) || MAX_GLOBAL_WAITERS))
@@ -85,7 +84,11 @@ export function createInboundBus(options = {}) {
   // 条目只按容量淘汰不按时间过期，60s 短窗会被 FIFO 永久挡死（同文本第二条在
   // 512 条新消息把它挤出去之前永远 duplicate）。
   const fifo = new Map()
-  const dedupKeyOf = (envelope) => `dedup:${envelope.channel}:${envelope.messageId}`
+  const dedupKeyOf = (envelope) => `dedup:${JSON.stringify([
+    String(envelope?.channel ?? '').trim().toLowerCase(),
+    String(envelope?.accountId ?? '').trim(),
+    String(envelope?.messageId ?? ''),
+  ])}`
   // G-46：合成键（adapter 侧内容哈希兜底）按 envelope 标记走短窗；平台原生 msgId 长窗不变。
   const dedupWindowOf = (envelope) => envelope?.messageIdSynthetic === true ? syntheticDedupWindowMs : dedupWindowMs
 
@@ -151,12 +154,12 @@ export function createInboundBus(options = {}) {
 
   /** 引导态：绑定表空 + 旧白名单空（此时六通道照常启动，仅开放注册面）。 */
   function isGuided() {
-    return identity !== null && identity.isEmpty() && allow.size === 0
+    return identity === null || identity.isEmpty()
   }
 
   /** 节流判定：窗口内已回执过则吞掉本次（返回 false 表示应回执）。 */
-  function shouldReply(channel, userId, now = Date.now()) {
-    const key = JSON.stringify([String(channel ?? ''), String(userId ?? '')])
+  function shouldReply(channel, userId, accountId = '', now = Date.now()) {
+    const key = JSON.stringify([String(channel ?? ''), String(accountId ?? ''), String(userId ?? '')])
     const last = replyThrottle.get(key) ?? 0
     if (now - last < REPLY_THROTTLE_MS) return false
     replyThrottle.set(key, now)
@@ -188,11 +191,10 @@ export function createInboundBus(options = {}) {
   }
 
   return {
-    /** 准入判定（默认全拒）。v0.7 复合键；旧调用 allows(userId) 仍兼容（扁平集合期语义）。 */
-    allows(channel, userId, accountId = undefined) {
-      if (identity !== null) return identity.allows(String(channel ?? ''), String(userId ?? ''), accountId)
-      const id = userId === undefined ? String(channel) : String(userId)
-      return allow.has(id)
+    /** 准入判定只查 canonical principal；缺少稳定账号身份时一律拒绝。 */
+    allows(channel, userId, accountId) {
+      if (identity === null) return false
+      return identity.allows(String(channel ?? ''), String(userId ?? ''), accountId)
     },
 
     /** 是否处于引导态（诊断/管理台展示用）。 */
@@ -211,7 +213,22 @@ export function createInboundBus(options = {}) {
      */
     accept(envelope) {
       const admission = privateControlAdmission(envelope)
-      if (!admission.ok) return admission
+      if (!admission.ok) {
+        // A provider has already proved this is a private chat, so an account
+        // identity failure can be explained in that same chat. Unknown/group
+        // sources remain silent because replying could disclose information.
+        if (admission.reason === 'source_missing_accountId'
+          && typeof envelope?.chatId === 'string' && envelope.chatId !== ''
+          && shouldReply(envelope.channel, envelope.userId ?? envelope.chatId, envelope.accountId)) {
+          return { ...admission, reply: strings.conversation.controlRejected }
+        }
+        return admission
+      }
+      if (typeof options.privateChatEnabled === 'function') {
+        try {
+          if (options.privateChatEnabled(envelope.channel) !== true) return { ok: false, reason: 'private_chat_disabled' }
+        } catch { return { ok: false, reason: 'private_chat_disabled' } }
+      }
       if (isDuplicate(envelope)) {
         warn(`跳过重复入站消息：${envelope.channel}:${envelope.messageId}`)
         return { ok: false, reason: 'duplicate' }
@@ -262,7 +279,7 @@ export function createInboundBus(options = {}) {
       // 未绑定来源只记内存：仍拦平台重投，但不允许陌生 messageId 无限放大 state.json。
       rememberInMemory(envelope)
       // 拒绝回执（引导态文案带配对指引；普通态带联系管理员指引）
-      if (identity !== null && shouldReply(envelope.channel, envelope.userId)) {
+      if (identity !== null && shouldReply(envelope.channel, envelope.userId, envelope.accountId)) {
         const bt = options.strings?.bus ?? stringsOf().bus
         const idLine = bt.identityLine(getChannelName(envelope.channel, options.strings), envelope.userId)
         const reply = guided ? bt.guidedReply(idLine) : bt.whitelistReply(idLine)

@@ -52,7 +52,7 @@ function normalizeDiff(payload = {}) {
  * 从共享成员控制服务构造 Native RPC 投影。
  * @param {object} [deps]
  * @param {ReturnType<typeof import('../control-plane/members.mjs').createMembersControlService>} [deps.service]
- *   - 共享成员控制服务（Native / Admin 共用同一实例）；缺失时按空表 / 不可用降级
+ *   - 共享成员控制服务（Native 使用同一实例）；缺失时按空表 / 不可用降级
  */
 export function createMembersProjection({ service = null } = {}) {
   const canList = service !== null && service !== undefined && typeof service.listMembers === 'function'

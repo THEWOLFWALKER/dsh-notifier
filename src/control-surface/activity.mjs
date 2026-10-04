@@ -2,7 +2,7 @@ import { normalizeDeliveryEvidence } from '../delivery-evidence.mjs'
 
 const SECRETISH = /(?:token|secret|password|credential|authorization|cookie|webhook|chatid|userid|accountid|body|content|message)$/i
 const ALLOWED_DETAIL_KEYS = new Set([
-  'channel', 'direction', 'status', 'reason', 'delivered', 'accepted', 'confirmed', 'skipped', 'failed',
+  'channel', 'direction', 'status', 'reason', 'delivered', 'accepted', 'confirmed', 'unknown', 'skipped', 'failed',
   'saved', 'deleted', 'hotApplied', 'taskRef', 'workspace',
   'action', 'source', 'count',
 ])
@@ -45,6 +45,7 @@ function titleFor(row) {
     // 不能再宣称「已送达」；只有显式回执才算 confirmed delivered。
     'delivery-finished': { en: `Notification accepted by provider${channel}`, zh: `通知已发送到提供方${channel}` },
     'delivery-confirmed': { en: `Notification confirmed delivered${channel}`, zh: `通知已确认送达${channel}` },
+    'delivery-unknown': { en: `Notification result is unclear — check before retrying${channel}`, zh: `通知结果不确定 · 重试前请先核对${channel}` },
     'delivery-failed': { en: `Notification delivery failed${channel}`, zh: `通知发送失败${channel}` },
     'delivery-skipped': { en: `Notification not delivered — no channel handled it${channel}`, zh: `通知未投递 · 没有渠道接收${channel}` },
     'channel-test-ok': { en: `Channel test succeeded${channel}`, zh: `渠道测试成功${channel}` },
@@ -100,12 +101,17 @@ export function createSurfaceActivity({ capacity = 100, now = Date.now } = {}) {
         ? sendRecord.failed.map((item) => typeof item?.channel === 'string' ? item.channel : '').filter(Boolean)
         : []
       const skipped = Array.isArray(sendRecord.skipped) ? sendRecord.skipped : []
-      const action = failed.length > 0 ? 'delivery-failed'
+      const unknown = Array.isArray(sendRecord.unknown)
+        ? sendRecord.unknown.map((item) => typeof item === 'string' ? item : typeof item?.channel === 'string' ? item.channel : '').filter(Boolean)
+        : []
+      const action = unknown.length > 0 ? 'delivery-unknown'
+        : failed.length > 0 ? 'delivery-failed'
         : confirmed.length > 0 ? 'delivery-confirmed'
           : accepted.length === 0 ? 'delivery-skipped'
             : 'delivery-finished'
       return record('notification', action, {
-        delivered: accepted, accepted, confirmed, failed, skipped, status: sendRecord.ok === false ? 'failed' : 'ok',
+        delivered: accepted, accepted, confirmed, unknown, failed, skipped,
+        status: unknown.length > 0 ? 'unknown' : sendRecord.ok === false ? 'failed' : 'ok',
       })
     },
     list({ limit = 30, category = null } = {}) {
@@ -120,7 +126,7 @@ export function createSurfaceActivity({ capacity = 100, now = Date.now } = {}) {
           timeText: timeText(row.atMs, now()),
           category: ['notification', 'control', 'configuration', 'system'].includes(row.category) ? row.category : 'system',
           level: row.detail?.status === 'failed' ? 'error'
-            : (row.action.includes('failed') || row.action === 'delivery-skipped' ? 'warn' : 'info'),
+            : (row.detail?.status === 'unknown' || row.action.includes('failed') || row.action === 'delivery-skipped' ? 'warn' : 'info'),
           title: titleFor(row),
           ...(row.detail?.reason ? { detail: { en: String(row.detail.reason), zh: String(row.detail.reason) } } : {}),
         }))

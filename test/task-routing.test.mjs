@@ -96,7 +96,7 @@ test('task projection: falls back to host agent list when registry is absent', (
 test('task selection: begin stores a pending selection and get reads it back', () => {
   const store = memoryStore()
   const sel = createTaskSelection({ store })
-  const eg = { channel: 'telegram', userId: 'u1', chatId: 'u1' }
+  const eg = { channel: 'telegram', accountId: 'bot-a', userId: 'u1', chatId: 'u1' }
   const result = sel.begin(eg, ['sid-a', 'sid-b', 'sid-a'], '帮我构建')
   assert.deepEqual(result, { candidates: ['sid-a', 'sid-b'], originalText: '帮我构建', attachments: [], image: null })
   assert.equal(sel.has(eg), true)
@@ -106,7 +106,7 @@ test('task selection: begin stores a pending selection and get reads it back', (
 test('task selection: resolving by number clears pending so original text delivers exactly once', () => {
   const store = memoryStore()
   const sel = createTaskSelection({ store })
-  const eg = { channel: 'telegram', userId: 'u1', chatId: 'u1' }
+  const eg = { channel: 'telegram', accountId: 'bot-a', userId: 'u1', chatId: 'u1' }
   sel.begin(eg, ['sid-a', 'sid-b'], 'msg')
   const resolved = sel.resolve(eg, '2')
   assert.deepEqual(resolved, { ok: true, sessionId: 'sid-b', originalText: 'msg', attachments: [], image: null })
@@ -118,7 +118,7 @@ test('task selection: resolving by number clears pending so original text delive
 test('C4：任务选择 durable 删除失败时不消费内存态、不返回成功', () => {
   const store = memoryStore()
   const sel = createTaskSelection({ store })
-  const eg = { channel: 'telegram', userId: 'u1', chatId: 'u1' }
+  const eg = { channel: 'telegram', accountId: 'bot-a', userId: 'u1', chatId: 'u1' }
   sel.begin(eg, ['sid-a'], 'msg')
   store.delete = () => { throw new Error('disk unavailable') }
   const result = sel.resolve(eg, '1')
@@ -129,7 +129,7 @@ test('C4：任务选择 durable 删除失败时不消费内存态、不返回成
 test('task selection: out-of-range number does not clear pending', () => {
   const store = memoryStore()
   const sel = createTaskSelection({ store })
-  const eg = { channel: 'telegram', userId: 'u1', chatId: 'u1' }
+  const eg = { channel: 'telegram', accountId: 'bot-a', userId: 'u1', chatId: 'u1' }
   sel.begin(eg, ['sid-a'], 'msg')
   const bad = sel.resolve(eg, '99')
   assert.equal(bad.ok, false)
@@ -142,7 +142,7 @@ test('task selection: expired pending is pruned and reads as absent', () => {
   const store = memoryStore()
   let clock = 0
   const sel = createTaskSelection({ store, now: () => clock, ttlMs: 1000 })
-  const eg = { channel: 'telegram', userId: 'u1', chatId: 'u1' }
+  const eg = { channel: 'telegram', accountId: 'bot-a', userId: 'u1', chatId: 'u1' }
   sel.begin(eg, ['sid-a'], 'msg')
   assert.equal(sel.has(eg), true)
   clock = 2000
@@ -153,7 +153,7 @@ test('task selection: expired pending is pruned and reads as absent', () => {
 test('task selection: pending view redacts originalText body', () => {
   const store = memoryStore()
   const sel = createTaskSelection({ store })
-  const eg = { channel: 'telegram', userId: 'u1', chatId: 'u1' }
+  const eg = { channel: 'telegram', accountId: 'bot-a', userId: 'u1', chatId: 'u1' }
   sel.begin(eg, ['sid-a'], '机密正文')
   const rows = sel.pending()
   assert.equal(rows.length, 1)
@@ -164,7 +164,7 @@ test('task selection: pending view redacts originalText body', () => {
 
 test('task selection: missing store degrades to in-memory state without throwing', () => {
   const sel = createTaskSelection({ store: null })
-  const eg = { channel: 'telegram', userId: 'u1', chatId: 'u1' }
+  const eg = { channel: 'telegram', accountId: 'bot-a', userId: 'u1', chatId: 'u1' }
   assert.equal(sel.has(eg), false)
   const result = sel.begin(eg, ['sid-a'], 'msg')
   assert.equal(result !== null, true)

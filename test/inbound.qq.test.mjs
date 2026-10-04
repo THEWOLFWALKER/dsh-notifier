@@ -4,7 +4,7 @@
 import test, { beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { createQqInbound, resolveQqInboundConfig } from '../src/inbound/qq-gw.mjs'
-import { createInboundBus } from '../src/inbound/bus.mjs'
+import { createPrivateTestBus as createInboundBus } from './helpers/private-bus.mjs'
 
 const API = 'https://api.sgroup.qq.com'
 const TOKEN_URL = 'https://bots.qq.com/app/getAppAccessToken'
@@ -122,6 +122,7 @@ function makeRig({ allowUsers = ['u_open'], config = {}, fetchOptions = {} } = {
 }
 
 const tick = (ms = 5) => new Promise((resolve) => setTimeout(resolve, ms))
+const CHAT_STATE_MAX = 1024
 
 /** 驱动到网关就绪：open → HELLO → IDENTIFY → READY。返回活跃 ws。 */
 async function driveReady(rig, { sessionId = 'sess_1' } = {}) {
@@ -144,7 +145,7 @@ afterEach(async () => {
 
 // ---------------------------------------------------------------- 配置解析
 
-test('resolveQqInboundConfig：缺凭证 ok=false 中文指引；归一化 notifyUsers/Groups 与默认 intents', () => {
+test('resolveQqInboundConfig：缺凭证给出中文指引；群目标明确不受支持', () => {
   const missing = resolveQqInboundConfig({})
   assert.equal(missing.ok, false)
   assert.match(missing.reason, /appId 与 appSecret/)
@@ -153,7 +154,6 @@ test('resolveQqInboundConfig：缺凭证 ok=false 中文指引；归一化 notif
   const ok = resolveQqInboundConfig({
     appId: ' a ', appSecret: ' s ',
     notifyUsers: [' u1 ', ''],
-    notifyGroups: ['g1'],
     apiBase: 'https://api.example.com/',
     intents: 1,
   })
@@ -161,7 +161,10 @@ test('resolveQqInboundConfig：缺凭证 ok=false 中文指引；归一化 notif
   assert.equal(ok.config.appId, 'a')
   assert.equal(ok.config.apiBase, 'https://api.example.com')
   assert.deepEqual(ok.config.notifyUsers, ['u1'])
-  assert.deepEqual(ok.config.notifyGroups, ['g1'])
+  assert.equal(Object.hasOwn(ok.config, 'notifyGroups'), false)
+  const groups = resolveQqInboundConfig({ appId: 'a', appSecret: 's', notifyGroups: ['g1'] })
+  assert.equal(groups.ok, false)
+  assert.match(groups.reason, /群聊目标已不受支持/)
   assert.equal(ok.config.intents, 1)
   assert.equal(resolveQqInboundConfig({ appId: 'a', appSecret: 's' }).config.intents, DEFAULT_INTENTS)
 })
@@ -769,42 +772,17 @@ test('Issue #14：QQ malformed/missing URL 静默拒绝，图片重放和非白�
   await rig.inbound.stop()
 })
 
-test('GROUP_AT_MESSAGE_CREATE：群 @ 消息剥离提及占位；chatId=group_openid，chatType=group', async () => {
+test('GROUP_AT_MESSAGE_CREATE is ignored before bus dispatch', async () => {
   const rig = makeRig()
-  const accepted = []
-  rig.bus.onMessage((envelope) => accepted.push(envelope))
+  let acceptCalls = 0
+  const accept = rig.bus.accept.bind(rig.bus)
+  rig.bus.accept = (envelope) => { acceptCalls += 1; return accept(envelope) }
   const ws = await driveReady(rig)
   ws.serverSend({
     op: 0, t: 'GROUP_AT_MESSAGE_CREATE', s: 4,
     d: { id: 'evt_2', group_openid: 'g_open', content: '<@!123456> 帮我跑测试', author: { member_openid: 'u_open' } },
   })
-  assert.deepEqual(accepted, [], '群事件不能进入业务消费者')
-  await rig.inbound.stop()
-})
-
-test('G-40：@ 占位白名单——三种已证实形态剥净（<@!数字>/<@数字>/行首 @名字+空格）', async () => {
-  const rig = makeRig()
-  const accepted = []
-  rig.bus.onMessage((envelope) => accepted.push(envelope))
-  const ws = await driveReady(rig)
-  // 三种已证实形态逐一入站（不同群避免去重/LRU 干扰）
-  ws.serverSend({ op: 0, t: 'GROUP_AT_MESSAGE_CREATE', s: 4, d: { id: 'evt_m1', group_openid: 'g_m1', content: '<@!123456>帮我跑测试', author: { member_openid: 'u_open' } } })
-  ws.serverSend({ op: 0, t: 'GROUP_AT_MESSAGE_CREATE', s: 5, d: { id: 'evt_m2', group_openid: 'g_m2', content: '<@123456> 帮我跑测试', author: { member_openid: 'u_open' } } })
-  ws.serverSend({ op: 0, t: 'GROUP_AT_MESSAGE_CREATE', s: 6, d: { id: 'evt_m3', group_openid: 'g_m3', content: '@小助手 帮我跑测试', author: { member_openid: 'u_open' } } })
-  assert.deepEqual(accepted, [], '群事件不能进入业务消费者')
-  await rig.inbound.stop()
-})
-
-test('G-40：未知 @ 形态保留原文 + debug 出声（不再假定「剥不掉也无害」）', async () => {
-  const rig = makeRig()
-  const accepted = []
-  rig.bus.onMessage((envelope) => accepted.push(envelope))
-  const ws = await driveReady(rig)
-  // 未知形态一：占位内非数字 ID（<@x>）——旧正则会剥 <@![A-Za-z0-9_]+>，白名单收紧后保留
-  ws.serverSend({ op: 0, t: 'GROUP_AT_MESSAGE_CREATE', s: 4, d: { id: 'evt_u1', group_openid: 'g_u1', content: '<@x> 帮我跑测试', author: { member_openid: 'u_open' } } })
-  // 未知形态二：行首 @名字 无尾随空格（缺「名字结束」判据，剥了会误伤粘连正文）
-  ws.serverSend({ op: 0, t: 'GROUP_AT_MESSAGE_CREATE', s: 5, d: { id: 'evt_u2', group_openid: 'g_u2', content: '@小助手帮我跑测试', author: { member_openid: 'u_open' } } })
-  assert.deepEqual(accepted, [], '群事件不能进入业务消费者')
+  assert.equal(acceptCalls, 0, 'group source has no admission, store, route, or reply side effects')
   await rig.inbound.stop()
 })
 
@@ -841,6 +819,7 @@ test('INTERACTION_CREATE：群按钮回调明确标记 group，避免进入控�
     },
   })
   assert.deepEqual(accepted, [], '群事件不能进入业务消费者')
+  assert.equal(rig.calls.some((entry) => entry.url.includes('/interactions/')), false, 'group callbacks are not acknowledged or processed')
   await rig.inbound.stop()
 })
 
@@ -927,17 +906,14 @@ test('#26 按钮 label 整体 ≤10 码点：超长选项截断补省略号、em
   await rig.inbound.stop()
 })
 
-test('目标类型学习：群事件后回执走 /v2/groups/；配置项 notifyGroups 也走群接口', async () => {
-  const rig = makeRig({ config: { notifyGroups: ['g_cfg'] } })
+test('D01: group events and unknown targets never cause outbound QQ sends', async () => {
+  const rig = makeRig()
   const ws = await driveReady(rig)
   ws.serverSend({ op: 0, t: 'GROUP_AT_MESSAGE_CREATE', s: 3, d: { id: 'e', group_openid: 'g_learned', content: '<@!1> hi', author: { member_openid: 'u_open' } } })
   await tick()
-  assert.equal(await rig.inbound.sendText('g_learned', '群回执'), true)
-  assert.ok(rig.calls.some((entry) => entry.url === `${API}/v2/groups/g_learned/messages`), '学习到的群目标应走群接口')
-  assert.equal(await rig.inbound.sendText('g_cfg', '配置群'), true)
-  assert.ok(rig.calls.some((entry) => entry.url === `${API}/v2/groups/g_cfg/messages`), '配置的群目标应走群接口')
-  assert.equal(await rig.inbound.sendText('u_open', '默认用户'), true)
-  assert.ok(rig.calls.some((entry) => entry.url === `${API}/v2/users/u_open/messages`), '未知目标默认按单聊')
+  assert.equal(await rig.inbound.sendText('g_learned', 'group receipt'), false)
+  assert.equal(rig.calls.some((entry) => entry.url.includes('/messages')), false, 'group source is rejected with no outbound side effect')
+  assert.equal(await rig.inbound.sendText('unknown-target', 'unknown'), false)
   await rig.inbound.stop()
 })
 
@@ -1022,31 +998,25 @@ test('QQ 出站长文本：无句末标点的长回复（纯 emoji）仍按等�
   await rig.inbound.stop()
 })
 
-test('G-22：被动回复条数配额超限 warn（c2c 4 条/群 5 条）——不硬阻塞投递，边界内静默', async () => {
-  const rig = makeRig({ config: { notifyGroups: ['g_open'] } })
+test('G-22：c2c 被动回复条数超限会告警，但群目标保持拒绝', async () => {
+  const rig = makeRig()
   await driveReady(rig)
-  // rateGate 固定 1050ms 节流：本用例要连发 5+5+6 段，压掉真实等待（finally 还原）
+  // rateGate 固定 1050ms 节流：本用例压掉真实等待（finally 还原）
   const realSetTimeout = globalThis.setTimeout
   globalThis.setTimeout = (fn, ms, ...rest) => realSetTimeout(fn, ms > 0 ? 0 : ms, ...rest)
   try {
-    // c2c：9000 码点 → 5 段 > 配额 4 → warn 出声但仍逐段投递（丢弃决策留给平台）
+    // 私聊：9000 码点 → 5 段 > 配额 4 → warn 出声但仍逐段投递
     assert.equal(await rig.inbound.sendText('u_open', '🀄'.repeat(9000), 'msg_q1'), true)
-    // 群：恰好 10000 码点 → 5 段 = 配额 5（边界未超）→ 不出声
-    assert.equal(await rig.inbound.sendText('g_open', '🀄'.repeat(10000), 'msg_q2'), true)
-    // 群：12000 码点 → 6 段 > 配额 5 → warn 出声
-    assert.equal(await rig.inbound.sendText('g_open', '🀄'.repeat(12000), 'msg_q3'), true)
+    assert.equal(await rig.inbound.sendText('g_open', 'group', 'msg_q2'), false)
   } finally {
     globalThis.setTimeout = realSetTimeout
   }
   const userSends = rig.calls.filter((entry) => entry.url === `${API}/v2/users/u_open/messages`)
-  const groupSends = rig.calls.filter((entry) => entry.url === `${API}/v2/groups/g_open/messages`)
   assert.equal(userSends.length, 5, 'c2c 超限仍投递 5 段（不硬阻塞）')
-  assert.equal(groupSends.length, 11, '群两轮共 5+6 段全部投递（不硬阻塞）')
   assert.ok(userSends.every((entry) => entry.body.msg_id === 'msg_q1'), '被动回复逐段携带原 msg_id')
   const quotaWarns = rig.lines.filter((line) => /配额/.test(line))
-  assert.equal(quotaWarns.length, 2, '恰好两次超限出声（c2c 一次 + 群一次），边界内静默')
-  assert.ok(quotaWarns.some((line) => line.includes('c2c') && line.includes('4')), 'c2c 超限 warn 含通道与配额数')
-  assert.ok(quotaWarns.some((line) => line.includes('群') && line.includes('5')), '群超限 warn 含通道与配额数')
+  assert.equal(quotaWarns.length, 1, '只有 c2c 超限告警')
+  assert.ok(quotaWarns.some((line) => line.includes('私聊') && line.includes('4')), '私聊超限 warn 含目标与配额数')
   await rig.inbound.stop()
 })
 
@@ -1079,95 +1049,28 @@ test('editResolved：补发审批结果文本（消息不可编辑）；无 chat
   await rig.inbound.stop()
 })
 
-test('notifyTargets：notifyUsers + notifyGroups 优先，缺省回落全局白名单；capabilities.buttons=true（v0.8.4 按钮化）', async () => {
-  const rig = makeRig({ config: { notifyUsers: ['u1', 'u2'], notifyGroups: ['g1'] } })
+test('notifyTargets only returns configured private users; group targets are excluded', async () => {
+  const rig = makeRig({ config: { notifyUsers: ['openid_user1', 'openid_user2'] } })
   assert.deepEqual(rig.inbound.notifyTargets(), [
-    { chatId: 'u1', userId: 'u1' },
-    { chatId: 'u2', userId: 'u2' },
-    { chatId: 'g1', userId: 'g1' },
+    { chatId: 'openid_user1', userId: 'openid_user1' },
+    { chatId: 'openid_user2', userId: 'openid_user2' },
   ])
   assert.deepEqual(rig.inbound.capabilities, { buttons: true })
-  const fallback = makeRig({ config: { notifyUsers: [], notifyGroups: [], fallbackTargets: ['u_global'] } })
-  assert.deepEqual(fallback.inbound.notifyTargets(), [{ chatId: 'u_global', userId: 'u_global' }])
   await rig.inbound.stop()
 })
 
-// ---------------------------------------------------------------- 有界内存表（v0.8.7 P1-7，宪法#4）
-
-const CHAT_STATE_MAX = 1024 // 与 qq-gw.mjs 的常量对齐（改源码上限须同步本值）
-
-/** 灌 n 个群 @ 事件（各自独立 group_openid + messageId，逐个进 targetKinds）。 */
-function floodGroupEvents(ws, count, { prefix = 'g_', from = 0 } = {}) {
-  for (let i = from; i < from + count; i += 1) {
-    ws.serverSend({
-      op: 0,
-      t: 'GROUP_AT_MESSAGE_CREATE',
-      s: 100 + i,
-      d: { id: `evt_flood_${prefix}${i}`, group_openid: `${prefix}${i}`, content: '<@!1> hi', author: { member_openid: 'u_open' } },
-    })
-  }
-}
-
-test('targetKinds 有界：第 1025 个群挤掉最旧 → 该目标回落配置判定（默认单聊接口），并 warn 出声', async () => {
+test('D01: QQ group source is rejected and never becomes a send target', async () => {
   const rig = makeRig()
   const ws = await driveReady(rig)
-  floodGroupEvents(ws, CHAT_STATE_MAX + 1)
+  ws.serverSend({ op: 0, t: 'GROUP_AT_MESSAGE_CREATE', s: 10, d: { id: 'group-event', group_openid: 'g_only', content: '<@!1> hi', author: { member_openid: 'u_open' } } })
   await tick()
-  assert.ok(
-    rig.lines.some((line) => line.includes('目标类型学习表达上限')),
-    '学习表淘汰必须可见（受影响目标的单聊/群判定降级，不可静默）',
-  )
-  // 最旧群：学习记录已淘汰 且 不在 notifyGroups ⇒ 回落「未知目标按单聊」既有语义
-  assert.equal(await rig.inbound.sendText('g_0', '最旧'), true)
-  assert.ok(rig.calls.some((entry) => entry.url === `${API}/v2/users/g_0/messages`), '被淘汰目标回落单聊接口')
-  // 最新群：学习记录仍在，照旧走群接口
-  assert.equal(await rig.inbound.sendText(`g_${CHAT_STATE_MAX}`, '最新'), true)
-  assert.ok(rig.calls.some((entry) => entry.url === `${API}/v2/groups/g_${CHAT_STATE_MAX}/messages`), '未淘汰目标仍走群接口')
-  await rig.inbound.stop()
-})
-
-test('targetKinds 淘汰后配置判定仍生效：notifyGroups 里的群被淘汰后依然走群接口（回落不是回落成错）', async () => {
-  const rig = makeRig({ config: { notifyGroups: ['g_0'] } })
-  const ws = await driveReady(rig)
-  floodGroupEvents(ws, CHAT_STATE_MAX + 1)
-  await tick()
-  assert.equal(await rig.inbound.sendText('g_0', '配置群'), true)
-  assert.ok(
-    rig.calls.some((entry) => entry.url === `${API}/v2/groups/g_0/messages`),
-    '配置里声明过的群即使学习记录被淘汰，也必须仍按群投递',
-  )
-  await rig.inbound.stop()
-})
-
-test('targetKinds LRU：活跃群（中途再来消息）不因「首次学习早」被淘汰', async () => {
-  const rig = makeRig()
-  const ws = await driveReady(rig)
-  const learnHot = (seq) => ws.serverSend({
-    op: 0,
-    t: 'GROUP_AT_MESSAGE_CREATE',
-    s: seq,
-    d: { id: `evt_hot_${seq}`, group_openid: 'g_hot', content: '<@!1> hi', author: { member_openid: 'u_open' } },
-  })
-  learnHot(1) // 最早学习
-  floodGroupEvents(ws, CHAT_STATE_MAX - 1, { prefix: 'g_pad_' }) // 表正好填满 1024
-  learnHot(2) // 活跃触摸
-  floodGroupEvents(ws, 1, { prefix: 'g_final_' }) // 撑破上限 ⇒ 淘汰最旧
-  await tick()
-  assert.equal(await rig.inbound.sendText('g_hot', '热键'), true)
-  assert.ok(
-    rig.calls.some((entry) => entry.url === `${API}/v2/groups/g_hot/messages`),
-    '被触摸过的活跃群必须存活（首次学习早不是淘汰理由）',
-  )
-  assert.equal(await rig.inbound.sendText('g_pad_0', '最旧'), true)
-  assert.ok(
-    rig.calls.some((entry) => entry.url === `${API}/v2/users/g_pad_0/messages`),
-    '淘汰的是未被触摸的最旧目标（回落单聊接口）',
-  )
+  assert.equal(await rig.inbound.sendText('g_only', 'must not send'), false)
+  assert.equal(rig.calls.some((entry) => entry.url.includes('/messages')), false)
   await rig.inbound.stop()
 })
 
 test('msgSeqs 有界：第 1025 个目标挤掉最旧 → 该目标 msg_seq 从 1 重新递增；活跃目标 seq 不被重置', async () => {
-  const rig = makeRig()
+  const rig = makeRig({ config: { notifyUsers: Array.from({ length: CHAT_STATE_MAX + 2 }, (_, index) => `t_${index}`) } })
   await driveReady(rig)
   // rateGate 固定 1050ms 节流：本用例要发 1000+ 条，压掉真实等待（仅本用例内，finally 还原）
   const realSetTimeout = globalThis.setTimeout

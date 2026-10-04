@@ -49,19 +49,19 @@ export interface NotifierSource {
   name: string
 }
 
-/** 单条失败项：`channel`+`error` 来自渠道投递失败，`reason: 'internal'` 来自 never-reject 兜底。 */
-export interface PushFailure {
-  channel?: string
-  error?: string
-  reason?: string
+/** 单渠道分类只含稳定原因码，不包含 provider 错误正文。 */
+export interface PushChannelReason {
+  channel: string
+  reason: string
 }
 
 /** `notifier.push()` 的返回值。永不 reject。 */
 export interface PushResult {
-  ok: boolean
-  delivered: string[]
-  skipped: NotifySkip[]
-  failed: PushFailure[]
+  accepted: string[]
+  confirmed: string[]
+  unknown: PushChannelReason[]
+  failed: PushChannelReason[]
+  skipped: PushChannelReason[]
   source?: NotifierSource
 }
 
@@ -73,15 +73,9 @@ export interface PushResult {
  * `dsh-notifier/testing` 的 fake 同样不提供 `enabled()`。
  */
 export interface NotifierFacade {
-  readonly version: '0.7'
+  readonly version: '0.8'
   push(message: NotifyMessage, options?: NotifyOptions): Promise<PushResult>
-  flush(): Promise<void>
-}
-
-/** `dsh-notifier/sent` 事件里的脱敏失败项（不含适配器错误正文）。 */
-export interface SentEventFailure {
-  channel: string
-  error: string
+  flush(): Promise<{ drained: boolean }>
 }
 
 /**
@@ -90,10 +84,11 @@ export interface SentEventFailure {
  */
 export interface SentEventRecord {
   time: string
-  ok: boolean
-  delivered: string[]
-  skipped: NotifySkip[]
-  failed: SentEventFailure[]
+  accepted: string[]
+  confirmed: string[]
+  unknown: PushChannelReason[]
+  failed: PushChannelReason[]
+  skipped: PushChannelReason[]
   titleLength: number
   contentLength: number
   titleBytes: number

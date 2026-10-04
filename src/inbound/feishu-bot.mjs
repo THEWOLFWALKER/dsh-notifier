@@ -88,13 +88,18 @@ export function resolveFeishuInboundConfig(raw, { envRefs = (v) => v, credential
   if (appId === '' || appSecret === '') {
     return { ok: false, reason: `飞书 inbound 需要 appId 与 appSecret（当前 appId ${appId !== '' ? '已配置' : '缺失'}，appSecret ${appSecret !== '' ? '已配置' : '缺失'}）。请在飞书开放平台创建企业自建应用并填入，或执行 node scripts/channel-login.mjs feishu 扫码一键创建自动写入` }
   }
+  if (Array.isArray(cfg.notifyGroups) && cfg.notifyGroups.length > 0) {
+    return { ok: false, reason: '飞书群聊目标已不受支持；请改用已验证的私聊用户 open_id' }
+  }
   return {
     ok: true,
     config: {
       appId,
       appSecret,
+      accountId: String(cfg.accountId ?? appId).trim(),
+      notifyUsers: (Array.isArray(cfg.notifyUsers) ? cfg.notifyUsers : [])
+        .map((id) => String(id).trim()).filter((id) => /^ou_[A-Za-z0-9]+$/.test(id)),
       domain: String(envRefs(cfg.domain ?? '')).trim() || DEFAULT_DOMAIN,
-      allowUsers: (Array.isArray(cfg.allowUsers) ? cfg.allowUsers : []).map((id) => String(id).trim()).filter((id) => id !== ''),
     },
   }
 }
@@ -144,7 +149,7 @@ function extractText(content, mentions = []) {
 /**
  * 按接收者 ID 前缀选 receive_id_type：
  * ou_ = open_id（私聊用户）、oc_ = chat_id（群聊，回执走这里）、on_ = union_id。
- * 兜底 open_id：notifyTargets 全部来自 allowUsers（open_id）。
+ * Configured private targets use Feishu open_id; observed P2P chats remain provider-proven.
  */
 function receiveIdTypeOf(id) {
   if (id.startsWith('oc_')) return 'chat_id'
@@ -274,9 +279,9 @@ function buildActionCard({ title, content, actions: buttons = [], chatId }) {
 /**
  * 创建飞书入站通道（统一契约：channel/notifyTargets/sendApprovalCard/sendActionCard/editResolved/sendText）。
  * @param {object} options
- * @param {{ appId: string, appSecret: string, domain?: string, allowUsers?: string[] }} options.config
+ * @param {{ appId: string, appSecret: string, domain?: string, notifyUsers?: string[] }} options.config
  * @param {ReturnType<typeof import('./bus.mjs').createInboundBus>} options.bus
- * @param {string[]} [options.fallbackTargets] - 未配置 allowUsers 时的卡片推送目标（全局白名单回落）
+ * Private recipients must be explicitly configured or provider-proven.
  * @param {object} [options.logger]
  * @param {() => Promise<object>} [options.sdkLoader] - SDK 懒加载器（测试注入；默认动态 import）
  * @param {number} [options.handshakeTimeoutMs=10000] - SDK 加载与 WS start/close 截止时间
@@ -287,11 +292,10 @@ function buildActionCard({ title, content, actions: buttons = [], chatId }) {
  * @param {object} [options.strings] - stringsOf(lang) 全文案表（读 `feishu` 节，跨节复用
  *   verdict/actions/questions；缺省回落 zh——须先在 strings.mjs 落 `feishu` 节）
  */
-export function createFeishuInbound({ config, bus, fallbackTargets = [], logger = null, sdkLoader, handshakeTimeoutMs: requestedHandshakeTimeoutMs, actions = null, identity = null, questions = null, control = null, accountId = null, strings = null } = {}) {
+export function createFeishuInbound({ config, bus, logger = null, sdkLoader, handshakeTimeoutMs: requestedHandshakeTimeoutMs, actions = null, identity = null, questions = null, control = null, accountId = null, strings = null } = {}) {
   const STRINGS = strings ?? stringsOf()
   const t = STRINGS.feishu
   const domain = (config.domain || DEFAULT_DOMAIN).replace(/\/+$/, '')
-  const allowUsers = Array.isArray(config.allowUsers) ? config.allowUsers.map(String) : []
   // Stable per-provider account id, injected into every normalized indicator so shared
   // Control Core source binding accepts valid callbacks and rejects a different account.
   // Explicit config.accountId or config.appId wins; the EVENT payload is NEVER trusted as a
@@ -307,6 +311,7 @@ export function createFeishuInbound({ config, bus, fallbackTargets = [], logger 
   const handshakeTimeoutMs = Math.max(10, Number(requestedHandshakeTimeoutMs) || FEISHU_HTTP_TIMEOUT_MS)
   let client = null // Lark.Client（发送消息）
   let wsClient = null // Lark.WSClient（长连接）
+  const privateChatTargets = new Map() // chat_id -> last provider-confirmed p2p event
   let running = false
   let startPromise = null
   // Truthful lifecycle for the provider facade's status(): idle → starting → connected,
@@ -380,9 +385,14 @@ export function createFeishuInbound({ config, bus, fallbackTargets = [], logger 
   function handleMessage(data) {
     try {
       const message = data?.message ?? {}
+      if (String(message.chat_type ?? '') !== 'p2p') return
       const openId = String(data?.sender?.sender_id?.open_id ?? '')
       const messageId = String(message.message_id ?? '')
       if (messageId === '' || openId === '') return
+      const privateChatId = String(message.chat_id ?? openId)
+      privateChatTargets.delete(privateChatId)
+      privateChatTargets.set(privateChatId, Date.now())
+      while (privateChatTargets.size > 2048) privateChatTargets.delete(privateChatTargets.keys().next().value)
       const isText = String(message.message_type ?? '') === 'text'
       if (!isText) {
         // G-26：非文本消息静默忽略 + 回执，不再注入占位符文本——占位符会进 agent
@@ -427,9 +437,17 @@ export function createFeishuInbound({ config, bus, fallbackTargets = [], logger 
     }
   }
 
-  /** 飞书群聊识别：群聊 open chat_id 以 oc_ 开头（用户 open_id 以 ou_ 开头）。 */
-  function isGroupChatId(chatId) {
-    return String(chatId ?? '').startsWith('oc_')
+  function isPrivateTarget(chatId) {
+    const id = String(chatId ?? '')
+    return isOpenIdTarget('feishu', id) || privateChatTargets.has(id)
+  }
+
+  function rememberPrivateChat(chatId) {
+    const id = String(chatId ?? '')
+    if (!id.startsWith('oc_')) return
+    privateChatTargets.delete(id)
+    privateChatTargets.set(id, Date.now())
+    while (privateChatTargets.size > 2048) privateChatTargets.delete(privateChatTargets.keys().next().value)
   }
 
   /**
@@ -491,6 +509,7 @@ export function createFeishuInbound({ config, bus, fallbackTargets = [], logger 
   function sendPlain(chatId, text) {
     if (client === null) return false
     const receiveId = String(chatId)
+    if (!isPrivateTarget(receiveId)) return false
     return client.im.v1.message.create({
       params: { receive_id_type: receiveIdTypeOf(receiveId) },
       data: { receive_id: receiveId, msg_type: 'text', content: JSON.stringify({ text: String(text ?? '').slice(0, 4000) }) },
@@ -499,25 +518,6 @@ export function createFeishuInbound({ config, bus, fallbackTargets = [], logger 
         warn(`回执发送失败: ${error instanceof Error ? error.message : String(error)}`)
         return false
       })
-  }
-
-  /**
-   * Personal-mode approval/question fallbacks must never disclose their
-   * contents to an entire Feishu group. Keep ordinary status/command text
-   * available in groups; only the stable sensitive-control headings emitted
-   * by the approval/question bridges are blocked here.
-   * lang（zh/en）都拦：标题前缀从 strings 表推导（cardTitle('') 即前缀），保证
-   * en 卡片标题同样命中群聊敏感文案闸（zh 推导值与旧正则逐字节等价）。
-   */
-  function isSensitiveControlText(text) {
-    const value = String(text ?? '')
-    const prefixes = [
-      STRINGS.approval.cardTitle(''),
-      STRINGS.questions.cardTitle(''),
-    ].filter((prefix) => prefix !== '')
-    if (prefixes.length === 0) return false
-    const escaped = prefixes.map((prefix) => prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
-    return new RegExp(`(?:^|\\n)(?:${escaped.join('|')})`).test(value)
   }
 
   /**
@@ -544,6 +544,7 @@ export function createFeishuInbound({ config, bus, fallbackTargets = [], logger 
       warn(`卡片回调缺少点击会话（open_chat_id），来源校验拒绝（srcChat=${srcChat}；不裁决、不 patch，回原会话可重试）`)
       return false
     }
+    if (!isPrivateTarget(srcChat)) return false
     // P0-Feishu-P2P（#20）：srcChat 是 ou_ 私聊投递目标 → 校验 operator.open_id === srcChat
     if (isOpenIdTarget('feishu', srcChat)) {
       const operator = String(data?.operator?.open_id ?? data?.sender?.sender_id?.open_id ?? '')
@@ -578,6 +579,11 @@ export function createFeishuInbound({ config, bus, fallbackTargets = [], logger 
 
   function handleCardAction(data) {
     try {
+      // Provider callback context is also authoritative P2P proof. This allows a card
+      // click to establish the same private target used for patch-failure fallback.
+      if (String(data?.context?.open_chat_type ?? data?.chat_type ?? '') === 'p2p') {
+        rememberPrivateChat(clickedChatOf(data))
+      }
       const value = data?.action?.value ?? {}
       const raw = typeof value.act === 'string' ? value.act : ''
       // G-17：卡片 TTL 校验（与 TG refs 15min 对称）。带 iat 的新卡超过窗口即拒绝——
@@ -736,25 +742,20 @@ export function createFeishuInbound({ config, bus, fallbackTargets = [], logger 
       startPromise = null
     },
 
-    /** 卡片推送目标（v0.7 三级解析）：绑定成员 → 通道 allowUsers → 全局回落（仅绑定表整体空）。 */
+    /** Private card targets come from paired identities or explicit private user IDs. */
     notifyTargets() {
       return resolveNotifyTargets({
         identity,
         channel: 'feishu',
-        configTargets: allowUsers,
-        fallbackTargets,
-      })
+        accountId: resolvedAccountId,
+        configTargets: Array.isArray(config?.notifyUsers) ? config.notifyUsers : [],
+      }).filter((target) => isPrivateTarget(target.chatId))
     },
 
     /** 推送审批卡片（失败 null，caller 降级纯通知）。群聊（oc_*）敏感控制卡片在发送前降级为纯文本——不投放可被任一群成员误点的按钮。 */
     async sendApprovalCard({ chatId, title, content, approvalKey, token }) {
       if (client === null) return null
-      // 群聊：个人模式敏感审批不发送任何内容；router 也会丢弃该目标，
-      // 这里保留显式降级标记以防调用方绕过规划层后登记虚假的送达证据。
-      if (isGroupChatId(chatId)) {
-        warn(`飞书群聊跳过敏感审批（chat=${String(chatId).slice(0, 32)}；请使用私聊）`)
-        return { downgraded: true, messageId: '' }
-      }
+      if (!isPrivateTarget(chatId)) return null
       try {
         const messageId = await sendInteractive(chatId, buildCard({ title, content, approvalKey, token, chatId, t }))
         return messageId !== '' ? { messageId } : null
@@ -770,11 +771,7 @@ export function createFeishuInbound({ config, bus, fallbackTargets = [], logger 
      */
     async sendActionCard({ chatId, title, content, actions: buttons = [] }) {
       if (client === null) return null
-      // 群聊：不发动作按钮（group sensitive control downgrade），仅纯文本冒烟——避免群内任意成员触发。
-      if (isGroupChatId(chatId)) {
-        const ok = await sendPlain(chatId, `${title}\n\n${content}\n${t.groupDowngradeNote}`)
-        return ok ? { messageId: `downgraded:${chatId}`, downgraded: true } : null
-      }
+      if (!isPrivateTarget(chatId)) return null
       const card = buildActionCard({ title, content, actions: buttons, chatId })
       if (!Array.isArray(card.elements) || !card.elements.some((element) => element?.tag === 'action')) return null
       try {
@@ -792,8 +789,7 @@ export function createFeishuInbound({ config, bus, fallbackTargets = [], logger 
      *   caller 降级编号回复文案——选项卡为主，编号是兜底。
      */
     async sendQuestionCard({ chatId, title, content, qKey, token, options = [], multiSelect = false }) {
-      // 群聊拦截发送（block）：提问按钮不应投放给整个群（任何成员都能作答）。
-      if (isGroupChatId(chatId)) return null
+      if (!isPrivateTarget(chatId)) return null
       if (client === null || multiSelect === true) return null
       try {
         const messageId = await sendInteractive(chatId, buildQuestionCard({ title, content, qKey, token, options, chatId }))
@@ -808,6 +804,9 @@ export function createFeishuInbound({ config, bus, fallbackTargets = [], logger 
      *  patch 失败时向原 chat 补发「恰好一条」文本兜底（桌面侧终态不静默丢失）。 */
     async editResolved(target, text) {
       if (client === null || target?.messageId === undefined) return
+      // A durable provider message_id is sufficient to patch the exact outbound card;
+      // chat_id is not used as a recipient in this API call.
+      if (target?.chatId !== undefined && !isPrivateTarget(target.chatId)) return
       // kind 'aq' = 提问卡片（终态文案用「提问已作答」头，不误标「审批已完成」）
       const card = target?.kind === 'aq'
         ? buildQuestionResolvedCard(text, t)
@@ -825,13 +824,7 @@ export function createFeishuInbound({ config, bus, fallbackTargets = [], logger 
 
     /** 发普通文本（命令回执；尽力而为）。 */
     async sendText(chatId, text) {
-      // questions/router uses sendText for numbered fallback after
-      // sendQuestionCard returns null. Suppress that sensitive fallback in a
-      // group while retaining ordinary status and command notifications.
-      if (isGroupChatId(chatId) && isSensitiveControlText(text)) {
-        warn(`飞书群聊跳过敏感控制文本（chat=${String(chatId).slice(0, 32)}；请使用私聊）`)
-        return false
-      }
+      if (!isPrivateTarget(chatId)) return false
       return sendPlain(chatId, text)
     },
   }

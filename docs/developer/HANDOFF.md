@@ -1,28 +1,20 @@
 # Current handoff
 
-Updated: 2026-10-03. Work is on `dev`, based on `3135257936d4bf4350c18e0abad9dc4ee213b424`. The requested sequence is Stage 4 P2 through P5. Package version remains 0.13.1; this work does not publish it.
+The working branch is `dev`. This checkout implements the v0.15 private-only, Native-first rebuild in [rebuild-v015](rebuild-v015/README.md). `docs/developer/rebuild-v015/PROGRESS.md` records stage decisions, checks and evidence limits.
 
-## Completed
+## Current behavior
 
-- **P2** removed unused daily browser controllers and their state/navigation wiring, plus the unused Recovery launch RPC. Commit `6c9e72c6788d0d967adfce58e6c37656bed3f3f5`; pushed to `origin/dev`.
-- **P3** requires dsh-im checked contract v1, validates the target and account fingerprint before delivery, removes the guessed config importer, and treats ambiguous sends as unknown. Commit `128ff9a9a33cea90b07ac3c5bfb281989535da91`; pushed to `origin/dev`.
-- **P4** removed the unshipped cloud-store fake and future-contract documentation, narrowed the npm package contents, and reconciled the handoff and deletion record. Focused package/docs tests passed 13/13; `npm run verify:release` passed; the dry-run package contains 211 files and no internal execution artifacts. Commit `6b9109b` is pushed to `origin/dev`.
+- Private access requires an explicit `(channel, accountId, userId)` identity and private conversation evidence. Group conversations and missing identity evidence fail closed.
+- The standalone Admin Web Console, recovery server and legacy channel overlay are retired. Daily controls use the admitted DSH Host Native connection. There is no dsh-im one-click importer; it was skipped at the user's direction.
+- State older than schema 15 is backed up offline with restrictive permissions, then reset for explicit reconfiguration. Old credentials, identities, routes and bindings are not loaded into the fresh state.
+- The public notifier contract is v0.8. Cloud recovery requires an explicit retry after a failed or uncertain deployment effect.
 
-## Current implementation notes
+## Evidence limits
 
-- Native daily controls are limited to notification and private chat; the Advanced Console is a read-only recovery report.
-- Inbound group traffic is rejected before identity, pairing, or task routing. Outbound group notifications remain supported.
-- dsh-im sends require the checked v1 contract and do not fall back to ordinary sends. Config-file import is not supported because no matching public export contract is available.
-- No cloud-storage provider or cloud-storage placeholder is part of the product.
+Fixed source fixtures cover the checked DSH Host and dsh-im interfaces. They do not prove a real Host boot, real provider delivery, real device interaction or Cloud account effects. Those remain unknown until exercised with the corresponding live systems.
 
-## Validation state
+## Local checks
 
-| Phase | Status |
-|---|---|
-| P2 | focused tests, full `npm test` (2468/2468), DOM tests (41/41), commit and push complete |
-| P3 | bridge tests (13/13), acceptance tests (3/3), full `npm test` (2455/2455), commit and push complete |
-| P4 | package/docs tests 13/13; release guard passed; dry-run package 211 files, forbidden internal files 0 |
-| P5 | loopback binding override closed; admin server/Origin tests 33/33; full Node 2447/2447; DOM 41/41; release, 28-channel matrix and host-compatibility gates passed |
-| 测试 | `npm test` **2447 tests**；2447 pass，0 fail/skip |
+The final v0.15 results are recorded in `rebuild-v015/PROGRESS.md`. Re-run the required project gates before preparing another change. A passing local suite is not a substitute for real Host/provider/device evidence.
 
-P0/P1 details are in repository history. See [architecture](architecture.md), [deletion ledger](v015-deletion-ledger.md), and [Stage 4 acceptance record](v015-final-acceptance.md) for the current scope and evidence. Push only to `dev`; do not merge `main`, tag, create a release, or publish to npm.
+Only `dev` may be changed or pushed. Do not force-push, change `main`, tag, create a GitHub Release or publish to npm without separate authorization.

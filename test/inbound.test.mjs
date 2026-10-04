@@ -8,7 +8,29 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createStore, defaultStateDir } from '../src/inbound/store.mjs'
 import { createTokenVault } from '../src/inbound/tokens.mjs'
-import { createInboundBus, MESSAGE_PRIORITY } from '../src/inbound/bus.mjs'
+import { createInboundBus as createProductionInboundBus, MESSAGE_PRIORITY } from '../src/inbound/bus.mjs'
+
+// These bus tests enter after provider normalization; make their private source and paired
+// identity explicit in one fixture. Missing/unknown sources are covered in v015-private-admission.
+function createInboundBus({ allowUsers = [], ...options } = {}) {
+  const users = new Set(allowUsers.map(String))
+  const identity = {
+    isEmpty: () => false,
+    allows: (_channel, userId, accountId) => typeof accountId === 'string'
+      && accountId.trim() !== '' && accountId !== 'default' && users.has(String(userId)),
+  }
+  const bus = createProductionInboundBus({ ...options, identity })
+  return {
+    ...bus,
+    accept(envelope = {}) {
+      const userId = String(envelope.userId ?? '42')
+      return bus.accept({
+        channel: 'telegram', accountId: 'TG_APP', userId, chatId: userId, chatType: 'private',
+        ...envelope,
+      })
+    },
+  }
+}
 
 function tempStorePath() {
   const dir = mkdtempSync(join(tmpdir(), 'dsh-notifier-inbound-'))
@@ -317,24 +339,24 @@ test('tokens：过期 token → expired；TTL 可配置', () => {
 // ---------------------------------------------------------------- bus
 
 function envelope(overrides = {}) {
-  return { channel: 'telegram', userId: '42', chatId: '42', messageId: 'msg:1:42', text: 'hi', ...overrides }
+  return { channel: 'telegram', accountId: 'tg-app', userId: '42', chatId: '42', chatType: 'private', messageId: 'msg:1:42', text: 'hi', ...overrides }
 }
 
 test('bus：白名单默认全拒（allowUsers 为空时任何人都不通过）', () => {
   const bus = createInboundBus({ allowUsers: [] })
-  assert.equal(bus.allows('42'), false)
-  assert.equal(bus.allows(''), false)
-  assert.deepEqual(bus.accept(envelope()), { ok: false, reason: 'whitelist' })
+  assert.equal(bus.allows('telegram', '42', 'tg-app'), false)
+  assert.equal(bus.allows('telegram', '', 'tg-app'), false)
+  assert.equal(bus.accept(envelope()).reason, 'whitelist')
 })
 
 test('bus：白名单外用户被拒，白名单内用户通过并触发处理器', () => {
   const seen = []
   const bus = createInboundBus({ allowUsers: ['42'] })
   bus.onMessage((env) => seen.push(env))
-  assert.equal(bus.allows('42'), true)
-  assert.equal(bus.allows('43'), false)
+  assert.equal(bus.allows('telegram', '42', 'tg-app'), true)
+  assert.equal(bus.allows('telegram', '43', 'tg-app'), false)
   // 拒绝也进去了重表（R5-3-P3-2）：两条消息必须用不同 messageId（真实平台保证全局唯一）
-  assert.deepEqual(bus.accept(envelope({ userId: '43', messageId: 'msg:1:43' })), { ok: false, reason: 'whitelist' })
+  assert.equal(bus.accept(envelope({ userId: '43', messageId: 'msg:1:43' })).reason, 'whitelist')
   assert.equal(seen.length, 0)
   assert.deepEqual(bus.accept(envelope()), { ok: true })
   assert.equal(seen.length, 1)
@@ -394,7 +416,7 @@ test('G-46：合成 messageId 走短去重窗——同文本第二条在短窗�
   // 窗过期后：同键不再拦截（原生 msgId 的 24h 窗语义不适用于内容哈希兜底键）
   const { path } = tempStorePath()
   const store = createStore(path)
-  store.set('dedup:telegram:wx:u1:abc123', Date.now() - 2000)
+  store.set(`dedup:${JSON.stringify(['telegram', 'tg-app', 'wx:u1:abc123'])}`, Date.now() - 2000)
   const bus2 = createInboundBus({ allowUsers: ['42'], store, syntheticDedupWindowMs: 1000 })
   bus2.onMessage((env) => seen.push(env))
   assert.equal(bus2.accept(synthetic('wx:u1:abc123')).ok, true)
@@ -404,7 +426,7 @@ test('G-46：合成 messageId 走短去重窗——同文本第二条在短窗�
 test('G-46：原生 messageId（无 synthetic 标记）仍走 24h 长窗', () => {
   const { path } = tempStorePath()
   const store = createStore(path)
-  store.set('dedup:telegram:msg:native:1', Date.now() - 90_000) // 90s 前：远超合成窗、远小于 24h
+  store.set(`dedup:${JSON.stringify(['telegram', 'tg-app', 'msg:native:1'])}`, Date.now() - 90_000) // 90s 前：远超合成窗、远小于 24h
   const bus = createInboundBus({ allowUsers: ['42'], store, syntheticDedupWindowMs: 1000 })
   assert.deepEqual(bus.accept(envelope({ messageId: 'msg:native:1' })), { ok: false, reason: 'duplicate' })
 })
@@ -421,7 +443,7 @@ test('bus：去重跨重启（store 持久层）——新 bus 实例共享 store
 test('bus：去重窗口外的旧记录不再拦截（dedupWindowMs）', () => {
   const { path } = tempStorePath()
   const store = createStore(path)
-  store.set('dedup:telegram:msg:1:42', Date.now() - 60_000)
+  store.set(`dedup:${JSON.stringify(['telegram', 'tg-app', 'msg:1:42'])}`, Date.now() - 60_000)
   const bus = createInboundBus({ allowUsers: ['42'], store, dedupWindowMs: 10_000 })
   assert.deepEqual(bus.accept(envelope()), { ok: true }) // 窗口外，放行
 })

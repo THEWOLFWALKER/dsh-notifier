@@ -9,8 +9,7 @@
 //  - resolve 已终态不翻转（S-14，W12）：已决行二次 resolve 返回 'already-resolved'，
 //    内部 API 误用/迟到 settle/竞态双 resolve 不再覆写既有终态裁决（approval/questions
 //    单次裁决不受影响；主链路 bus settle 本就有防线）。actions 的
-//    「首达采纳 → 执行 → 终局多步落地」用 opts.claimedSettle 显式逃生门：'executing'
-//    是执行中占位声明（并发双击/崩溃中段的消费护栏），同一执行在终局允许落定终态裁决；
+//    「首达采纳 → 执行 → 终局多步落地」用 claim 返回的 executionId 核对执行所有权；
 //  - terminate 仅 pending 可翻：防已决行被 onAbandon 二次改写（C2/P1-5 僵尸守卫）；
 //  - get 不做投影：行原样返回，上游按 status/decision 自己裁决；
 //  - 过期不设独立 status：token TTL + decision 'timeout' 表达（与三条链现状一致）。
@@ -19,6 +18,7 @@
 // intended/hint + liveWaiters 僵尸行过滤）差异太大，强行统一会引入行为漂移（批 4 决策）。
 
 import { setDurable, transactDurable, transactOutcome } from '../inbound/store.mjs'
+import { randomUUID } from 'node:crypto'
 
 /**
  * 账本行的 metadata 白名单（RC Gate 2A）。这些是**旁注字段**：它们可以从原始行
@@ -107,27 +107,18 @@ export function createInteractionLedger(options = {}) {
     claimedAt: now(),
   })
 
-  /**
-   * Apply a state transition against the freshest transaction draft.  Legacy
-   * test doubles still get the old single-key fallback; the production store
-   * always takes the atomic path.
-   */
+  /** Apply a lifecycle transition only against a fresh durable transaction. */
   const transition = (key, decide, write) => {
-    if (typeof store?.transact === 'function') {
-      let outcome = { kind: 'missing' }
-      const result = transactDurable(store, (draft) => {
-        const row = draft[key]
-        outcome = decide(row)
-        if (outcome.kind === 'write') draft[key] = write(row, outcome)
-        return outcome.kind
-      })
-      if (result.committed !== true) return { ok: false, reason: 'storage-failed' }
-      return { ok: true, ...outcome }
-    }
-    const row = store?.get(key)
-    const outcome = decide(row)
-    if (outcome.kind !== 'write') return { ok: true, ...outcome }
-    if (setDurable(store, key, write(row, outcome)) !== true) return { ok: false, reason: 'storage-failed' }
+    if (store === null || store === undefined) return { ok: true, kind: 'missing' }
+    if (typeof store?.transact !== 'function') return { ok: false, reason: 'transaction-unavailable' }
+    let outcome = { kind: 'missing' }
+    const result = transactDurable(store, (draft) => {
+      const row = draft[key]
+      outcome = decide(row)
+      if (outcome.kind === 'write') draft[key] = write(row, outcome)
+      return outcome.kind
+    })
+    if (result.committed !== true) return { ok: false, reason: 'storage-failed' }
     return { ok: true, ...outcome }
   }
 
@@ -199,6 +190,7 @@ export function createInteractionLedger(options = {}) {
      * not pending and is never auto-executed again after a restart.
      */
     claim(key, extra = {}) {
+      const executionId = randomUUID()
       const result = transition(
         key,
         (row) => {
@@ -207,25 +199,26 @@ export function createInteractionLedger(options = {}) {
           if (row.status !== statuses.pending) return { kind: 'already-resolved' }
           return { kind: 'write' }
         },
-        (row) => claimedRowOf(row, extra),
+        (row) => claimedRowOf(row, { ...extra, executionId }),
       )
       if (!result.ok) return { ok: false, reason: result.reason }
-      if (result.kind === 'write') return { ok: true, claimed: true }
+      if (result.kind === 'write') return { ok: true, claimed: true, executionId }
       return { ok: false, reason: result.kind === 'uncertain' ? 'uncertain' : result.kind === 'already-resolved' ? 'already-resolved' : 'unknown' }
     },
     /** 行缺失返回 false；已终态（status='resolved'）返回 'already-resolved' 不再翻转
      *  （S-14，W12：内部 API 误用/迟到 settle/竞态双 resolve 不覆写既有终态裁决）。
      *  actions 的「首达采纳后多步落地」（'executing' 占位 → 'done' 终局）是同一执行的
-     *  显式逃生门：传 opts={claimedSettle:true} 放行已占位行的终局落定；除此之外任何
+     *  显式逃生门：传回 claim 返回的 executionId 才能结算对应占位行；除此之外任何
      *  已决行二次 resolve 一律拒绝。extra 不能覆盖 status/decision/resolvedAt。
-     * @param {object} [opts.claimedSettle] - 仅 actions 用：放行对已终态行的终局落地 */
+     * @param {object} [opts.executionId] - 仅匹配的 claim 可落定 claimed 行 */
     resolve(key, decision, extra = {}, opts = {}) {
       const result = transition(
         key,
         (row) => {
           if (row === undefined) return { kind: 'missing' }
-          if (row.status === statuses.resolved && opts.claimedSettle !== true) return { kind: 'already-resolved' }
-          if (row.status === 'claimed' && opts.claimedSettle !== true) return { kind: 'already-claimed' }
+          if (row.status === statuses.resolved) return { kind: 'already-resolved' }
+          if (row.status === 'claimed' && (typeof opts.executionId !== 'string' || opts.executionId === '' || row.executionId !== opts.executionId)) return { kind: 'already-claimed' }
+          if (row.status !== 'claimed' && opts.executionId !== undefined) return { kind: 'execution-mismatch' }
           if (row.status !== statuses.pending && row.status !== 'claimed') return { kind: 'already-resolved' }
           return { kind: 'write' }
         },
@@ -234,16 +227,20 @@ export function createInteractionLedger(options = {}) {
       if (!result.ok) return 'storage-failed'
       if (result.kind === 'write') return true
       if (result.kind === 'already-claimed') return 'already-claimed'
+      if (result.kind === 'execution-mismatch') return 'already-resolved'
       if (result.kind === 'already-resolved') return 'already-resolved'
       return false
     },
     /** 仅 pending 行可终止为 'terminated'（C2/P1-5 僵尸守卫）：已决/缺失行返回
      *  false，绝不改写。onAbandon / 会话销毁路径专用。 */
     terminate(key, extra = {}) {
-      const row = store?.get(key)
-      if (row === undefined || !isPending(row)) return false
-      if (setDurable(store, key, resolvedRowOf(row, 'terminated', extra)) !== true) return 'storage-failed'
-      return true
+      const result = transition(
+        key,
+        (row) => row === undefined ? { kind: 'missing' } : isPending(row) ? { kind: 'write' } : { kind: 'already-terminal' },
+        (row) => resolvedRowOf(row, 'terminated', extra),
+      )
+      if (!result.ok) return 'storage-failed'
+      return result.kind === 'write'
     },
     /**
      * v0.13（C11.5 / R5）：终态落地失败后的恢复标记（durable-first 的诚实退路）。
@@ -253,16 +250,19 @@ export function createInteractionLedger(options = {}) {
      * @returns {boolean} 标记是否真正落盘（false = 连恢复标记也失败，需上层告警）
      */
     markUncertain(key, reason = 'terminal-persist-failed', extra = {}) {
-      const row = store?.get(key)
-      if (row === undefined) return false
-      return setDurable(store, key, {
-        ...row,
-        ...extra,
-        status: 'uncertain',
-        [decisionField]: 'uncertain',
-        uncertainReason: String(reason),
-        uncertainAt: now(),
-      }) === true
+      const result = transition(
+        key,
+        (row) => row === undefined ? { kind: 'missing' } : (row.status === statuses.pending || row.status === 'claimed') ? { kind: 'write' } : { kind: 'already-terminal' },
+        (row) => ({
+          ...row,
+          ...extra,
+          status: 'uncertain',
+          [decisionField]: 'uncertain',
+          uncertainReason: String(reason),
+          uncertainAt: now(),
+        }),
+      )
+      return result.ok && result.kind === 'write'
     },
     /**
      * v0.13（C11.5 / R5）：终态清理的唯一收口（durable-first，绝不伪装成功）。

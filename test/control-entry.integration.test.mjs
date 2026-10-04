@@ -12,6 +12,15 @@ const pending = (channel, chatId, extra = {}) => ({
   expiresAt: 1000, pushedTo: [{ channel, chatId, userId: 'user-1' }], ...extra,
 })
 
+// Callback adapter fixtures attach the provider's normalized source scope.
+// An explicit `chatType: undefined` still tests missing-scope rejection.
+const sourceChatType = (input) => {
+  if (Object.hasOwn(input, 'chatType')) return input.chatType
+  if (input.channel === 'feishu') return 'p2p'
+  if (input.channel === 'qq' || input.channel === 'telegram') return 'private'
+  return undefined
+}
+
 function makeControl(rows, settled, options = {}) {
   const control = createControlEntry({ now: () => 150, ...options })
   control.register('approval', {
@@ -26,7 +35,7 @@ function makeControl(rows, settled, options = {}) {
       chatId: input.chatId,
       policyVersion: row.policyVersion,
       command: 'approval',
-      chatType: input.chatType,
+      chatType: sourceChatType(input),
       createdAt: row.createdAt,
       expiresAt: row.expiresAt,
     }),
@@ -42,8 +51,8 @@ test('Control Core runtime entry is shared by Telegram and Feishu callback envel
   ])
   const settled = []
   const control = makeControl(rows, settled)
-  assert.equal(control.handle({ eventId: 'tg-1', command: 'approval', approvalKey: 'ap:tg', channel: 'telegram', chatId: 'tg-chat', userId: 'user-1' }).status, 'accepted')
-  assert.equal(control.handle({ eventId: 'fs-1', command: 'approval', approvalKey: 'ap:fs', channel: 'feishu', chatId: 'fs-chat', userId: 'user-1' }).status, 'accepted')
+  assert.equal(control.handle({ eventId: 'tg-1', command: 'approval', approvalKey: 'ap:tg', channel: 'telegram', accountId: 'telegram', chatId: 'tg-chat', userId: 'user-1', chatType: 'private' }).status, 'accepted')
+  assert.equal(control.handle({ eventId: 'fs-1', command: 'approval', approvalKey: 'ap:fs', channel: 'feishu', accountId: 'feishu', chatId: 'fs-chat', userId: 'user-1', chatType: 'p2p' }).status, 'accepted')
   assert.deepEqual(settled, [{ channel: 'telegram', key: 'ap:tg' }, { channel: 'feishu', key: 'ap:fs' }])
 })
 
@@ -51,7 +60,7 @@ test('Control Core rejects old/replayed callback, wrong chat, expired policy, an
   const rows = new Map([['ap:tg', pending('telegram', 'tg-chat')]])
   const settled = []
   const control = makeControl(rows, settled, { policy: { expiresAt: 500 } })
-  const base = { eventId: 'same', command: 'approval', approvalKey: 'ap:tg', channel: 'telegram', chatId: 'tg-chat', userId: 'user-1' }
+  const base = { eventId: 'same', command: 'approval', approvalKey: 'ap:tg', channel: 'telegram', accountId: 'telegram', chatId: 'tg-chat', userId: 'user-1', chatType: 'private' }
   assert.equal(control.handle(base).status, 'accepted')
   assert.equal(control.handle(base).status, 'already_handled')
   const wrongChat = makeControl(rows, settled)
@@ -69,14 +78,14 @@ test('personal default keeps converse disabled while private stop remains availa
   const ordinary = control.handle({
     eventId: 'ordinary', command: 'ordinary-message', channel: 'telegram', accountId: 'telegram',
     userId: 'user-1', chatId: 'tg-chat', sessionId: 'session-1', policyVersion: '1',
-    pending: pendingRow, settle: () => { calls++; return true },
+    pending: pendingRow, chatType: 'private', settle: () => { calls++; return true },
   })
   assert.equal(ordinary.reason, 'conversation_disabled')
   assert.equal(calls, 0)
   const stop = control.handle({
     eventId: 'stop', command: 'stop', channel: 'telegram', accountId: 'telegram',
     userId: 'user-1', chatId: 'tg-chat', sessionId: 'session-1', policyVersion: '1',
-    pending: pendingRow, settle: () => { calls++; return true },
+    pending: pendingRow, chatType: 'private', settle: () => { calls++; return true },
   })
   assert.equal(stop.status, 'accepted')
   assert.equal(calls, 1)
@@ -91,21 +100,21 @@ test('Control Core：stop/action 载荷缺 accountId → missing_accountId fail-
   }
   const stop = control.handle({
     eventId: 'stop-no-account', command: 'stop', channel: 'telegram',
-    userId: 'user-1', chatId: 'tg-chat', sessionId: 'session-1', policyVersion: '1',
-    pending: barePending, settle: () => { throw new Error('缺账号来源不得结算') },
+    userId: 'user-1', chatId: 'tg-chat', sessionId: 'session-1', policyVersion: '1', chatType: 'private',
+    pending: barePending, chatType: 'private', settle: () => { throw new Error('缺账号来源不得结算') },
   })
   assert.equal(stop.status, 'rejected')
-  assert.equal(stop.reason, 'missing_accountId')
+  assert.equal(stop.reason, 'source_missing_accountId')
   // 携带本地账号标识的正常 stop 仍可裁决（正控）
   const okStop = control.handle({
     eventId: 'stop-with-account', command: 'stop', channel: 'telegram', accountId: 'tg-app',
-    userId: 'user-1', chatId: 'tg-chat', sessionId: 'session-1', policyVersion: '1',
-    pending: barePending, settle: () => true,
+    userId: 'user-1', chatId: 'tg-chat', sessionId: 'session-1', policyVersion: '1', chatType: 'private',
+    pending: barePending, chatType: 'private', settle: () => true,
   })
   assert.equal(okStop.status, 'accepted')
 })
 
-test('QQ group and unknown-source controls fail closed for every command, while legacy C2C remains private', () => {
+test('QQ group and unknown-source controls fail closed for every command, including untyped C2C', () => {
   const control = createControlEntry({
     policy: { mode: 'team', capabilities: { converse: true, groupChatControl: true } },
     now: () => 150,
@@ -130,8 +139,9 @@ test('QQ group and unknown-source controls fail closed for every command, while 
     ...base, command: 'stop', eventId: 'legacy-c2c', userId: 'u1', chatId: 'u1', chatType: undefined,
     pending: pending('qq', 'u1', { accountId: 'QQ_APP', userId: 'u1' }),
   })
-  assert.equal(legacyC2c.status, 'accepted')
-  assert.equal(calls.length, 1)
+  assert.equal(legacyC2c.status, 'rejected')
+  assert.equal(legacyC2c.reason, 'source_chat_type_unknown')
+  assert.equal(calls.length, 0)
 })
 
 test('action callbacks from Telegram and Feishu settle through the shared entry', () => {
@@ -139,6 +149,13 @@ test('action callbacks from Telegram and Feishu settle through the shared entry'
   const store = {
     get: (key) => rows.get(key),
     set: (key, value) => { rows.set(key, value) },
+    transact: (mutator) => {
+      const draft = Object.fromEntries(rows)
+      mutator(draft)
+      rows.clear()
+      for (const [key, value] of Object.entries(draft)) rows.set(key, value)
+      return { committed: true, durable: true }
+    },
   }
   const dispatcher = createActionDispatcher({
     store,
@@ -154,8 +171,8 @@ test('action callbacks from Telegram and Feishu settle through the shared entry'
   const feishu = dispatcher.mintAction('turn/cancel', {}, { channel: 'feishu', chatId: 'fs-chat' })
   // 生产传输层（telegram/feishu inbound）总是把本地 resolved accountId 随 action 回调传入；
   // Control Core 的 'stop' 载荷必须携带该账号标识（缺失 = missing_accountId fail-closed）。
-  assert.equal(dispatcher.dispatch({ actionKey: telegram.key, token: telegram.token, via: 'telegram:action', userId: 7, chatId: 'tg-chat', accountId: 'tg-app' }).message, '✅ 已停止任务')
-  assert.equal(dispatcher.dispatch({ actionKey: feishu.key, token: feishu.token, via: 'feishu:action', userId: 7, chatId: 'fs-chat', accountId: 'fs-app' }).message, '✅ 已停止任务')
+  assert.equal(dispatcher.dispatch({ actionKey: telegram.key, token: telegram.token, via: 'telegram:action', userId: 7, chatId: 'tg-chat', accountId: 'tg-app', chatType: 'private' }).message, '✅ 已停止任务')
+  assert.equal(dispatcher.dispatch({ actionKey: feishu.key, token: feishu.token, via: 'feishu:action', userId: 7, chatId: 'fs-chat', accountId: 'fs-app', chatType: 'p2p' }).message, '✅ 已停止任务')
   assert.deepEqual(calls, ['telegram:action', 'feishu:action'])
 })
 
@@ -173,7 +190,7 @@ function makeTeamControl(approvalMembers, owner, settled) {
     buildEvent: (input, row) => ({
       eventId: input.eventId, sessionId: row.sessionId, source: 'mobile', channel: row.channel,
       accountId: input.accountId, userId: input.userId, chatId: input.chatId ?? row.chatId, policyVersion: row.policyVersion,
-      command: 'approval', chatType: input.chatType, createdAt: row.createdAt, expiresAt: row.expiresAt,
+      command: 'approval', chatType: sourceChatType(input), createdAt: row.createdAt, expiresAt: row.expiresAt,
     }),
     settle: (input, pending, event, policy) => { settled.push({ userId: input.userId, policyOwner: policy.owner }); return true },
   })
@@ -183,7 +200,7 @@ function makeTeamControl(approvalMembers, owner, settled) {
 test('team approvalMembers authorize only listed members and the owner through the shared Core entry', () => {
   const settled = []
   const control = makeTeamControl([{ channel: 'telegram', accountId: 'telegram', userId: 'member-2' }], 'owner-1', settled)
-  const base = { command: 'approval', approvalKey: 'ap:team', channel: 'telegram', accountId: 'telegram', chatId: 'tg-chat', userId: 'member-2' }
+  const base = { command: 'approval', approvalKey: 'ap:team', channel: 'telegram', accountId: 'telegram', chatId: 'tg-chat', userId: 'member-2', chatType: 'private' }
   // listed member settles; the settle callback receives the normalized policy snapshot (owner is set)
   assert.equal(control.handle({ ...base, eventId: 'm' }).status, 'accepted')
   assert.equal(settled[0].userId, 'member-2')
@@ -259,7 +276,7 @@ test('owner-only authorization fails closed when no source metadata exists at al
 test('owner authorization rejects conflicting base, pending, and nested control metadata sources', () => {
   const policy = { mode: 'team', owner: 'owner-1', channel: 'telegram', accountId: 'tg-app', approvalOwnerOnly: true, capabilities: { approve: true } }
   const baseRow = { sessionId: 'session-1', chatId: 'tg-chat', userId: 'owner-1', createdAt: 100, expiresAt: 1000 }
-  const event = { channel: 'feishu', accountId: 'fs-app', userId: 'owner-1', chatId: 'tg-chat', sessionId: 'session-1', policyVersion: '1', chatType: 'private' }
+  const event = { channel: 'feishu', accountId: 'fs-app', userId: 'owner-1', chatId: 'tg-chat', sessionId: 'session-1', policyVersion: '1', chatType: 'p2p' }
   for (const row of [
     { ...baseRow, channel: 'feishu', accountId: 'fs-app' },
     { ...baseRow, control: { channel: 'feishu', accountId: 'fs-app' } },
@@ -272,9 +289,9 @@ test('owner authorization rejects conflicting base, pending, and nested control 
     assert.equal(hit.settled, 0)
   }
   const aligned = runOwnerControl(policy, { ...baseRow, controlMeta: { channel: 'telegram', accountId: 'tg-app' } }, {
-    ...event, channel: 'telegram', accountId: 'tg-app',
+    ...event, channel: 'telegram', accountId: 'tg-app', chatType: 'private',
   })
-  assert.equal(aligned.result.status, 'accepted')
+  assert.equal(aligned.result.status, 'accepted', aligned.result.reason)
   assert.equal(aligned.settled, 1)
   const question = runOwnerControl(policy, { ...baseRow, controlMeta: { channel: 'telegram', accountId: 'tg-app' } }, {
     ...event, eventId: 'question-answer', channel: 'feishu', accountId: 'fs-app',
@@ -287,7 +304,7 @@ test('owner authorization rejects conflicting base, pending, and nested control 
 test('team member authorization stays fail-closed on wrong chat and group chat, zero settlement', () => {
   const settled = []
   const control = makeTeamControl([{ channel: 'telegram', accountId: 'telegram', userId: 'member-2' }], 'owner-1', settled)
-  const base = { command: 'approval', approvalKey: 'ap:team', channel: 'telegram', accountId: 'telegram', userId: 'member-2' }
+  const base = { command: 'approval', approvalKey: 'ap:team', channel: 'telegram', accountId: 'telegram', userId: 'member-2', chatType: 'private' }
   // conversation binding is exact even for approved team members
   assert.equal(control.handle({ ...base, eventId: 'wc', chatId: 'other' }).reason, 'source_mismatch_chatId')
   // QQ-style group control stays fail-closed
@@ -375,6 +392,7 @@ test('session overlay keeps personal defaults and approvalMembers never widen co
   const pendingRow = overlayPending('owner-1')
   const result = control.handle({
     eventId: 'ordinary-overlay', command: 'ordinary-message', channel: 'telegram', accountId: 'tg-app',
+    chatType: 'private',
     userId: 'member-1', chatId: 'tg-chat', sessionId: 'session-overlay', policyVersion: '1',
     pending: pendingRow, settle: () => true,
   })
@@ -411,10 +429,10 @@ test('resolver is keyed by the exact session id and is not consulted when normal
   const control = createControlEntry({ now: () => 150, policyForSession: () => { calls++; return { mode: 'team' } } })
   control.register('approval', {
     getPending: () => overlayPending('member-1'),
-    buildEvent: () => ({ eventId: 'missing-session', source: 'mobile', channel: 'telegram', accountId: 'tg-app', userId: 'member-1', chatId: 'tg-chat', policyVersion: '1', command: 'approval', createdAt: 100, expiresAt: 1000 }),
+    buildEvent: () => ({ eventId: 'missing-session', source: 'mobile', channel: 'telegram', accountId: 'tg-app', userId: 'member-1', chatId: 'tg-chat', policyVersion: '1', command: 'approval', chatType: 'private', createdAt: 100, expiresAt: 1000 }),
     settle: () => true,
   })
-  const result = control.handle({ eventId: 'missing-session', command: 'approval', approvalKey: 'overlay-key', channel: 'telegram', accountId: 'tg-app', userId: 'member-1', chatId: 'tg-chat' })
+  const result = control.handle({ eventId: 'missing-session', command: 'approval', approvalKey: 'overlay-key', channel: 'telegram', accountId: 'tg-app', userId: 'member-1', chatId: 'tg-chat', chatType: 'private' })
   assert.equal(result.reason, 'missing_sessionId')
   assert.equal(calls, 0)
 })
@@ -464,7 +482,7 @@ test('admin writes overlay through registry → Control Core uses new policy (en
       eventId: input.eventId, sessionId: row.sessionId, source: 'mobile',
       channel: input.channel ?? row.channel, accountId: input.accountId ?? row.accountId,
       userId: row.userId, chatId: row.chatId, policyVersion: row.policyVersion,
-      command: 'approval', createdAt: row.createdAt, expiresAt: row.expiresAt,
+      command: 'approval', chatType: sourceChatType(input), createdAt: row.createdAt, expiresAt: row.expiresAt,
     }),
     settle: (_, __, ___, policy) => { settled.push({ owner: policy.owner, ownerOnly: policy.approvalOwnerOnly }); return true },
   })
@@ -473,6 +491,7 @@ test('admin writes overlay through registry → Control Core uses new policy (en
   const adminResult = control.handle({
     eventId: 'admin-ok', command: 'approval', approvalKey: 'ap:e2e',
     channel: 'telegram', accountId: 'tg-app', chatId: 'tg-chat',
+    chatType: 'private',
     userId: 'admin-owner', sessionId: 'session-e2e', policyVersion: '1',
   })
   assert.equal(adminResult.status, 'accepted')
@@ -483,6 +502,7 @@ test('admin writes overlay through registry → Control Core uses new policy (en
   const nonOwner = control.handle({
     eventId: 'non-owner', command: 'approval', approvalKey: 'ap:e2e',
     channel: 'feishu', accountId: 'fs-app', chatId: 'fs-chat',
+    chatType: 'p2p',
     userId: 'admin-owner', sessionId: 'session-e2e', policyVersion: '1',
   })
   assert.equal(nonOwner.status, 'rejected', 'wrong channel rejected by source binding')
@@ -526,7 +546,7 @@ test('overlay persists across restart (new registry instance reads overlay from 
       eventId: input.eventId, sessionId: row.sessionId, source: 'mobile',
       channel: row.channel, accountId: row.accountId, userId: input.userId ?? row.userId,
       chatId: row.chatId, policyVersion: row.policyVersion,
-      command: 'approval', createdAt: row.createdAt, expiresAt: row.expiresAt,
+      command: 'approval', chatType: sourceChatType(input), createdAt: row.createdAt, expiresAt: row.expiresAt,
     }),
     settle: () => true,
   })
@@ -535,6 +555,7 @@ test('overlay persists across restart (new registry instance reads overlay from 
   const memberResult = control.handle({
     eventId: 'persist-member', command: 'approval', approvalKey: 'ap:persist',
     channel: 'telegram', accountId: 'tg', chatId: 'tg-chat',
+    chatType: 'private',
     userId: 'team-member', sessionId: 's-persist', policyVersion: '1',
   })
   assert.equal(memberResult.status, 'accepted', 'overlay persisted across restart')
@@ -543,6 +564,7 @@ test('overlay persists across restart (new registry instance reads overlay from 
   const strangerResult = control.handle({
     eventId: 'persist-stranger', command: 'approval', approvalKey: 'ap:persist',
     channel: 'telegram', accountId: 'tg', chatId: 'tg-chat',
+    chatType: 'private',
     userId: 'stranger', sessionId: 's-persist', policyVersion: '1',
   })
   assert.equal(strangerResult.status, 'rejected')
@@ -581,7 +603,7 @@ test('overlay path fails closed for wrong account, channel, user, and session', 
       }),
       settle: () => true,
     })
-    return control.handle({ command: 'approval', ...base, userId: 'member-1', ...extra })
+    return control.handle({ command: 'approval', ...base, userId: 'member-1', chatType: 'private', ...extra })
   }
 
   // Wrong account — source binding catches before overlay auth
@@ -627,7 +649,7 @@ test('malicious overlay cannot forge channel/account/user/session or add capabil
       eventId: input.eventId, sessionId: row.sessionId, source: 'mobile',
       channel: row.channel, accountId: row.accountId, userId: input.userId ?? row.userId,
       chatId: row.chatId, policyVersion: row.policyVersion,
-      command: 'approval', createdAt: row.createdAt, expiresAt: row.expiresAt,
+      command: 'approval', chatType: sourceChatType(input), createdAt: row.createdAt, expiresAt: row.expiresAt,
     }),
     settle: (input, row, event, policy) => { settled.push({ owner: policy.owner, channel: policy.channel, accountId: policy.accountId }); return true },
   })
@@ -636,7 +658,7 @@ test('malicious overlay cannot forge channel/account/user/session or add capabil
   const result = control.handle({
     eventId: 'mal-1', command: 'approval', approvalKey: 'ap:mal',
     channel: 'feishu', accountId: 'evil-app', chatId: 'evil-chat',
-    userId: 'attacker', sessionId: 'session-mal', policyVersion: '1',
+    userId: 'attacker', sessionId: 'session-mal', policyVersion: '1', chatType: 'p2p',
   })
   // Should be rejected: overlay source fields were stripped; policy uses base source
   assert.equal(result.status, 'rejected', 'malicious overlay source fields must not authorize')
@@ -646,7 +668,7 @@ test('malicious overlay cannot forge channel/account/user/session or add capabil
   const result2 = control.handle({
     eventId: 'mal-2', command: 'approval', approvalKey: 'ap:mal',
     channel: 'feishu', accountId: 'evil-app', chatId: 'evil-chat',
-    userId: 'attacker', sessionId: 'session-mal', policyVersion: '1',
+    userId: 'attacker', sessionId: 'session-mal', policyVersion: '1', chatType: 'p2p',
   })
   assert.equal(result2.status, 'rejected')
 })
@@ -670,7 +692,7 @@ test('overlay approvalOwnerOnly positive: owner from correct source settles', ()
       eventId: input.eventId, sessionId: row.sessionId, source: 'mobile',
       channel: row.channel, accountId: row.accountId, userId: row.userId,
       chatId: row.chatId, policyVersion: row.policyVersion,
-      command: 'approval', createdAt: row.createdAt, expiresAt: row.expiresAt,
+      command: 'approval', chatType: sourceChatType(input), createdAt: row.createdAt, expiresAt: row.expiresAt,
     }),
     settle: () => { settled.push('settled'); return true },
   })
@@ -679,6 +701,7 @@ test('overlay approvalOwnerOnly positive: owner from correct source settles', ()
   const ownerOk = control.handle({
     eventId: 'own-ok', command: 'approval', approvalKey: 'ap:own',
     channel: 'telegram', accountId: 'tg-app', chatId: 'tg-chat',
+    chatType: 'private',
     userId: 'the-owner', sessionId: 's-own', policyVersion: '1',
   })
   assert.equal(ownerOk.status, 'accepted')
@@ -701,13 +724,14 @@ test('overlay approvalOwnerOnly positive: owner from correct source settles', ()
       eventId: input.eventId, sessionId: row.sessionId, source: 'mobile',
       channel: row.channel, accountId: row.accountId, userId: row.userId,
       chatId: row.chatId, policyVersion: row.policyVersion,
-      command: 'approval', createdAt: row.createdAt, expiresAt: row.expiresAt,
+      command: 'approval', chatType: sourceChatType(input), createdAt: row.createdAt, expiresAt: row.expiresAt,
     }),
     settle: () => { settled.push('settled'); return true },
   })
   const nonOwner = control2.handle({
     eventId: 'own-no', command: 'approval', approvalKey: 'ap:own',
     channel: 'telegram', accountId: 'tg-app', chatId: 'tg-chat',
+    chatType: 'private',
     userId: 'not-owner', sessionId: 's-own2', policyVersion: '1',
   })
   assert.equal(nonOwner.status, 'rejected')
@@ -736,7 +760,7 @@ test('overlay approvalMembers positive: listed member settles; negative: unliste
       eventId: input.eventId, sessionId: row.sessionId, source: 'mobile',
       channel: row.channel, accountId: row.accountId, userId: row.userId,
       chatId: row.chatId, policyVersion: row.policyVersion,
-      command: 'approval', createdAt: row.createdAt, expiresAt: row.expiresAt,
+      command: 'approval', chatType: sourceChatType(input), createdAt: row.createdAt, expiresAt: row.expiresAt,
     }),
     settle: () => { settled.push('settled'); return true },
   })
@@ -745,6 +769,7 @@ test('overlay approvalMembers positive: listed member settles; negative: unliste
   const listed = control.handle({
     eventId: 'mem-ok', command: 'approval', approvalKey: 'ap:mem',
     channel: 'telegram', accountId: 'tg-app', chatId: 'tg-chat',
+    chatType: 'private',
     userId: 'listed-1', sessionId: 's-mem', policyVersion: '1',
   })
   assert.equal(listed.status, 'accepted')
@@ -770,13 +795,14 @@ test('overlay approvalMembers positive: listed member settles; negative: unliste
       eventId: input.eventId, sessionId: row.sessionId, source: 'mobile',
       channel: row.channel, accountId: row.accountId, userId: row.userId,
       chatId: row.chatId, policyVersion: row.policyVersion,
-      command: 'approval', createdAt: row.createdAt, expiresAt: row.expiresAt,
+      command: 'approval', chatType: sourceChatType(input), createdAt: row.createdAt, expiresAt: row.expiresAt,
     }),
     settle: () => { settled.push('settled'); return true },
   })
   const unlisted = control2.handle({
     eventId: 'mem-no', command: 'approval', approvalKey: 'ap:mem',
     channel: 'telegram', accountId: 'tg-app', chatId: 'tg-chat',
+    chatType: 'private',
     userId: 'unlisted-99', sessionId: 's-mem2', policyVersion: '1',
   })
   assert.equal(unlisted.status, 'rejected')
@@ -811,7 +837,7 @@ test('overlay does not grant steer or ordinary-message to team members', () => {
         eventId: input.eventId, sessionId: row.sessionId, source: 'mobile',
         channel: row.channel, accountId: row.accountId, userId: input.userId ?? row.userId,
         chatId: row.chatId, policyVersion: row.policyVersion,
-        command: input.command, createdAt: row.createdAt, expiresAt: row.expiresAt,
+        command: input.command, chatType: sourceChatType(input), createdAt: row.createdAt, expiresAt: row.expiresAt,
       }),
       settle: () => { settled.push(command); return true },
     })
@@ -821,7 +847,7 @@ test('overlay does not grant steer or ordinary-message to team members', () => {
   const steer = control.handle({
     eventId: 'cmd-steer', command: 'steer',
     channel: 'telegram', accountId: 'tg-app', chatId: 'tg-chat',
-    userId: 'listed-1', sessionId: 's-cmd', policyVersion: '1',
+    userId: 'listed-1', sessionId: 's-cmd', policyVersion: '1', chatType: 'private',
   })
   assert.equal(steer.status, 'rejected')
   assert.equal(steer.reason, 'conversation_disabled')
@@ -830,7 +856,7 @@ test('overlay does not grant steer or ordinary-message to team members', () => {
   const ordinary = control.handle({
     eventId: 'cmd-ord', command: 'ordinary-message',
     channel: 'telegram', accountId: 'tg-app', chatId: 'tg-chat',
-    userId: 'listed-1', sessionId: 's-cmd', policyVersion: '1',
+    userId: 'listed-1', sessionId: 's-cmd', policyVersion: '1', chatType: 'private',
   })
   assert.equal(ordinary.status, 'rejected')
   assert.equal(ordinary.reason, 'conversation_disabled')
@@ -839,6 +865,7 @@ test('overlay does not grant steer or ordinary-message to team members', () => {
   const approval = control.handle({
     eventId: 'cmd-approval', command: 'approval',
     channel: 'telegram', accountId: 'tg-app', chatId: 'tg-chat',
+    chatType: 'private',
     userId: 'listed-1', sessionId: 's-cmd', policyVersion: '1',
   })
   assert.equal(approval.status, 'accepted')

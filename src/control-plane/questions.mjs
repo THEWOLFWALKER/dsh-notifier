@@ -1,5 +1,5 @@
 // dsh-notifier control-plane/questions.mjs
-// v0.14（S04）：远程提问结算契约的共享应用服务（Native / Admin / 宿主原生桥共用单点）。
+// v0.14（S04）：远程提问结算契约的共享应用服务（Native / 宿主原生桥共用单点）。
 //
 // 职责（编排 / 投影，不是权威）：
 //  - pending()  当前待决问题的脱敏快照（唯一投影源；脱敏语义在桥内，本层不重做）
@@ -7,7 +7,7 @@
 //               单次结算全部由桥 + Control Core 承接，本层绝不复制 ledger 结算、绝不直写状态
 //
 // 权威不变（I1）：`aq:` 账本与结算语义仍在 `src/questions/router.mjs` 的桥 + Control Core。
-// 本模块把此前 Native（control-surface 投影）与 Admin（HTTP 适配器）各自持有的
+// 本模块把此前 Native（control-surface 投影）与 已退役的 HTTP 适配器各自持有的
 // 「读待决 / 结算 / 归一化」重复编排收敛到一个入口（I9）。
 //
 // 失败语义：桥缺失或异常一律 fail-closed——pending 降级空表、settle 返回 not_available /

@@ -2,7 +2,7 @@
 
 > English: [PLUGINS.en.md](PLUGINS.en.md)
 > dsh-notifier v0.6 起开放两条面:**出向** `ctx.notifier` 服务注入(推送)与**入向** `dsh-notifier/sent` 事件(订阅)。
-公共接口版本：`0.7`(`ctx.notifier.version`,只在公共面 breaking 时 bump,与包版本不联动)。
+公共接口版本：`0.8`(`ctx.notifier.version`,只在公共面 breaking 时 bump,与包版本不联动)。
 
 ## 30 秒上手
 
@@ -13,7 +13,7 @@ export const inject = ['notifier']
 export function apply(ctx) {
   // 静态声明后，apply 执行时服务已就绪（宿主保证等待），直接取用
   ctx.notifier.push({ title: '📧 新邮件', content: '来自 x@y.z：周报初稿', level: 'active' }, { sourceName: 'my-email-plugin' })
-    .then((result) => { if (!result.ok) ctx.logger.warn('推送失败', result.failed) })
+    .then((result) => ctx.logger.debug('推送证据', result))
 }
 ```
 
@@ -41,7 +41,7 @@ const result = await notifier.push(message, options)
 
 - `message: { title?, content?, level?, group? }`
   - `level`: `timeSensitive` / `active` / `passive`(缺省 `active`;非法值丢弃)
-  - `title`/`content` 非字符串按空处理;**两者都空** → `skipped: ['(malformed)']`(不推送、不记账、不占限流名额)
+  - `title`/`content` 非字符串按空处理;**两者都空** → `skipped: [{ channel: '(request)', reason: 'malformed' }]`(不推送、不记账、不占限流名额)
   - 长度钳制:各 20000 码点,超出截断并 warn(防止超长文本引发分段风暴)
 - `options: { sourceName?, channel? }`
   - `sourceName`: 来源标注(进账本与 sent 事件,便于审计与将来按源静默);缺省/非字符串 = `anonymous`(与其他匿名调用共享单个限流窗)
@@ -49,20 +49,20 @@ const result = await notifier.push(message, options)
 
 公共面还对每个底层 notifier 实例施加有界资源预算（可在 `public` 中覆盖）：`maxCalls` 默认 10000、`maxBytes` 默认 10 MiB、`maxConcurrent` 默认 16、`maxQueue` 默认 64。预算按实例共享，不随 `sourceName` 轮换或第二个 facade 重置；超限返回 `skipped: ['(budget)']`，并发/排队满返回 `skipped: ['(busy)']`。`sourceName` 仅是脱敏审计显示标签（trim、64 码点、控制字符替换），不是身份凭证。
 
-**返回值(永不 reject——内部错误返回 `failed: [{ reason: 'internal' }]`,你不必写 try-catch)**:
+**返回值(永不 reject——内部错误返回 `failed: [{ channel: '(request)', reason: 'internal' }]`,你不必写 try-catch)**:
 
 ```js
-const result = { ok: true, delivered: ['telegram'], skipped: [], failed: [], source: { kind: 'plugin', name: 'my-email-plugin' } }
+const result = { accepted: ['telegram'], confirmed: [], unknown: [], failed: [], skipped: [], source: { kind: 'plugin', name: 'my-email-plugin' } }
 ```
 
-`delivered` 表示已走到配置渠道的提供方结果，并不自动证明终端已经展示消息；只有提供方明确给出端到端回执时，才可把它解释为确认送达。`accepted`、`delivered` 与终端确认应按三态语义区分。
+五类投递结果互斥：`accepted` 是提供方结果，只表示提供方已接受请求，不代表终端已经展示消息；`confirmed` 仅在提供端到端回执时使用；`unknown` 表示结果不确定，禁止自动重试；`failed` 是确定失败；`skipped` 表示未尝试投递。每个非成功项为 `{ channel, reason }`，原因是稳定代码，不带 provider 错误正文。
 
-- `skipped` 常见值:`(malformed)` 双空 / `(disabled)` 服务关闭 / `(rate-limited)` 超额 / `(quiet)` 会话静音 / `(渠道名)` 定向未配置
+- `skipped` 常见值:`malformed` 双空 / `disabled` 服务关闭 / `rate-limited` 超额 / `quiet` 会话静音；每项均是 `{ channel, reason }`
 - 定向推送(`channel` 有值)走单渠道路径；与广播一样写入一次审计记录并发出一次 `sent` 事件，结果仍只看返回值
 
 ## 限流
 
-每源独立滑动窗,默认 10 次/分钟(宿主可用 `public.limitPerMinutePerSource` 调整,0 = 不限)。超限返回 `skipped: ['(rate-limited)']`——**照记账、照发事件**(静音不等于没发生),你能感知到自己被限。
+每源独立滑动窗,默认 10 次/分钟(宿主可用 `public.limitPerMinutePerSource` 调整,0 = 不限)。超限返回 `skipped: [{ channel: '(request)', reason: 'rate-limited' }]`——**照记账、照发事件**(静音不等于没发生),你能感知到自己被限。
 
 公共面还设有与 `sourceName` 无关的实例预算：`maxCalls`（默认 10000 次）、`maxBytes`（默认 10 MiB，按 UTF-8）、`maxConcurrent`（默认 16）和 `maxQueue`（默认 64）。预算在分发前预留；超限仅拒绝当前调用并返回 `skipped: ['(budget)']` 或 `['(busy)']`，更换来源标签或创建第二个 facade 不能绕过同一 notifier 实例的总预算。
 
@@ -70,7 +70,7 @@ const result = { ok: true, delivered: ['telegram'], skipped: [], failed: [], sou
 
 ```js
 ctx.on?.('dsh-notifier/sent', (record) => {
-  // record: { time, ok, delivered[], skipped[], failed[], source?, channel?,
+  // record: { time, accepted[], confirmed[], unknown[], skipped[], failed[], source?, channel?,
   //   titleLength, contentLength, titleBytes, contentBytes, hasContent }
   // sent 事件永不包含 title/content、审批文本、用户正文或适配器错误正文。
 })
@@ -91,23 +91,23 @@ export function apply(ctx) {
 }
 ```
 
-flush 幂等,可重复调用。
+flush 幂等,可重复调用;返回 `{ drained: boolean }`，表示在途队列是否已清空，不代表任何具体消息的投递证据。
 
 公共 facade 本身是冻结对象，只暴露 `version`、`enabled()`、`push()` 和 `flush()`；消费方不能调用 `dispose()`。宿主在卸载时会通过私有 disposer 清理 facade 资源，重复卸载安全。
 
-## 三态语义(你拿到的是什么)
+## 服务状态与推送结果
 
 | 宿主状态 | 你拿到的 | push 行为 |
 |---|---|---|
 | 正常运行 | 完整 facade | 真实推送 |
 | `public.enabled: false` / 顶层 `enabled: false` | no-op stub | `skipped: ['(disabled)']` |
-| 零渠道配置 | 完整 facade | `ok: false` + 三空数组(诚实空投递,不进账本不发事件——真机验证与 `notify.mjs` 零渠道出口一致) |
+| 零渠道配置 | 完整 facade | 五类投递证据均为空(没有可用目标；不进账本、不发事件) |
 
 ## 版本与兼容
 
 - **能力探测优先**:`typeof notifier?.push === 'function'`;不要做版本相等比较
 - `notifier.version` 仅用于展示/日志
-- 0.7 起 sent 事件是 metadata-only breaking contract；旧的 `record.message` 消费方必须迁移到长度/状态字段
+- 0.8 起返回值与 sent 事件是 metadata-only breaking contract；旧的 `record.message` 消费方必须迁移到长度/状态字段
 - facade 返回值是冻结的稳定公共面（`version`、`enabled()`、`push()`、`flush()`）；卸载由宿主内部管理，消费方不可调用 `dispose`
 - 公共面 breaking 变更才会 bump `version` 并在 CHANGELOG 置顶声明
 
@@ -125,11 +125,11 @@ export function apply(ctx) {
   notifier.push(
     { title: '⏰ 定时提醒', content: '该复盘了', level: 'timeSensitive' },
     { sourceName: 'my-plugin' },
-  ).then((result) => log('推送结果', result.ok, result.delivered))
+  ).then((result) => log('推送证据', result.accepted, result.confirmed, result.unknown, result.failed, result.skipped))
 
   // 入向:订阅广播结果(事件订阅不需要 inject 声明;只读 + O(1) + 禁 push)
   ctx.on?.('dsh-notifier/sent', (record) => {
-    log('sent', record.source?.name ?? '(internal)', record.ok ? 'ok' : 'failed')
+    log('sent', record.source?.name ?? '(internal)', record.accepted, record.confirmed, record.unknown)
   })
 
   // 卸载:flush 在途送达
@@ -148,12 +148,12 @@ const fake = createFakeNotifier({ sourceName: 'my-plugin', now: () => 0 })
 // 把 fake 当作 ctx.notifier 注入你的 apply()
 const result = await fake.push({ title: 'T', content: 'C' }, { sourceName: 'my-plugin' })
 
-fake.version        // '0.7'，与真 facade 同一公共面版本
+fake.version        // '0.8'，与真 facade 同一公共面版本
 fake.calls          // [{ message, options, at }]，只读数组（每次读取返回深拷贝）
-await fake.flush()  // resolve undefined
+await fake.flush()  // { drained: true }
 ```
 
-行为规格与真 facade 逐项对齐：`push` **永不 reject**；返回 `{ ok, delivered, skipped, failed, source }`（`source.kind` 恒为 `'plugin'`，成功时 `delivered: ['fake']`）；`title`/`content` 非字符串按空、双空 → `skipped: ['(malformed)']`；`options.simulate: 'rate-limited' | 'disabled' | 'budget' | 'busy'` 回放对应 `skipped`，未知值按正常成功——用它测你的失败分支，不必改宿主配置。
+行为规格与真 facade 逐项对齐：`push` **永不 reject**；返回 `{ accepted, confirmed, unknown, failed, skipped, source }`（`source.kind` 恒为 `'plugin'`，成功时 `accepted: ['fake']`）；`title`/`content` 非字符串按空、双空 → `skipped: [{ channel: '(request)', reason: 'malformed' }]`；`options.simulate: 'rate-limited' | 'disabled' | 'budget' | 'busy'` 回放对应 `skipped`，未知值按正常成功——用它测你的失败分支，不必改宿主配置。
 
 两处刻意差异（不是缺陷）：fake 不做长度钳制/限流/预算记账（真实资源语义由真 facade 的契约测试覆盖），也不提供 `enabled()`（宿主诊断面，按能力探测 `typeof notifier?.push === 'function'` 即可）。fake **不发** `sent` 事件——事件面不在本工具内，测事件侧请用自有 `ctx` stub。
 
@@ -165,13 +165,13 @@ await fake.flush()  // resolve undefined
 import type { NotifierFacade, NotifyMessage, PushResult } from 'dsh-notifier/types'
 ```
 
-导出 `NotifyLevel` / `NotifyMessage` / `NotifyOptions` / `PushResult` / `PushFailure` / `NotifierSource` / `NotifierFacade` / `SentEventRecord` / `FakeNotifier` 等，逐项对照运行时公共面（只声明真存在的字段，内部选项不外泄）。`NotifierFacade.version` 是字面量 `'0.7'`，与 `ctx.notifier.version` 同源。`SentEventRecord` 保持 metadata-only——**不含** `title`/`content`/原始错误正文。
+导出 `NotifyLevel` / `NotifyMessage` / `NotifyOptions` / `PushResult` / `PushChannelReason` / `NotifierSource` / `NotifierFacade` / `SentEventRecord` / `FakeNotifier` 等，逐项对照运行时公共面（只声明真存在的字段，内部选项不外泄）。`NotifierFacade.version` 是字面量 `'0.8'，与 `ctx.notifier.version` 同源。`SentEventRecord` 保持 metadata-only——**不含** `title`/`content`/原始错误正文。
 
 这是显式 type-only 子路径：包根（`dsh-notifier`）是 DSH 插件契约本身，**没有** root `"types"` 字段（root JS 导出面远大于 notifier 公共面）。请始终 `from 'dsh-notifier/types'`。
 
 ## 真机验证记录
 
-- **2026-08-16 · DSH 0.1.0-rc.6(profile web,Node 24)**:特性 A/B 双确认——静态 inject 消费方解析到 `version=0.6` 真服务(非 stub);`dsh-notifier/sent` 事件跨插件可见(15/15,payload 形状完整);零渠道语义符合设计(`ok:false` 三空数组,不崩不阻塞)。同时裁定:回调式 `ctx.inject` 不触发、未声明访问服务属性直接抛错——本文档全部配方据此定稿为静态声明。安装注意:宿主用 pnpm 管理依赖时,手动覆盖 `node_modules/dsh-notifier` 会被回滚,升级请用 `dsh plugin add file:<路径>`。
+- **2026-08-16 · DSH 0.1.0-rc.6(profile web,Node 24)**:历史宿主探针确认静态 inject、sent 事件和旧版零渠道行为；这些结果仅记录当时 v0.6 实现，不代表当前 API。当前 v0.8 零目标返回五类空证据数组，不再有 `ok` 字段。探针同时确认回调式 `ctx.inject` 不触发、未声明访问服务属性会抛错。安装注意:宿主用 pnpm 管理依赖时,手动覆盖 `node_modules/dsh-notifier` 会被回滚,升级请用 `dsh plugin add file:<路径>`。
 
 ## FAQ
 

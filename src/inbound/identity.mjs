@@ -1,75 +1,45 @@
-// dsh-notifier v0.7 inbound/identity.mjs
-// 身份绑定层（v0.7 计划书 §3.1）：把「谁是家里人」从 YAML 不透明字符串提升为运行时对象。
-// 键设计：
-//  - inbound:bindings  → { "<channel>:<userId>": {channel,userId,label,role,pairedAt,lastSeenAt,origin} }
-//  - inbound:pending   → { "<channel>:<userId>": {channel,userId,origin,at,extra} } 待确认绑定（扫码/订阅学习）
-//  - inbound:migrated  → true（一次性迁移标记，防止 YAML 每次启动复活管理台已删成员）
-// 与会话路由键 bind:<channel>:<userId>（conversation.mjs，「这条消息交给哪个 agent」）语义不同，
-// 两键并存互不合并：身份绑定放行，会话绑定才可能被消费。
-// 军规：读失败回退空对象（fail-open 读），写失败由 store 保留 dirty 重试；绝不覆写损坏现场。
+// Paired private principals and bounded pending identity records.
+// Identity keys are `(channel, accountId, userId)` tuples; conversation task bindings are a
+// separate domain. YAML allowlists and transport credentials never create an authorized member.
+// Store failures remain visible to the caller; damaged state is never silently overwritten.
 
-import { isValidTargetId } from './target-guard.mjs'
 import { INBOUND_CHANNEL_SET } from './channels-registry.mjs'
 import { setDurable, transactDurable, transactOutcome } from './store.mjs'
 
 const KEY_BINDINGS = 'inbound:bindings'
 const KEY_PENDING = 'inbound:pending'
-/** 一次性迁移标记（R5 审查 R5-1-P1-1：无标记则每次启动重播撒，管理台已删成员被 YAML 复活）。 */
-const KEY_MIGRATED = 'inbound:migrated'
 /** lastSeenAt 更新节流：每用户每小时最多一次落盘（避免每条入站消息都全量重写 state.json）。 */
 const LAST_SEEN_THROTTLE_MS = 60 * 60 * 1000
 const VALID_CHANNELS = INBOUND_CHANNEL_SET // G-13：单一事实来源（原内联六通道字面量）
 const VALID_ROLES = new Set(['owner', 'member'])
 const VALID_ORIGINS = new Set(['migrated', 'paired', 'learned', 'confirmed'])
-const DEFAULT_ACCOUNT_ID = 'default'
 
-/**
- * G-49 身份/路由复合键的**唯一构造点**：`${channel}:${userId}`（会话绑定域由调用方再前缀
- * `bind:`）。四处键构造全部改引本函数，归一规则单一来源：
- *  - identity.allows 的读键与 lastSeenAt 写回键（本文件）；
- *  - conversation 的会话绑定持久化键 `bind:<channel>:<userId>`；
- *  - agent-router resolveInbound L1 的读键（与 conversation 写键同源才能命中）；
- *  - registry 入站挂钩的 channel/userId 分量（conversation 构造，镜像本函数规则）。
- *
- * 归一策略（大小写收敛）：
- *  - 两分量 trim：' user ' 与 'user' 同键——当前各适配器输出恰好归一，此修是休眠边界
- *    封口（不改现网行为，只保证未来空白/大小写漂移不裂键）；
- *  - channel 收敛小写：渠道是有限小写类型集合（VALID_CHANNELS），大小写漂移同键；
- *  - userId **不**折叠大小写：渠道侧 id 大小写语义真实存在（wxpusher UID_ 前缀、飞书
- *    open_id），折叠会让存量盘上键打 miss——只 trim 不折叠。
- *
- * 不返回归一后的分量（userId 可含冒号，复合键反切会截断）——需要分量的调用方
- * （registry 挂钩）在构造处镜像本规则，一致性由 test/identity.test.mjs 与
- * test/conversation.route.test.mjs 的全链路用例锁死。
- *
- * @param {string} channel - 渠道类型（telegram/feishu/qq/wxpusher/wechat/dingtalk）
- * @param {string} userId - 渠道侧用户 id
- * @returns {string} 归一复合键 `${channel}:${userId}`
- */
+/** Legacy conversation-binding key helper; it does not identify an authorized principal. */
 export function bindingKey(channel, userId) {
   const normalizedChannel = String(channel ?? '').trim().toLowerCase()
   const normalizedUserId = String(userId ?? '').trim()
   return `${normalizedChannel}:${normalizedUserId}`
 }
 
-/** v0.13 principal 主键：非默认账号使用独立键，避免同一用户跨 bot 账号串权。 */
+/** Stable principal key: account is required so same-channel bots cannot share authorization. */
 export function principalKey(channel, accountId, userId) {
   const normalizedChannel = String(channel ?? '').trim().toLowerCase()
-  const normalizedAccountId = String(accountId ?? DEFAULT_ACCOUNT_ID).trim() || DEFAULT_ACCOUNT_ID
+  const normalizedAccountId = String(accountId ?? '').trim()
   const normalizedUserId = String(userId ?? '').trim()
+  if (normalizedChannel === '' || normalizedAccountId === '' || normalizedAccountId === 'default' || normalizedUserId === '') return ''
   return `${normalizedChannel}:${normalizedAccountId}:${normalizedUserId}`
 }
 
 function normalizeAccountId(accountId) {
-  const value = String(accountId ?? '').trim() || DEFAULT_ACCOUNT_ID
-  if (value.length > 128 || value.includes(':')) return null
+  const value = String(accountId ?? '').trim()
+  if (value === '' || value === 'default' || value.length > 128 || value.includes(':')) return null
   return value
 }
 
-function keyFor(channel, userId, accountId = undefined) {
+function keyFor(channel, userId, accountId) {
   const account = normalizeAccountId(accountId)
   if (account === null) return null
-  return account === DEFAULT_ACCOUNT_ID ? bindingKey(channel, userId) : principalKey(channel, account, userId)
+  return principalKey(channel, account, userId)
 }
 
 /** 归一化单条绑定记录（读盘防御：坏字段回退默认，坏形状整条丢弃）。 */
@@ -91,7 +61,7 @@ function normalizeBinding(raw, fallbackKey) {
     lastSeenAt: typeof raw.lastSeenAt === 'number' ? raw.lastSeenAt : 0,
     origin: VALID_ORIGINS.has(raw.origin) ? raw.origin : 'paired',
   }
-  if (accountId !== DEFAULT_ACCOUNT_ID) record.accountId = accountId
+  record.accountId = accountId
   if (!VALID_CHANNELS.has(record.channel) || record.userId === '') return null
   return record
 }
@@ -115,7 +85,7 @@ export function createIdentity(options = {}) {
     try { console.error('[dsh-notifier/identity]', message) } catch { /* 控制台不可用不致命 */ }
   }
 
-  /** 读绑定表（store 读收敛让宿主进程半秒内看到 CLI/管理台写入）。 */
+  /** Read paired principals from the shared durable store. */
   function readBindings() {
     if (store === null) return {}
     const raw = store.get(KEY_BINDINGS, {})
@@ -166,7 +136,7 @@ export function createIdentity(options = {}) {
   // 'Telegram:42'、'telegram: 42' 这类读路径永远命中不了的幽灵键）。allows() 用
   // bindingKey 归一查询，这些键只占存储不见天日，是「存储与业务视图长期不一致」的来源，
   // 读时清洗不写回会让盘上死键无限累积，故本批次改为启动一次性清洗 + 写回。
-  // 只动 inbound:bindings，绝不动 inbound:migrated——白名单重播的一次性守卫若被清洗
+  // 只动 inbound:bindings；不会从 YAML 重播授权。
   // 连带清掉，「启动损坏白纸重置」（绑定表全坏读到空白）场景下管理台已删成员会被
   // YAML 静默复活（删减权收归管理台的契约被推翻），这是本条的放大面，测试必含。
   const startupCleanup = () => {
@@ -253,12 +223,12 @@ export function createIdentity(options = {}) {
         at: typeof value.at === 'number' ? value.at : 0,
         extra: value.extra !== null && typeof value.extra === 'object' ? value.extra : {},
       }
-      if (accountId !== DEFAULT_ACCOUNT_ID) out[canonical].accountId = accountId
+      out[canonical].accountId = accountId
     }
     return { out, expired, rawCount: Object.keys(raw).length }
   }
 
-  function addBindingToTable(table, { channel, accountId = DEFAULT_ACCOUNT_ID, userId, label = '', origin = 'paired' } = {}) {
+  function addBindingToTable(table, { channel, accountId, userId, label = '', origin = 'paired' } = {}) {
     if (!VALID_CHANNELS.has(channel)) return { ok: false, reason: 'invalid-channel' }
     const normalizedAccountId = normalizeAccountId(accountId)
     if (normalizedAccountId === null) return { ok: false, reason: 'invalid-account' }
@@ -279,7 +249,7 @@ export function createIdentity(options = {}) {
       lastSeenAt: 0,
       origin: VALID_ORIGINS.has(origin) ? origin : 'paired',
     }
-    if (normalizedAccountId !== DEFAULT_ACCOUNT_ID) record.accountId = normalizedAccountId
+    record.accountId = normalizedAccountId
     table[key] = record
     return { ok: true, record }
   }
@@ -371,7 +341,7 @@ export function createIdentity(options = {}) {
 
   return {
     /** 复合键准入（v0.7 计划书 §3.1：准入带渠道维度，修跨渠道串扰）。 */
-    allows(channel, userId, accountId = undefined) {
+    allows(channel, userId, accountId) {
       if (typeof channel !== 'string' || typeof userId !== 'string') return false
       // G-49：读键与写回键同走 bindingKey 归一（' user ' 与 'user' 同键），单一构造点
       // 防读写两侧漂移——若写回用裸 channel 拼键，未来分量归一放宽时会落出
@@ -416,88 +386,10 @@ export function createIdentity(options = {}) {
     },
 
     /**
-     * v0.7 迁移（计划书 §3.1）：YAML allowUsers 播撒为绑定记录。
-     * **一次性**（R5 审查 R5-1-P1-1）：落 `inbound:migrated` 标记后永不再播撒——否则每次
-     * 启动重跑「只增不减」，管理台删除的成员（origin=migrated）下次重启被 YAML 静默复活，
-     * 删减权收归管理台单一入口的契约被推翻。副作用：首启时未就绪的通道不补播（用 /pair 或
-     * 管理台补齐），复活已删成员的风险远大于补播便利。
-     * 播撒按渠道 id 形态过滤（R5 审查 R5-3-P1-3）：TG 数字 id 不播给飞书（异形状占据一级
-     * 解析后遮蔽通道自己的配置清单）。
-     * 绑定表为空时首条播撒记录置 owner（R5 审查 R5-1-P2-2：迁移实例 ownerCount 恒 0，
-     * 违反「首位成员即 owner」契约且 bootstrap 永不铸造）。
-     * @param {string[]} allowUsers - YAML 白名单（裸字符串，无法反查渠道 → 对每个已启用通道各播一条）
-     * @param {string[]} enabledChannels - 本次启动实际启用的入站通道
-     */
-    migrate(allowUsers, enabledChannels) {
-      const ids = (Array.isArray(allowUsers) ? allowUsers : []).map((id) => String(id).trim()).filter((id) => id !== '')
-      const channels = (Array.isArray(enabledChannels) ? enabledChannels : []).filter((channel) => VALID_CHANNELS.has(channel))
-      if (ids.length === 0 || channels.length === 0) return { added: 0, skipped: false }
-      if (store !== null && store.get(KEY_MIGRATED, false) === true) return { added: 0, skipped: true }
-      const now = Date.now()
-      // 纯规划器：只往传入的 table 里补缺失键（已存在键绝不覆盖，保护更新的 canonical 数据）。
-      const plan = (table) => {
-        const wasEmpty = Object.keys(table).length === 0
-        let ownerAssigned = false
-        let added = 0
-        for (const userId of ids) {
-          for (const channel of channels) {
-            // 渠道形态过滤：该渠道显然不接受的 id 不播（如 feishu 不吃裸数字、TG 不吃 UID_）
-            if (!isValidTargetId(channel, userId)) continue
-            const key = keyFor(channel, userId, DEFAULT_ACCOUNT_ID)
-            if (table[key] !== undefined) continue
-            // 空表首条（跨通道也只此一条）置 owner——「首位成员即 owner」契约
-            const role = wasEmpty && !ownerAssigned ? 'owner' : 'member'
-            if (role === 'owner') ownerAssigned = true
-            table[key] = { channel, userId, label: '', role, pairedAt: now, lastSeenAt: 0, origin: 'migrated' }
-            added += 1
-          }
-        }
-        return { added }
-      }
-      // 无 store：只做内存态一次性导入（与既有语义一致，本来也无处落盘重放）。
-      if (store === null) {
-        const { added } = plan({})
-        if (added > 0) warn(`白名单迁移：${added} 条绑定（无 store，内存态一次性导入）`)
-        return { added }
-      }
-      // 遗留 store 无跨键事务：保留顺序兼容路径（正式 createStore 不走这里）。
-      if (typeof store.transact !== 'function') {
-        const table = readBindings()
-        const { added } = plan(table)
-        if (added > 0) {
-          if (writeBindings(table) !== true) return { added: 0, reason: 'storage-failed' }
-          warn(`白名单迁移：${added} 条绑定落盘（一次性导入完成，此后增删以管理台为准）`)
-        }
-        if (setDurable(store, KEY_MIGRATED, true) !== true) return { added: 0, reason: 'storage-failed' }
-        return { added }
-      }
-      // v0.14（P1-03）：bindings 与 migrated 标记放进同一事务——第二写失败不再留下
-      // 「绑定已播撒但标记未落」的半提交；重跑因标记同事务落定而幂等；事务内以 draft 最新
-      // 绑定表为基底，绝不覆盖并发写入的更新 canonical 数据。
-      const outcome = { added: 0 }
-      const tx = transactDurable(store, (draft) => {
-        if (draft[KEY_MIGRATED] === true) {
-          outcome.added = 0
-          outcome.skipped = true
-          return true
-        }
-        const table = normalizeBindings(draft[KEY_BINDINGS] ?? {})
-        outcome.added = plan(table).added
-        draft[KEY_BINDINGS] = table
-        draft[KEY_MIGRATED] = true
-        return true
-      })
-      if (tx.committed !== true) return { added: 0, reason: 'storage-failed' }
-      if (outcome.skipped === true) return { added: 0, skipped: true }
-      if (outcome.added > 0) warn(`白名单迁移：${outcome.added} 条绑定落盘（一次性导入完成，此后增删以管理台为准）`)
-      return { added: outcome.added }
-    },
-
-    /**
      * 新增绑定（配对核销/待确认转正）。首条绑定为 owner（配对语义：bootstrap 单胜也走这里）。
      * @returns {{ ok: boolean, record?: object, reason?: string }}
      */
-    addBinding({ channel, accountId = DEFAULT_ACCOUNT_ID, userId, label = '', origin = 'paired' }) {
+    addBinding({ channel, accountId, userId, label = '', origin = 'paired' }) {
       // v0.15（Gate 2D）：真 store 锁内 fresh 读改写——首 owner 判定（`Object.keys(table).length === 0`）
       // 与写入同一事务，两个并发「首绑」不再各自看到空表而双双被铸成 owner。
       // 无事务能力的 legacy/mock store 保留读改写兼容路径。
@@ -530,7 +422,7 @@ export function createIdentity(options = {}) {
      * C4 application transaction hook：只在 detached state draft 上准备绑定，
      * 供 pairing 将「码核销 + 绑定 + 锁出清理」一次提交。不会自行写盘。
      */
-    addBindingToDraft(draft, { channel, accountId = DEFAULT_ACCOUNT_ID, userId, label = '', origin = 'paired' } = {}) {
+    addBindingToDraft(draft, { channel, accountId, userId, label = '', origin = 'paired' } = {}) {
       if (draft === null || typeof draft !== 'object' || Array.isArray(draft)) {
         return { ok: false, reason: 'storage-failed' }
       }
@@ -545,7 +437,7 @@ export function createIdentity(options = {}) {
      * 移除绑定。末位 owner 不可删——守卫在**锁内**（mutateBinding 的同一事务），
      * 与删除动作原子，杜绝并发双删清零（K03）。
      */
-    removeBinding(channel, userId, accountId = undefined) {
+    removeBinding(channel, userId, accountId) {
       const key = keyFor(channel, String(userId ?? ''), accountId)
       if (key === null) return { ok: false, reason: 'invalid-account' }
       return mutateBinding(key, (table, record) => {
@@ -558,7 +450,7 @@ export function createIdentity(options = {}) {
     /**
      * 改 label/role。末位 owner 不可降级——同样在锁内判定（K03）；label 变更不受影响。
      */
-    updateBinding(channel, userId, diff = {}, accountId = undefined) {
+    updateBinding(channel, userId, diff = {}, accountId) {
       const key = keyFor(channel, String(userId ?? ''), accountId)
       if (key === null) return { ok: false, reason: 'invalid-account' }
       return mutateBinding(key, (table, record) => {
@@ -578,7 +470,7 @@ export function createIdentity(options = {}) {
     // ———————— 待确认绑定（学习键汇流，v0.7 计划书 §3.6） ————————
 
     /** 记录待确认身份（飞书扫码 openId / wxpusher 订阅 uid）。幂等：已存在刷新 at。 */
-    addPending({ channel, accountId = DEFAULT_ACCOUNT_ID, userId, origin = 'learned', extra = {} }) {
+    addPending({ channel, accountId, userId, origin = 'learned', extra = {} }) {
       if (!VALID_CHANNELS.has(channel)) return { ok: false, reason: 'invalid-channel' }
       const normalizedAccountId = normalizeAccountId(accountId)
       if (normalizedAccountId === null) return { ok: false, reason: 'invalid-account' }
@@ -591,7 +483,7 @@ export function createIdentity(options = {}) {
       const key = keyFor(channel, uid, normalizedAccountId)
       if (key === null) return { ok: false, reason: 'invalid-account' }
       const entry = { channel, userId: uid, origin, at: Date.now(), extra }
-      if (normalizedAccountId !== DEFAULT_ACCOUNT_ID) entry.accountId = normalizedAccountId
+      entry.accountId = normalizedAccountId
       // v0.15（T06）：真 store 走锁内读改写——旧实现锁外 readBindings+readPending 再整表
       // setDurable，并发两次 addPending 会互相覆盖（同键整表丢失更新）。
       if (typeof store?.transact === 'function') {
@@ -620,7 +512,7 @@ export function createIdentity(options = {}) {
     },
 
     /** 确认待确认绑定 → 转正为正式成员。 */
-    confirmPending(channel, userId, accountId = undefined) {
+    confirmPending(channel, userId, accountId) {
       if (store === null) return { ok: false, reason: 'not-found' }
       // 遗留第三方/mock store 没有跨键 transact：保留兼容路径；正式 createStore
       // 始终走下面的单事务路径，避免真实状态出现 pending/binding 半提交。
@@ -675,7 +567,7 @@ export function createIdentity(options = {}) {
       return outcome
     },
 
-    dismissPending(channel, userId, accountId = undefined) {
+    dismissPending(channel, userId, accountId) {
       const key = keyFor(channel, String(userId ?? ''), accountId)
       if (key === null) return { ok: false, reason: 'invalid-account' }
       // v0.15（T06）：同 addPending——真 store 锁内读改写，业务拒绝 abort（零写盘）。

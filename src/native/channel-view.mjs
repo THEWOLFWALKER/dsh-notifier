@@ -30,9 +30,6 @@ import {
 /** 测试结果四态（契约封闭集）。 */
 export const RECEIPT_KINDS = Object.freeze(['sent', 'confirmed', 'unknown', 'failed'])
 
-/** 账号键：无显式 accountId 时归入 default 账号（与 identity 复合键语义一致）。 */
-const DEFAULT_ACCOUNT = 'default'
-
 const hasOwn = (object, key) => Object.prototype.hasOwnProperty.call(object ?? {}, key)
 
 /**
@@ -134,7 +131,7 @@ function channelSummary(row, lang) {
     canNotify: row?.capabilities?.notify === true,
     canPrivateChat: row?.capabilities?.control === true,
     notifyEnabled: row?.notify?.configured === true,
-    privateChatEnabled: row?.control?.configured === true,
+    privateChatEnabled: row?.control?.enabled === true,
     state,
     stateText: stateText(state, lang),
     ...(action ? { nextAction: { id: action.id, label: pick(action.label, lang) } } : {}),
@@ -198,7 +195,7 @@ function accountView(row, accountId, memberRows, lang) {
   return {
     id: `${id}:${accountId}`,
     accountId,
-    displayName: accountId === DEFAULT_ACCOUNT ? channelName(row, lang) : accountId,
+    displayName: accountId,
     ...(identity ? { maskedIdentity: maskIdentity(identity.userId) } : {}),
     state,
     stateText: stateText(state, lang),
@@ -210,7 +207,8 @@ function accountView(row, accountId, memberRows, lang) {
     ...(row?.control
       ? {
           privateChat: {
-            enabled: row.control.configured === true,
+            enabled: row.control.enabled === true || (row.control.enabled === undefined && row.control.configured === true),
+            configured: row.control.configured === true,
             canTest: row.control.configured === true,
             users: memberRows.length,
             fields: controlFields,
@@ -246,17 +244,15 @@ export function createChannelView({ channels = null, members = null } = {}) {
     } catch { return [] }
   }
 
-  /** 某渠道下出现过的 accountId 集合（无成员时至少一个 default 账号）。 */
+  /** 仅展示具有稳定账号标识的已配对账号。 */
   const accountIdsOf = (type) => {
     const ids = new Set()
     for (const member of memberRows()) {
       if (String(member?.channel ?? '') !== type) continue
-      const accountId = member?.accountId === undefined || String(member.accountId) === ''
-        ? DEFAULT_ACCOUNT
-        : String(member.accountId)
+      const accountId = String(member?.accountId ?? '').trim()
+      if (accountId === '' || accountId === 'default') continue
       ids.add(accountId)
     }
-    if (ids.size === 0) ids.add(DEFAULT_ACCOUNT)
     return [...ids]
   }
 
@@ -277,9 +273,7 @@ export function createChannelView({ channels = null, members = null } = {}) {
           row,
           accountId,
           memberRows().filter((member) => String(member?.channel ?? '') === key
-            && (member?.accountId === undefined || String(member.accountId) === ''
-              ? DEFAULT_ACCOUNT
-              : String(member.accountId)) === accountId),
+            && String(member?.accountId ?? '').trim() === accountId),
           lang,
         )),
       }

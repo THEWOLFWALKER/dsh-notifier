@@ -4,7 +4,7 @@
 // 本层只做「传输形态映射」：把共享 `QuestionsControlService` 的脱敏待决快照映射成 Native
 // RPC 契约形状（{ multiple, options: [{value, label}] }），把结算结果映射成
 // `{ settled, alreadyHandled }` 或带 code 的错误。读取 / 结算 / 归一化本身都在共享服务里，
-// 本层不再自行触达问题桥（消除与 Admin 的重复投影 / 校验入口，I9）。
+// 本层不再自行触达问题桥（消除重复投影 / 校验入口，I9）。
 
 /** 结算结果 → RPC 语义（首达胜出 = settled；已被他人裁决 = alreadyHandled；其余按 reason 分码）。 */
 function settleView(result) {
@@ -29,7 +29,7 @@ function settleView(result) {
  * 从共享提问控制服务构造 Native RPC 投影。
  * @param {object} [deps]
  * @param {ReturnType<typeof import('../control-plane/questions.mjs').createQuestionsControlService>} [deps.service]
- *   - 共享提问控制服务（Native / Admin / 宿主桥共用同一实例）；缺失时按空表 / 不可用降级
+ *   - 共享提问控制服务（Native / 宿主桥共用同一实例）；缺失时按空表 / 不可用降级
  */
 export function createQuestionProjection({ service = null } = {}) {
   const source = service ?? { pending: () => [], settle: () => ({ ok: false, handled: false, reason: 'not_available', message: '问题服务未装配' }) }

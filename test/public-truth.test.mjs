@@ -17,7 +17,7 @@ test('public capability wording is evidence-bound', () => {
 })
 
 test('plugin docs distinguish provider result from client confirmation', () => {
-  assert.match(pluginsZh, /提供方结果.*终端已经展示消息/)
+  assert.match(pluginsZh, /提供方已接受请求.*终端已经展示消息/)
   assert.match(pluginsZh, /端到端回执/)
   assert.match(pluginsEn, /provider-level result.*client displayed the message/)
   assert.match(pluginsEn, /end-to-end receipt evidence/)

@@ -1,8 +1,10 @@
+> Historical review baseline. The S1/S2 entries below are reconciled to the v0.15 source tree; this document is an inventory, while current implementation and tests are authoritative.
+
 # State writer registry (v0.15 / T07)
 
 Authority map for every persistent store key: who may write it, through which entry point, and the
 current convergence verdict. Companion to `docs/developer/behavior-contract.md` and the T01 inventory in
-`.agents/workstreams/core-distillation-v015.md`.
+`docs/developer/rebuild-v015/PLAN.md`.
 
 **Rule.** One business fact → one authority → one fresh transaction. A key with more than one
 production writer is a defect unless the extra writer is a projection/observation that never claims
@@ -24,15 +26,15 @@ to own the fact.
 
 | Key | Authority (owner) | Production writers | Verdict |
 |---|---|---|---|
-| `inbound:bindings` | identity | identity: `writeBindings`, `mutateBinding` (add/remove/update), `confirmPending`, `migrate`, `startupCleanup` | **single** |
+| `inbound:bindings` | identity | identity: `writeBindings`, `mutateBinding` (add/remove/update), `confirmPending`, `startupCleanup` | **single** |
 | `inbound:pending` | identity | identity: `addPending`, `dismissPending`, `confirmPending`, `readPending` sweep | **single** |
-| `inbound:migrated` | identity | identity: `migrate` (same transaction as bindings) | **single** |
+
 | `inbound:pairing` | pairing | pairing: `mint`, `revoke`, `redeem`, `redeemAndBind`, `sweep` | **single** (see deferral) |
 | `inbound:pairing:lockout` | pairing | pairing: redeem failure recorder, `clearLockout` | **single** |
 | `route:agents` | agent-router | `setAgentBinding` (CLI/Admin/router) | **single** |
 | `route:channels` | agent-router | `setChannelDefault` | **single** |
 | `route:sessions` | session-registry **and** agent-router (both inside one `store.transact()` draft) | `agent-router.commitSessions` + `session-registry.persist` (each reads the fresh base inside the same key transaction) | **single** (converged at T14: no writer commits a base read outside the transaction) |
-| `channel:<type>:outbound` | outbound-config | `outbound-config` `save`/`remove` (single in-transaction merge); `channel-config-migration` is a **one-shot, marker-guarded** projection | **single** (converged at T08) |
+| `channel:<type>:outbound` | outbound-config | `outbound-config` `save`/`remove` (single in-transaction merge) | **single** |
 | `channel:<type>:inbound` / `<type>:account` | channel-config | `channel-config.mergeAccount` (in-transaction) + scan onboarding `_feishu-register` / `_qq-scan` (`mergeDurable`, in-transaction field merge) | **single** (converged at T11) |
 | `aq:<id>` | questions router (business owner) | `interaction/ledger.mjs` on behalf of `questions/router.mjs` (narrow `add`/`settle`/`patchMetadata`) | single |
 | approval rows | approval router (business owner) | `interaction/ledger.mjs` on behalf of `approval/router.mjs` | single |
@@ -48,22 +50,19 @@ to own the fact.
 | `dingtalk:robot-code` | dingtalk-stream | `inbound/dingtalk-stream.mjs` | single |
 | `wxpusher:webhookPath` | assembly | `assembly/inbound-signals.mjs` | single |
 | `wxpusher:bind:<uid>` | wxpusher-callback | `inbound/wxpusher-callback.mjs` | single |
-| `admin:token-hash` | assembly | `assembly/admin-token.mjs` | single |
-| `state:schema-version` | channel-config-migration | `channel-config-migration.mjs` | single |
+
+
 | `portability:staged:<direction>:<type>` | config-portability | `config-portability.mjs` `commitImport` (new channels only, in one transaction) | **single** (inert: assembly never reads this key domain; a staged entry is never active) |
 
 ### Hidden / secondary writers (registered, not a separate authority)
 
-- **bootstrap seeding** — `identity.migrate` (first-boot owner promotion) writes `inbound:bindings`
-  in the same transaction as `inbound:migrated`; one-shot, guarded by the migrated flag.
 - **startup cleanup** — `identity.startupCleanup` rewrites `inbound:bindings` to drop dead keys;
-  only on dead-key presence (zero write amplification otherwise); never touches `inbound:migrated`.
+  only on dead-key presence (zero write amplification otherwise). YAML and legacy binds never seed identities.
 - **read-path sweep** — `identity.readPending` and `pairing.sweep` prune expired entries on read and
   write back; bounded, idempotent.
 - **CLI** — `scripts/route.mjs` (`route.mjs set`, `... forget`) reaches `route:agents` /
   `route:channels` / `route:sessions` **through agent-router**, never via a raw key write.
-- **Admin adapter** — `src/admin/api.mjs` mutates members/pairing/sessions **through the shared
-  control-plane services** (identity / pairing / members / sessions), not directly.
+- **Native adapter** — Native RPC mutates members/pairing/sessions through shared control-plane services.
 - **dispose / teardown** — no key is written on dispose; teardown only releases listeners and locks.
 
 ## Deferrals recorded at T07
@@ -85,7 +84,7 @@ to own the fact.
 | **resources** | adapter-private `_`/`__` runtime fields (`_tokenManager`, `_msgSeq`, …) | on the live resolved object | Mutable, kept across sends; **stripped** from every projection |
 | projection | `snapshot()` / `get()` copy | external observers (Native, Support Report) | deep-frozen, no reference sharing with live |
 
-Precedence (outbound): `channel:<type>:outbound` (canonical) → `admin:channel:<type>:outbound` → non-dual `<type>:account` → YAML; the two Admin-legacy tiers are read only when `admin.enabled === true` and `allowLegacy !== false`. Secrets: patch keeps existing unless replaced; explicit `clear`/`null` removes and is rejected for public fields. Disable is explicit (`remove` with `mode:'revoke'` deletes canonical + legacy overlay sources; YAML bootstrap is not deletable).
+Precedence (outbound): `channel:<type>:outbound` canonical overlay → YAML base. Admin-legacy tiers and migration reads were retired. Secrets: patch keeps existing unless replaced; explicit `clear`/`null` removes and is rejected for public fields. Remove deletes the canonical overlay; YAML bootstrap is not deletable.
 
 Runtime truth has one owner (`RuntimeChannelManager`). Its lifecycle updates carry a **monotonic revision fence**: a stale (older `source.version`) apply result can never override a newer runtime state (T08 / C03).
 
@@ -109,40 +108,34 @@ removed. `src/inbound/store.mjs` is the only module allowed to call the raw `sto
 <!-- writer-fitness:allowlist -->
 | Module | Owns |
 |---|---|
-| `src/inbound/store.mjs` | the store primitive itself (raw `set`/`delete`, `transact`, `sweepPrefix`) |
-| `src/index.mjs` | composition root; wires authorities, owns no key |
-| `src/assembly/admin-token.mjs` | `admin:token-hash` |
-| `src/assembly/inbound-signals.mjs` | `wxpusher:webhookPath` |
-| `src/channels/wechat-ilink/index.mjs` | wechat-ilink legacy-core composition |
-| `src/channels/wechat-ilink/legacy-core.mjs` | `wechat:sync_buf` / ctx token |
-| `src/control-surface/channel-config-migration.mjs` | `channel:<type>:outbound` (one-shot migration), `state:schema-version` |
-| `src/cloudflare/tunnel.mjs` | `cloudflare:tunnel` (explicit configuration only; startup never starts the process) |
-| `src/cloudflare/deployment.mjs` | `cloudflare:deployment:<type>`; channel writes through canonical plan merge in the same durable transaction |
-| `src/control-plane/config-portability.mjs` | `portability:staged:<direction>:<type>` (import staging, inert/disabled) |
-| `src/control-surface/outbound-config.mjs` | `channel:<type>:outbound` |
-| `src/inbound/_feishu-register.mjs` | `feishu:account` scan onboarding (`mergeDurable`) |
-| `src/inbound/_qq-scan.mjs` | `qq:account` scan onboarding (`mergeDurable`) |
-| `src/inbound/bus.mjs` | inbound dedup rows (fail-closed) |
-| `src/inbound/channel-config.mjs` | `channel:<type>:inbound` / `<type>:account` |
-| `src/inbound/dingtalk-stream.mjs` | `dingtalk:robot-code` |
-| `src/inbound/identity.mjs` | `inbound:bindings`, `inbound:pending`, `inbound:migrated` |
-| `src/inbound/pairing.mjs` | `inbound:pairing`, `inbound:pairing:lockout` |
-| `src/inbound/telegram-bot.mjs` | `tg:offset` |
-| `src/inbound/wxpusher-callback.mjs` | `wxpusher:bind:<uid>` |
-| `src/interaction/ledger.mjs` | interaction ledger rows (all three chains write through its narrow mutations) |
-| `src/routing/agent-router.mjs` | `route:agents`, `route:channels`, `route:sessions` |
-| `src/routing/current-task.mjs` | conversation bindings (`bind:<channel>:<accountId>:<userId>`) |
-| `src/routing/session-registry.mjs` | `route:sessions` |
-| `src/routing/task-selection.mjs` | `cloud:job:<id>` | Cloud deployment | `cloudflare/deployment.mjs` durable claim, checkpoint, receipt, completion and startup sweep | single; no secret values |
-| `cloudflare:deployment:<type>` | Cloud deployment | `cloudflare/deployment.mjs`; references canonical channel secret | single |
-| `taskselect:*` |
+| `src/inbound/store.mjs` | store primitives |
+| `src/index.mjs` | composition root / reset |
+| `src/assembly/inbound-signals.mjs` | wxpusher webhook path |
+| `src/channels/wechat-ilink/index.mjs` | legacy-core composition |
+| `src/channels/wechat-ilink/legacy-core.mjs` | wechat sync buffer/context token |
+| `src/control-surface/outbound-config.mjs` | canonical outbound config |
+| `src/cloudflare/tunnel.mjs` | Cloudflare tunnel config |
+| `src/cloudflare/deployment.mjs` | Cloudflare deployment state |
+| `src/control-plane/config-portability.mjs` | inert staged imports |
+| `src/inbound/_feishu-register.mjs` | Feishu scan account merge |
+| `src/inbound/_qq-scan.mjs` | QQ scan account merge |
+| `src/inbound/bus.mjs` | inbound dedup |
+| `src/inbound/channel-config.mjs` | inbound/account channel config |
+| `src/inbound/dingtalk-stream.mjs` | DingTalk robot code |
+| `src/inbound/identity.mjs` | identity bindings and pending |
+| `src/inbound/pairing.mjs` | pairing and lockout |
+| `src/inbound/telegram-bot.mjs` | Telegram offset |
+| `src/inbound/wxpusher-callback.mjs` | WxPusher learned binding |
+| `src/interaction/ledger.mjs` | interaction ledger rows |
+| `src/routing/agent-router.mjs` | route agents/channels/sessions |
+| `src/routing/current-task.mjs` | account-scoped conversation bindings |
+| `src/routing/session-registry.mjs` | route sessions |
+| `src/routing/task-selection.mjs` | task selection |
 <!-- /writer-fitness:allowlist -->
 
 ## Convergence status
 
-Done in S1: `inbound:bindings`, `inbound:pending`, `inbound:migrated` (identity is the single
-in-lock authority; last-owner enforced in-lock). Done in S2: `channel:<type>:outbound`
-(outbound-config is the single in-transaction authority; migration is a one-shot projection).
+Done in S1: `inbound:bindings` and `inbound:pending` (identity is the single in-lock authority; last-owner enforced in-lock). Done in S2: `channel:<type>:outbound` (outbound-config is the only in-transaction authority; YAML authorization migration and legacy overlays are retired).
 Done in S5 (T11): inbound `<type>:account` scan onboarding now merges in-transaction
 (`mergeDurable`), so the credential domain has one merge authority.
 Done in S3 (T14): `route:sessions` — the session-registry lifecycle write and the agent-router

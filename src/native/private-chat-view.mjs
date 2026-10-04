@@ -15,7 +15,6 @@ import { createHash } from 'node:crypto'
 import { displayNameOf, toInboundChannelName } from '../inbound/capability-matrix.mjs'
 import { PERMISSION_TEXT, VERIFIED_TEXT, maskIdentity, pick, relativeText } from './vocabulary.mjs'
 
-const DEFAULT_ACCOUNT = 'default'
 
 /** 首次启用向导最多展示几个候选任务（超出只影响「选择任务」步，不影响摘要）。 */
 const TASK_CAP = 10
@@ -62,19 +61,22 @@ export function createPrivateChatView({
   const questionRows = () => safeList(questions, 'list')
   const taskRows = () => safeList(tasks, 'list')
 
-  const ownerOf = (rows) => rows.find((row) => row?.role === 'owner') ?? null
+  const ownersOf = (rows) => rows.filter((row) => row?.role === 'owner'
+    && typeof row?.accountId === 'string' && row.accountId.trim() !== '')
+  const hasUnscopedRows = (rows) => rows.some((row) => typeof row?.accountId !== 'string' || row.accountId.trim() === '')
 
   /** 不透明 id → 真实成员键（仅服务端动作解析用；绝不进入任何对外载荷）。 */
   const memberKeyOf = (id) => {
     const wanted = String(id ?? '')
     for (const row of [...memberRows(), ...pendingMemberRows()]) {
+      if (typeof row?.accountId !== 'string' || row.accountId.trim() === '') continue
       const key = String(row?.key ?? '')
       if (key !== '' && opaqueUserId(key) === wanted) return key
     }
     return null
   }
 
-  const users = (lang) => memberRows().map((row) => {
+  const users = (lang) => memberRows().filter((row) => typeof row?.accountId === 'string' && row.accountId.trim() !== '').map((row) => {
     const key = String(row?.key ?? '')
     const label = typeof row?.label === 'string' && row.label.trim() !== '' ? row.label.trim() : null
     return {
@@ -136,9 +138,19 @@ export function createPrivateChatView({
    * 待确认身份与候选任务都给不透明 id，绝不出内部键。
    */
   const setup = (lang) => {
-    const owner = ownerOf(memberRows())
-    const verified = owner !== null
-    const pendingIdentities = pendingMemberRows().map((row) => ({
+    const rows = memberRows()
+    const owners = ownersOf(rows)
+    const ownerChoices = owners.map((owner) => {
+      const key = String(owner?.key ?? '')
+      const label = typeof owner?.label === 'string' && owner.label.trim() !== '' ? owner.label.trim() : null
+      return {
+        id: opaqueUserId(key),
+        displayName: label ?? maskIdentity(owner?.userId) ?? pick({ en: 'User', zh: '使用者' }, lang),
+        channelName: channelLabelOf(owner?.channel, lang),
+        ...(currentTaskOf(owner) ? { currentTask: currentTaskOf(owner) } : {}),
+      }
+    })
+    const pendingIdentities = pendingMemberRows().filter((row) => typeof row?.accountId === 'string' && row.accountId.trim() !== '').map((row) => ({
       id: opaqueUserId(String(row?.key ?? '')),
       displayName: maskIdentity(row?.userId) ?? pick({ en: 'User', zh: '使用者' }, lang),
       sourceText: pick({
@@ -146,8 +158,8 @@ export function createPrivateChatView({
         zh: `来自 ${channelLabelOf(row?.channel, 'zh')}`,
       }, lang),
     }))
-    const step = !verified ? 'confirm' : (currentTaskOf(owner) ? 'ready' : 'task')
-    return { step, pendingIdentities, tasks: taskCandidates() }
+    const step = owners.length === 0 ? 'confirm' : (ownerChoices.every((owner) => owner.currentTask) ? 'ready' : 'task')
+    return { step, pendingIdentities, owners: ownerChoices, tasks: taskCandidates() }
   }
 
   const pendingItems = (lang = 'zh') => {
@@ -165,7 +177,7 @@ export function createPrivateChatView({
             label: String(option?.label ?? ''),
             kind: 'choose',
           })),
-          { id: 'reject', label: pick({ en: 'Handle later', zh: '稍后处理' }, lang), kind: 'reject' },
+          { id: 'reject', label: pick({ en: 'Decline', zh: '拒绝' }, lang), kind: 'reject' },
         ],
       })
     }
@@ -191,15 +203,14 @@ export function createPrivateChatView({
     /** 契约 PrivateChatSummary。 */
     summary(lang = 'zh') {
       const rows = memberRows()
-      const owner = ownerOf(rows)
-      const task = currentTaskOf(owner)
+      const owners = ownersOf(rows)
+      const owner = owners.length === 1 ? owners[0] : null
+      const task = owner === null ? null : currentTaskOf(owner)
       const pendingCount = questionRows().length + pendingMemberRows().length
       const enabled = typeof isEnabled === 'function'
         ? isEnabled() === true
         : rows.length > 0 || pendingCount > 0
-      const accountId = owner?.accountId === undefined || String(owner.accountId) === ''
-        ? DEFAULT_ACCOUNT
-        : String(owner.accountId)
+      const accountId = owner?.accountId === undefined ? '' : String(owner.accountId)
       const channel = owner === null ? undefined : {
         id: `${String(owner.channel ?? '')}:${accountId}`,
         name: channelLabelOf(owner.channel, lang),
@@ -207,12 +218,13 @@ export function createPrivateChatView({
       }
       return {
         enabled,
-        verified: owner !== null,
-        verifiedText: pick(owner !== null ? VERIFIED_TEXT.yes : VERIFIED_TEXT.no, lang),
+        verified: owners.length > 0,
+        verifiedText: pick(owners.length > 0 ? VERIFIED_TEXT.yes : VERIFIED_TEXT.no, lang),
         ...(channel ? { channel } : {}),
         ...(task ? { currentTask: task } : {}),
         users: users(lang),
         pendingCount,
+        reconfigurationRequired: hasUnscopedRows(rows),
         // 首次启用向导的派生状态（确认本人 → 选择任务 → 可以用了）。
         setup: setup(lang),
       }

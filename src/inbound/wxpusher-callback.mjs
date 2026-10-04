@@ -93,7 +93,7 @@ export function resolveWxpusherInboundConfig(raw, { randomPath } = {}) {
  *           notifyUids?: string[], allowedIps?: string[], timeoutMs?: number }} options.config
  * @param {ReturnType<typeof import('./bus.mjs').createInboundBus>} options.bus
  * @param {import('./store.mjs').store} [options.store] - 学习到的 uid 绑定落盘（app_subscribe）
- * @param {string[]} [options.fallbackTargets] - 未配置 notifyUids 时的推送目标（全局白名单回落）
+ * Private recipients must be explicit or provider-proven.
  * @param {object} [options.logger]
  * @param {typeof fetch} [options.fetchImpl] - fetch 注入（测试用）
  * @param {(options: object) => Promise<{ port: number, close: () => Promise<void> }>} [options.serverStarter]
@@ -102,16 +102,15 @@ export function resolveWxpusherInboundConfig(raw, { randomPath } = {}) {
  *   approval.fallbackText；缺省回落 zh——须先在 strings.mjs 落 `wxpusher` 节）
  */
 export function createWxpusherInbound(options = {}) {
-  const { config, bus, store = null, fallbackTargets = [], logger = null, identity = null } = options
+  const { config, bus, store = null, logger = null, identity = null } = options
   const STRINGS = options.strings ?? stringsOf()
   const t = STRINGS.wxpusher
   const fetchImpl = options.fetchImpl ?? globalThis.fetch?.bind(globalThis)
   const startServer = options.serverStarter ?? startHttpCallback
   const allowedIps = Array.isArray(config.allowedIps) ? config.allowedIps.map(String) : []
-  // v0.8.7 账号来源绑定：稳定本地标识（config.accountId 显式配置优先，缺省字面量 'default'，
-  // 与 telegram 通道的缺省语义一致）。绝不从回调事件字段（data.appId 是对端自报）取号——
-  // accountId 会进入 source 校验/审计回执，必须可验证且非凭证。
-  const resolvedAccountId = String(config?.accountId ?? '').trim() || 'default'
+  // Stable source binding comes only from canonical local configuration, never callback
+  // fields. Missing account identity stays empty and fails private admission closed.
+  const resolvedAccountId = String(config?.accountId ?? '').trim()
 
   const warn = (message) => {
     try { logger?.warn?.('[dsh-notifier/inbound:wxpusher]', message) } catch { /* 日志失败绝不致命 */ }
@@ -187,13 +186,15 @@ export function createWxpusherInbound(options = {}) {
         // v0.7：accept 返回值消费——拒绝/命令回执不再已读不回。
         // v0.8.4 INJ-1：授权门槛仍由 bus 身份/白名单裁决——只有已确认绑定的 uid 能到达
         // 业务扇出，app_subscribe 学习到的待确认 uid 不在此列，天然无裁决能力。
-        // v0.8.7：envelope 携带本地 accountId（config.accountId/'default'），供 Control Core
+        // The envelope carries the configured local accountId for Control Core
         // 来源绑定精确校验——从不使用回调自报的 data.appId。
         const result = bus.accept({
           channel: 'wxpusher',
           accountId: resolvedAccountId,
           userId: uid,
           chatId: uid,
+          // WxPusher's private-user callback is one-to-one; no group target exists in this route.
+          chatType: 'private',
           // G-46/G-27：回调无消息 id，hash6 合成键标记 synthetic——bus 去重走 60s 短窗
           // （只吸收传输层重推）；键追加进程内单调 seq，同秒同内容两条真实消息不再互吞。
           messageId: `cmd:${uid}:${time}:${hash6(text)}:${syntheticSeq++}`,
@@ -223,8 +224,8 @@ export function createWxpusherInbound(options = {}) {
         // （origin=learned；已是成员时 addPending 幂等拒绝，不产生重复条目）
         if (identity !== null && typeof identity.addPending === 'function') {
           try {
-            const learned = identity.addPending({ channel: 'wxpusher', userId: uid, origin: 'learned', extra: { source: 'app_subscribe', extra: String(data.extra ?? '').slice(0, 256) } })
-            if (learned.ok) warn(`uid ${uid} 已订阅（已入待确认绑定，管理台成员页可转正）`)
+            const learned = identity.addPending({ channel: 'wxpusher', accountId: resolvedAccountId, userId: uid, origin: 'learned', extra: { source: 'app_subscribe', extra: String(data.extra ?? '').slice(0, 256) } })
+            if (learned.ok) warn(`uid ${uid} 已订阅（已入待确认绑定，可在宿主 Native 界面的「成员」页确认）`)
           } catch (error) {
             warn(`订阅学习入待确认失败（不致命）: ${error instanceof Error ? error.message : String(error)}`)
           }
@@ -307,13 +308,13 @@ export function createWxpusherInbound(options = {}) {
       return server?.port ?? null
     },
 
-    /** 审批推送目标（v0.7 三级解析）：绑定成员 → notifyUids → 全局回落（仅绑定表整体空）。 */
+    /** Private approval targets from paired identities or explicit user IDs. */
     notifyTargets() {
       return resolveNotifyTargets({
         identity,
         channel: 'wxpusher',
+        accountId: resolvedAccountId,
         configTargets: Array.isArray(config.notifyUids) ? config.notifyUids.map(String) : [],
-        fallbackTargets,
       })
     },
 

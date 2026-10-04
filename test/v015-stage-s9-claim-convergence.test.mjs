@@ -22,7 +22,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createStore } from '../src/inbound/store.mjs'
 import { createTokenVault } from '../src/inbound/tokens.mjs'
-import { createInboundBus } from '../src/inbound/bus.mjs'
+import { createPrivateFlowBus as createInboundBus } from './helpers/private-flow-bus.mjs'
 import { createIdentity } from '../src/inbound/identity.mjs'
 import { createControlEntry } from '../src/control/entry.mjs'
 import { createQuestionBridge } from '../src/questions/router.mjs'
@@ -73,7 +73,7 @@ function makeQuestionRig({ sabotage = null, timeoutMs = 400 } = {}) {
   const vault = createTokenVault({ secret: 't15-q' })
   const bus = createInboundBus({ allowUsers: ['42', '100'], store, vault })
   const identity = createIdentity({ store, logger: null })
-  identity.addBinding({ channel: 'telegram', userId: '100' })
+  identity.addBinding({ channel: 'telegram', accountId: 'TG_APP', userId: '100' })
   const notifier = { channels: ['telegram'], notifyAll: async () => ({ ok: true, delivered: [], skipped: [], failed: [] }) }
   const cards = []
   const instances = [{
@@ -158,7 +158,7 @@ test('T15/I02：Control Core 对提交失败的 settle 返回非 accepted（不�
 
   const receipt = rig.control.handle({
     eventId: 't15-q-receipt', command: 'question-answer', qKey, trusted: true, via: 'admin:web',
-    channel: 'telegram', accountId: 'TG_APP', chatId: '100', userId: '100', optIdxes: [0],
+    channel: 'telegram', accountId: 'TG_APP', chatId: '100', chatType: 'private', userId: '100', optIdxes: [0],
   })
   assert.notEqual(receipt.status, 'accepted', 'durable 失败不得返回 accepted')
   assert.equal(receipt.status, 'desktop_fallback')
@@ -176,7 +176,7 @@ test('T15/I02：审批 durable 首达结算失败 → host waiter 零释放，�
 
   const receipt = rig.control.handle({
     eventId: 't15-ap-claim', command: 'approval', approvalKey: apKeyOf(rig), decision: 'allowed-once',
-    via: 'telegram:button', channel: 'telegram', accountId: 'TG_APP', userId: 'u1', chatId: '10001', trusted: true,
+    via: 'telegram:button', channel: 'telegram', accountId: 'TG_APP', userId: 'u1', chatId: '10001', chatType: 'private', trusted: true,
   })
   assert.notEqual(receipt.status, 'accepted')
   assert.equal(rig.settleCalls.length, 0, 'claim 未落盘 → 不释放 live waiter（静默永不批准）')
@@ -188,22 +188,19 @@ test('T15/I02：审批 durable 首达结算失败 → host waiter 零释放，�
 test('T15/I02：动作 claim 落盘失败 → handler 零调用（三条入口同一 claim 语义）', () => {
   const store = createStore(tempPath())
   const vault = createTokenVault({ secret: 't15-act' })
-  let writes = 0
-  const original = store.transact.bind(store)
-  store.transact = (mutator) => {
-    writes += 1
-    if (writes === 2) return { ok: false, committed: false, durable: false, code: 'STATE_WRITE_FAILED' }
-    return original(mutator)
-  }
   const dispatcher = createActionDispatcher({ vault, store })
   let runs = 0
   dispatcher.register('turn/cancel', () => { runs += 1; return { ok: true } })
   const card = dispatcher.mintAction('turn/cancel', {})
-  const click = dispatcher.dispatch({ actionKey: card.key, token: card.token, via: 'telegram:action', userId: 42, chatId: '10001' })
+  dispatcher.markSource(card.key, 'telegram', '10001')
+  const original = store.transact.bind(store)
+  store.transact = (mutator) => ({ ok: false, committed: false, durable: false, code: 'STATE_WRITE_FAILED' })
+  const click = dispatcher.dispatch({ actionKey: card.key, token: card.token, via: 'telegram:action', userId: 42, chatId: '10001', chatType: 'private', accountId: 'TG_APP' })
   assert.equal(click.ok, false)
   assert.equal(click.reason, 'storage-failed')
   assert.equal(runs, 0, 'claim 失败绝不执行不可逆 handler')
   assert.equal(store.get(card.key).status, 'pending', 'pending 保留，待重试')
+  store.transact = original
 })
 
 // ----------------------------------------------------------------- I03 claim 后 kill → uncertain
@@ -215,16 +212,17 @@ test('T15/I03：动作 claim 后终态落盘失败 → 保持 claimed，重启�
   let runs = 0
   dispatcher.register('turn/cancel', () => { runs += 1; return { ok: true } })
   const card = dispatcher.mintAction('turn/cancel', {})
+  dispatcher.markSource(card.key, 'telegram', '10001')
   sabotageWrite(store, { keyPrefix: 'act:', decision: 'done', field: 'outcome' })
 
-  const click = dispatcher.dispatch({ actionKey: card.key, token: card.token, via: 'telegram:action', userId: 42, chatId: '10001' })
+  const click = dispatcher.dispatch({ actionKey: card.key, token: card.token, via: 'telegram:action', userId: 42, chatId: '10001', chatType: 'private', accountId: 'TG_APP' })
   assert.equal(click.ok, true, 'claim 已提交、handler 已执行 → 本次点击生效')
   assert.equal(runs, 1)
   assert.equal(store.get(card.key).status, 'claimed', '终态未落盘 → claim 不解除')
 
   const restarted = createActionDispatcher({ vault, store, logger: { warn() {} } })
   restarted.register('turn/cancel', () => { runs += 1; return { ok: true } })
-  const again = restarted.dispatch({ actionKey: card.key, token: card.token, via: 'telegram:action', userId: 42, chatId: '10001' })
+  const again = restarted.dispatch({ actionKey: card.key, token: card.token, via: 'telegram:action', userId: 42, chatId: '10001', chatType: 'private', accountId: 'TG_APP' })
   assert.equal(again.ok, false)
   assert.equal(again.reason, 'uncertain', '重启看到 claimed 只报 uncertain')
   assert.equal(runs, 1, '绝不自动重放不可逆 effect')
@@ -280,7 +278,7 @@ test('T15/I04：审批同一 key 二次 settle → 只生效一次，终态不�
 
   const first = rig.control.handle({
     eventId: 't15-ap-win', command: 'approval', approvalKey: key, decision: 'allowed-once',
-    via: 'telegram:button', channel: 'telegram', accountId: 'TG_APP', userId: 'u1', chatId: '10001', trusted: true,
+    via: 'telegram:button', channel: 'telegram', accountId: 'TG_APP', userId: 'u1', chatId: '10001', chatType: 'private', trusted: true,
   })
   assert.equal(first.status, 'accepted', '首达裁决生效')
   assert.equal(rig.store.get(key).decision, 'allowed-once')
@@ -288,7 +286,7 @@ test('T15/I04：审批同一 key 二次 settle → 只生效一次，终态不�
 
   const second = rig.control.handle({
     eventId: 't15-ap-late', command: 'approval', approvalKey: key, decision: 'rejected',
-    via: 'telegram:button', channel: 'telegram', accountId: 'TG_APP', userId: 'u1', chatId: '10001', trusted: true,
+    via: 'telegram:button', channel: 'telegram', accountId: 'TG_APP', userId: 'u1', chatId: '10001', chatType: 'private', trusted: true,
   })
   assert.notEqual(second.status, 'accepted', '二次 settle 不生效')
   assert.equal(rig.store.get(key).decision, 'allowed-once', '终态不被迟到裁决反转')
@@ -303,9 +301,10 @@ test('T15/I04：动作重复点击 → handler 恰好一次，二次 already-res
   let runs = 0
   dispatcher.register('turn/cancel', () => { runs += 1; return { ok: true } })
   const card = dispatcher.mintAction('turn/cancel', {})
-  const first = dispatcher.dispatch({ actionKey: card.key, token: card.token, via: 'telegram:action', userId: 42, chatId: '10001' })
+  dispatcher.markSource(card.key, 'telegram', '10001')
+  const first = dispatcher.dispatch({ actionKey: card.key, token: card.token, via: 'telegram:action', userId: 42, chatId: '10001', chatType: 'private', accountId: 'TG_APP' })
   assert.equal(first.ok, true)
-  const second = dispatcher.dispatch({ actionKey: card.key, token: card.token, via: 'telegram:action', userId: 42, chatId: '10001' })
+  const second = dispatcher.dispatch({ actionKey: card.key, token: card.token, via: 'telegram:action', userId: 42, chatId: '10001', chatType: 'private', accountId: 'TG_APP' })
   assert.equal(second.ok, false)
   assert.equal(second.reason, 'already-resolved')
   assert.equal(runs, 1, '不可逆 handler 恰好执行一次')

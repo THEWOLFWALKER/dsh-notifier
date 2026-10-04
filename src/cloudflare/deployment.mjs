@@ -13,7 +13,6 @@ export function createCloudflareDeploymentService({ store, root, outboundConfig,
   const tunnel = tunnelService ?? createNativeTunnelService({ store })
   const cli = runner ?? createWranglerRunner({ root })
   let job = null, disposed = false
-  let recoveryQueue = [], recoveryScheduled = false
   const JOB_PREFIX = 'cloud:job:'
   const fingerprint = value => createHash('sha256').update(String(value)).digest('hex')
   const token = () => { const ref = store.get(`${PREFIX}telegram`)?.secretReference; return String((ref ? store.get(ref)?.botToken : outboundConfig.raw('telegram')?.botToken) ?? '').trim() }
@@ -27,7 +26,10 @@ export function createCloudflareDeploymentService({ store, root, outboundConfig,
   const raw = type => store.get(keyOf(type)) ?? null
   const publicRow = r => r && ({ type: r.type, accountId: r.accountId, name: r.name, endpoint: r.endpoint ?? null, versionId: r.versionId ?? null, state: r.endpoint ? (r.bound ? 'bound' : 'unbound') : 'pending', linkedDirections: r.linkedDirections ?? [], enrollment: r.enrollment === true, health: r.health ?? 'unknown' })
   function status() {
-    return { tunnel: tunnel.status(), wranglerVersion: WRANGLER_VERSION, accounts, login, job: job ? { id: job.id, kind: job.kind, step: job.step, state: job.state } : null, error: lastError, deployments: ['bark', 'telegram'].map(raw).filter(Boolean).map(publicRow) }
+    const recoveries = store.keys(JOB_PREFIX).map(k => store.get(k))
+      .filter(r => r?.kind?.startsWith('deploy-') && r.id !== job?.id && !['done', 'failed', 'cancelled'].includes(r.state))
+      .map(r => ({ id: r.id, type: r.type, step: r.step, state: 'recovery-required', updatedAt: r.updatedAt }))
+    return { tunnel: tunnel.status(), wranglerVersion: WRANGLER_VERSION, accounts, login, job: job ? { id: job.id, kind: job.kind, step: job.step, state: job.state } : null, recoveries, error: lastError, deployments: ['bark', 'telegram'].map(raw).filter(Boolean).map(publicRow) }
   }
   function saveJob(current, patch = {}) {
     const next = { ...current, ...patch, updatedAt: Date.now(), revision: (current.revision ?? 0) + 1 }
@@ -39,22 +41,24 @@ export function createCloudflareDeploymentService({ store, root, outboundConfig,
     if (disposed) throw error('连接设置已关闭', 'host-unavailable')
     if (job) throw error('请等待当前操作结束', 'conflict')
     const controller = new AbortController()
-    const current = { id: randomBytes(12).toString('hex'), kind, step: 'prepare', state: 'planned', createdAt: Date.now(), cancelRequested: false, recoveryRequired: false, revision: 0, ...durable, controller }
+    const current = { id: randomBytes(12).toString('hex'), kind, step: 'prepare', phase: 'planned', state: 'planned', externalStarted: false, createdAt: Date.now(), cancelRequested: false, recoveryRequired: false, revision: 0, ...durable, controller }
     if (durable) saveJob(current)
     job = current; lastError = null
     const check = () => { if (disposed || controller.signal.aborted || current.cancelRequested || job !== current) throw error('已取消', 'cancelled') }
     const step = value => { check(); if (durable) saveJob(current, { step: value, state: 'running' }); else current.step = value }
-    void (async () => {
+    current.completion = (async () => {
       try {
         await cli.prepare(controller.signal); check()
         await action({ signal: controller.signal, check, step, current }); check()
-        if (durable) saveJob(current, { state: 'done', recoveryRequired: false })
+        if (durable) saveJob(current, { state: 'done', phase: 'done', recoveryRequired: false })
       } catch (e) {
         if (durable && !disposed) {
-          try { saveJob(current, { state: current.cancelRequested ? 'cancel-requested' : 'recovery-required', recoveryRequired: !current.cancelRequested, errorCode: e.code ?? 'operation-failed' }) } catch {}
+          const uncertain = current.externalStarted === true
+          const finalState = uncertain ? 'recovery-required' : current.cancelRequested ? 'cancelled' : 'failed'
+          try { saveJob(current, { state: finalState, phase: uncertain ? 'recovery-required' : finalState, recoveryRequired: uncertain, errorCode: e.code ?? 'operation-failed' }) } catch {}
         }
         if (!disposed && job === current) lastError = e.code === 'storage-failed' ? e.message : '操作未完成，请检查登录和网络后重试。已有服务会保留。'
-      } finally { if (job === current) job = null; drainRecovery() }
+      } finally { if (job === current) job = null }
     })()
     return status()
   }
@@ -86,12 +90,12 @@ export function createCloudflareDeploymentService({ store, root, outboundConfig,
     const botToken = type === 'telegram' ? String(payload.botToken || token()).trim() : null
     if (type === 'telegram' && !/^\d+:[A-Za-z0-9_-]+$/.test(botToken)) throw error('请填写有效的 Telegram Bot Token')
     if (type === 'telegram' && payload.activate === true && !String(payload.chatId || outboundConfig.raw('telegram')?.chatId || '').trim()) throw error('请填写接收者，再开启备用连接')
-    const pending = store.keys(JOB_PREFIX).map(k => store.get(k)).find(r => r.kind === `deploy-${type}` && !['done', 'failed', 'cancel-requested'].includes(r.state))
+    const pending = store.keys(JOB_PREFIX).map(k => store.get(k)).find(r => r.kind === `deploy-${type}` && !['done', 'failed', 'cancelled'].includes(r.state))
     // Retry means recover the existing claim; do not create another operation over an uncertain one.
     if (pending) return resume(pending)
     const suffix = randomBytes(8).toString('hex')
     const record = { ...(previous ?? { type, accountId, name: `dn-${type}-${suffix}`, databaseName: `dn-bark-${suffix}`, bound: false }), enrollment: type === 'bark' && payload.enrollment === true }
-    const claim = { id: randomBytes(12).toString('hex'), kind: `deploy-${type}`, type, resourceKey: keyOf(type), accountId, resourceIdentity: record.name, step: 'prepare', state: 'planned', createdAt: Date.now(), updatedAt: Date.now(), cancelRequested: false, recoveryRequired: false, revision: 0, options: { activate: payload.activate === true, inbound: payload.inbound === true, chatId: payload.chatId }, configSecretGeneration: botToken ? fingerprint(botToken) : null }
+    const claim = { id: randomBytes(12).toString('hex'), kind: `deploy-${type}`, type, resourceKey: keyOf(type), accountId, resourceIdentity: record.name, step: 'prepare', phase: 'planned', state: 'planned', externalStarted: false, createdAt: Date.now(), updatedAt: Date.now(), cancelRequested: false, recoveryRequired: false, revision: 0, options: { activate: payload.activate === true, inbound: payload.inbound === true, chatId: payload.chatId }, configSecretGeneration: botToken ? fingerprint(botToken) : null }
     if (type === 'telegram') record.secretReference = payload.botToken ? 'telegram:account' : (previous?.secretReference ?? 'channel:telegram:outbound')
     const secretPlan = type === 'telegram' && payload.botToken ? inboundConfig.planPut(type, { botToken }) : null
     mutate(draft => {
@@ -99,14 +103,18 @@ export function createCloudflareDeploymentService({ store, root, outboundConfig,
       delete record.botToken; delete record.gatewayKey
       draft[keyOf(type)] = record
       draft[`${JOB_PREFIX}${claim.id}`] = claim
-      const terminal = Object.entries(draft).filter(([k, r]) => k.startsWith(JOB_PREFIX) && ['done', 'failed', 'cancel-requested'].includes(r.state)).sort((a,b) => b[1].updatedAt - a[1].updatedAt)
+      const terminal = Object.entries(draft).filter(([k, r]) => k.startsWith(JOB_PREFIX) && ['done', 'failed', 'cancelled'].includes(r.state)).sort((a,b) => b[1].updatedAt - a[1].updatedAt)
       for (const [k] of terminal.slice(64)) delete draft[k]
     })
     return runDeployment(claim, false)
   }
   function resume(claim) {
-    if (claim.cancelRequested) return status()
-    return runDeployment(claim, true)
+    return runDeployment({ ...claim, cancelRequested: false, recoveryRequired: true }, true)
+  }
+  function markExternal(current, operation, check) {
+    check()
+    saveJob(current, { phase: 'external-started', externalOperation: operation, externalStarted: true })
+    check()
   }
   function runDeployment(claim, recovery) {
     return start(claim.kind, async ({ signal, check, step, current }) => {
@@ -126,10 +134,13 @@ export function createCloudflareDeploymentService({ store, root, outboundConfig,
       }
       writeFileSync(join(cwd, 'wrangler.json'), JSON.stringify(config), { mode: 0o600 })
       if (type === 'bark') {
-        if (!record.databaseId) { const db = await cli.d1Create({ name: record.databaseName, cwd, accountId, signal }); record.databaseId = db.id; saveRecord(); check() }
+        if (!record.databaseId) {
+          markExternal(current, 'd1-create', check)
+          const db = await cli.d1Create({ name: record.databaseName, cwd, accountId, signal }); record.databaseId = db.id; saveRecord(); check()
+        }
         config.d1_databases = [{ binding: 'database', database_name: record.databaseName, database_id: record.databaseId, migrations_dir: 'migrations' }]
         writeFileSync(join(cwd, 'wrangler.json'), JSON.stringify(config), { mode: 0o600 })
-        step('migration'); await cli.d1Migrate({ cwd, accountId, signal }); check()
+        step('migration'); markExternal(current, 'd1-migrate', check); await cli.d1Migrate({ cwd, accountId, signal }); check()
       }
       let deployments = null
       if (recovery && ['create', 'deploy', 'verify', 'apply'].includes(claim.step)) {
@@ -147,6 +158,7 @@ export function createCloudflareDeploymentService({ store, root, outboundConfig,
         step('create')
         const currentToken = token()
         if (type === 'telegram' && fingerprint(currentToken) !== current.configSecretGeneration) throw error('凭证已更改，请重新设置连接', 'conflict')
+        markExternal(current, 'worker-deploy', check)
         const value = await cli.deployWorker({ cwd, accountId, name: record.name, signal, secrets: type === 'telegram' ? { BOT_TOKEN: currentToken } : {} })
         // Save the receipt before any cancellation check or local configuration apply.
         saveJob(current, { remoteReceipt: { endpoint: value.endpoint, versionId: value.versionId }, step: 'verify' })
@@ -232,27 +244,40 @@ export function createCloudflareDeploymentService({ store, root, outboundConfig,
     }
   }
   // Terminal history is bounded even if no new deployment is requested after restart.
-  const terminal = store.keys(JOB_PREFIX).map(k => [k, store.get(k)]).filter(([,r]) => ['done', 'failed', 'cancel-requested'].includes(r?.state)).sort((a,b) => b[1].updatedAt - a[1].updatedAt)
+  const terminal = store.keys(JOB_PREFIX).map(k => [k, store.get(k)]).filter(([,r]) => ['done', 'failed', 'cancelled'].includes(r?.state)).sort((a,b) => b[1].updatedAt - a[1].updatedAt)
   const expired = terminal.filter(([,r], i) => i >= 64 || r.updatedAt < Date.now() - 7 * 86400000)
   if (expired.length) mutate(draft => { for (const [k] of expired) delete draft[k] })
-  function drainRecovery() {
-    if (disposed || job || recoveryScheduled || !recoveryQueue.length) return
-    recoveryScheduled = true
-    queueMicrotask(() => {
-      recoveryScheduled = false
-      if (disposed || job) return
-      const next = recoveryQueue.shift()
-      try { resume(next) } catch { lastError = '请重试连接设置'; drainRecovery() }
-    })
-  }
-  const unfinished = store.keys(JOB_PREFIX).map(k => store.get(k)).filter(r => r?.kind?.startsWith('deploy-') && !['done', 'failed', 'cancel-requested'].includes(r.state))
-  recoveryQueue = unfinished.sort((a,b) => a.createdAt - b.createdAt)
-  drainRecovery()
   return { status, loginDevice, refresh, deploy, link, unbind,
     tunnelConfigure: payload => tunnel.configure(payload),
     tunnelStart: payload => tunnel.start(payload),
     tunnelStop: () => tunnel.stop(),
-    cancel() { if (job) { if (job.kind.startsWith('deploy-')) saveJob(job, { cancelRequested: true, state: 'cancel-requested', recoveryRequired: false }); job.controller.abort() }; return status() },
-    dispose() { disposed = true; job?.controller.abort(); cli.dispose(); tunnel.dispose() },
+    async cancel() {
+      const current = job
+      if (current) {
+        let saveFailure = null
+        current.cancelRequested = true
+        if (current.kind.startsWith('deploy-')) {
+          try { saveJob(current, { cancelRequested: true, state: 'cancel-requested', phase: 'cancel-requested', recoveryRequired: current.externalStarted === true }) }
+          catch (e) { saveFailure = e }
+        }
+        current.controller.abort()
+        try { await current.completion } catch { /* start() contains failures */ }
+        if (saveFailure) throw error('取消已发出，但状态未能保存；请检查恢复状态', 'storage-failed')
+      }
+      return status()
+    },
+    dispose() {
+      disposed = true
+      const current = job
+      if (!current) {
+        cli.dispose()
+        return tunnel.dispose?.()
+      }
+      current.controller.abort()
+      return Promise.resolve(current.completion).catch(() => {}).then(() => {
+        cli.dispose()
+        return tunnel.dispose?.()
+      })
+    },
   }
 }

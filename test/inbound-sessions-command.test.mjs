@@ -8,7 +8,7 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { registerConversationRouter } from '../src/inbound/conversation.mjs'
-import { createInboundBus } from '../src/inbound/bus.mjs'
+import { createPrivateFlowBus as createInboundBus } from './helpers/private-flow-bus.mjs'
 import { createStore } from '../src/inbound/store.mjs'
 import { createAgentRouter } from '../src/routing/agent-router.mjs'
 import { createSessionRegistry } from '../src/routing/session-registry.mjs'
@@ -28,7 +28,7 @@ function makeAgent(id, status = 'idle', cwd = '/home/u/proj/alpha') {
 
 function makeRig({ agents = [], attentionOf, withRouter = true, lang = 'zh', throwingGet = false } = {}) {
   const store = createStore(tempPath())
-  const bus = createInboundBus({ allowUsers: ['42'], store })
+  const bus = createInboundBus({ pairedUsers: ['42', '99'], store })
   const handlers = {}
   const agentMap = new Map(agents.map((a) => [a.id, a]))
   const ctx = {
@@ -56,7 +56,7 @@ function makeRig({ agents = [], attentionOf, withRouter = true, lang = 'zh', thr
   // 这样 /sessions 的「当前绑定」只由 /bind 决定，测试可控。
   const seed = (agent, advanceMs = 1) => { registry.ensureSession(agent); clockMs += advanceMs }
   const say = async (text, { userId = '42' } = {}) => {
-    bus.accept({ channel: 'telegram', userId, chatId: userId, messageId: `m${Math.random()}`, text })
+    bus.accept({ channel: 'telegram', accountId: 'tg-app', userId, chatId: userId, chatType: 'private', messageId: `m${Math.random()}`, text })
     await sleep(15)
     return replies.at(-1)?.text
   }
@@ -158,7 +158,7 @@ test('/sessions 英文文案：英文回执完整', async () => {
 test('/sessions 未配对身份：根本触达不到命令（无回执）', async () => {
   const rig = makeRig({ agents: [makeAgent(SID_A, 'running')] })
   rig.seed(makeAgent(SID_A, 'running'))
-  await rig.say('/sessions', { userId: '99' })
+  await rig.say('/sessions', { userId: 'unpaired-user' })
   assert.equal(rig.replies.length, 0, '未配对用户不得触达 /sessions')
   rig.dispose()
 })

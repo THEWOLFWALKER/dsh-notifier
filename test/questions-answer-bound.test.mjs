@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createQuestionBridge, sanitizeAnswerText, ANSWER_MAX_CODEPOINTS } from '../src/questions/router.mjs'
 import { createControlEntry } from '../src/control/entry.mjs'
-import { createInboundBus } from '../src/inbound/bus.mjs'
+import { createPrivateFlowBus as createInboundBus } from './helpers/private-flow-bus.mjs'
 import { createTokenVault } from '../src/inbound/tokens.mjs'
 import { createStore } from '../src/inbound/store.mjs'
 import { createIdentity } from '../src/inbound/identity.mjs'
@@ -29,7 +29,7 @@ function makeRig({ channel = 'telegram', accountId = 'tg-acc', chatId = '900113'
   const vault = createTokenVault({ secret: 's07-test-secret' })
   const bus = createInboundBus({ allowUsers: [userId], store, vault })
   const identity = createIdentity({ store, logger: null })
-  identity.addBinding({ channel, userId })
+  identity.addBinding({ channel, accountId, userId })
   const texts = []
   const warns = []
   const raw = {

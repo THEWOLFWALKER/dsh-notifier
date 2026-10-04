@@ -10,7 +10,7 @@ import { join } from 'node:path'
 import { createQuestionBridge } from '../src/questions/router.mjs'
 import { createIdentity } from '../src/inbound/identity.mjs'
 import { createControlEntry } from '../src/control/entry.mjs'
-import { createInboundBus } from '../src/inbound/bus.mjs'
+import { createPrivateFlowBus as createInboundBus } from './helpers/private-flow-bus.mjs'
 import { createTokenVault } from '../src/inbound/tokens.mjs'
 import { createStore } from '../src/inbound/store.mjs'
 import { resolveConfig } from '../src/config.mjs'
@@ -39,7 +39,7 @@ function makeRig(config, overrides = {}) {
   const bus = createInboundBus({ allowUsers: ['42', '100'], store, vault })
   // adminSettle（桥级结算）需要 identity + 配置过 policy 的 Control Core。
   const identity = createIdentity({ store, logger: null })
-  identity.addBinding({ channel: 'telegram', userId: '100' })
+  identity.addBinding({ channel: 'telegram', accountId: 'TG_APP', userId: '100' })
   const broadcasts = []
   const notifier = { channels: ['telegram'], notifyAll: async (message, opts) => { broadcasts.push({ message, opts }); return { ok: true, delivered: [], skipped: [], failed: [] } } }
   const cards = []

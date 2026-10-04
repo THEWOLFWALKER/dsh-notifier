@@ -30,9 +30,8 @@ function makeRig() {
   const fellThrough = []
   bus.onMessage((envelope) => { fellThrough.push(envelope.text); return false })
   const accept = (text, accountId) => bus.accept({
-    channel: 'telegram', userId: '42', chatId: '42', chatType: 'private',
+    channel: 'telegram', accountId: accountId ?? 'TG_APP', userId: '42', chatId: '42', chatType: 'private',
     messageId: `m${Math.random()}`, text,
-    ...(accountId === undefined ? {} : { accountId }),
   })
   return { store, identity, pairing, bus, fellThrough, accept }
 }
@@ -91,7 +90,7 @@ test('G-06 bus 级：/pair@bot <码> 真实核销——码面不含 @ 残片，�
   const result = rig.accept(`/pair@MyNotifierBot ${minted.code}`)
   assert.equal(result.ok, true)
   assert.match(result.reply, /配对成功/)
-  assert.equal(rig.identity.allows('telegram', '42'), true, '码面被干净地当作 args[0] 核销')
+  assert.equal(rig.identity.allows('telegram', '42', 'TG_APP'), true, '码面被干净地当作 args[0] 核销')
   assert.deepEqual(rig.fellThrough, [], '注册面命令被消费，不落回对话路由')
 })
 
@@ -101,7 +100,7 @@ test('G-65 bus 级：／pair <码> 等价 /pair（全角斜杠不再漏进对话
   const result = rig.accept(`／pair ${minted.code}`)
   assert.equal(result.ok, true)
   assert.match(result.reply, /配对成功/)
-  assert.equal(rig.identity.allows('telegram', '42'), true)
+  assert.equal(rig.identity.allows('telegram', '42', 'TG_APP'), true)
   assert.deepEqual(rig.fellThrough, [], '全角命令在注册面被消费（旧行为：parseCommand 返回 null 漏进对话路由）')
 })
 
@@ -120,7 +119,7 @@ test('R2 bus 级：/pair 真 seam 使用 envelope.accountId——非默认账号
   assert.match(result.reply, /配对成功/)
   assert.equal(rig.identity.allows('telegram', '42', 'acct-A'), true, '非默认账号必须真被授权')
   assert.equal(rig.identity.allows('telegram', '42', 'acct-B'), false, '其它账号不得被连带授权')
-  assert.equal(rig.identity.allows('telegram', '42'), false, '不得落到 default 账号')
+  assert.equal(rig.identity.allows('telegram', '42'), false, '缺失 accountId 不得落到账号默认值')
 })
 
 test('矩阵边界：/stopwatch 不是 /stop；非注册面斜杠消息落回对话路由', () => {
@@ -129,7 +128,7 @@ test('矩阵边界：/stopwatch 不是 /stop；非注册面斜杠消息落回对
   assert.equal(parseCommand('/stopwatch').name, 'stopwatch')
   assert.notEqual(parseCommand('/stopwatch').name, 'stop')
   // 绑定成员发非注册面命令：bus 不消费，落回扇出（由会话路由按普通文本处理）
-  rig.identity.addBinding({ channel: 'telegram', userId: '42' })
+  rig.identity.addBinding({ channel: 'telegram', accountId: 'TG_APP', userId: '42' })
   const result = rig.accept('/stopwatch')
   assert.equal(result.reply, undefined)
   assert.deepEqual(rig.fellThrough, ['/stopwatch'], '未知命令落回扇出（由会话路由按普通文本处理）')

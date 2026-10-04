@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createQuestionBridge, validateAskArgs, registerAskUserTool } from '../src/questions/router.mjs'
 import { createControlEntry } from '../src/control/entry.mjs'
-import { createInboundBus } from '../src/inbound/bus.mjs'
+import { createPrivateFlowBus as createInboundBus } from './helpers/private-flow-bus.mjs'
 import { createTokenVault } from '../src/inbound/tokens.mjs'
 import { createStore } from '../src/inbound/store.mjs'
 import { createIdentity } from '../src/inbound/identity.mjs'
@@ -212,7 +212,7 @@ test('P4 编号兜底只发卡片未送达的渠道（分流 channelTypes）', a
 
 test('P4 全渠道无卡片：编号文案广播全部渠道，白名单用户回编号可作答', async () => {
   const identity = createIdentity({ store: createStore(tempPath()) })
-  identity.addBinding({ channel: 'qq', userId: '42' }) // 首条绑定 = owner（CRACK-004 hint 兜底需 owner）
+  identity.addBinding({ channel: 'qq',accountId: 'QQ_APP', userId: '42' }) // 首条绑定 = owner（CRACK-004 hint 兜底需 owner）
   const rig = makeRig({
     inbounds: [{ channel: 'qq', accountId: 'QQ_APP', card: false, targets: [{ chatId: 'qq-user-42', userId: '42' }] }],
     channelTypes: ['qq', 'wxpusher'],
@@ -244,7 +244,7 @@ test('P4 卡片投递失败（异常）也走编号兜底：normalizeInbound 吞
   const vault = createTokenVault({ secret: 's' })
   const bus = createInboundBus({ allowUsers: ['42'], store, vault })
   const identity = createIdentity({ store: createStore(tempPath()) })
-  identity.addBinding({ channel: 'feishu', userId: '42' }) // 首条绑定 = owner（CRACK-004 hint 兜底需 owner）
+  identity.addBinding({ channel: 'feishu',accountId: 'FS_APP', userId: '42' }) // 首条绑定 = owner（CRACK-004 hint 兜底需 owner）
   const broadcasts = []
   const notifier = {
     channels: ['feishu'],
@@ -266,7 +266,7 @@ test('P4 卡片投递失败（异常）也走编号兜底：normalizeInbound 吞
   await sleep(30)
   assert.equal(broadcasts.length, 1, '卡片炸了 → feishu 落回编号文案')
   assert.deepEqual(broadcasts[0].opts, { channelTypes: ['feishu'] })
-  bus.accept({ channel: 'feishu', accountId: 'FS_APP', chatType: 'private', userId: '42', chatId: 'oc_00000042', messageId: 'm1', text: '3' })
+  bus.accept({ channel: 'feishu', accountId: 'FS_APP', chatType: 'p2p', userId: '42', chatId: 'oc_00000042', messageId: 'm1', text: '3' })
   const result = await pending
   assert.deepEqual(result.results[0].answers, ['生产环境'])
   bridge.dispose()
@@ -276,7 +276,7 @@ test('P4 卡片投递失败（异常）也走编号兜底：normalizeInbound 吞
 
 test('发错编号（越界）：回执提示 + 选项重发，问题保持待决，随后正确作答成功', async () => {
   const identity = createIdentity({ store: createStore(tempPath()) })
-  identity.addBinding({ channel: 'qq', userId: '42' }) // 首条绑定 = owner（CRACK-004 hint 兜底需 owner）
+  identity.addBinding({ channel: 'qq',accountId: 'QQ_APP', userId: '42' }) // 首条绑定 = owner（CRACK-004 hint 兜底需 owner）
   const rig = makeRig({ inbounds: [{ channel: 'qq', accountId: 'QQ_APP', card: false, targets: [{ chatId: 'qq-user-42', userId: '42' }] }], channelTypes: ['qq'], identity, notifyOutcome: { ok: true, delivered: [], skipped: ['qq'], failed: [] } })
   const pending = rig.bridge.askQuestions({ questions: [SINGLE] })
   await sleep(30)
@@ -305,7 +305,7 @@ test('发错编号（越界）：回执提示 + 选项重发，问题保持待�
 
 test('单选回多项（1,2）：提示本题单选 + 选项重发，保持待决，改回单编号成功', async () => {
   const identity = createIdentity({ store: createStore(tempPath()) })
-  identity.addBinding({ channel: 'qq', userId: '42' }) // 首条绑定 = owner（CRACK-004 hint 兜底需 owner）
+  identity.addBinding({ channel: 'qq',accountId: 'QQ_APP', userId: '42' }) // 首条绑定 = owner（CRACK-004 hint 兜底需 owner）
   const rig = makeRig({ inbounds: [{ channel: 'qq', accountId: 'QQ_APP', card: false, targets: [{ chatId: 'qq-user-42', userId: '42' }] }], channelTypes: ['qq'], identity, notifyOutcome: { ok: true, delivered: [], skipped: ['qq'], failed: [] } })
   const pending = rig.bridge.askQuestions({ questions: [SINGLE] })
   await sleep(30)
@@ -325,7 +325,7 @@ test('单选回多项（1,2）：提示本题单选 + 选项重发，保持待�
 
 test('多选作答：中文逗号 1，3 也认，去重后两项落账', async () => {
   const identity = createIdentity({ store: createStore(tempPath()) })
-  identity.addBinding({ channel: 'qq', userId: '100' }) // 首条绑定 = owner（CRACK-004 hint 兜底需 owner）
+  identity.addBinding({ channel: 'qq',accountId: 'QQ_APP', userId: '100' }) // 首条绑定 = owner（CRACK-004 hint 兜底需 owner）
   const rig = makeRig({ inbounds: [{ channel: 'qq', accountId: 'QQ_APP', card: false, targets: [{ chatId: 'qq-user-100', userId: '100' }] }], channelTypes: ['qq'], identity, notifyOutcome: { ok: true, delivered: [], skipped: ['qq'], failed: [] } })
   const pending = rig.bridge.askQuestions({ questions: [MULTI] })
   await sleep(30)
@@ -341,7 +341,7 @@ test('多选作答：中文逗号 1，3 也认，去重后两项落账', async (
 /** G-52：同一 rig 逐形态驱动多选作答（每形态独立提问、独立断言，共用装配减少样板）。 */
 async function driveMultiForm(text) {
   const identity = createIdentity({ store: createStore(tempPath()) })
-  identity.addBinding({ channel: 'qq', userId: '100' })
+  identity.addBinding({ channel: 'qq',accountId: 'QQ_APP', userId: '100' })
   const rig = makeRig({ inbounds: [{ channel: 'qq', accountId: 'QQ_APP', card: false, targets: [{ chatId: 'qq-user-100', userId: '100' }] }], channelTypes: ['qq'], identity, notifyOutcome: { ok: true, delivered: [], skipped: ['qq'], failed: [] } })
   const seen = []
   rig.bus.onMessage((envelope) => { seen.push(envelope.text); return false })
@@ -377,7 +377,7 @@ test('G-52 重复编号去重：1, 1 等价单选 1（不触发单选多项误�
 
 test('G-52 单选 + 重复编号：2 2 去重为单编号，不再误报「本题是单选」', async () => {
   const identity = createIdentity({ store: createStore(tempPath()) })
-  identity.addBinding({ channel: 'qq', userId: '42' })
+  identity.addBinding({ channel: 'qq',accountId: 'QQ_APP', userId: '42' })
   const rig = makeRig({ inbounds: [{ channel: 'qq', accountId: 'QQ_APP', card: false, targets: [{ chatId: 'qq-user-42', userId: '42' }] }], channelTypes: ['qq'], identity, notifyOutcome: { ok: true, delivered: [], skipped: ['qq'], failed: [] } })
   const pending = rig.bridge.askQuestions({ questions: [SINGLE] })
   await sleep(30)
@@ -398,7 +398,7 @@ test('G-52 fail-closed 保持：混入非编号词（1, a / 1 2x）整条不认�
 
 test('G-52 越界号维持既有回执：1, 99 → 提示编号需在 1-3 之间 + 选项重发，问题保持待决', async () => {
   const identity = createIdentity({ store: createStore(tempPath()) })
-  identity.addBinding({ channel: 'qq', userId: '100' })
+  identity.addBinding({ channel: 'qq',accountId: 'QQ_APP', userId: '100' })
   const rig = makeRig({ inbounds: [{ channel: 'qq', accountId: 'QQ_APP', card: false, targets: [{ chatId: 'qq-user-100', userId: '100' }] }], channelTypes: ['qq'], identity, notifyOutcome: { ok: true, delivered: [], skipped: ['qq'], failed: [] } })
   const pending = rig.bridge.askQuestions({ questions: [MULTI] })
   await sleep(30)
@@ -419,7 +419,7 @@ test('G-52 越界号维持既有回执：1, 99 → 提示编号需在 1-3 之间
 
 test('裸编号消费语义：有效作答被消费（不进对话路由），无待决时裸编号不拦', async () => {
   const identity = createIdentity({ store: createStore(tempPath()) })
-  identity.addBinding({ channel: 'qq', userId: '42' }) // 首条绑定 = owner（CRACK-004 hint 兜底需 owner）
+  identity.addBinding({ channel: 'qq',accountId: 'QQ_APP', userId: '42' }) // 首条绑定 = owner（CRACK-004 hint 兜底需 owner）
   const rig = makeRig({ inbounds: [{ channel: 'qq', accountId: 'QQ_APP', card: false, targets: [{ chatId: 'qq-user-42', userId: '42' }] }], channelTypes: ['qq'], identity, notifyOutcome: { ok: true, delivered: [], skipped: ['qq'], failed: [] } })
   const seen = []
   rig.bus.onMessage((envelope) => { seen.push(envelope.text); return false })
@@ -460,7 +460,7 @@ test('SEC-2 关闭跨渠道抢答：feishu 卡片送达 u1，qq u2 未收到话�
 
 test('SEC-2 正控：qq 收到逐 chat 编号话术后 qq u2 回 1 → 命中作答', async () => {
   const identity = createIdentity({ store: createStore(tempPath()) })
-  identity.addBinding({ channel: 'qq', userId: '42' }) // 首条绑定 = owner（CRACK-004 hint 兜底需 owner）
+  identity.addBinding({ channel: 'qq',accountId: 'QQ_APP', userId: '42' }) // 首条绑定 = owner（CRACK-004 hint 兜底需 owner）
   const rig = makeRig({
     inbounds: [
       { channel: 'feishu', accountId: 'FS_APP', card: true, targets: [{ chatId: 'oc_100', userId: 'ou_100' }] },
@@ -516,7 +516,7 @@ test('SEC-2 多 pending 定向隔离：telegram 回复只命中 telegram 定向�
   const pendingB = bridge.askQuestions({ questions: [SINGLE] })
   await sleep(30)
   // telegram 白名单成员回 1 → 只命中 B（telegram 定向），A 不受影响
-  bus.accept({ channel: 'telegram', accountId: 'TG_APP', userId: '100', chatId: '100', messageId: 'm1', text: '1' })
+  bus.accept({ channel: 'telegram', chatType: 'private', accountId: 'TG_APP', userId: '100', chatId: '100', messageId: 'm1', text: '1' })
   const resultB = await pendingB
   assert.equal(resultB.answered, true)
   assert.deepEqual(resultB.results[0].answers, ['测试环境'])
@@ -553,7 +553,7 @@ test('SEC-2 hint 与 exact 优先级稳定：exact 行优先于 hint 行', async
   rig.bus.wait(xKey, 800, {})
   rig.bus.wait(yKey, 800, {})
   // telegram u1 回 1 → 命中 X（exact 优先于 hint），Y 不受影响
-  rig.bus.accept({ channel: 'telegram', accountId: 'TG_APP', userId: '100', chatId: '100', messageId: 'm1', text: '1' })
+  rig.bus.accept({ channel: 'telegram', chatType: 'private', accountId: 'TG_APP', userId: '100', chatId: '100', messageId: 'm1', text: '1' })
   assert.equal(rig.store.get(xKey).status, 'resolved', 'exact 行被命中')
   assert.equal(rig.store.get(xKey).decision, 'answered')
   assert.equal(rig.store.get(yKey).status, 'pending', 'hint 行不被 exact 抢走')
@@ -566,7 +566,7 @@ test('issue #11 QQ：qq-bot 出站 ↔ qq 入站异名 → 逐 chat hintTargets 
   // 出站只有 qq-bot（文本）→ 编号话术经出站 qq-bot 送达；入站 qq 无卡片能力。
   // 修复前 hintChannels=['qq-bot']，qq 入站回复编号命中不了 → timeout + 对话污染。
   const identity = createIdentity({ store: createStore(tempPath()) })
-  identity.addBinding({ channel: 'qq', userId: '42' }) // 首条绑定 = owner（CRACK-004 hint 兜底需 owner）
+  identity.addBinding({ channel: 'qq',accountId: 'QQ_APP', userId: '42' }) // 首条绑定 = owner（CRACK-004 hint 兜底需 owner）
   const rig = makeRig({ inbounds: [{ channel: 'qq', accountId: 'QQ_APP', card: false, targets: [{ chatId: 'qquser42', userId: '42' }] }], channelTypes: ['qq-bot'], identity, notifyOutcome: { ok: true, delivered: [], skipped: ['qq-bot'], failed: [] } })
   const seen = []
   rig.bus.onMessage((envelope) => { seen.push(envelope.text); return false })
@@ -592,7 +592,7 @@ test('issue #11 微信 iLink 纯入站：hintTargets 记录 sendText 送达，we
   // wechat iLink 是 inbound-only（无对应出站 type、无 sendQuestionCard）。
   // 修复前编号话术永不送达、hintChannels 永不含 wechat → 编号作答完全失效。
   const identity = createIdentity({ store: createStore(tempPath()) })
-  identity.addBinding({ channel: 'wechat', userId: '42' }) // 首条绑定 = owner（CRACK-004 hint 兜底需 owner）
+  identity.addBinding({ channel: 'wechat',accountId: 'WX_APP', userId: '42' }) // 首条绑定 = owner（CRACK-004 hint 兜底需 owner）
   const rig = makeRig({ inbounds: [{ channel: 'wechat', accountId: 'WX_APP', card: false, targets: [{ chatId: 'wxuser42', userId: '42' }] }], channelTypes: ['telegram'], identity })
   const pending = rig.bridge.askQuestions({ questions: [SINGLE] })
   await sleep(30)
@@ -603,7 +603,7 @@ test('issue #11 微信 iLink 纯入站：hintTargets 记录 sendText 送达，we
   assert.equal(rig.instances[0].texts.length, 1, '纯入站通道经 sendText 收到编号话术')
   assert.match(rig.instances[0].texts[0].text, /回复编号/, '编号话术在场')
   // wechat 用户回 1 → hint 命中
-  rig.bus.accept({ channel: 'wechat', accountId: 'WX_APP', userId: '42', chatId: 'wxuser42', messageId: 'm1', text: '1' })
+  rig.bus.accept({ channel: 'wechat', chatType: 'private', accountId: 'WX_APP', userId: '42', chatId: 'wxuser42', messageId: 'm1', text: '1' })
   const result = await pending
   assert.equal(result.answered, true)
   assert.deepEqual(result.results[0].answers, ['测试环境'])
@@ -613,7 +613,7 @@ test('issue #11 微信 iLink 纯入站：hintTargets 记录 sendText 送达，we
 
 test('SEC-2 发送失败不登记 hint 证据：纯入站渠道未收到话术时裸编号不命中', async () => {
   const identity = createIdentity({ store: createStore(tempPath()) })
-  identity.addBinding({ channel: 'wechat', userId: '42' })
+  identity.addBinding({ channel: 'wechat',accountId: 'WX_APP', userId: '42' })
   const rig = makeRig({
     inbounds: [{ channel: 'wechat', accountId: 'WX_APP', card: false, sendTextResult: false, targets: [{ chatId: 'wxuser42', userId: '42' }] }],
     channelTypes: ['telegram'],
@@ -623,7 +623,7 @@ test('SEC-2 发送失败不登记 hint 证据：纯入站渠道未收到话术�
   await sleep(30)
   const row = rig.store.get(rig.store.keys('aq:')[0])
   assert.deepEqual(row.hintTargets, [], 'sendText 失败时不登记 wechat hint')
-  rig.bus.accept({ channel: 'wechat', accountId: 'WX_APP', userId: '42', chatId: 'wxuser42', messageId: 'm-fail', text: '1' })
+  rig.bus.accept({ channel: 'wechat', chatType: 'private', accountId: 'WX_APP', userId: '42', chatId: 'wxuser42', messageId: 'm-fail', text: '1' })
   const result = await pending
   assert.equal(result.answered, false, '未收到题目时裸编号不能作答')
   rig.bridge.dispose()
@@ -631,7 +631,7 @@ test('SEC-2 发送失败不登记 hint 证据：纯入站渠道未收到话术�
 
 test('SEC-2 出站广播无实际 delivered 不登记 hint 证据', async () => {
   const identity = createIdentity({ store: createStore(tempPath()) })
-  identity.addBinding({ channel: 'telegram', userId: '42' })
+  identity.addBinding({ channel: 'telegram',accountId: 'TG_APP', userId: '42' })
   const rig = makeRig({
     inbounds: [],
     channelTypes: ['telegram'],
@@ -642,7 +642,7 @@ test('SEC-2 出站广播无实际 delivered 不登记 hint 证据', async () => 
   await sleep(30)
   const row = rig.store.get(rig.store.keys('aq:')[0])
   assert.deepEqual(row.hintTargets, [], '空目标/静音广播不留下逐 chat 编号证据')
-  rig.bus.accept({ channel: 'telegram', accountId: 'TG_APP', userId: '42', chatId: 'tg-42', messageId: 'm-no-delivery', text: '1' })
+  rig.bus.accept({ channel: 'telegram', chatType: 'private', accountId: 'TG_APP', userId: '42', chatId: 'tg-42', messageId: 'm-no-delivery', text: '1' })
   const result = await pending
   assert.equal(result.answered, false, '未实际送达时裸编号不能作答')
   rig.bridge.dispose()
@@ -665,7 +665,7 @@ test('issue #11 fail-closed：未绑定目标用户的入站通道不补入 hint
   const row = rig.store.get(rig.store.keys('aq:')[0])
   assert.deepEqual(row.hintTargets, [{ channel: 'qq', accountId: 'QQ_APP', chatId: 'qquser42', userId: '42' }], 'feishu 无绑定目标不入 hintTargets（含本地 accountId）')
   // feishu 白名单用户 100 回 1 → 不命中（feishu 未收到话术），落回对话路由
-  rig.bus.accept({ channel: 'feishu', accountId: 'FS_APP', chatType: 'private', userId: '100', chatId: 'oc_100', messageId: 'm1', text: '1' })
+  rig.bus.accept({ channel: 'feishu', accountId: 'FS_APP', chatType: 'p2p', userId: '100', chatId: 'oc_100', messageId: 'm1', text: '1' })
   assert.deepEqual(seen, ['1'], '无关通道裸编号不被消费')
   assert.equal(row.status, 'pending', '无关通道作答不落终态')
   rig.bridge.dispose()
@@ -677,8 +677,8 @@ test('CRACK-004 归属闸：hint 命中但代答者是 member → 拒（消费 +
   // feishu 卡片送达本人；qq 无卡片 → hintTargets 记录 qq 目标。qq 渠道 owner=100、member=42。
   const warns = []
   const identity = createIdentity({ store: createStore(tempPath()) })
-  identity.addBinding({ channel: 'qq', userId: '100' }) // 首条绑定 = owner
-  identity.addBinding({ channel: 'qq', userId: '42' }) // 第二条 = member
+  identity.addBinding({ channel: 'qq',accountId: 'QQ_APP', userId: '100' }) // 首条绑定 = owner
+  identity.addBinding({ channel: 'qq',accountId: 'QQ_APP', userId: '42' }) // 第二条 = member
   const rig = makeRig({
     inbounds: [
       { channel: 'feishu', accountId: 'FS_APP', card: true, targets: [{ chatId: 'oc_100', userId: 'ou_100' }] },
@@ -712,7 +712,7 @@ test('CRACK-004 归属闸：hint 命中但代答者是 member → 拒（消费 +
 
 test('CRACK-004 放行矩阵：hint + owner → 正常作答（兜底链不断）', async () => {
   const identity = createIdentity({ store: createStore(tempPath()) })
-  identity.addBinding({ channel: 'qq', userId: '42' }) // 首条绑定 = owner
+  identity.addBinding({ channel: 'qq',accountId: 'QQ_APP', userId: '42' }) // 首条绑定 = owner
   const rig = makeRig({
     inbounds: [
       { channel: 'feishu', accountId: 'FS_APP', card: true, targets: [{ chatId: 'oc_100', userId: 'ou_100' }] },
@@ -735,12 +735,33 @@ test('CRACK-004 放行矩阵：hint + owner → 正常作答（兜底链不断�
   rig.bridge.dispose()
 })
 
+test('CRACK-004 跨账号 owner 不得代答', async () => {
+  const identity = createIdentity({ store: createStore(tempPath()) })
+  identity.addBinding({ channel: 'qq',accountId: 'QQ_OTHER', userId: '42' })
+  const rig = makeRig({
+    inbounds: [
+      { channel: 'feishu', accountId: 'FS_APP', card: true, targets: [{ chatId: 'oc_100', userId: 'ou_100' }] },
+      { channel: 'qq', accountId: 'QQ_APP', card: false, targets: [{ chatId: 'qq-user-42', userId: '42' }] },
+    ],
+    channelTypes: ['feishu', 'qq'],
+    notifyOutcome: { ok: true, delivered: [], skipped: ['feishu', 'qq'], failed: [] },
+    identity,
+  })
+  const pending = rig.bridge.askQuestions({ questions: [SINGLE] })
+  await sleep(30)
+  rig.bus.accept({ channel: 'qq', accountId: 'QQ_APP', chatType: 'private', userId: '42', chatId: 'qq-user-42', messageId: 'm-cross-account', text: '1' })
+  assert.equal(rig.instances[1].texts.some((entry) => /无权/.test(entry.text)), true)
+  const result = await pending
+  assert.equal(result.answered, false)
+  rig.bridge.dispose()
+})
+
 test('CRACK-004 放行矩阵：exact/onChannel 本人作答不查 identity（防过度收紧——未绑定用户本人仍可答）', async () => {
   // 卡片送达 qq 用户 100 本人（pushedTo 含 userId 100），hintChannels=[]。
   // identity 在场但不含 100（只有 qq:42 owner）→ 用户 100 本人回编号必须照常放行：
   // exact/onChannel 是当事人级证词，归属闸不得要求身份绑定或 owner 角色。
   const identity = createIdentity({ store: createStore(tempPath()) })
-  identity.addBinding({ channel: 'qq', userId: '42' }) // 表里只有别人；100 完全未绑定
+  identity.addBinding({ channel: 'qq',accountId: 'QQ_APP', userId: '42' }) // 表里只有别人；100 完全未绑定
   const rig = makeRig({
     inbounds: [{ channel: 'qq', accountId: 'QQ_APP', card: true, targets: [{ chatId: 'qquser100', userId: '100' }] }],
     channelTypes: ['qq'],
@@ -969,7 +990,7 @@ test('伪造 token 被拒，问题继续等到超时（不代答）', async () =
 
 test('多问逐问推送逐问独立作答：全答 answered=true，一问超时 answered=false', async () => {
   const identity = createIdentity({ store: createStore(tempPath()) })
-  identity.addBinding({ channel: 'qq', userId: '42' }) // 首条绑定 = owner（CRACK-004 hint 兜底需 owner）
+  identity.addBinding({ channel: 'qq',accountId: 'QQ_APP', userId: '42' }) // 首条绑定 = owner（CRACK-004 hint 兜底需 owner）
   const rig = makeRig({ inbounds: [{ channel: 'qq', accountId: 'QQ_APP', card: false, targets: [{ chatId: 'qq-user-42', userId: '42' }] }], channelTypes: ['qq'], identity, notifyOutcome: { ok: true, delivered: [], skipped: ['qq'], failed: [] } })
   const pending = rig.bridge.askQuestions({
     questions: [SINGLE, MULTI],
@@ -1127,7 +1148,7 @@ test('B3 dispose 级联：ask_user 任务在 agent/disposed 后标记 terminated
 
 test('CC-1 正确 chat 匹配 hint：hint 送达 (channel, userId, chatId-A)，同一 chat 回复编号 → 命中作答', async () => {
   const identity = createIdentity({ store: createStore(tempPath()) })
-  identity.addBinding({ channel: 'qq', userId: '42' }) // owner
+  identity.addBinding({ channel: 'qq',accountId: 'QQ_APP', userId: '42' }) // owner
   const rig = makeRig({
     inbounds: [{ channel: 'qq', accountId: 'QQ_APP', card: false, targets: [{ chatId: 'qq-chat-A', userId: '42' }] }],
     channelTypes: [],
@@ -1150,7 +1171,7 @@ test('CC-1 正确 chat 匹配 hint：hint 送达 (channel, userId, chatId-A)，�
 
 test('CC-1 错误 chat：hint 送达 chat A，同用户同渠道 chat B 回复编号 → 消费消息 + 提示回原会话 + 不裁决', async () => {
   const identity = createIdentity({ store: createStore(tempPath()) })
-  identity.addBinding({ channel: 'qq', userId: '42' }) // owner
+  identity.addBinding({ channel: 'qq',accountId: 'QQ_APP', userId: '42' }) // owner
   const rig = makeRig({
     inbounds: [{ channel: 'qq', accountId: 'QQ_APP', card: false, targets: [{ chatId: 'qq-chat-A', userId: '42' }] }],
     channelTypes: [],
@@ -1181,7 +1202,7 @@ test('CC-1 错误 chat：hint 送达 chat A，同用户同渠道 chat B 回复�
 
 test('CC-1 同 chat 不同用户：hint 证据含 userId=42，userId=100 裸编号不匹配', async () => {
   const identity = createIdentity({ store: createStore(tempPath()) })
-  identity.addBinding({ channel: 'qq', userId: '42' })
+  identity.addBinding({ channel: 'qq',accountId: 'QQ_APP', userId: '42' })
   const rig = makeRig({
     inbounds: [{ channel: 'qq', accountId: 'QQ_APP', card: false, targets: [{ chatId: 'shared-chat', userId: '42' }] }],
     channelTypes: [],
@@ -1200,7 +1221,7 @@ test('CC-1 同 chat 不同用户：hint 证据含 userId=42，userId=100 裸编�
 
 test('CC-1 缺 chatId：envelope 无 chatId → fail-closed（消费但不裁决，不落回对话路由）+ G-43 指路回执', async () => {
   const identity = createIdentity({ store: createStore(tempPath()) })
-  identity.addBinding({ channel: 'qq', userId: '42' }) // owner
+  identity.addBinding({ channel: 'qq',accountId: 'QQ_APP', userId: '42' }) // owner
   const rig = makeRig({
     inbounds: [{ channel: 'qq', accountId: 'QQ_APP', card: false, targets: [{ chatId: 'qq-chat-A', userId: '42' }] }],
     channelTypes: [],
@@ -1213,15 +1234,14 @@ test('CC-1 缺 chatId：envelope 无 chatId → fail-closed（消费但不裁决
   const qq = rig.instances[0]
   const textsBefore = qq.texts.length
   // 无 chatId 的编号回复
-  rig.bus.accept({ channel: 'qq', accountId: 'QQ_APP', chatType: 'private', userId: '42', messageId: 'm1', text: '1' })
+  const admission = rig.bus.acceptRaw({ channel: 'qq', accountId: 'QQ_APP', chatType: 'private', userId: '42', messageId: 'm1', text: '1' })
   await sleep(10)
   assert.deepEqual(seen, [], '缺 chatId 编号被消费，不进对话路由')
+  assert.equal(admission.reason, 'source_missing_chatId', '缺少 chatId 时在业务路由前拒绝')
   const row = rig.store.get(rig.store.keys('aq:')[0])
   assert.equal(row.status, 'pending', '缺 chatId 不裁决')
   // G-43：消费黑洞补回执——此前该路径静默 return true，用户零反馈
-  assert.equal(qq.texts.length, textsBefore + 1, '补发一条指路回执')
-  assert.match(qq.texts.at(-1).text, /未能定位到提问卡片/, '回执指明缺少会话上下文')
-  assert.match(qq.texts.at(-1).text, /回到原卡片|管理台/, '回执给出可操作出路')
+  assert.equal(qq.texts.length, textsBefore, '缺少来源会话时不能安全发送指路回执')
   const result = await pending
   assert.equal(result.answered, false, '超时未作答（回执不影响 fail-closed 裁决语义）')
   rig.bridge.dispose()
@@ -1236,7 +1256,7 @@ test('CC-1 精确 card 送达 + 正确 chat：pushedTo 含 (channel, userId, cha
   await sleep(30)
   assert.equal(rig.instances[0].cards.length, 1, '卡片已送达')
   // 精确 chat 回复编号 → exact 命中
-  rig.bus.accept({ channel: 'telegram', accountId: 'TG_APP', userId: '100', chatId: '100', messageId: 'm1', text: '1' })
+  rig.bus.accept({ channel: 'telegram', chatType: 'private', accountId: 'TG_APP', userId: '100', chatId: '100', messageId: 'm1', text: '1' })
   const result = await pending
   assert.equal(result.answered, true)
   assert.deepEqual(result.results[0].answers, ['测试环境'])
@@ -1254,7 +1274,7 @@ test('CC-1 精确 card 送达 + 错误 chat：同用户不同 chat 回复编号 
   await sleep(30)
   assert.equal(rig.instances[0].cards.length, 1, '卡片送达 chat 100')
   // 同用户不同 chat 回复编号
-  rig.bus.accept({ channel: 'telegram', accountId: 'TG_APP', userId: '100', chatId: '200', messageId: 'm1', text: '1' })
+  rig.bus.accept({ channel: 'telegram', chatType: 'private', accountId: 'TG_APP', userId: '100', chatId: '200', messageId: 'm1', text: '1' })
   await sleep(10)
   assert.deepEqual(seen, [], '错误 chat 编号被消费')
   const tg = rig.instances[0]
@@ -1270,7 +1290,7 @@ test('CC-1 精确 card 送达 + 错误 chat：同用户不同 chat 回复编号 
 
 test('CC-1 部分送达：hint 送达 chat A 但未送达 chat B → 只有 chat A 可回复，chat B 被拒', async () => {
   const identity = createIdentity({ store: createStore(tempPath()) })
-  identity.addBinding({ channel: 'wechat', userId: '42' })
+  identity.addBinding({ channel: 'wechat',accountId: 'WX_APP', userId: '42' })
   // 两个 wechat 目标：qq-chat-A sendText 成功，chat-B sendText 失败
   const sendTextResults = new Map()
   sendTextResults.set('qq-chat-A', true)
@@ -1299,7 +1319,7 @@ test('CC-1 部分送达：hint 送达 chat A 但未送达 chat B → 只有 chat
   assert.ok(row.hintTargets.some((t) => t.channel === 'wechat' && t.userId === '42' && t.chatId === 'qq-chat-A'), 'qq-chat-A 有 hint 证据')
   assert.equal(row.hintTargets.some((t) => t.chatId === 'chat-B'), false, 'chat-B 无 hint 证据（发送失败）')
   // qq-chat-A 回复编号 → 命中
-  rig.bus.accept({ channel: 'wechat', accountId: 'WX_APP', userId: '42', chatId: 'qq-chat-A', messageId: 'm1', text: '1' })
+  rig.bus.accept({ channel: 'wechat', chatType: 'private', accountId: 'WX_APP', userId: '42', chatId: 'qq-chat-A', messageId: 'm1', text: '1' })
   const result = await pending
   assert.equal(result.answered, true, 'qq-chat-A 可作答')
   assert.deepEqual(result.results[0].answers, ['测试环境'])
@@ -1309,7 +1329,7 @@ test('CC-1 部分送达：hint 送达 chat A 但未送达 chat B → 只有 chat
 
 test('CC-1 出站 delivered 仅渠道级：不能推导具体 chat hint，裸编号不消费', async () => {
   const identity = createIdentity({ store: createStore(tempPath()) })
-  identity.addBinding({ channel: 'qq', userId: '42' })
+  identity.addBinding({ channel: 'qq',accountId: 'QQ_APP', userId: '42' })
   const rig = makeRig({
     inbounds: [{ channel: 'qq', accountId: 'QQ_APP', card: false, targets: [{ chatId: 'qq-chat-A', userId: '42' }] }],
     channelTypes: ['qq'],
@@ -1329,7 +1349,7 @@ test('CC-1 出站 delivered 仅渠道级：不能推导具体 chat hint，裸编
 
 test('CC-1 旧记录 hintChannels（字符串数组，无 hintTargets）→ hint 路径不匹配，fail-closed', async () => {
   const identity = createIdentity({ store: createStore(tempPath()) })
-  identity.addBinding({ channel: 'qq', userId: '42' })
+  identity.addBinding({ channel: 'qq',accountId: 'QQ_APP', userId: '42' })
   const rig = makeRig({
     inbounds: [{ channel: 'qq', accountId: 'QQ_APP', card: false, targets: [{ chatId: 'qq-chat-A', userId: '42' }] }],
     channelTypes: ['qq'],
@@ -1352,7 +1372,7 @@ test('CC-1 旧记录 hintChannels（字符串数组，无 hintTargets）→ hint
 
 test('CC-1 并发 pending：两个待决问题分别送达不同 chat，回复只命中匹配 chat 的那个', async () => {
   const identity = createIdentity({ store: createStore(tempPath()) })
-  identity.addBinding({ channel: 'qq', userId: '42' })
+  identity.addBinding({ channel: 'qq',accountId: 'QQ_APP', userId: '42' })
   const rig = makeRig({
     inbounds: [{ channel: 'qq', accountId: 'QQ_APP', card: false, targets: [{ chatId: 'qq-chat-A', userId: '42' }, { chatId: 'qq-chat-B', userId: '42' }] }],
     channelTypes: [],
@@ -1382,7 +1402,7 @@ test('CC-1 并发 pending：两个待决问题分别送达不同 chat，回复�
 
 test('CC-1 僵尸 pending：已决行不匹配，编号回复落回对话路由', async () => {
   const identity = createIdentity({ store: createStore(tempPath()) })
-  identity.addBinding({ channel: 'qq', userId: '42' })
+  identity.addBinding({ channel: 'qq',accountId: 'QQ_APP', userId: '42' })
   const rig = makeRig({
     inbounds: [{ channel: 'qq', accountId: 'QQ_APP', card: false, targets: [{ chatId: 'qq-chat-A', userId: '42' }] }],
     channelTypes: ['qq'],
@@ -1404,7 +1424,7 @@ test('CC-1 僵尸 pending：已决行不匹配，编号回复落回对话路由'
 
 test('CC-1 重复回复：同 chat 两次编号回复 → 首达采纳，第二次被首达采纳拒绝', async () => {
   const identity = createIdentity({ store: createStore(tempPath()) })
-  identity.addBinding({ channel: 'qq', userId: '42' })
+  identity.addBinding({ channel: 'qq',accountId: 'QQ_APP', userId: '42' })
   const rig = makeRig({
     inbounds: [{ channel: 'qq', accountId: 'QQ_APP', card: false, targets: [{ chatId: 'qq-chat-A', userId: '42' }] }],
     channelTypes: [],
@@ -1429,7 +1449,7 @@ test('CC-1 重复回复：同 chat 两次编号回复 → 首达采纳，第二�
 
 test('CC-1 无关用户裸编号不被消费：无待决提问时编号落回对话路由', async () => {
   const identity = createIdentity({ store: createStore(tempPath()) })
-  identity.addBinding({ channel: 'qq', userId: '42' })
+  identity.addBinding({ channel: 'qq',accountId: 'QQ_APP', userId: '42' })
   const rig = makeRig({
     inbounds: [{ channel: 'qq', accountId: 'QQ_APP', card: false, targets: [{ chatId: 'qq-chat-A', userId: '42' }] }],
     channelTypes: ['qq'],
@@ -1477,7 +1497,7 @@ function makeControlRig({ channel = 'telegram', accountId = 'tg-acc', chatId = '
   const vault = createTokenVault({ secret: 'ctrl-test-secret' })
   const bus = createInboundBus({ allowUsers: [userId, 'u-other'], store, vault })
   const identity = createIdentity({ store, logger: null })
-  identity.addBinding({ channel, userId }) // 首条绑定 = owner
+  identity.addBinding({ channel, accountId, userId }) // 首条绑定 = owner
   const texts = []
   const raw = {
     channel,
@@ -1541,14 +1561,14 @@ test('P1 跳过经 Control Core：feishu-style 正确 account 可跳过；同用
   const qKey = rig.store.keys('aq:')[0]
   const token = rig.vault.mint(qKey)
   // 错误账号：同 userId/chat，accountId 不同 → pushedTo 目标不命中 → 拒
-  rig.bus.accept({ channel: 'feishu', accountId: 'FS_APP', chatType: 'private', userId: 'u1', chatId: 'ou_9100001', accountId: 'cli_evil', chatType: 'private', messageId: 'm-evil', questionAction: { qKey, optIdx: 's', token } })
+  rig.bus.accept({ channel: 'feishu', accountId: 'cli_evil', chatType: 'p2p', userId: 'u1', chatId: 'ou_9100001', messageId: 'm-evil', questionAction: { qKey, optIdx: 's', token } })
   assert.equal(rig.store.get(qKey).status, 'pending', '错误 accountId 不可跳过')
   // 拒绝回执：可能命中 pushedTo 原会话预检（请到原会话操作）或 Control Core 裁决拒（已作答）。
   // 安全底线是「不落终态」——上方 status 断言已固；这里只要求确实发了 fail-closed 拒回执。
   assert.match(rig.texts.at(-1)?.text ?? '', /原会话操作|该提问已被作答/, '错误账号跳过被拒并回执')
   assert.ok(!/已跳过/.test(rig.texts.at(-1)?.text ?? ''), '错误账号绝不得获跳过着落回执')
   // 正确账号 → 经 Control Core 结算成功（跳过）
-  rig.bus.accept({ channel: 'feishu', accountId: 'FS_APP', chatType: 'private', userId: 'u1', chatId: 'ou_9100001', accountId: 'cli_a1b2c3d4e5', chatType: 'private', messageId: 'm-ok', questionAction: { qKey, optIdx: 's', token } })
+  rig.bus.accept({ channel: 'feishu', accountId: 'cli_a1b2c3d4e5', chatType: 'p2p', userId: 'u1', chatId: 'ou_9100001', messageId: 'm-ok', questionAction: { qKey, optIdx: 's', token } })
   const result = await p
   assert.equal(result.answered, false, '跳过即交还桌面，非作答')
   const row = rig.store.get(qKey)
@@ -1565,9 +1585,9 @@ test('P1 跳过经 Control Core：feishu 缺失 accountId 回调 fail-closed（�
   const qKey = rig.store.keys('aq:')[0]
   const token = rig.vault.mint(qKey)
   // 同一 owner(u1) 同 chat，但回调不带 accountId：pushedTo 已绑定账号 → 缺失即 fail-closed，绝不放行。
-  rig.bus.accept({ channel: 'feishu', accountId: 'FS_APP', chatType: 'private', userId: 'u1', chatId: 'ou_9100001', chatType: 'private', messageId: 'm-noacc', questionAction: { qKey, optIdx: 's', token } })
+  const missingAccount = rig.bus.acceptRaw({ channel: 'feishu', chatType: 'p2p', userId: 'u1', chatId: 'ou_9100001', messageId: 'm-noacc', questionAction: { qKey, optIdx: 's', token } })
   assert.equal(rig.store.get(qKey).status, 'pending', '缺失 accountId 不可跳过')
-  assert.match(rig.texts.at(-1)?.text ?? '', /原会话操作|该提问已被作答|作答被拒绝/, '缺失 accountId 跳过被拒并回执')
+  assert.equal(missingAccount.reason, 'source_missing_accountId', '缺失 accountId 在业务路由前拒绝')
   assert.ok(!/已跳过/.test(rig.texts.at(-1)?.text ?? ''), '缺失 accountId 绝不得获跳过着落回执')
   const result = await p
   assert.equal(result.answered, false, '缺失 accountId 跳过未生效，问题保持待决')
@@ -1655,7 +1675,7 @@ test('P1 自定义答 replay/去重：同 messageId 重复入站不重复结算�
   const p = rig.bridge.askQuestions({ questions: [SINGLE] })
   await sleep(30)
   const qKey = rig.store.keys('aq:')[0]
-  const env = { channel: 'telegram', userId: 'u1', chatId: '900113', accountId: 'tg-acc', chatType: 'private', messageId: 'm-replay', text: '答：replay' }
+  const env = { channel: 'telegram', accountId: 'TG_APP', userId: 'u1', chatId: '900113', accountId: 'tg-acc', chatType: 'private', messageId: 'm-replay', text: '答：replay' }
   const first = rig.bus.accept(env)
   assert.equal(first.ok, true, '首次作答受理')
   const again = rig.bus.accept(env) // 重放同一事件

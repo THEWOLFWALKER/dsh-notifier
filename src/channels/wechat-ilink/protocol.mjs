@@ -96,7 +96,7 @@ export function normalizeInboundMessage(message, { accountId = '' } = {}) {
   const rawContextToken = String(message.context_token ?? '').trim()
   const contextToken = validBoundedToken(rawContextToken)
   const envelope = {
-    channel: 'wechat', accountId: account, userId, chatId: userId, messageId, messageIdSynthetic,
+    channel: 'wechat', accountId: account, userId, chatId: userId, chatType: 'private', messageId, messageIdSynthetic,
     contextToken,
     contextTokenRejected: rawContextToken !== '' && contextToken === '',
   }

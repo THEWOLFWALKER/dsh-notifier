@@ -1,14 +1,14 @@
 // v0.12.1（P1-03 / D-01 第一步）：入站通道配置读写的独立能力。
-// Native Control Surface 与 Admin 共用此端口，避免 Native 依赖 admin.enabled 的装配生命周期。
+// Native Control Surface owns this canonical channel configuration port.
 
 import { INBOUND_CHANNELS, INBOUND_CHANNEL_SET } from './channels-registry.mjs'
 import { toInboundChannelName } from './capability-matrix.mjs'
-import { deleteDurable, setDurable, transactDurable } from './store.mjs'
+import { setDurable, transactDurable } from './store.mjs'
 import { isPublicExposure } from '../security/exposure.mjs'
 import { splitSecretPatch } from '../security/secret-patch.mjs'
 import { inboundApplyMode, isHotApplied } from '../control-surface/apply-mode.mjs'
 
-/** 入站通道的凭证字段表（与 Admin 既有表一致；wechat 为扫码产物，不手填）。 */
+/** 入站通道的凭证字段表（由 Native 配置表定义；wechat 为扫码产物，不手填）。 */
 export const INBOUND_FIELDS = Object.freeze({
   telegram: { botToken: { required: true, desc: 'Telegram Bot Token（与出站同域）' }, apiBase: { required: false, secret: false, exposure: 'public', desc: 'Telegram API / 网关地址' }, gatewayKey: { required: false, secret: true, desc: 'Cloudflare 网关密钥' } },
   feishu: {
@@ -33,6 +33,7 @@ export const INBOUND_FIELDS = Object.freeze({
 const MAX_CHANNEL_KEYS = 64
 const MAX_VALUE_BYTES = 8 * 1024
 const DANGEROUS_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
+const privateChatEnabledKey = (type) => `private-chat:${String(type ?? '')}:enabled`
 
 const plain = (value) => value !== null && typeof value === 'object' && !Array.isArray(value) ? value : null
 const clone = (value) => JSON.parse(JSON.stringify(value))
@@ -45,7 +46,7 @@ const valueBytes = (value) => {
   try { return Buffer.byteLength(value, 'utf8') } catch { return Infinity }
 }
 
-/** 递归值形态校验，与 Admin 原入站写入规则一致。 */
+/** 递归值形态校验，与 Native 入站写入规则一致。 */
 export function describeBadChannelValue(key, value) {
   if (typeof value === 'string') {
     if (valueBytes(value) > MAX_VALUE_BYTES) return `"${key}" 超过 ${MAX_VALUE_BYTES} 字节上限`
@@ -135,8 +136,9 @@ function normalizePutInput(type, config) {
   return { normalized, obj, clear, allKnownBlank }
 }
 
-export function createInboundChannelConfigPort({ store, warn = () => {}, audit = () => {}, runtime = null } = {}) {
+export function createInboundChannelConfigPort({ store, warn = () => {}, audit = () => {}, runtime = null, yamlConfigOf = null } = {}) {
   let version = 0
+  const admissionDenied = new Set()
   const read = (key) => {
     try { return store?.get?.(key) } catch { return undefined }
   }
@@ -149,10 +151,38 @@ export function createInboundChannelConfigPort({ store, warn = () => {}, audit =
     } catch { return null }
   }
 
+  const yamlConfig = (type) => {
+    try { return plain(typeof yamlConfigOf === 'function' ? yamlConfigOf(type) : null) ?? {} } catch { return {} }
+  }
+  const rawConfigOf = (type) => {
+    const config = { ...yamlConfig(type), ...(plain(read(`${type}:account`)) ?? {}) }
+    delete config.enabled
+    return config
+  }
+  const configuredOf = (type) => {
+    const config = rawConfigOf(type)
+    const fields = INBOUND_FIELDS[type] ?? {}
+    const required = Object.entries(fields).filter(([, meta]) => meta.required === true).map(([key]) => key)
+    const hasCredentials = Object.keys(fields).length === 0
+      ? Object.keys(config).length > 0
+      : Object.keys(config).some((key) => Object.hasOwn(fields, key))
+    return hasCredentials
+      && required.every((key) => typeof config[key] === 'string' && config[key].trim() !== '')
+  }
+  // Credentials and authorization are distinct facts. Old state has no enable marker,
+  // therefore it stays disabled until the operator explicitly enables private chat.
+  const privateChatEnabled = (type) => {
+    const marker = read(privateChatEnabledKey(type))
+    return configuredOf(type) && (marker === true || (marker !== false && yamlConfig(type).enabled === true))
+  }
+  const privateChatAllowed = (type) => !admissionDenied.has(String(type ?? '')) && privateChatEnabled(type)
+
   function rows() {
     return INBOUND_CHANNELS.map((type) => {
-      const config = plain(read(`${type}:account`)) ?? {}
-      const configured = Object.keys(config).length > 0
+      const config = rawConfigOf(type)
+      const configured = configuredOf(type)
+      const desiredEnabled = privateChatEnabled(type)
+      const enabled = desiredEnabled && privateChatAllowed(type)
       const runtimeState = runtimeOf(type)
       // desired（configured）与 runtime（active）分层：configured=true 绝不推 active=true。
       // 拿不到真实 lifecycle → active=false、restartPending=true（入站保存后需重启并入 transport）。
@@ -161,10 +191,12 @@ export function createInboundChannelConfigPort({ store, warn = () => {}, audit =
         type,
         direction: 'inbound',
         configured,
-        enabled: configured,
+        enabled,
+        privateChatEnabled: enabled,
+        desiredEnabled,
         active,
         applyMode: inboundApplyMode(),
-        restartPending: configured && !active,
+        restartPending: configured && (!active || desiredEnabled !== enabled || (active && !enabled)),
         restartRequired: !isHotApplied('inbound'),
         editable: true,
         config: maskSecrets(config, inboundKeyWhitelist(type), type),
@@ -222,8 +254,16 @@ export function createInboundChannelConfigPort({ store, warn = () => {}, audit =
     }
     const key = `${normalized}:account`
     if (plain(read(key)) === null) throw Object.assign(new Error(`入站配置不存在：${normalized}`), { status: 404 })
-    const removal = deleteDurable(store, key)
-    if (removal.durable !== true) {
+    admissionDenied.add(normalized)
+    if (typeof store?.transact !== 'function') {
+      throw Object.assign(new Error('入站配置删除需要事务存储'), { status: 500, code: 'storage-failed' })
+    }
+    const result = transactDurable(store, (draft) => {
+      delete draft[key]
+      delete draft[privateChatEnabledKey(normalized)]
+      return true
+    })
+    if (result.committed !== true) {
       warn(`入站通道配置删除失败: ${normalized}`)
       throw Object.assign(new Error('入站配置删除失败'), { status: 500 })
     }
@@ -232,10 +272,35 @@ export function createInboundChannelConfigPort({ store, warn = () => {}, audit =
     return { type: normalized, deleted: true, direction: 'inbound', configRevision: version }
   }
 
+  function setPrivateChatEnabled(type, enabled) {
+    const normalized = toInboundChannelName(type)
+    if (typeof type !== 'string' || !INBOUND_CHANNEL_SET.has(normalized) || typeof enabled !== 'boolean') {
+      throw Object.assign(new Error('私聊开关参数无效'), { status: 422, code: 'bad-request' })
+    }
+    if (enabled && !configuredOf(normalized)) {
+      throw Object.assign(new Error('请先保存完整的私聊渠道配置'), { status: 409, code: 'not-configured' })
+    }
+    if (!enabled) admissionDenied.add(normalized)
+    if (typeof store?.transact !== 'function') {
+      throw Object.assign(new Error('私聊开关需要事务存储'), { status: 500, code: 'storage-failed' })
+    }
+    const result = transactDurable(store, (draft) => {
+      draft[privateChatEnabledKey(normalized)] = enabled
+      return true
+    })
+    if (result.committed !== true) {
+      warn(`私聊开关写入失败: ${normalized}`)
+      throw Object.assign(new Error('私聊开关保存失败'), { status: 500, code: 'storage-failed' })
+    }
+    version += 1
+    audit('setPrivateChatEnabled', { type: normalized, enabled })
+    return { type: normalized, enabled, configRevision: version }
+  }
+
   /**
    * v0.14（S12）：凭证域（`<type>:account`）的事务化字段级合并写。
-   * 供共享 ChannelControlService 的 legacy 兼容路由（Admin `PUT /api/channels/:type`）调用——
-   * Admin 适配器不再直接写 store（I9）。合并与落盘在同一事务内完成，并发写兄弟字段不会被
+   * 供共享 ChannelControlService 的 Native channel write path 调用——
+   * 调用方不直接写 store（I9）。合并与落盘在同一事务内完成，并发写兄弟字段不会被
    * 读-改-写窗口静默覆盖（I10）；落盘失败时内存与磁盘都不变（I2/I16）。字段校验由调用方在
    * 调用前完成（本方法是持久化原语，不做形态校验，也不归一化 type——legacy 路由按原 key 落盘）。
    * @param {string} type - 通道类型（原样用作 `<type>:account` 键）
@@ -309,7 +374,7 @@ export function createInboundChannelConfigPort({ store, warn = () => {}, audit =
     }
   }
 
-  return { rows, put, remove, mergeAccount, planPut, applyCommitted, get version() { return version } }
+  return { rows, put, remove, setPrivateChatEnabled, privateChatEnabled, privateChatAllowed, mergeAccount, planPut, applyCommitted, get version() { return version } }
 }
 
 function maskSecrets(config, allowed, type) {

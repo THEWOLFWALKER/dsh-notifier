@@ -42,7 +42,7 @@ function reasonError(reason, message) {
 }
 
 /**
- * 展示层形状校验（与 Advanced Console putBindings 同口径，adapter 侧，I9）。
+ * 展示层形状校验（与 Native putBindings 同口径，adapter 侧，I9）。
  * agents 值必须是普通对象；channels 若出现必须是 string[] ⊆ CHANNEL_TYPES；quiet 若是布尔。
  * channels 表键必须 ∈ INBOUND_CHANNELS；值对象的 defaultAgent 必须是非空字符串。
  * 只出现者参与替换；两侧都不出现 = 空操作（返回当前快照）。
@@ -97,7 +97,7 @@ function normalizeBindingPatch(patch) {
  * 从共享路由控制服务构造 Native 绑定 RPC 投影。
  * @param {object} [deps]
  * @param {ReturnType<typeof import('../control-plane/sessions.mjs').createRoutingControlService>} [deps.service]
- *   - 共享路由控制服务（Native / Admin 共用同一实例）；缺失时按空表 / 不可用降级
+ *   - 共享路由控制服务（Native 使用同一实例）；缺失时按空表 / 不可用降级
  */
 export function createBindingsProjection({ service = null } = {}) {
   const canRead = service !== null && service !== undefined && typeof service.bindingsSnapshot === 'function'

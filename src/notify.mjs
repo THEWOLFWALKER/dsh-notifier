@@ -110,6 +110,7 @@ export function createNotifier(ctx, channels, options = {}) {
   /** 等待所有在途推送完成（进程退出 / 插件卸载前的 flush）。 */
   async function flush() {
     await Promise.allSettled([...inFlight])
+    return { drained: true }
   }
 
   /** 单渠道推送：未配置/未知渠道静默跳过 + warn 提示；已配置渠道失败返回 failed 结果（不抛出，供工具渲染中文反馈）。 */
@@ -129,7 +130,7 @@ export function createNotifier(ctx, channels, options = {}) {
       try {
         const sent = await sendOne(type, entry.config, normalized)
         const confirmed = confirmedOf(sent)
-        const result = channelResult(type, 'sent')
+        const result = { ...channelResult(type, 'sent'), ...(confirmed ? { confirmed: true } : {}) }
         // delivered 是 legacy 别名（== accepted）；accepted/confirmed 才是有证据强度的语义。
         audit(normalized, {
           ok: true,
@@ -150,7 +151,7 @@ export function createNotifier(ctx, channels, options = {}) {
         // 成功证据也非确定性失败，健康面据此报 unavailable 而非伪造 healthy，也绝不触发重放。
         const uncertain = error instanceof Error
           && (error.uncertain === true || (error.noRetry === true && error.code === ERROR_CODES.TIMEOUT))
-        const result = channelResult(type, 'failed', error)
+        const result = { ...channelResult(type, 'failed', error), ...(uncertain ? { uncertain: true } : {}) }
         audit(normalized, {
           ok: false, accepted: [], confirmed: [], delivered: [], skipped: [],
           unknown: uncertain ? [type] : [],

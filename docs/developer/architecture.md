@@ -1,97 +1,91 @@
 # Architecture
 
-## Product And UX Contract
+## Product and trust boundary
 
-The system is designed around the user's task, not around an internal feature inventory. A new capability should reduce user effort, make state and failure understandable, and remain safe under interruption or partial availability. Prefer progressive disclosure, sensible defaults, explicit status, reversible actions, and actionable errors. Rich functionality is welcome when it composes cleanly with existing flows; complexity that cannot be explained or maintained is a design defect.
+The plugin is private-chat only and Native-first. The standalone Admin Console, its HTTP API, browser UI, SSE event hub, scan handlers and recovery server have been removed. Native access is admitted by the DSH Host connection and restricted to an exact method allowlist. When Native is unavailable, operators use Host logs or offline state recovery; the plugin does not start an alternate listener.
 
-All implementation work follows a written plan and an adversarial review loop: plan the smallest useful slice, implement it, challenge assumptions and failure paths, revise the code, then validate focused behavior and the full contract. Long-range roadmap items stay staged and evidence-driven; do not build speculative infrastructure ahead of a demonstrated need.
+Inbound business handling requires provider evidence for a private chat, a stable account ID and a complete `(channel, accountId, userId)` principal. Missing or unknown values fail closed. Pairing establishes identity; transport credentials and legacy YAML `allowUsers` do not grant access. Outbound private targets are account-scoped and provider-checked. Group sources and targets are rejected.
 
-The sub-agent console and any admin-facing GUI are part of DSH, not a separate product. They must reuse the visual tokens, density, navigation, feedback states, responsive behavior, and interaction grammar provided by the DSH Host, as consumed by `client.js`. New screens may add domain-specific information architecture, but they must not create a competing visual language or decorative dashboard style.
+## Runtime assembly
 
-The approved future product direction is documented in `docs/developer/architecture-roadmap.md`: a personal-mode-first cross-IM control plane with a unified control core and native channel renderers. That roadmap is planning state only; current runtime behavior remains defined by `src/` and tests.
+`src/index.mjs` is the Cordis plugin assembly root. It resolves configuration, initializes the fresh-schema state store, loads canonical channel configuration, builds the notifier and wires optional services. Important authorities have one owner:
 
-## Runtime Shape
+- `src/inbound/store.mjs` owns durable state and the one-time v0.15 offline backup/reset.
+- `src/inbound/identity.mjs` owns paired principal identity.
+- `src/inbound/bus.mjs` performs private admission, deduplication and inbound dispatch.
+- `src/interaction/ledger.mjs` owns approval, action and question lifecycle transitions.
+- `src/routing/current-task.mjs` owns explicit private-user task selection.
+- `src/control-plane/` owns canonical channel, member, routing, question, portability and checked dsh-im operations.
+- `src/native/` projects safe read models and exposes narrow Native actions.
 
-`src/index.mjs` is the Cordis plugin assembly root. It resolves configuration, creates the shared state store, overlays admin-managed credentials when enabled, builds the notifier, and then wires optional services. Pure "decision" stages of assembly — the outbound credential overlay, the admin token strategy, and the six-channel inbound enable signals — live as documented in `src/assembly/*.mjs` (`outbound.mjs`, `admin-token.mjs`, `inbound-signals.mjs`, `inbound-channels.mjs`); `index.mjs` calls them and wires the results in place. The actions/approval/questions interaction lifecycles share one state ledger (`src/interaction/ledger.mjs`, `createInteractionLedger`) with decision-field names preserved per chain (`outcome` vs `decision`); per-chain `latestPendingFor` heuristics stay local. Inbound content normalizes to a unified text/image/file shape via `src/inbound/message.mjs` (`normalizeInboundMessage`, text-compatible); the WeChat iLink provider is isolated under `src/channels/wechat-ilink/` and enters through a compatibility facade, with account-scoped cursor/context state and protocol evidence labels. QQ C2C image parsing is wired into the inbound gateway, and QQ/WeChat iLink/DingTalk image paths are contract-tested; none has real-device evidence. Disposal is collected and executed in reverse assembly order.
-
-```text
-Cordis context
-  -> config.mjs
-  -> store / ledger / routing registry
-  -> src/assembly/*.mjs (outbound/admin decisions, inbound signals and channel registry)
-  -> createNotifier (adapters + level routing + segmentation + retry)
-  -> event-listener (automatic events + turn tracker)
-  -> tools (notify, notify_test, ask_user)
-  -> inbound identity/pairing/bus/token stack
-  -> approval/actions/questions/conversation bridges
-  -> admin API/UI/SSE and scan handlers
-```
-
-## Outbound Flow
-
-1. `resolveConfig()` validates rows, resolves `${ENV:NAME}`, and skips invalid channels without aborting startup.
-2. `createNotifier()` normalizes messages and resolves level routing.
-3. `routeTargets()` selects enabled channel instances; optional agent/session routing filters the result.
-4. `sendSegmented()` splits long Unicode text. A partial segmented failure is marked `noRetry` so already delivered pieces are not replayed.
-5. Retry policy is level-dependent: time-sensitive retries most, active retries once, passive does not retry by default.
-6. Broadcast outcomes feed the ledger, admin event hub, and optional `dsh-notifier/sent` emission independently.
-
-## Inbound Trust Flow
+Provider modules normalize events and implement transport-specific private-chat proof. Optional SDKs load only when their provider is explicitly enabled. Disposal is collected in reverse assembly order.
 
 ```text
-provider payload
-  -> normalizeInbound / channel-specific authentication
-  -> shared private-chat admission (reject group events before identity/routing)
-  -> inbound bus deduplication
-  -> identity allows(channel, userId, accountId)
-  -> command / approval / question / conversation consumer
-  -> token or trusted reply validation
-  -> first-arrival settlement
-  -> agent action or desktop fallback
+DSH Host context
+  -> config and fresh-schema store
+  -> canonical channel sources and outbound notifier
+  -> inbound provider transports
+  -> private admission and identity
+  -> approval / question / action / conversation consumers
+  -> Native read model and narrow actions through Host RPC
 ```
 
-The empty identity table is a guided bootstrap state: registration commands remain available, while normal business messages remain denied until pairing succeeds. Pairing codes are hashed, short-lived, rate-limited, and auditable. The guided bootstrap code is delivered through `<stateDir>/bootstrap-paircode.txt` (mode `0600`, rewritten on re-mint, deleted as soon as the code is redeemed/expired/revoked or the instance boots outside the guided state); logs and stderr carry only the file path, never the code itself. Failed pairing attempts — including submissions of an already expired code — count toward the per-`(channel, userId)` lockout, so an expired code cannot be used to pump unlimited re-mints. Callback/action/question tokens are single-use and source-scoped when a source chat is recorded. Source scoping is fail-closed on the click side since 2026-08-24 (batch C1 / P1-4): when a Telegram short reference carries an origin chat, or a Feishu card value carries `srcChat`, a callback whose own chat id cannot be read (deleted message, malformed payload, missing `context.open_chat_id`) is rejected with "go back to the original chat" instead of being allowed through. The reference is not consumed and the waiter is not settled, so the original card stays usable inside its TTL. Cards minted before the metadata existed (no origin / empty `srcChat`) keep the legacy warn-and-allow path, bounded by the 15-minute reference TTL.
+## Delivery evidence
 
-Question numbered fallbacks carry target-scoped `hintTargets` records. A reply can settle only when `(channel,userId,chatId)` exactly matches a pushed card or a confirmed per-target `sendText`; a same-user wrong-chat reply is consumed with an instruction to return to the original chat and does not settle. Missing `chatId`, legacy channel-only `hintChannels`, cross-channel messages, and unconfirmed/partial delivery remain fail-closed. A channel-level `notifyAll().delivered` result is intentionally insufficient to establish a specific chat's receipt.
+Public notification results distinguish provider acceptance, explicit confirmation, unknown outcomes, failures and skipped targets. `accepted` does not mean delivered. Unknown results are not retried automatically. Activity records contain metadata only and label uncertain outcomes clearly.
+
+Cloud deployment restart reads and reconciles durable job state; it does not repeat external writes. A retry is an explicit user action. Failures before an external request are definite failures; failures after it starts may require recovery because the remote outcome can be unknown.
+
+## Private-chat lifecycle
+
+```text
+provider event
+  -> authenticate and establish private chat type
+  -> require enabled channel, current generation and stable account identity
+  -> resolve complete paired principal
+  -> deduplicate and dispatch commands / approvals / questions / conversation
+  -> recheck current generation before external actions
+```
+
+The fresh state begins in guided setup. Registration commands remain available in an explicitly enabled private chat; normal business messages remain denied until pairing succeeds. Pairing codes are hashed, short-lived, rate-limited and auditable. The bootstrap code is delivered through `<stateDir>/bootstrap-paircode.txt` with mode `0600`; logs carry only the path.
+
+Callback and action tokens are single-use and source-scoped. Missing account, user, chat type or source evidence is a rejection; it does not consume a token or settle a waiter. Numbered question replies must match the target channel, account, user and private chat. Channel-wide delivery results do not prove a particular recipient received a message.
 
 ## Routing
 
-Outbound resolution layers are, in order: session diff, exact agent id, workspace entry, global enabled channel pool. `channels` and `quiet` are resolved independently. Inbound resolution uses explicit conversation binding, channel default, unique active agent, then latest active session.
+Outbound resolution layers are session diff, exact agent ID, workspace entry and global enabled channel pool. `channels` and `quiet` resolve independently. Inbound resolution requires an explicit conversation binding, channel default or an unambiguous active workspace selection; an implicit latest-session fallback is not used for private task selection.
 
-Persistent route keys are `route:agents`, `route:channels`, `route:sessions`, and `bind:*` compatibility records. The route CLI and admin API use the same router setters; they must not write these tables directly.
+Persistent routing state is keyed by `route:agents`, `route:channels`, `route:sessions` and account-scoped `bind:*` records. Missing-account legacy records do not participate in the current principal model.
 
-## Control-Plane Services (v0.14)
+## Native control services
 
-Each control domain has one shared application service. The Native surface and the loopback Advanced Console consume the same service and are projections/adapters over it — neither writes the store directly (contract I9), and the Native read-only views add no second authority.
+Native actions call shared control-plane authorities. They do not write state directly, and no legacy Admin adapter or second authorization path remains.
 
-| Domain | Shared service | Note |
+| Domain | Authority | Responsibility |
 | --- | --- | --- |
-| Outbound channels | `createChannelControlService` (`src/control-plane/channels.mjs`), `createOutboundConfigService` (`src/control-surface/outbound-config.mjs`) | validate → durable write → atomic `OutboundSource.replace`; credential merge stays in the inbound port |
-| Inbound credentials | inbound port `mergeAccount` (`src/inbound/channel-config.mjs`) | read-merge-commit inside one `store.transact` |
-| Members / pairing / pending | `createMembersControlService` (`src/control-plane/members.mjs`) | identity + pairing lifecycle; backs the Native private-chat wizard and pending banner |
-| Sessions / routing / bindings | `createRoutingControlService` (`src/control-plane/sessions.mjs`) | writes `route:*` through the router transaction, never a direct table write |
-| Questions settlement | `createQuestionsControlService` (`src/control-plane/questions.mjs`) | delegates to the Control Core bridge; backs Native pending items |
-| Diagnostics | `createDiagnosticsService` (`src/control-surface/diagnostics.mjs`) | read-only redacted snapshot; backs support reports and the recovery console |
+| Outbound channels | `createChannelControlService` and `createOutboundConfigService` | Validate, durably save and apply canonical channel settings |
+| Inbound credentials | inbound config port | Merge secret patches in one store transaction |
+| Members and pairing | `createMembersControlService` | Pairing, member status and user removal |
+| Routing | `createRoutingControlService` | Account-scoped route and binding state |
+| Questions | `createQuestionsControlService` | Delegate settlement to Control Core |
+| Diagnostics | `createDiagnosticsService` | Return a read-only, redacted support snapshot |
+| Cloud deployment | `createCloudflareDeploymentService` | Persist jobs and require explicit retries after uncertain external effects |
 
-Cross-field credential merges and session-overlay updates run inside a single `store.transact()` (read the latest draft → field-level merge → durable commit) so a concurrent sibling-field write is preserved instead of overwritten — the v0.14 session-overlay TOCTOU fix.
+The optional dsh-im bridge uses checked delivery interfaces from the fixed upstream contract. The dsh-im one-click config importer is intentionally out of scope for this rebuild.
 
-## State And Files
+## State and files
 
-The shared file is `<stateDir>/state.json` (default `$DSH_HOME/dsh-notifier/state.json`, then `~/.dsh/dsh-notifier/state.json`). The store uses dirty-key merge, a lock file, mtime convergence reads, 0600 best effort permissions, and corruption backup before self-healing.
+The shared state file is `<stateDir>/state.json` (default `$DSH_HOME/dsh-notifier/state.json`, then `~/.dsh/dsh-notifier/state.json`). The store uses detached reads, transactional writes, file and directory sync, bounded locks and corruption backups. A rename followed by failed directory sync is reported as an unknown commit outcome; callers must not blindly repeat external side effects.
 
-Other durable files include `ledger.jsonl`, `ledger-state.json`, and `admin-audit.jsonl` in the same state directory when those features are enabled. Credentials are masked in admin responses and must never be copied into docs, tests, or logs.
+On the first v0.15 startup, a mode-0600 offline backup is created before old keys are cleared and the fresh schema is committed. Backup or transaction failure fences access to the old state. Startup does not migrate old credentials, identities, private-chat permissions or routes into runtime.
 
-Every state key family and every in-process learning table must have a bound and a reclamation path. Persistent families are reclaimed by the `sweepOnce` pass in `src/index.mjs` (dedup window, resolved approvals/actions/questions, orphan pending rows, observe-mode retention) or by their owner's lifecycle (`bind:*` follows session-registry reclamation, `wechat:<accountId>:ctx:` caps at 256 uids; legacy `wechat:ctx:` remains for compatibility callers). In-process tables use `src/inbound/_bounded.mjs`: `setBounded` evicts the oldest entry past the cap and refreshes an updated key's freshness (LRU touch), and `createThrottledWarn` keeps eviction visible without flooding logs. Current caps are 1024 for the dingtalk (`sessionWebhooks`, `chatSenders`, `seenMsgIds`) and qq (`targetKinds`, `msgSeqs`) tables, and 256 in-flight keys for the debounce and grace queues, which fire the oldest entry early rather than dropping it. Eviction must always degrade into an existing fallback path, never into a lost notification.
+Durable families have bounded retention or a reclamation path. In-process provider maps are capped and evict old observations. Eviction must fail closed for authorization and private target proofs.
 
-## Admin Boundary
+## Extension boundaries
 
-The server is a zero-dependency `node:http` wrapper around `admin/api.mjs`. It is loopback-only, requires `Authorization: Bearer`, caps request bodies at 1 MiB, caps SSE connections, and maps business errors to safe status/message responses. The UI is embedded in `src/admin/ui.mjs`; the API and CLI share the same router/store semantics.
-
-## Extension Boundaries
-
-- Add fixed HTTP notification channels to `src/adapters/spec-channels.mjs` plus a fixture; use a code adapter only for token exchange or multi-step control flow.
+- Add fixed HTTP notification channels to `src/adapters/spec-channels.mjs` with a fixture; use a code adapter only for token exchange or multi-step control flow.
 - Keep the adapter contract `resolve(cfg) -> resolved` and `send(resolved, msg) -> Promise`.
-- Inbound channels implement the shared contract and may expose optional action/question card methods; callers must always retain text/number fallbacks. The QQ transport uses explicit `INTERACTION_CREATE` key/token callbacks for single-chat cards; group targets remain text-only. Approval/question decisions stay in the shared Control Core, and `approval.parallel` is an explicit opt-in (default off) with fail-closed rejection handling.
-- QQ single-chat native buttons and outbound group notification fallback are contract-tested only; QQ/WeChat iLink/DingTalk image envelopes are wired and contract-tested, while real provider payload/device behavior remains unverified. The loopback Web/admin surface now offers a 阶段 2A `ask_user` settlement entry (choose/reject through Control Core, masked snapshot, Bearer-gated; see `src/questions/router.mjs` facade); desktop still has none, so dual-end sharing is not claimed.
-- Other plugins consume the injected `notifier` service and `dsh-notifier/sent` event; they must declare static injection and must not push from a sent-event handler.
-- Future bidirectional channels must keep transport, control semantics, and native rendering separate. External SDKs are optional and lazy-loaded only after license, maintenance, security, and dependency review; unlicensed or `UNLICENSED` code is not copied.
+- Inbound providers must expose and validate private-chat evidence before dispatch. Unknown/group chat types and targets are rejected.
+- Approval and question decisions stay in the shared Control Core. Notifications retain truthful text fallbacks where the provider supports them.
+- Consumers use the injected `notifier` service and metadata-only `dsh-notifier/sent` event; they must not push from a sent-event handler.
+- External SDKs remain optional and lazy-loaded; provider contract tests do not certify real-device behavior.

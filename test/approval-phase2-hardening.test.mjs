@@ -42,7 +42,12 @@ function makeFake(channel, { targets = [], failCards = false, accountId = undefi
 function makeRig({ telegram = null, approvalConfig = {}, control = undefined, interactive = undefined } = {}) {
   const store = createStore(tempPath())
   const vault = createTokenVault({ secret: 'phase2-secret' })
-  const bus = createInboundBus({ allowUsers: ['u1', 'u2', 'u3'], store, vault })
+  const allowed = new Set(['telegram:TG_APP:u1', 'telegram:TG_APP:u2', 'telegram:TG_APP:u3'])
+  const identity = {
+    isEmpty: () => false,
+    allows: (channel, userId, accountId) => allowed.has(`${channel}:${accountId}:${userId}`),
+  }
+  const bus = createInboundBus({ identity, store, vault })
   const handlers = {}
   const ctx = {
     on: (event, handler) => { handlers[event] = handler; return () => { delete handlers[event] } },
@@ -104,7 +109,7 @@ test('concurrent qKeys are isolated: settling one leaves the other pending', asy
   // Settle the first one via button (unique messageId to avoid dedup)
   const action1 = buildApprovalAction('allowed-once', card1.approvalKey, card1.token)
   rig.bus.accept({
-    channel: 'telegram', accountId: 'TG_APP', userId: 'u1', chatId: '10001', messageId: 'msg-1',
+    channel: 'telegram', chatType: 'private', accountId: 'TG_APP', userId: 'u1', chatId: '10001', messageId: 'msg-1',
     text: 'approve', approvalAction: parseApprovalAction(action1),
   })
   const result1 = await p1
@@ -113,7 +118,7 @@ test('concurrent qKeys are isolated: settling one leaves the other pending', asy
   // Settle the second one independently (with its own action and unique messageId)
   const action2 = buildApprovalAction('rejected', card2.approvalKey, card2.token)
   rig.bus.accept({
-    channel: 'telegram', accountId: 'TG_APP', userId: 'u1', chatId: '10001', messageId: 'msg-2',
+    channel: 'telegram', chatType: 'private', accountId: 'TG_APP', userId: 'u1', chatId: '10001', messageId: 'msg-2',
     text: 'reject', approvalAction: parseApprovalAction(action2),
   })
   const result2 = await p2
@@ -131,7 +136,7 @@ test('approval.parallel defaults to off: remote and desktop run sequentially', a
   // Settle from mobile（真实回调携带消息标识 → eventId）
   const action = buildApprovalAction('allowed-once', card.approvalKey, card.token)
   rig.bus.accept({
-    channel: 'telegram', accountId: 'TG_APP', userId: 'u1', chatId: '10001', messageId: 'msg-pp-1',
+    channel: 'telegram', chatType: 'private', accountId: 'TG_APP', userId: 'u1', chatId: '10001', messageId: 'msg-pp-1',
     text: 'approve', approvalAction: parseApprovalAction(action),
   })
   const result = await outcome
@@ -167,13 +172,13 @@ test('replay of consumed approval action is rejected (single-use token)', async 
   // First accept succeeds（真实回调携带消息标识 → eventId）
   const action = buildApprovalAction('allowed-once', card.approvalKey, card.token)
   const first = rig.bus.accept({
-    channel: 'telegram', accountId: 'TG_APP', userId: 'u1', chatId: '10001', messageId: 'msg-rp-1',
+    channel: 'telegram', chatType: 'private', accountId: 'TG_APP', userId: 'u1', chatId: '10001', messageId: 'msg-rp-1',
     text: 'approve', approvalAction: parseApprovalAction(action),
   })
   assert.equal(first.ok, true, 'first accept succeeds')
   // Replay the same action → should be rejected (already consumed)
   const replay = rig.bus.accept({
-    channel: 'telegram', accountId: 'TG_APP', userId: 'u1', chatId: '10001', messageId: 'msg-rp-2',
+    channel: 'telegram', chatType: 'private', accountId: 'TG_APP', userId: 'u1', chatId: '10001', messageId: 'msg-rp-2',
     text: 'replay', approvalAction: parseApprovalAction(action),
   })
   // The replay might succeed at bus level but the approval handler detects already-resolved
@@ -198,7 +203,7 @@ test('G-41: empty pushedTo fails closed — receipt visible, no settlement, desk
   const row = rig.store.get(card.approvalKey)
   rig.store.set(card.approvalKey, { ...row, pushedTo: [] })
   rig.bus.accept({
-    channel: 'telegram', accountId: 'TG_APP', userId: 'u1', chatId: '10001', messageId: 'msg-g41-empty',
+    channel: 'telegram', chatType: 'private', accountId: 'TG_APP', userId: 'u1', chatId: '10001', messageId: 'msg-g41-empty',
     text: 'approve', approvalAction: parseApprovalAction(buildApprovalAction('allowed-once', card.approvalKey, card.token)),
   })
   assert.ok(
@@ -217,7 +222,7 @@ test('G-41: non-empty pushedTo keeps both branches — wrong user rejected, reci
   const card = tg.state.cards[0]
   // Card delivered to u1; same channel/account, a different user (u2) clicks → rejected.
   rig.bus.accept({
-    channel: 'telegram', accountId: 'TG_APP', userId: 'u2', chatId: '10001', messageId: 'msg-g41-wrong',
+    channel: 'telegram', chatType: 'private', accountId: 'TG_APP', userId: 'u2', chatId: '10001', messageId: 'msg-g41-wrong',
     text: 'x', approvalAction: parseApprovalAction(buildApprovalAction('allowed-once', card.approvalKey, card.token)),
   })
   assert.ok(
@@ -227,7 +232,7 @@ test('G-41: non-empty pushedTo keeps both branches — wrong user rejected, reci
   assert.equal(rig.store.get(card.approvalKey).status, 'pending', 'mismatch does not settle')
   // The actual recipient (u1) can still settle afterwards — rejection did not consume the token.
   rig.bus.accept({
-    channel: 'telegram', accountId: 'TG_APP', userId: 'u1', chatId: '10001', messageId: 'msg-g41-right',
+    channel: 'telegram', chatType: 'private', accountId: 'TG_APP', userId: 'u1', chatId: '10001', messageId: 'msg-g41-right',
     text: 'approve', approvalAction: parseApprovalAction(buildApprovalAction('allowed-once', card.approvalKey, card.token)),
   })
   assert.equal(await outcome, 'allowed-once', 'matched recipient still settles')

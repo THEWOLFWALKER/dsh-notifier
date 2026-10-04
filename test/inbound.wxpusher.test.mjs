@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
 import { createWxpusherInbound, resolveWxpusherInboundConfig } from '../src/inbound/wxpusher-callback.mjs'
-import { createInboundBus } from '../src/inbound/bus.mjs'
+import { createPrivateTestBus as createInboundBus } from './helpers/private-bus.mjs'
 import { createStore } from '../src/inbound/store.mjs'
 import { createIdentity } from '../src/inbound/identity.mjs'
 
@@ -49,7 +49,7 @@ function makeRig({ allowUsers = ['UID_1'], config = {}, pushOptions = {} } = {})
       port: 0, // 随机端口（真实 server）
       notifyUids: config.notifyUids ?? [],
       allowedIps: config.allowedIps ?? [],
-      ...(config.accountId === undefined ? {} : { accountId: config.accountId }),
+      accountId: config.accountId === undefined ? 'wxpusher-test' : config.accountId,
     },
     bus,
     store,
@@ -158,7 +158,7 @@ test('send_up_cmd：剥 #{appId} 前缀 → bus envelope；白名单外 uid 拒�
   await rig.inbound.stop()
 })
 
-test('send_up_cmd：本地 accountId 注入 envelop（config.accountId 优先；缺省字面量 default；回调自报 appId 一律忽略）', async () => {
+test('send_up_cmd：本地 accountId 注入 envelop（缺省保持空并拒绝准入；回调自报 appId 一律忽略）', async () => {
   const accepted = []
   const rig = makeRig({ config: { accountId: 'my-wx-app', notifyUids: ['UID_1'] } })
   rig.bus.onMessage((envelope) => accepted.push(envelope))
@@ -172,13 +172,13 @@ test('send_up_cmd：本地 accountId 注入 envelop（config.accountId 优先；
   await rig.inbound.stop()
 
   const acceptedDefault = []
-  const rig2 = makeRig({ config: { notifyUids: [] } })
+  const rig2 = makeRig({ config: { accountId: '', notifyUids: [] } })
   rig2.bus.onMessage((envelope) => acceptedDefault.push(envelope))
   rig2.inbound.start()
   await tick()
   await post(rig2, { action: 'send_up_cmd', data: { uid: 'UID_1', appId: 'EVIL_SELF_REPORT', time: '10', content: 'hi' } })
-  assert.equal(acceptedDefault[0].accountId, 'default', '未显式配置 accountId → 稳定字面量 default')
-  assert.equal(rig2.inbound.accountId, 'default')
+  assert.equal(acceptedDefault.length, 0, '未显式配置 accountId 时 fail closed，不合成默认 principal')
+  assert.equal(rig2.inbound.accountId, '')
   await rig2.inbound.stop()
 })
 
@@ -242,7 +242,7 @@ test('v0.7 学习键汇流：identity 装配时 app_subscribe uid 进待确认�
   const rig = makeRig()
   const identity = createIdentity({ store: rig.store })
   rig.inbound = createWxpusherInbound({
-    config: { appToken: 'AT', webhookPath: '/hook/secret123', host: '127.0.0.1', port: 0, notifyUids: [], allowedIps: [] },
+    config: { appToken: 'AT', accountId: 'wxpusher-test', webhookPath: '/hook/secret123', host: '127.0.0.1', port: 0, notifyUids: [], allowedIps: [] },
     bus: rig.bus, store: rig.store, identity, logger: { warn: () => {} }, fetchImpl: () => Promise.resolve(jsonResponse({ code: 1000 })),
   })
   liveInbounds.push(rig.inbound)
@@ -251,13 +251,13 @@ test('v0.7 学习键汇流：identity 装配时 app_subscribe uid 进待确认�
   await post(rig, { action: 'app_subscribe', data: { uid: '990011', extra: 'scan-qr' } })
   const pending = identity.listPending()
   assert.equal(pending.length, 1, '订阅 uid 进待确认绑定')
-  assert.equal(pending[0].key ?? `${pending[0].channel}:${pending[0].userId}`, 'wxpusher:990011')
+  assert.equal(pending[0].key ?? `${pending[0].channel}:${pending[0].accountId}:${pending[0].userId}`, 'wxpusher:wxpusher-test:990011')
   assert.equal(pending[0].origin, 'learned')
   // 幂等：重复订阅事件不产生重复条目
   await post(rig, { action: 'app_subscribe', data: { uid: '990011' } })
   assert.equal(identity.listPending().length, 1)
   // 已是成员：不进待确认（addPending 查绑定表拒绝 already-bound；allowUsers 不是绑定）
-  identity.addBinding({ channel: 'wxpusher', userId: 'UID_1' })
+  identity.addBinding({ channel: 'wxpusher', accountId: 'wxpusher-test', userId: 'UID_1' })
   await post(rig, { action: 'app_subscribe', data: { uid: 'UID_1' } })
   assert.equal(identity.listPending().some((entry) => entry.userId === 'UID_1'), false)
   await rig.inbound.stop()
@@ -355,7 +355,7 @@ test('INJ-1 app_subscribe：只进学习队列（待确认），不直接获得�
   const identity = createIdentity({ store: rig.store })
   rig.bus = createInboundBus({ identity, store: rig.store, logger: { warn: () => {} } })
   rig.inbound = createWxpusherInbound({
-    config: { appToken: 'AT', webhookPath: '/hook/secret123', host: '127.0.0.1', port: 0, notifyUids: [], allowedIps: [] },
+    config: { appToken: 'AT', accountId: 'wxpusher-test', webhookPath: '/hook/secret123', host: '127.0.0.1', port: 0, notifyUids: [], allowedIps: [] },
     bus: rig.bus, store: rig.store, identity, logger: { warn: () => {} }, fetchImpl: () => Promise.resolve(jsonResponse({ code: 1000 })),
   })
   liveInbounds.push(rig.inbound)
@@ -367,7 +367,7 @@ test('INJ-1 app_subscribe：只进学习队列（待确认），不直接获得�
   const pending = identity.listPending()
   assert.equal(pending.length, 1, '订阅 uid 进待确认绑定')
   assert.ok(pending.every((entry) => entry.origin === 'learned'))
-  assert.equal(identity.allows('wxpusher', '990011'), false, '待确认 uid 尚未绑定，不具备准入/裁决权')
+  assert.equal(identity.allows('wxpusher', '990011', 'wxpusher-test'), false, '待确认 uid 尚未绑定，不具备准入/裁决权')
 
   // 该 uid 的 send_up_cmd → bus 拒绝（身份层挡下），不进入审批/路由
   let delivered = 0
@@ -376,8 +376,8 @@ test('INJ-1 app_subscribe：只进学习队列（待确认），不直接获得�
   assert.equal(delivered, 0, '未确认绑定的 send_up_cmd 不得到达审批/路由')
 
   // 确认转正后才有裁决入口（须由管理台 confirm）
-  identity.confirmPending('wxpusher', '990011')
-  assert.equal(identity.allows('wxpusher', '990011'), true, '确认后才具备准入能力')
+  identity.confirmPending('wxpusher', '990011', 'wxpusher-test')
+  assert.equal(identity.allows('wxpusher', '990011', 'wxpusher-test'), true, '确认后才具备准入能力')
   await rig.inbound.stop()
 })
 
@@ -464,14 +464,14 @@ test('限速门：连续两次推送间隔 ≥500ms（官方 ~2QPS）', async ()
 
 // ---------------------------------------------------------------- 契约
 
-test('notifyTargets：notifyUids 优先回落白名单；capabilities.buttons=false', () => {
+test('notifyTargets：仅显式 notifyUids 有效；capabilities.buttons=false', () => {
   const rig = makeRig({ config: { notifyUids: ['UID_1', 'UID_2'] } })
   assert.deepEqual(rig.inbound.notifyTargets(), [
     { chatId: 'UID_1', userId: 'UID_1' },
     { chatId: 'UID_2', userId: 'UID_2' },
   ])
   const fallback = makeRig({ config: { fallbackTargets: ['UID_GLOBAL'] } })
-  assert.deepEqual(fallback.inbound.notifyTargets(), [{ chatId: 'UID_GLOBAL', userId: 'UID_GLOBAL' }])
+  assert.deepEqual(fallback.inbound.notifyTargets(), [])
   assert.deepEqual(rig.inbound.capabilities, { buttons: false })
 })
 

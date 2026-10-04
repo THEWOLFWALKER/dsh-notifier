@@ -104,8 +104,19 @@ function mountOnWebServer(ctx, service) {
       let rpcId = 'invalid-request'
       try {
         const admission = connection.admit(req)
-        if (admission !== null && typeof admission === 'object' && 'rejection' in admission) {
-          writeText(res, admission.rejection, admission.rejection === 401 ? 'unauthorized' : 'forbidden')
+        // DSH Host PeerAdmission is `{ peer } | { rejection }`. Treat a missing or
+        // malformed result as denied; only the authenticated operator peer may proceed.
+        if (admission === null || typeof admission !== 'object' || Array.isArray(admission)) {
+          writeText(res, 403, 'forbidden')
+          return
+        }
+        if ('rejection' in admission) {
+          const status = admission.rejection === 401 ? 401 : 403
+          writeText(res, status, status === 401 ? 'unauthorized' : 'forbidden')
+          return
+        }
+        if (admission.peer === null || typeof admission.peer !== 'object') {
+          writeText(res, 403, 'forbidden')
           return
         }
         const pathname = new URL(String(req?.url ?? '/'), 'http://dsh.internal').pathname

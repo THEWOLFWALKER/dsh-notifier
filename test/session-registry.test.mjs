@@ -358,22 +358,22 @@ test('G-47 线 2：disposed 会话到期摘除但保留出站覆盖字段——�
 test('attachInbound/detachInbound：去重追加、移除、摘空删键、未知会话惰性建档', () => {
   const { registry } = makeRegistry()
   registry.ensureSession(agentOf('s1', '/w'))
-  registry.attachInbound('s1', { channel: 'telegram', userId: '42' })
-  registry.attachInbound('s1', { channel: 'telegram', userId: '42' }) // 重复：去重
-  registry.attachInbound('s1', { channel: 'bark', userId: '42' }) // 不同通道：追加
+  registry.attachInbound('s1', { channel: 'telegram', accountId: 'tg-app', userId: '42' })
+  registry.attachInbound('s1', { channel: 'telegram', accountId: 'tg-app', userId: '42' }) // 重复：去重
+  registry.attachInbound('s1', { channel: 'bark', accountId: 'bark-app', userId: '42' }) // 不同通道：追加
   assert.deepEqual(registry.getSession('s1').inbound, [
-    { channel: 'telegram', userId: '42' },
-    { channel: 'bark', userId: '42' },
+    { channel: 'telegram', accountId: 'tg-app', userId: '42' },
+    { channel: 'bark', accountId: 'bark-app', userId: '42' },
   ])
-  registry.detachInbound('s1', { channel: 'telegram', userId: '42' })
-  assert.deepEqual(registry.getSession('s1').inbound, [{ channel: 'bark', userId: '42' }])
-  registry.detachInbound('s1', { channel: 'bark', userId: '42' })
+  registry.detachInbound('s1', { channel: 'telegram', accountId: 'tg-app', userId: '42' })
+  assert.deepEqual(registry.getSession('s1').inbound, [{ channel: 'bark', accountId: 'bark-app', userId: '42' }])
+  registry.detachInbound('s1', { channel: 'bark', accountId: 'bark-app', userId: '42' })
   assert.equal(registry.getSession('s1').inbound, undefined) // 摘空后整键移除
   registry.detachInbound('s1', { channel: 'nope', userId: '1' }) // 不存在的绑定：安全无操作
   assert.ok(registry.getSession('s1') !== undefined)
-  const lazy = registry.attachInbound('s-new', { channel: 'qq', userId: '7' }) // 未知会话惰性建档
+  const lazy = registry.attachInbound('s-new', { channel: 'qq', accountId: 'qq-app', userId: '7' }) // 未知会话惰性建档
   assert.equal(lazy.workspace, '')
-  assert.deepEqual(lazy.inbound, [{ channel: 'qq', userId: '7' }])
+  assert.deepEqual(lazy.inbound, [{ channel: 'qq', accountId: 'qq-app', userId: '7' }])
   assert.equal(registry.attachInbound('s2', {}), undefined) // 无效绑定：不建档不变更
   assert.equal(registry.getSession('s2'), undefined)
 })
@@ -393,33 +393,6 @@ test('setOutbound：字段级 diff 合并、undefined 删键、惰性建档、�
   const lazy = registry.setOutbound('ghost', { channels: ['bark'] }) // 未知会话惰性建档
   assert.equal(lazy.workspace, '')
   assert.deepEqual(lazy.outbound, { channels: ['bark'] })
-})
-
-// ---- 迁移兼容 ----
-
-test('migrateLegacyBinds：为 bind:* 旧值补最小记录，跳过已有与非字符串，返回迁移数', () => {
-  const seeded = makeStore({
-    'bind:telegram:42': 's1',
-    'bind:telegram:43': 's2',
-    'bind:bark:7': 12345, // 非字符串值：跳过
-    'bind:qq:1': 's3',
-  })
-  const { registry, clock } = makeRegistry({ store: seeded })
-  registry.ensureSession(agentOf('s3', '/w/known')) // s3 已有记录：不迁移
-  assert.equal(registry.migrateLegacyBinds(), 2)
-  const s1 = registry.getSession('s1')
-  assert.equal(s1.inherit, '') // 最小记录：空串占位
-  assert.equal(s1.workspace, '')
-  assert.equal(s1.createdAt, 1_000_000)
-  assert.equal(registry.getSession('s2') !== undefined, true)
-  assert.equal(registry.getSession('s3').workspace, 'known')
-  clock.t += 4_000
-  registry.ensureSession(agentOf('s1', '/w/proj')) // 等 agent/created 再补全占位
-  const filled = registry.getSession('s1')
-  assert.equal(filled.workspace, 'proj')
-  assert.equal(filled.inherit, 'proj')
-  assert.equal(filled.createdAt, 1_000_000) // 迁移建档时间保留
-  assert.equal(registry.migrateLegacyBinds(), 0) // 再跑一次：全部已存在
 })
 
 // ---- 活跃集合与消歧 ----

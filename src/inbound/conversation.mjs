@@ -247,7 +247,7 @@ export function registerConversationRouter(deps, strings) {
   const inboundBindingOf = (envelope) => ({
     channel: String(envelope.channel ?? '').trim().toLowerCase(),
     userId: String(envelope.userId ?? '').trim(),
-    ...(envelope.accountId && envelope.accountId !== 'default' ? { accountId: String(envelope.accountId).trim() } : {}),
+    accountId: String(envelope.accountId ?? '').trim(),
   })
 
   /**
@@ -550,15 +550,18 @@ say(t.helpLines.join('\n'))
   }
 
   /**
-   * owner 判定：identity.list(channel) 里存在同 userId 且 role === 'owner' 的记录。
-   * owner 是 **channel-scoped** 绑定（同 userId 在别的渠道的 owner 不算数）；
+   * owner 判定：完整匹配本条消息的 channel/accountId/userId principal。
    * identity 缺失/list 抛错一律 fail-closed（false）。绝不告诉调用者「谁是 owner」。
    */
   function isOwner(envelope) {
     if (identity === null || typeof identity.list !== 'function') return false
+    const accountId = String(envelope?.accountId ?? '').trim()
+    if (accountId === '') return false
     try {
       return identity.list(envelope.channel).some(
-        (row) => String(row?.userId) === String(envelope.userId) && row?.role === 'owner',
+        (row) => row?.accountId !== undefined && String(row.accountId) === accountId
+          && String(row?.userId) === String(envelope.userId)
+          && row?.role === 'owner',
       )
     } catch { return false }
   }
@@ -924,7 +927,7 @@ say(t.helpLines.join('\n'))
   // 键函数反查，绝不找错窗。
   const pending = new Map() // `${channel}:${userId}:${String(chatId ?? '')}` -> { parts, timer, forceSteer }
   const mergeWindowKeyOf = (envelope) =>
-    `${envelope.channel}:${envelope.accountId ?? 'default'}:${envelope.userId}:${String(envelope.chatId ?? '')}`
+    `${envelope.channel}:${String(envelope.accountId ?? '')}:${envelope.userId}:${String(envelope.chatId ?? '')}`
 
   const utf8Bytes = (value) => Buffer.byteLength(String(value), 'utf8')
   const scheduleMerge = (entry) => {

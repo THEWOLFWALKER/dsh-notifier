@@ -18,7 +18,7 @@ import {
 } from '../src/host/messages.mjs'
 import { createNativeQuestionBridge } from '../src/host/native-questions.mjs'
 import { registerConversationRouter } from '../src/inbound/conversation.mjs'
-import { createInboundBus } from '../src/inbound/bus.mjs'
+import { createPrivateFlowBus as createInboundBus } from './helpers/private-flow-bus.mjs'
 import { createStore } from '../src/inbound/store.mjs'
 import { createAgentRouter } from '../src/routing/agent-router.mjs'
 import { createSessionRegistry } from '../src/routing/session-registry.mjs'
@@ -68,7 +68,7 @@ function makeAgent(id = SID, status = 'idle') {
 
 function makeRig({ agents = [] } = {}) {
   const store = createStore(join(mkdtempSync(join(tmpdir(), 'dsh-notifier-38-')), 'state.json'))
-  const bus = createInboundBus({ allowUsers: ['42'], store })
+  const bus = createInboundBus({ store })
   const handlers = {}
   const agentMap = new Map(agents.map((a) => [a.id, a]))
   const ctx = {
@@ -89,7 +89,7 @@ function makeRig({ agents = [] } = {}) {
     channelTypes: () => ['telegram'],
   })
   const flush = async ({ userId = '42', chatId = userId, text = '' }) => {
-    bus.accept({ channel: 'telegram', userId, chatId, messageId: `m${Math.random()}`, text })
+    bus.accept({ channel: 'telegram', accountId: 'tg-app', chatType: 'private', userId, chatId, messageId: `m${Math.random()}`, text })
     await sleep(FLUSH_MS + 10)
   }
   const fire = (event, payload) => (handlers[event] ?? []).forEach((h) => h(payload))

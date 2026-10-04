@@ -10,7 +10,7 @@ Get DeepSeek Harness task updates wherever you are. Reply to questions, handle a
 
 [![npm](https://img.shields.io/npm/v/dsh-notifier?style=flat-square)](https://www.npmjs.com/package/dsh-notifier) [![License](https://img.shields.io/badge/license-MIT-2ea44f?style=flat-square)](LICENSE) [![dshfind](https://dshfind.com/api/badge/THEWOLFWALKER/dsh-notifier?lang=en)](https://dshfind.com/en/plugins/THEWOLFWALKER/dsh-notifier?ref=badge)
 
-`dsh-notifier@0.13.1`
+`dsh-notifier@0.15.0`
 
 <p><img src="docs/screenshots/native-v2-desktop.png" alt="Notify & Private chat" width="760"></p>
 

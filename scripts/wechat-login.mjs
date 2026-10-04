@@ -85,7 +85,7 @@ export function applyWechatConfirmation({ store, statusResp, stateFile, log = co
   // 扫码即配对：iLink 机器人是扫码微信的专属好友（1:1，只有扫码者能和它聊），
   // 扫码确认那一刻身份已唯一确定——直接写绑定（首条即 owner），不需要配对码。
   if (userId !== '') {
-    const bound = createIdentity({ store }).addBinding({ channel: 'wechat', userId, origin: 'paired' })
+    const bound = createIdentity({ store }).addBinding({ channel: 'wechat', accountId, userId, origin: 'paired' })
     if (bound.ok) {
       log(`扫码即配对完成：该微信已绑定为${bound.record.role === 'owner' ? ' owner（首位成员）' : '成员'}，无需再发 /pair。`)
     } else if (bound.reason === 'storage-failed') {

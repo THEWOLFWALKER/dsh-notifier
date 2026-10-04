@@ -15,6 +15,13 @@ function memoryStore() {
     set: (key, value) => { data.set(key, value) },
     delete: (key) => { data.delete(key) },
     entries: () => [...data.entries()],
+    transact: (mutator) => {
+      const draft = Object.fromEntries([...data].map(([key, value]) => [key, structuredClone(value)]))
+      const value = mutator(draft)
+      data.clear()
+      for (const [key, row] of Object.entries(draft)) data.set(key, row)
+      return { ok: true, committed: true, durable: true, value }
+    },
   }
 }
 
@@ -32,9 +39,9 @@ test('register + mintAction + dispatch 正常链', async () => {
     calls.push({ payload, via })
     return { ok: true, message: '✅ 已停止任务' }
   }), true)
-  const minted = dispatcher.mintAction('turn/cancel', { sessionId: 'sess-1' })
+  const minted = dispatcher.mintAction('turn/cancel', { sessionId: 'sess-1' }, { channel: 'telegram', chatId: '42' })
   assert.ok(minted !== null && typeof minted.key === 'string' && minted.key.startsWith('act:turn/cancel:'))
-  const result = dispatcher.dispatch({ actionKey: minted.key, token: minted.token, via: 'telegram:action', userId: 42 })
+  const result = dispatcher.dispatch({ actionKey: minted.key, token: minted.token, via: 'telegram:action', userId: 42, chatId: '42' })
   assert.equal(result.ok, true)
   assert.equal(result.message, '✅ 已停止任务')
   assert.equal(calls.length, 1)
@@ -72,9 +79,9 @@ test('v0.8.7 dispatch：accountId 原样转发进 Control Core（stop 载荷）�
 test('首达采纳：同 token 二次 dispatch 拒绝（already-resolved）', () => {
   const { dispatcher } = setup()
   dispatcher.register('turn/cancel', () => ({ ok: true, message: 'done' }))
-  const minted = dispatcher.mintAction('turn/cancel', {})
-  assert.equal(dispatcher.dispatch({ actionKey: minted.key, token: minted.token }).ok, true)
-  const second = dispatcher.dispatch({ actionKey: minted.key, token: minted.token })
+  const minted = dispatcher.mintAction('turn/cancel', {}, { channel: 'telegram', chatId: '42' })
+  assert.equal(dispatcher.dispatch({ actionKey: minted.key, token: minted.token, via: 'telegram:action', chatId: '42' }).ok, true)
+  const second = dispatcher.dispatch({ actionKey: minted.key, token: minted.token, via: 'telegram:action', chatId: '42' })
   assert.equal(second.ok, false)
   assert.equal(second.reason, 'already-resolved')
   assert.match(second.message, /已处理/)
@@ -132,16 +139,15 @@ test('账本行缺失（重启清账）→ unknown-action 绝不执行', () => {
 
 test('handler 缺失（账本有行但 kind 已注销）→ unknown-kind + 落终态防重试风暴', () => {
   const { store, dispatcher } = setup()
-  // CRACK-001 后缺 srcChats 且窗外的行会先被来源闸拒绝——本用例只关心 unknown-kind，
-  // 夹具给新鲜 createdAt 使其落入升级宽限窗、抵达 handler 查找。
-  store.set('act:ghost/act:abcd', { kind: 'ghost/act', payload: {}, status: 'pending', createdAt: Date.now() })
+  // A missing source proof must not reach handler lookup, even for a freshly created row.
+  store.set('act:ghost/act:abcd', { kind: 'ghost/act', payload: {}, status: 'pending', srcChats: { telegram: ['42'] } })
   const result = dispatcher.dispatch({ actionKey: 'act:ghost/act:abcd', token: 'whatever.sig' })
   // token 验签先失败（whatever.sig 非法）——先过验签再测 unknown-kind
   if (result.reason === 'bad-signature') {
     // 用真 vault 给该 key 铸造合法 token 复测
     const vault2 = createTokenVault({ secret: 'test-secret' })
     const token2 = vault2.mint('act:ghost/act:abcd')
-    const retry = dispatcher.dispatch({ actionKey: 'act:ghost/act:abcd', token: token2 })
+    const retry = dispatcher.dispatch({ actionKey: 'act:ghost/act:abcd', token: token2, via: 'telegram:action', chatId: '42' })
     assert.equal(retry.reason, 'unknown-kind')
     assert.equal(store.get('act:ghost/act:abcd').status, 'resolved')
     assert.equal(store.get('act:ghost/act:abcd').outcome, 'unknown-kind')
@@ -153,8 +159,8 @@ test('handler 缺失（账本有行但 kind 已注销）→ unknown-kind + 落�
 test('handler 抛异常：已核销 + 中文反馈 + 绝不外抛', () => {
   const { store, dispatcher } = setup()
   dispatcher.register('turn/cancel', () => { throw new Error('boom') })
-  const minted = dispatcher.mintAction('turn/cancel', {})
-  const result = dispatcher.dispatch({ actionKey: minted.key, token: minted.token })
+  const minted = dispatcher.mintAction('turn/cancel', {}, { channel: 'telegram', chatId: '42' })
+  const result = dispatcher.dispatch({ actionKey: minted.key, token: minted.token, via: 'telegram:action', chatId: '42' })
   assert.equal(result.ok, true, '点击已生效（核销成功），执行异常另行反馈')
   assert.match(result.message, /异常/)
   assert.equal(store.get(minted.key).outcome, 'handler-error')
@@ -163,8 +169,8 @@ test('handler 抛异常：已核销 + 中文反馈 + 绝不外抛', () => {
 test('handler 返回 ok:false → message 透传给操作者', () => {
   const { store, dispatcher } = setup()
   dispatcher.register('turn/cancel', () => ({ ok: false, message: '会话不存在（任务可能已结束）' }))
-  const minted = dispatcher.mintAction('turn/cancel', { sessionId: 'x' })
-  const result = dispatcher.dispatch({ actionKey: minted.key, token: minted.token })
+  const minted = dispatcher.mintAction('turn/cancel', { sessionId: 'x' }, { channel: 'telegram', chatId: '42' })
+  const result = dispatcher.dispatch({ actionKey: minted.key, token: minted.token, via: 'telegram:action', chatId: '42' })
   assert.equal(result.ok, true, '核销成功')
   assert.equal(result.message, '会话不存在（任务可能已结束）')
   const row = store.get(minted.key)
@@ -286,7 +292,7 @@ test('F-08 dispatch：markSource 补记多目标，markSource/unmarkSource 生�
   assert.equal(dispatcher.dispatch({ actionKey: minted.key, token: minted.token, via: 'telegram:action', userId: 42, chatId: '42' }).ok, true)
 })
 
-test('F-08 dispatch：legacy 老卡（无来源元数据）→ 显式 warn + 兼容放行', async () => {
+test('F-08 dispatch：缺来源证明的旧卡 fail-closed，不执行动作', async () => {
   const loggerLines = []
   const logger = { warn: (p, m) => loggerLines.push(`${p} ${m}`) }
   const dispatcher = createActionDispatcher({ vault: createTokenVault({ secret: 'test-secret' }), store: memoryStore(), logger })
@@ -295,8 +301,9 @@ test('F-08 dispatch：legacy 老卡（无来源元数据）→ 显式 warn + 兼
 
   const minted = dispatcher.mintAction('turn/cancel', { sessionId: 's' }) // 无 meta → legacy
   const result = dispatcher.dispatch({ actionKey: minted.key, token: minted.token, via: 'telegram:action', userId: 42, chatId: '999' })
-  assert.equal(result.ok, true, '老卡缺来源元数据：兼容放行')
-  assert.equal(calls.length, 1, '兼容路径仍执行 handler')
+  assert.equal(result.ok, false)
+  assert.equal(result.reason, 'source-chat-mismatch')
+  assert.equal(calls.length, 0)
   assert.ok(loggerLines.some((line) => /srcChats/.test(line)), '应显式 warn 来源元数据缺失')
 })
 
@@ -319,16 +326,17 @@ function seedLegacyCard({ vault, store, key, ageMs = 6_000, srcChats }) {
   return { key, token: vault.mint(key) }
 }
 
-test('CRACK-001 A-3：升级在途旧卡（缺 srcChats、窗内）→ 宽限放行 + warn 含宽限', async () => {
+test('CRACK-001 A-3：升级在途旧卡缺 srcChats 时立即拒绝', async () => {
   const { loggerLines, vault, store, dispatcher } = graceRig()
   const calls = []
   dispatcher.register('turn/cancel', (p) => { calls.push(p); return { ok: true } })
 
   const card = seedLegacyCard({ vault, store, key: 'act:turn/cancel:grace-in', ageMs: 6_000 })
   const result = dispatcher.dispatch({ actionKey: card.key, token: card.token, via: 'telegram:action', userId: 42, chatId: '999' })
-  assert.equal(result.ok, true, '窗内旧卡按宽限语义放行')
-  assert.equal(calls.length, 1)
-  assert.ok(loggerLines.some((line) => /srcChats/.test(line) && /宽限/.test(line)), `warn 应含「宽限」（实际：${loggerLines.join(' | ')}）`)
+  assert.equal(result.ok, false)
+  assert.equal(result.reason, 'source-chat-mismatch')
+  assert.equal(calls.length, 0)
+  assert.ok(loggerLines.some((line) => /srcChats/.test(line) && /拒绝/.test(line)))
 })
 
 test('CRACK-001 A-4：窗外旧卡（缺 srcChats、>10min）→ source-chat-mismatch 拒绝 + warn，不核销不执行', async () => {
@@ -346,33 +354,33 @@ test('CRACK-001 A-4：窗外旧卡（缺 srcChats、>10min）→ source-chat-mis
   assert.ok(loggerLines.some((line) => /srcChats/.test(line) && /拒绝/.test(line)), `拒绝必显式 warn（实际：${loggerLines.join(' | ')}）`)
 })
 
-test('CRACK-001 边界：贴窗内沿放行 / 刚出窗 1ms 拒绝（±时钟漂移余量）', async () => {
+test('CRACK-001 边界：来源缺失时新旧时间戳均拒绝', async () => {
   const { vault, store, dispatcher } = graceRig()
   dispatcher.register('turn/cancel', () => ({ ok: true }))
-  // 内沿留 30s 余量防测试机时钟抖动翻红；外侧压 1ms 表达「<= 即放行」的紧边界意图
+  // 时间戳不能替代来源证明。
   const inside = seedLegacyCard({ vault, store, key: 'act:turn/cancel:edge-in', ageMs: 10 * 60 * 1000 - 30_000 })
-  assert.equal(dispatcher.dispatch({ actionKey: inside.key, token: inside.token, via: 'telegram:action', userId: 1 }).ok, true)
+  assert.equal(dispatcher.dispatch({ actionKey: inside.key, token: inside.token, via: 'telegram:action', userId: 1 }).reason, 'source-chat-mismatch')
 
   const outside = seedLegacyCard({ vault, store, key: 'act:turn/cancel:edge-out', ageMs: 10 * 60 * 1000 + 1 })
   assert.equal(dispatcher.dispatch({ actionKey: outside.key, token: outside.token, via: 'telegram:action', userId: 1 }).reason, 'source-chat-mismatch')
 })
 
-test('CRACK-001 A-5：显式 null 分窗——null+窗内放行（宽限），null+窗外拒绝', async () => {
+test('CRACK-001 A-5：显式 null 来源证明始终拒绝', async () => {
   const { loggerLines, vault, store, dispatcher } = graceRig()
   const calls = []
   dispatcher.register('turn/cancel', (p) => { calls.push(p); return { ok: true } })
 
-  // A-5 空挡回归：srcChats===null 在旧代码里两分支都不命中 → 静默放行；新代码必须分窗
+  // A-5 空挡回归：null 不构成来源证明。
   const freshNull = seedLegacyCard({ vault, store, key: 'act:turn/cancel:null-in', ageMs: 6_000, srcChats: null })
   const okResult = dispatcher.dispatch({ actionKey: freshNull.key, token: freshNull.token, via: 'telegram:action', userId: 42, chatId: '999' })
-  assert.equal(okResult.ok, true, '显式 null 窗内与 undefined 同语义（宽限放行）')
-  assert.ok(loggerLines.some((line) => /宽限/.test(line)))
+  assert.equal(okResult.ok, false)
+  assert.equal(okResult.reason, 'source-chat-mismatch')
 
   const staleNull = seedLegacyCard({ vault, store, key: 'act:turn/cancel:null-out', ageMs: 10 * 60 * 1000 + 5_000, srcChats: null })
   const badResult = dispatcher.dispatch({ actionKey: staleNull.key, token: staleNull.token, via: 'telegram:action', userId: 42, chatId: '999' })
   assert.equal(badResult.ok, false, '显式 null 窗外一律拒绝（堵双空挡静默放行）')
   assert.equal(badResult.reason, 'source-chat-mismatch')
-  assert.equal(calls.length, 1, '仅窗内那张执行过 handler')
+  assert.equal(calls.length, 0, '无证明时不执行 handler')
 })
 
 test('CRACK-001 A-6：无 createdAt（无法核时间凭据）→ 拒绝不宽限', async () => {
@@ -430,41 +438,37 @@ test('CRACK-001 装配侧契约：mint 无 meta → markSource 补登 → 新卡
   assert.equal(calls.length, 1)
 })
 
-test('CRACK-001 装配侧兜底：markSource 落账失败（store 抛错被吞）→ 窗内可点、窗外拒，不产生永久免检卡', async () => {
-  // 模拟 event-listener.mjs:301 catch 路径：mint 成功后 markSource 的 store.set 抛错
-  // （偶发磁盘故障），卡片照发但账本无 srcChats。宽限窗必须给它 10min 上界。
+test('CRACK-001 装配侧：markSource 落账失败时拒绝执行，不能用时间窗代替来源证明', async () => {
   const data = new Map()
-  let calls = 0
+  let effectCalls = 0
+  let transactions = 0
   const flakyStore = {
     get: (key, fallback) => (data.has(key) ? data.get(key) : fallback),
-    set: (key, value) => {
-      calls += 1
-      if (calls % 2 === 0) throw new Error('disk busy') // 每张卡的 markSource 那次写失败
-      data.set(key, value)
-    },
+    set: (key, value) => { data.set(key, value); return true },
     delete: (key) => { data.delete(key) },
+    transact: (mutator) => {
+      transactions += 1
+      if (transactions === 2) return { ok: false, committed: false, durable: false, code: 'STATE_WRITE_FAILED' }
+      const draft = Object.fromEntries([...data].map(([key, value]) => [key, structuredClone(value)]))
+      const value = mutator(draft)
+      data.clear()
+      for (const [key, row] of Object.entries(draft)) data.set(key, row)
+      return { ok: true, committed: true, durable: true, value }
+    },
   }
   const loggerLines = []
   const logger = { warn: (p, m) => loggerLines.push(`${p} ${m}`) }
   const vault = createTokenVault({ secret: 'test-secret' })
   const dispatcher = createActionDispatcher({ vault, store: flakyStore, logger })
-  dispatcher.register('turn/cancel', () => ({ ok: true }))
+  dispatcher.register('turn/cancel', () => { effectCalls += 1; return { ok: true } })
 
-  // 第一张：markSource 失败 → 无来源 → 窗内点击走宽限放行
-  const cardA = dispatcher.mintAction('turn/cancel', { sessionId: 'a' })
-  try { dispatcher.markSource(cardA.key, 'telegram', '42') } catch { /* 装配层 catch 吞掉 */ }
-  assert.equal(data.get(cardA.key).srcChats, undefined, 'markSource 失败后账本确无来源')
-  const clickA = dispatcher.dispatch({ actionKey: cardA.key, token: cardA.token, via: 'telegram:action', userId: 42, chatId: '999' })
-  assert.equal(clickA.ok, true, 'markSource 失败的新卡窗内仍可点（有界折中）')
-  assert.ok(loggerLines.some((line) => /宽限/.test(line)), '且必须以宽限 warn 可见')
-
-  // 第二张：同路径铸造后把账本行回拨到窗外 → 必须拒绝（免检不可永久）
-  const cardB = dispatcher.mintAction('turn/cancel', { sessionId: 'b' })
-  try { dispatcher.markSource(cardB.key, 'telegram', '42') } catch { /* 同上 */ }
-  data.set(cardB.key, { ...data.get(cardB.key), createdAt: Date.now() - (10 * 60 * 1000 + 1000) })
-  const clickB = dispatcher.dispatch({ actionKey: cardB.key, token: cardB.token, via: 'telegram:action', userId: 42, chatId: '999' })
-  assert.equal(clickB.ok, false, '同一失败路径的卡出窗后 fail-closed')
-  assert.equal(clickB.reason, 'source-chat-mismatch')
+  const card = dispatcher.mintAction('turn/cancel', { sessionId: 'a' })
+  dispatcher.markSource(card.key, 'telegram', '42')
+  assert.equal(data.get(card.key).srcChats, undefined, 'markSource 失败后账本确无来源')
+  const result = dispatcher.dispatch({ actionKey: card.key, token: card.token, via: 'telegram:action', userId: 42, chatId: '42' })
+  assert.equal(result.ok, false)
+  assert.equal(result.reason, 'source-chat-mismatch')
+  assert.equal(effectCalls, 0, '来源证据写入失败时零动作副作用')
 })
 
 test('C5：动作 claim 落盘失败时绝不执行 handler，pending 保持可重试', () => {
@@ -480,13 +484,22 @@ test('C5：动作 claim 落盘失败时绝不执行 handler，pending 保持可�
     },
     delete: (key) => { data.delete(key); return true },
     entries: () => [...data.entries()],
+    transact: (mutator) => {
+      writes += 1
+      if (writes === 2) return { ok: false, committed: false, durable: false, code: 'STATE_WRITE_FAILED' }
+      const draft = Object.fromEntries([...data].map(([key, value]) => [key, structuredClone(value)]))
+      const value = mutator(draft)
+      data.clear()
+      for (const [key, row] of Object.entries(draft)) data.set(key, row)
+      return { ok: true, committed: true, durable: true, value }
+    },
   }
   const vault = createTokenVault({ secret: 'c5-claim-fail' })
   const dispatcher = createActionDispatcher({ vault, store })
   let calls = 0
   dispatcher.register('turn/cancel', () => { calls += 1; return { ok: true } })
-  const card = dispatcher.mintAction('turn/cancel', {})
-  const result = dispatcher.dispatch({ actionKey: card.key, token: card.token })
+  const card = dispatcher.mintAction('turn/cancel', {}, { channel: 'telegram', chatId: '42' })
+  const result = dispatcher.dispatch({ actionKey: card.key, token: card.token, via: 'telegram:action', chatId: '42' })
   assert.equal(result.ok, false)
   assert.equal(result.reason, 'storage-failed')
   assert.equal(calls, 0)
@@ -500,6 +513,13 @@ test('C5：重启看到 claimed 只报告 uncertain，不自动重跑 handler', 
     set: (key, value) => { data.set(key, value); return true },
     delete: (key) => { data.delete(key); return true },
     entries: () => [...data.entries()],
+    transact: (mutator) => {
+      const draft = Object.fromEntries([...data].map(([key, value]) => [key, structuredClone(value)]))
+      const value = mutator(draft)
+      data.clear()
+      for (const [key, row] of Object.entries(draft)) data.set(key, row)
+      return { ok: true, committed: true, durable: true, value }
+    },
   }
   const vault = createTokenVault({ secret: 'c5-restart' })
   const first = createActionDispatcher({ vault, store })

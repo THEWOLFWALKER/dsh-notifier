@@ -21,6 +21,58 @@ test('set：可写路径持久化成功返回 true，同路径新 store 重启�
   assert.deepEqual(reloaded.get('k'), { v: 1 })
 })
 
+test('backup：幂等保留原 state，副本唯一且 mode 0600', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-store-backup-'))
+  const file = join(dir, 'state.json')
+  writeFileSync(file, JSON.stringify({ secretRef: 'opaque-reference' }), { mode: 0o600 })
+  const store = createStore(file)
+  const first = store.backup('v015-reset')
+  assert.equal(first.ok, true)
+  assert.equal(first.existing, false)
+  assert.equal(readFileSync(first.path, 'utf8'), readFileSync(file, 'utf8'))
+  assert.equal(statSync(first.path).mode & 0o777, 0o600)
+  const second = store.backup('v015-reset')
+  assert.equal(second.ok, true)
+  assert.equal(second.existing, true)
+  assert.equal(second.path, first.path)
+  assert.equal(readFileSync(file, 'utf8'), JSON.stringify({ secretRef: 'opaque-reference' }))
+})
+
+test('v0.15 fresh schema: legacy keys are backed up, cleared atomically, and never loaded again', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-store-v015-reset-'))
+  const file = join(dir, 'state.json')
+  writeFileSync(file, JSON.stringify({ 'telegram:account': { botToken: 'secret' }, 'bind:telegram:u1': { role: 'owner' } }), { mode: 0o600 })
+  const store = createStore(file)
+  const result = store.initializeFreshSchema()
+  assert.equal(result.ok, true)
+  assert.equal(result.hadLegacyState, true)
+  assert.ok(result.backupPath)
+  assert.deepEqual(JSON.parse(readFileSync(result.backupPath, 'utf8')), {
+    'telegram:account': { botToken: 'secret' }, 'bind:telegram:u1': { role: 'owner' },
+  })
+  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), {
+    'state:schema-version': 15,
+    'state:setup': { status: 'reconfigure', version: 15, legacyBackupAvailable: true },
+  })
+  assert.equal(store.get('telegram:account'), undefined)
+  assert.equal(store.keys().some((key) => key.startsWith('bind:')), false)
+  assert.deepEqual(createStore(file).initializeFreshSchema(), { ok: true, already: true, backupPath: null })
+})
+
+test('v0.15 fresh schema: backup failure fences old reads and writes', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-store-reset-fail-'))
+  const file = join(dir, 'state.json')
+  writeFileSync(file, JSON.stringify({ 'telegram:account': { botToken: 'secret' } }), { mode: 0o600 })
+  const store = createStore(file)
+  store.backup = () => ({ ok: false })
+  assert.deepEqual(store.initializeFreshSchema(), { ok: false, reason: 'backup-failed' })
+  assert.equal(store.bootStatus().resetRequired, true)
+  assert.equal(store.get('telegram:account'), undefined)
+  assert.deepEqual(store.keys(), [])
+  assert.equal(store.set('unrelated', true), false)
+  assert.match(readFileSync(file, 'utf8'), /botToken/)
+})
+
 test('set：父路径被常规文件占用 → 落盘失败返回 false（不抛、不静默吞、不谎报成功）', () => {
   const dir = mkdtempSync(join(tmpdir(), 'dsh-store-fail-'))
   const blocker = join(dir, 'blocker')

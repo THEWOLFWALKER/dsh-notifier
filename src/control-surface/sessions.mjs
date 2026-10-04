@@ -151,7 +151,7 @@ function normalizeControlDiff(diff) {
  * 从共享路由控制服务构造 Native RPC 投影。
  * @param {object} [deps]
  * @param {ReturnType<typeof import('../control-plane/sessions.mjs').createRoutingControlService>} [deps.service]
- *   - 共享路由控制服务（Native / Admin 共用同一实例）；缺失时按空表 / 不可用降级
+ *   - 共享路由控制服务（Native 使用同一实例）；缺失时按空表 / 不可用降级
  * @param {() => string[]} [deps.enabledTypes] - 已启用出站渠道类型（实时解析用）
  */
 export function createSessionsProjection({ service = null, enabledTypes = () => [] } = {}) {

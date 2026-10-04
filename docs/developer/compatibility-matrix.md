@@ -2,6 +2,12 @@
 
 Snapshot: 2026-09-25.
 
+The host smoke rows below record earlier package versions and the Native surface exercised at
+that time. They are historical evidence only for v0.15: the v0.15 Native RPC and client
+contracts have source-level checks, while a fresh v0.15 host boot and visual walkthrough have
+not been run. Provider and device evidence must be read per-flow and is not implied by a Host
+row.
+
 This document separates three evidence levels:
 
 - **contract/source verified** — repository seams and official source/artifact shape match;
@@ -20,9 +26,9 @@ Do not collapse these into one “supported” claim.
 | QQ inbound gateway | none | native fetch + WebSocket implementation | transport errors isolated | heartbeat/reconnect/stop/restart covered by tests | contract-tested; gateway/device validation still external |
 | QR terminal rendering | `qrcode-terminal` | login CLI convenience | absence does not affect credential result | callback failures absorbed | optional convenience |
 
-Legacy YAML `inbound.allowUsers` remains a one-time migration input. Runtime membership is managed by pairing/admin APIs.
+Legacy YAML `inbound.allowUsers` is ignored for authorization. Runtime membership must be re-established by private chat pairing after the v0.15 state reset.
 
-WxPusher inbound has a local `accountId` (default `default` when omitted). Multiple apps should use distinct explicit `accountId` values; channel names are never used as account IDs.
+WxPusher inbound requires an explicit local `accountId`; a missing id remains missing and private admission fails closed. Multiple apps should use distinct explicit ids; channel names and callback payloads are never used to invent an account id.
 
 No optional SDK is a production runtime dependency.
 

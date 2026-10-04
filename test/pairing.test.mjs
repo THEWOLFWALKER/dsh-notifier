@@ -35,7 +35,7 @@ test('C4：配对应用事务失败时码、绑定、锁出清理都不发布', 
   const beforeCodes = JSON.parse(JSON.stringify(store.get('inbound:pairing', {})))
   store.transact = () => ({ committed: false, durable: false, code: 'STATE_BUSY' })
 
-  const result = pairing.redeemAndBind(minted.code, { channel: 'telegram', userId: 'atomic' },
+  const result = pairing.redeemAndBind(minted.code, { channel: 'telegram', accountId: 'tg-app', userId: 'atomic' },
     (draft, binding) => identity.addBindingToDraft(draft, binding))
   assert.deepEqual(result, { ok: false, reason: 'storage-failed' })
   assert.deepEqual(store.get('inbound:pairing', {}), beforeCodes)
@@ -53,7 +53,7 @@ test('G-59 TTL 过期：码超时后核销 → expired 回执，翻转即落盘 
   const pairing = createPairing({ store, logger: quiet, onAudit: (event, detail) => audits.push({ event, ...detail }) })
   const now = Date.now()
   const minted = pairing.mint({ origin: 'admin', mintedBy: 'boss', now }) // 默认 TTL 10 分钟
-  assert.equal(pairing.redeem(minted.code, { channel: 'telegram', userId: '1', now: now + 10 * 60 * 1000 }).reason, 'expired')
+  assert.equal(pairing.redeem(minted.code, { channel: 'telegram', accountId: 'tg-app', userId: '1', now: now + 10 * 60 * 1000 }).reason, 'expired')
   const table = store.get('inbound:pairing', {})
   const entry = table[Object.keys(table).find((k) => k.startsWith(minted.id))]
   assert.equal(entry.state, 'expired', '惰性过期翻转即落盘（不是只改内存）')
@@ -65,9 +65,9 @@ test('G-59 自定义 ttlMs：mint 参数覆盖默认；到期前一刻可核销�
   const now = Date.now()
   const a = pairing.mint({ origin: 'admin', mintedBy: 'boss', ttlMs: 5000, now })
   assert.equal(a.expiresAt, now + 5000)
-  assert.equal(pairing.redeem(a.code, { channel: 'telegram', userId: '1', now: now + 4999 }).ok, true, '到期前一刻仍可核销')
+  assert.equal(pairing.redeem(a.code, { channel: 'telegram', accountId: 'tg-app', userId: '1', now: now + 4999 }).ok, true, '到期前一刻仍可核销')
   const b = pairing.mint({ origin: 'admin', mintedBy: 'boss', ttlMs: 5000, now })
-  assert.equal(pairing.redeem(b.code, { channel: 'telegram', userId: '1', now: now + 5000 }).reason, 'expired', '恰好到期即过期')
+  assert.equal(pairing.redeem(b.code, { channel: 'telegram', accountId: 'tg-app', userId: '1', now: now + 5000 }).reason, 'expired', '恰好到期即过期')
 })
 
 test('G-20 minted-active 单态同等可过期：过期后不在在铸列表（W12 语义）', () => {
@@ -77,7 +77,7 @@ test('G-20 minted-active 单态同等可过期：过期后不在在铸列表（W
   assert.equal(pairing.listActive(now).length, 1, '刚铸在列（minted-active 视同在铸）')
   const later = now + 61 * 1000
   assert.equal(pairing.listActive(later).length, 0, '过期后 sweep 移出在铸列表')
-  assert.equal(pairing.redeem(minted.code, { channel: 'telegram', userId: '1', now: later }).reason, 'expired')
+  assert.equal(pairing.redeem(minted.code, { channel: 'telegram', accountId: 'tg-app', userId: '1', now: later }).reason, 'expired')
 })
 
 test('G-59 过期码不计锁出（W11 新语义）：连提 6 次过期码始终 expired，永不 locked-out', () => {
@@ -86,12 +86,12 @@ test('G-59 过期码不计锁出（W11 新语义）：连提 6 次过期码始�
   const stale = pairing.mint({ origin: 'bootstrap', mintedBy: 'system:boot', ttlMs: 1 })
   const later = Date.now() + 5000 // 码已过期
   for (let i = 0; i < 6; i += 1) {
-    assert.equal(pairing.redeem(stale.code, { channel: 'telegram', userId: '42', now: later }).reason, 'expired',
+    assert.equal(pairing.redeem(stale.code, { channel: 'telegram', accountId: 'tg-app', userId: '42', now: later }).reason, 'expired',
       `第 ${i + 1} 次应始终是 expired（过期码不翻锁）`)
   }
-  assert.equal(pairing.isLockedOut('telegram', '42', later), false, '过期码提交不触发锁出')
+  assert.equal(pairing.isLockedOut('telegram', '42', later, 'tg-app'), false, '过期码提交不触发锁出')
   const fresh = pairing.mint({ origin: 'admin', mintedBy: 'boss', now: later })
-  assert.equal(pairing.redeem(fresh.code, { channel: 'telegram', userId: '42', now: later }).ok, true,
+  assert.equal(pairing.redeem(fresh.code, { channel: 'telegram', accountId: 'tg-app', userId: '42', now: later }).ok, true,
     '过期码不计失败 → 合法新码直接可配对，无锁出阴影')
 })
 
@@ -99,43 +99,43 @@ test('G-59 无效码翻锁（W11 语义保留）：5 次锁 10 分钟，锁出�
   const pairing = createPairing({ store: null, logger: quiet })
   const now = Date.now()
   for (let i = 0; i < 4; i += 1) {
-    assert.equal(pairing.redeem('AAAA1111', { channel: 'qq', userId: 'q1', now }).reason, 'invalid-code',
+    assert.equal(pairing.redeem('AAAA1111', { channel: 'qq', accountId: 'qq-app', userId: 'q1', now }).reason, 'invalid-code',
       `第 ${i + 1} 次无效码仍计失败`)
   }
-  assert.equal(pairing.isLockedOut('qq', 'q1', now), false, '4 次后不该锁（阈值 5，下边界）')
-  assert.equal(pairing.redeem('AAAA2222', { channel: 'qq', userId: 'q1', now }).reason, 'locked-out', '第 5 次翻锁（上边界）')
+  assert.equal(pairing.isLockedOut('qq', 'q1', now, 'qq-app'), false, '4 次后不该锁（阈值 5，下边界）')
+  assert.equal(pairing.redeem('AAAA2222', { channel: 'qq', accountId: 'qq-app', userId: 'q1', now }).reason, 'locked-out', '第 5 次翻锁（上边界）')
   const fresh = pairing.mint({ origin: 'admin', mintedBy: 'boss', now })
-  assert.equal(pairing.redeem(fresh.code, { channel: 'qq', userId: 'q1', now }).reason, 'locked-out', '锁出期内有效码也进不来')
+  assert.equal(pairing.redeem(fresh.code, { channel: 'qq', accountId: 'qq-app', userId: 'q1', now }).reason, 'locked-out', '锁出期内有效码也进不来')
   const unlocked = now + 10 * 60 * 1000 + 1
-  assert.equal(pairing.isLockedOut('qq', 'q1', unlocked), false, '锁出期满解锁（lockedUntil 持久化，不看滑窗）')
+  assert.equal(pairing.isLockedOut('qq', 'q1', unlocked, 'qq-app'), false, '锁出期满解锁（lockedUntil 持久化，不看滑窗）')
   const after = pairing.mint({ origin: 'admin', mintedBy: 'boss', now: unlocked })
-  assert.equal(pairing.redeem(after.code, { channel: 'qq', userId: 'q1', now: unlocked }).ok, true,
+  assert.equal(pairing.redeem(after.code, { channel: 'qq', accountId: 'qq-app', userId: 'q1', now: unlocked }).ok, true,
     '解锁后合法用户可正常配对（宪法#6：用户失误不永久锁死）')
 })
 
 test('G-59 锁出按 (channel,userId) 隔离：一个用户被锁不牵连他人', () => {
   const pairing = createPairing({ store: null, logger: quiet })
   const now = Date.now()
-  for (let i = 0; i < 5; i += 1) pairing.redeem('AAAA1111', { channel: 'telegram', userId: '42', now })
-  assert.equal(pairing.isLockedOut('telegram', '42', now), true, '前置：42 已锁（无效码触发）')
-  assert.equal(pairing.isLockedOut('telegram', '43', now), false, '同渠道另一 userId 不受牵连')
-  assert.equal(pairing.isLockedOut('qq', '42', now), false, '同 userId 另一渠道：复合键隔离')
+  for (let i = 0; i < 5; i += 1) pairing.redeem('AAAA1111', { channel: 'telegram', accountId: 'tg-app', userId: '42', now })
+  assert.equal(pairing.isLockedOut('telegram', '42', now, 'tg-app'), true, '前置：42 已锁（无效码触发）')
+  assert.equal(pairing.isLockedOut('telegram', '43', now, 'tg-app'), false, '同渠道另一 userId 不受牵连')
+  assert.equal(pairing.isLockedOut('qq', '42', now, 'qq-app'), false, '同 userId 另一渠道：复合键隔离')
 })
 
 test('G-59 成功核销清零失败计数：3 次无效码 + 成功 → 计数清零，后续再错从 0 计', () => {
   const pairing = createPairing({ store: null, logger: quiet })
   const now = Date.now()
   for (let i = 0; i < 3; i += 1) {
-    assert.equal(pairing.redeem('BBBB2222', { channel: 'telegram', userId: 'c1', now }).reason, 'invalid-code')
+    assert.equal(pairing.redeem('BBBB2222', { channel: 'telegram', accountId: 'tg-app', userId: 'c1', now }).reason, 'invalid-code')
   }
   assert.equal(pairing.isLockedOut('telegram', 'c1', now), false, '前置：3 次未锁')
   const code = pairing.mint({ origin: 'admin', mintedBy: 'boss', now })
-  assert.equal(pairing.redeem(code.code, { channel: 'telegram', userId: 'c1', now }).ok, true)
+  assert.equal(pairing.redeem(code.code, { channel: 'telegram', accountId: 'tg-app', userId: 'c1', now }).ok, true)
   for (let i = 0; i < 4; i += 1) {
-    assert.equal(pairing.redeem('BBBB2222', { channel: 'telegram', userId: 'c1', now }).reason, 'invalid-code')
+    assert.equal(pairing.redeem('BBBB2222', { channel: 'telegram', accountId: 'tg-app', userId: 'c1', now }).reason, 'invalid-code')
   }
   assert.equal(pairing.isLockedOut('telegram', 'c1', now), false, '清零后 4 次不锁（失败计数已复位）')
-  assert.equal(pairing.redeem('BBBB2222', { channel: 'telegram', userId: 'c1', now }).reason, 'locked-out', '第 5 次翻锁')
+  assert.equal(pairing.redeem('BBBB2222', { channel: 'telegram', accountId: 'tg-app', userId: 'c1', now }).reason, 'locked-out', '第 5 次翻锁')
 })
 
 test('G-59 失败滑窗：间隔超 10 分钟窗口的失败不累计（分散尝试永不翻锁）', () => {
@@ -143,23 +143,23 @@ test('G-59 失败滑窗：间隔超 10 分钟窗口的失败不累计（分散�
   const t0 = Date.now()
   for (let i = 0; i < 5; i += 1) {
     const at = t0 + i * 11 * 60 * 1000 // 每次相隔 11 分钟（> ATTEMPT_WINDOW_MS 10 分钟）
-    assert.equal(pairing.redeem('BBBB2222', { channel: 'telegram', userId: 's1', now: at }).reason, 'invalid-code')
+    assert.equal(pairing.redeem('BBBB2222', { channel: 'telegram', accountId: 'tg-app', userId: 's1', now: at }).reason, 'invalid-code')
   }
-  assert.equal(pairing.isLockedOut('telegram', 's1', t0 + 5 * 11 * 60 * 1000), false, '分散失败各次滑出窗口，不翻锁')
+  assert.equal(pairing.isLockedOut('telegram', 's1', t0 + 5 * 11 * 60 * 1000, 'tg-app'), false, '分散失败各次滑出窗口，不翻锁')
 })
 
 test('G-59 锁出审计：翻锁时发 lockout(tripped)，锁出期拒绝发 lockout(rejected)', () => {
   const audits = []
   const pairing = createPairing({ store: null, logger: quiet, onAudit: (event, detail) => audits.push({ event, ...detail }) })
   const now = Date.now()
-  for (let i = 0; i < 4; i += 1) pairing.redeem('BBBB2222', { channel: 'qq', userId: 'q9', now })
+  for (let i = 0; i < 4; i += 1) pairing.redeem('BBBB2222', { channel: 'qq', accountId: 'qq-app', userId: 'q9', now })
   assert.ok(!audits.some((a) => a.event === 'lockout'), '未翻锁前无 lockout 审计')
-  pairing.redeem('BBBB2222', { channel: 'qq', userId: 'q9', now })
+  pairing.redeem('BBBB2222', { channel: 'qq', accountId: 'qq-app', userId: 'q9', now })
   const tripped = audits.filter((a) => a.event === 'lockout')
   assert.equal(tripped.length, 1)
   assert.equal(tripped[0].phase, 'tripped')
-  assert.equal(tripped[0].user, 'qq:q9')
-  pairing.redeem('CCCC3333', { channel: 'qq', userId: 'q9', now }) // 锁出期内再提交
+  assert.equal(tripped[0].user, 'qq:qq-app:q9')
+  pairing.redeem('CCCC3333', { channel: 'qq', accountId: 'qq-app', userId: 'q9', now }) // 锁出期内再提交
   const rejected = audits.filter((a) => a.event === 'lockout')
   assert.equal(rejected.length, 2)
   assert.equal(rejected[1].phase, 'rejected', '锁出期拒绝也要审计')
@@ -170,10 +170,10 @@ test('G-59 revoked/locked 终态：管理台处置后不可核销（人工处置
   const now = Date.now()
   const a = pairing.mint({ origin: 'admin', mintedBy: 'boss', now })
   pairing.revoke(a.id, { by: 'admin', now })
-  assert.equal(pairing.redeem(a.code, { channel: 'telegram', userId: 'u', now }).reason, 'revoked')
+  assert.equal(pairing.redeem(a.code, { channel: 'telegram', accountId: 'tg-app', userId: 'u', now }).reason, 'revoked')
   const b = pairing.mint({ origin: 'admin', mintedBy: 'boss', now })
   pairing.lock(b.id, { by: 'admin', now })
-  assert.equal(pairing.redeem(b.code, { channel: 'telegram', userId: 'u', now }).reason, 'locked')
+  assert.equal(pairing.redeem(b.code, { channel: 'telegram', accountId: 'tg-app', userId: 'u', now }).reason, 'locked')
 })
 
 // ─────────────────── R2（C11.5）：配对 principal = (channel, accountId, userId) ───────────────────
@@ -203,17 +203,6 @@ test('R2：锁出按 (channel, accountId, userId) 隔离——A 被锁不牵连 
   assert.equal(pairing.isLockedOut('telegram', 'u1', now, 'acct-A'), true, '前置：acct-A 已锁')
   assert.equal(pairing.isLockedOut('telegram', 'u1', now, 'acct-B'), false, '另一账号不被牵连')
   assert.equal(pairing.isLockedOut('telegram', 'u1', now), false, 'default 账号不被牵连')
-})
-
-test('R2：存量默认账号锁出记录只作用于 default，不扩散到非默认账号', () => {
-  const { store } = tempStore()
-  const now = Date.now()
-  // 旧生产数据形态：2 段键 <channel>:<userId>，无 accountId —— 语义即 default 账号
-  store.set('inbound:pairing:lockout', { 'telegram:u1': { fails: [], lockedUntil: now + LOCKOUT_MS } })
-  const pairing = createPairing({ store, logger: quiet })
-
-  assert.equal(pairing.isLockedOut('telegram', 'u1', now), true, '存量记录仍锁 default 账号')
-  assert.equal(pairing.isLockedOut('telegram', 'u1', now, 'acct-A'), false, '绝不把旧锁出扩散到其它账号')
 })
 
 test('R2：配对事务失败时 account 绑定与码都不发布', () => {

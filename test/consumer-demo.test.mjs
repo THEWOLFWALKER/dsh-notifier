@@ -40,12 +40,12 @@ test('consumer demo: apply pushes once with an explicit sourceName and wires dis
   const events = []
   const ctx = {
     notifier: {
-      version: '0.7',
+      version: '0.8',
       push: async (message, options) => {
         calls.push({ message, options })
-        return { ok: true, delivered: ['fake'], skipped: [], failed: [] }
+        return { accepted: ['fake'], confirmed: [], unknown: [], skipped: [], failed: [], source: { kind: 'plugin', name: 'consumer-demo' } }
       },
-      flush: async () => {},
+      flush: async () => ({ drained: true }),
     },
     on: (name, handler) => { events.push({ name, handler }) },
     logger: { warn() {}, debug() {} },

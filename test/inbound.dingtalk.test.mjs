@@ -16,7 +16,7 @@
 import test, { beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { createDingtalkInbound, resolveDingtalkInboundConfig } from '../src/inbound/dingtalk-stream.mjs'
-import { createInboundBus } from '../src/inbound/bus.mjs'
+import { createPrivateTestBus as createInboundBus } from './helpers/private-bus.mjs'
 
 const API = 'https://api.dingtalk.com'
 const OAPI = 'https://oapi.dingtalk.com'
@@ -168,6 +168,7 @@ function pushMessage(overrides = {}) {
     },
     data: JSON.stringify({
       conversationId: 'cid_1',
+      conversationType: '1',
       msgId: `msg_${frameSeq}`,
       senderStaffId: 'staff_1',
       senderNick: '张三',
@@ -380,7 +381,7 @@ test('ack：headers 无 messageId 的帧不回执（空 messageId 短路，不�
   const ws = pushFrame({
     type: 'CALLBACK',
     headers: { contentType: 'application/json', topic: BOT_TOPIC },
-    data: JSON.stringify({ msgId: 'msg_nomid', conversationId: 'cid_1', senderStaffId: 'staff_1', text: { content: 'hi' } }),
+    data: JSON.stringify({ msgId: 'msg_nomid', conversationId: 'cid_1', conversationType: '1', senderStaffId: 'staff_1', text: { content: 'hi' } }),
   })
   assert.equal(ws.sent.length, 0, '无 messageId 不回执')
   assert.equal(accepted.length, 1, 'ack 缺席不影响业务投递')
@@ -599,7 +600,7 @@ test('robotCode 学习：首条入站消息落 store（dingtalk:robot-code），
   await driveConnected(rig)
   pushMessage({ msgId: 'msg_rc', robotCode: 'RC_9' })
   assert.equal(rig.store.get('dingtalk:robot-code'), 'RC_9')
-  assert.equal(await rig.inbound.sendText('staff_7', 'hi'), true)
+  assert.equal(await rig.inbound.sendText('staff_1', 'hi'), true)
   const batch = rig.calls.find((entry) => entry.url.startsWith(BATCH_URL))
   assert.ok(batch, '应走 batchSend')
   assert.match(batch.url, /robot_code=RC_9/)
@@ -773,7 +774,7 @@ test('主动推送：batchSend body 为单元素数组（chatbotId/msgKey/msgPar
   const rig = makeRig()
   await driveConnected(rig)
   pushMessage({ msgId: 'msg_bs', robotCode: 'RC_1' })
-  assert.equal(await rig.inbound.sendText('staff_2', '主动推送'), true)
+  assert.equal(await rig.inbound.sendText('staff_1', '主动推送'), true)
   const batch = rig.calls.find((entry) => entry.url.startsWith(BATCH_URL))
   assert.ok(batch)
   assert.equal(new URL(batch.url).searchParams.get('robot_code'), 'RC_1')
@@ -783,7 +784,7 @@ test('主动推送：batchSend body 为单元素数组（chatbotId/msgKey/msgPar
     chatbotId: 'RC_1',
     msgKey: 'sampleText',
     msgParam: JSON.stringify({ content: '主动推送' }),
-    staffId: 'staff_2',
+    staffId: 'staff_1',
   })
   assert.equal(batch.headers['x-acs-dingtalk-access-token'], 'AT_TOKEN')
 })
@@ -802,12 +803,12 @@ test('熔断：连续推送失败达阈值后开路，后续推送被短路（�
   const rig = makeRig({ fetchOptions: { batchSendResponses: Array.from({ length: 12 }, () => ({ errcode: 300001, errmsg: 'send too fast' })) } })
   await driveConnected(rig)
   pushMessage({ msgId: 'msg_brk', robotCode: 'RC_1' })
-  assert.equal(await rig.inbound.sendText('staff_9', '一'), false)
-  assert.equal(await rig.inbound.sendText('staff_9', '二'), false)
-  assert.equal(await rig.inbound.sendText('staff_9', '三'), false)
+  assert.equal(await rig.inbound.sendText('staff_1', '一'), false)
+  assert.equal(await rig.inbound.sendText('staff_1', '二'), false)
+  assert.equal(await rig.inbound.sendText('staff_1', '三'), false)
   const countAfterTrips = rig.calls.filter((entry) => entry.url.startsWith(BATCH_URL)).length
   assert.equal(countAfterTrips, 6, '3 次失败 ×（首试+token 重试）= 6 次请求')
-  assert.equal(await rig.inbound.sendText('staff_9', '四'), false)
+  assert.equal(await rig.inbound.sendText('staff_1', '四'), false)
   assert.equal(rig.calls.filter((entry) => entry.url.startsWith(BATCH_URL)).length, countAfterTrips, '开路期间应短路不再请求')
   assert.ok(rig.lines.some((line) => line.includes('熔断开路')))
 })
@@ -817,18 +818,18 @@ test('熔断复位：任一入站消息 breaker.reset()，随后推送恢复放�
   const rig = makeRig({ fetchOptions: { batchSendResponses: Array.from({ length: 6 }, () => ({ errcode: 300001, errmsg: 'send too fast' })) } })
   await driveConnected(rig)
   pushMessage({ msgId: 'msg_brk2', robotCode: 'RC_1' })
-  for (const text of ['一', '二', '三']) assert.equal(await rig.inbound.sendText('staff_9', text), false)
-  assert.equal(await rig.inbound.sendText('staff_9', '开路中'), false)
+  for (const text of ['一', '二', '三']) assert.equal(await rig.inbound.sendText('staff_1', text), false)
+  assert.equal(await rig.inbound.sendText('staff_1', '开路中'), false)
   pushMessage({ msgId: 'msg_reset', conversationId: 'cid_r', robotCode: 'RC_1' }) // 入站复位熔断
-  assert.equal(await rig.inbound.sendText('staff_9', '复位后'), true, '复位后应恢复放行（队列耗尽走默认成功）')
+  assert.equal(await rig.inbound.sendText('staff_1', '复位后'), true, '复位后应恢复放行（队列耗尽走默认成功）')
 })
 
-test('notifyTargets：notifyUsers 优先，缺省回落 fallbackTargets；capabilities.buttons=false', async () => {
-  const rig = makeRig({ config: { notifyUsers: ['s1', 's2'], fallbackTargets: ['u_global'] } })
-  assert.deepEqual(rig.inbound.notifyTargets(), [{ chatId: 's1', userId: 's1' }, { chatId: 's2', userId: 's2' }])
+test('notifyTargets：仅显式私聊用户目标；capabilities.buttons=false', async () => {
+  const rig = makeRig({ config: { notifyUsers: ['staff_1', 'staff_2'], fallbackTargets: ['u_global'] } })
+  assert.deepEqual(rig.inbound.notifyTargets(), [{ chatId: 'staff_1', userId: 'staff_1' }, { chatId: 'staff_2', userId: 'staff_2' }])
   assert.deepEqual(rig.inbound.capabilities, { buttons: false })
   const fallback = makeRig({ config: { notifyUsers: [], fallbackTargets: ['u_global'] } })
-  assert.deepEqual(fallback.inbound.notifyTargets(), [{ chatId: 'u_global', userId: 'u_global' }])
+  assert.deepEqual(fallback.inbound.notifyTargets(), [])
 })
 
 // ---------------------------------------------------------------- token 与重连

@@ -12,6 +12,13 @@ function memStore() {
   return {
     get: (key) => map.get(key),
     set: (key, value) => { map.set(key, value); return true },
+    transact: (mutator) => {
+      const draft = Object.fromEntries([...map].map(([key, value]) => [key, structuredClone(value)]))
+      const value = mutator(draft)
+      map.clear()
+      for (const [key, row] of Object.entries(draft)) map.set(key, row)
+      return { ok: true, committed: true, durable: true, value }
+    },
     keys: (prefix = '') => [...map.keys()].filter((key) => key.startsWith(prefix)),
     _map: map,
   }
@@ -61,14 +68,16 @@ test('账本：resolve 已终态不翻转（S-14 双 resolve 幂等）；claimed
   // 动作完成必须经过真实 pending → claimed → resolved 中间态；不能把已有
   // winner 当成 claimed 再次改写。
   ledger.add('aq:claimed', { payload: 9 })
-  assert.equal(ledger.claim('aq:claimed', { via: 'claim' }).ok, true)
-  assert.equal(ledger.resolve('aq:claimed', 'done', { via: 'x' }, { claimedSettle: true }), true)
+  const claim = ledger.claim('aq:claimed', { via: 'claim' })
+  assert.equal(claim.ok, true)
+  assert.equal(ledger.resolve('aq:claimed', 'done', { via: 'x' }, { executionId: 'wrong-execution' }), 'already-claimed')
+  assert.equal(ledger.resolve('aq:claimed', 'done', { via: 'x' }, { executionId: claim.executionId }), true)
   const settled = store.get('aq:claimed')
   assert.equal(settled.decision, 'done')
   assert.equal(settled.via, 'x')
   assert.equal(settled.status, 'resolved')
   // 终态 winner 仍不可被迟到完成路径覆写。
-  assert.equal(ledger.resolve('aq:1', 'final', { status: 'pending', decision: 'evil', resolvedAt: 5 }, { claimedSettle: true }), 'already-resolved')
+  assert.equal(ledger.resolve('aq:1', 'final', { status: 'pending', decision: 'evil', resolvedAt: 5 }, { executionId: claim.executionId }), 'already-resolved')
   const final = store.get('aq:1')
   assert.equal(final.status, 'resolved')
   assert.equal(final.decision, 'answered')
@@ -111,4 +120,18 @@ test('账本：store 可空（actions 缺账本构造）——add/get/scanKeys n
   assert.equal(ledger.resolve('act:k', 'done'), false)
   assert.equal(ledger.terminate('act:k'), false)
   assert.equal(ledger.isPending(undefined), false)
+})
+
+test('账本：lifecycle transition requires a fresh transaction; terminal uncertainty cannot overwrite a winner', () => {
+  const store = memStore()
+  const ledger = createInteractionLedger({ keyPrefix: 'aq:', store })
+  ledger.add('aq:terminal', {})
+  assert.equal(ledger.resolve('aq:terminal', 'answered'), true)
+  assert.equal(ledger.markUncertain('aq:terminal'), false)
+  assert.equal(store.get('aq:terminal').decision, 'answered')
+
+  const legacy = { get: () => ({ status: 'pending' }), set: () => true }
+  const withoutTransactions = createInteractionLedger({ store: legacy })
+  assert.equal(withoutTransactions.terminate('aq:legacy'), 'storage-failed')
+  assert.equal(withoutTransactions.resolve('aq:legacy', 'done'), 'storage-failed')
 })

@@ -2,7 +2,7 @@
 
 > 中文: [PLUGINS.md](PLUGINS.md)
 > Since dsh-notifier v0.6 there are two surfaces: **outbound** — the injected `ctx.notifier` service (push), and **inbound** — the `dsh-notifier/sent` event (subscribe).
-Public API version: `0.7` (`ctx.notifier.version`; bumped only on a public-surface break, independent of the package version).
+Public API version: `0.8` (`ctx.notifier.version`; bumped only on a public-surface break, independent of the package version).
 
 ## 30-second quick start
 
@@ -14,7 +14,7 @@ export function apply(ctx) {
   // After the static declaration, the service is ready when apply runs
   // (the host guarantees the wait) — use it directly.
   ctx.notifier.push({ title: '📧 New mail', content: 'From x@y.z: weekly draft', level: 'active' }, { sourceName: 'my-email-plugin' })
-    .then((result) => { if (!result.ok) ctx.logger.warn('push failed', result.failed) })
+    .then((result) => ctx.logger.debug('push evidence', result))
 }
 ```
 
@@ -42,36 +42,36 @@ const result = await notifier.push(message, options)
 
 - `message: { title?, content?, level?, group? }`
   - `level`: `timeSensitive` / `active` / `passive` (default `active`; invalid values are dropped)
-  - `title`/`content` are treated as empty when not strings; **both empty** → `skipped: ['(malformed)']` (no push, no ledger entry, no rate-limit slot consumed)
+  - `title`/`content` are treated as empty when not strings; **both empty** → `skipped: [{ channel: '(request)', reason: 'malformed' }]` (no push, no ledger entry, no rate-limit slot consumed)
   - Length clamping: 20000 code points each; over-length text is truncated with a warn (preventing a segmentation storm)
 - `options: { sourceName?, channel? }`
   - `sourceName`: source label (goes into the ledger and the sent event, for auditing and future per-source muting); missing/non-string = `anonymous` (shares a single rate-limit window with other anonymous calls)
 - `channel`: target a single channel type (e.g. `'telegram'`); omit it to broadcast to every configured channel through level-based routing
 
-The public surface also applies a bounded resource budget per underlying notifier instance (overridable in `public`): `maxCalls` default 10000, `maxBytes` default 10 MiB, `maxConcurrent` default 16, `maxQueue` default 64. The budget is shared by the instance and is not reset by rotating `sourceName` or creating a second facade; exceeding it returns `skipped: ['(budget)']`, and a full concurrency/queue returns `skipped: ['(busy)']`. `sourceName` is only a redacted audit display label (trimmed, 64 code points, control characters replaced) — not an identity credential.
+The public surface also applies a bounded resource budget per underlying notifier instance (overridable in `public`): `maxCalls` default 10000, `maxBytes` default 10 MiB, `maxConcurrent` default 16, `maxQueue` default 64. The budget is shared by the instance and is not reset by rotating `sourceName` or creating a second facade; exceeding it returns `skipped: [{ channel: '(request)', reason: 'budget' }]`, and a full concurrency/queue returns `skipped: ['(busy)']`. `sourceName` is only a redacted audit display label (trimmed, 64 code points, control characters replaced) — not an identity credential.
 
-**Return value (never rejects — internal errors return `failed: [{ reason: 'internal' }]`, so you never need try-catch):**
+**Return value (never rejects — internal errors return `failed: [{ channel: '(request)', reason: 'internal' }]`, so you never need try-catch):**
 
 ```js
-const result = { ok: true, delivered: ['telegram'], skipped: [], failed: [], source: { kind: 'plugin', name: 'my-email-plugin' } }
+const result = { accepted: ['telegram'], confirmed: [], unknown: [], failed: [], skipped: [], source: { kind: 'plugin', name: 'my-email-plugin' } }
 ```
 
-`delivered` is the provider-level result from the configured channel path; it does not by itself prove that the client displayed the message. Interpret it as confirmed delivery only when the provider supplies explicit end-to-end receipt evidence. Keep `accepted`, `delivered`, and client confirmation distinct under the three-state semantics.
+The five outcome groups are mutually exclusive: `accepted` is a provider-level result that only means the provider accepted the request; it does not mean the client displayed the message. `confirmed` requires explicit end-to-end receipt evidence; `unknown` means the effect is uncertain and must not be retried automatically; `failed` is a definite failure; `skipped` means no attempt was made. Each non-success entry is `{ channel, reason }` with a stable reason code, never provider error text.
 
-- Common `skipped` values: `(malformed)` both empty / `(disabled)` service off / `(rate-limited)` over quota / `(quiet)` conversation muted / `(channel name)` targeted channel not configured
+- Common `skipped` reasons: `malformed`, `disabled`, `rate-limited`, `quiet`; every item has `{ channel, reason }`
 - A targeted push (`channel` present) takes the single-channel path; like a broadcast it writes one audit record and emits one `sent` event, and the outcome is still read only from the return value
 
 ## Rate limiting
 
-Each source has its own sliding window, default 10 calls/minute (the host can adjust it with `public.limitPerMinutePerSource`; 0 = unlimited). Over quota returns `skipped: ['(rate-limited)']` — **still recorded, still emits the event** (muted does not mean it did not happen), so you can tell you were limited.
+Each source has its own sliding window, default 10 calls/minute (the host can adjust it with `public.limitPerMinutePerSource`; 0 = unlimited). Over quota returns `skipped: [{ channel: '(request)', reason: 'rate-limited' }]` — **still recorded, still emits the event** (muted does not mean it did not happen), so you can tell you were limited.
 
-The public surface also carries an instance budget independent of `sourceName`: `maxCalls` (default 10000), `maxBytes` (default 10 MiB, by UTF-8), `maxConcurrent` (default 16) and `maxQueue` (default 64). The budget is reserved before dispatch; exceeding it rejects only the current call with `skipped: ['(budget)']` or `['(busy)']`, and changing the source label or creating a second facade cannot bypass the total budget of the same notifier instance.
+The public surface also carries an instance budget independent of `sourceName`: `maxCalls` (default 10000), `maxBytes` (default 10 MiB, by UTF-8), `maxConcurrent` (default 16) and `maxQueue` (default 64). The budget is reserved before dispatch; exceeding it rejects only the current call with `skipped: [{ channel: '(request)', reason: 'budget' }]` or `[{ channel: '(request)', reason: 'busy' }]`, and changing the source label or creating a second facade cannot bypass the total budget of the same notifier instance.
 
 ## Subscribing to the sent event
 
 ```js
 ctx.on?.('dsh-notifier/sent', (record) => {
-  // record: { time, ok, delivered[], skipped[], failed[], source?, channel?,
+  // record: { time, accepted[], confirmed[], unknown[], skipped[], failed[], source?, channel?,
   //   titleLength, contentLength, titleBytes, contentBytes, hasContent }
   // The sent event never contains title/content, approval text, user body text
   // or adapter error text.
@@ -93,23 +93,23 @@ export function apply(ctx) {
 }
 ```
 
-flush is idempotent and can be called repeatedly.
+flush is idempotent and can be called repeatedly; it returns `{ drained: boolean }` to report whether the in-flight queue is empty, not evidence for any particular message.
 
 The public facade itself is a frozen object exposing only `version`, `enabled()`, `push()` and `flush()`; consumers cannot call `dispose()`. On unload the host cleans up facade resources through a private disposer, and repeated unloads are safe.
 
-## Three-state semantics (what you actually get)
+## Service state and push results
 
 | Host state | What you get | push behavior |
 |---|---|---|
 | Normal | Full facade | Real delivery |
 | `public.enabled: false` / top-level `enabled: false` | no-op stub | `skipped: ['(disabled)']` |
-| Zero channels configured | Full facade | `ok: false` + three empty arrays (honest empty delivery — no ledger entry, no event; matches on-device verification and the zero-channel exit in `notify.mjs`) |
+| Zero channels configured | Full facade | All five delivery evidence groups are empty (no available target; no ledger entry or event) |
 
 ## Version and compatibility
 
 - **Prefer capability detection**: `typeof notifier?.push === 'function'`; do not compare versions for equality
 - `notifier.version` is for display/logging only
-- Since 0.7 the sent event is a metadata-only breaking contract; consumers of the old `record.message` must migrate to the length/status fields
+- Since 0.8 the push result and sent event is a metadata-only breaking contract; consumers of the old `record.message` must migrate to the length/status fields
 - The facade return value is a frozen, stable public surface (`version`, `enabled()`, `push()`, `flush()`); unload is managed internally by the host, and consumers must not call `dispose`
 - Only a public-surface break bumps `version` and announces it at the top of the CHANGELOG
 
@@ -127,11 +127,11 @@ export function apply(ctx) {
   notifier.push(
     { title: '⏰ Reminder', content: 'Time to review', level: 'timeSensitive' },
     { sourceName: 'my-plugin' },
-  ).then((result) => log('push result', result.ok, result.delivered))
+  ).then((result) => log('push evidence', result.accepted, result.confirmed, result.unknown, result.failed, result.skipped))
 
   // Inbound: subscribe to broadcast results (no inject needed; read-only + O(1) + no push)
   ctx.on?.('dsh-notifier/sent', (record) => {
-    log('sent', record.source?.name ?? '(internal)', record.ok ? 'ok' : 'failed')
+    log('sent', record.source?.name ?? '(internal)', record.accepted, record.confirmed, record.unknown)
   })
 
   // Unload: flush in-flight delivery
@@ -150,12 +150,12 @@ const fake = createFakeNotifier({ sourceName: 'my-plugin', now: () => 0 })
 // Inject the fake as ctx.notifier into your apply()
 const result = await fake.push({ title: 'T', content: 'C' }, { sourceName: 'my-plugin' })
 
-fake.version        // '0.7', the same public-surface version as the real facade
+fake.version        // '0.8', the same public-surface version as the real facade
 fake.calls          // [{ message, options, at }], a read-only array (each read returns a deep copy)
-await fake.flush()  // resolves undefined
+await fake.flush()  // { drained: true }
 ```
 
-The behavior spec mirrors the real facade item by item: `push` **never rejects**; it returns `{ ok, delivered, skipped, failed, source }` (`source.kind` is always `'plugin'`, and `delivered: ['fake']` on success); non-string `title`/`content` count as empty, and both empty → `skipped: ['(malformed)']`; `options.simulate: 'rate-limited' | 'disabled' | 'budget' | 'busy'` replays the matching `skipped`, and unknown values succeed normally — use it to test your failure branches without touching host config.
+The behavior spec mirrors the real facade item by item: `push` **never rejects**; it returns `{ accepted, confirmed, unknown, failed, skipped, source }` (`source.kind` is always `'plugin'`, and `accepted: ['fake']` on success); non-string `title`/`content` count as empty, and both empty → `skipped: [{ channel: '(request)', reason: 'malformed' }]`; `options.simulate: 'rate-limited' | 'disabled' | 'budget' | 'busy'` replays the matching `skipped`, and unknown values succeed normally — use it to test your failure branches without touching host config.
 
 Two deliberate differences (not defects): the fake does no length clamping, rate limiting or budget accounting (the real resource semantics are covered by the real facade contract tests), and it does not provide `enabled()` (a host diagnostics surface; detect capability with `typeof notifier?.push === 'function'`). The fake **does not emit** the `sent` event — the event surface is not part of this tool; test the event side with your own `ctx` stub.
 
@@ -167,13 +167,13 @@ When writing a consumer plugin in TS, take the types from the type-only subpath:
 import type { NotifierFacade, NotifyMessage, PushResult } from 'dsh-notifier/types'
 ```
 
-It exports `NotifyLevel` / `NotifyMessage` / `NotifyOptions` / `PushResult` / `PushFailure` / `NotifierSource` / `NotifierFacade` / `SentEventRecord` / `FakeNotifier` and more, aligned item by item with the runtime public surface (only real fields are declared; internal options are not exposed). `NotifierFacade.version` is the literal `'0.7'`, from the same source as `ctx.notifier.version`. `SentEventRecord` stays metadata-only — **without** `title`/`content`/raw error text.
+It exports `NotifyLevel` / `NotifyMessage` / `NotifyOptions` / `PushResult` / `PushChannelReason` / `NotifierSource` / `NotifierFacade` / `SentEventRecord` / `FakeNotifier` and more, aligned item by item with the runtime public surface (only real fields are declared; internal options are not exposed). `NotifierFacade.version` is the literal `'0.8', from the same source as `ctx.notifier.version`. `SentEventRecord` stays metadata-only — **without** `title`/`content`/raw error text.
 
 This is an explicit type-only subpath: the package root (`dsh-notifier`) is the DSH plugin contract itself and has **no** root `"types"` field (the root JS export surface is far larger than the notifier public surface). Always import `from 'dsh-notifier/types'`.
 
 ## On-device verification record
 
-- **2026-08-16 · DSH 0.1.0-rc.6 (web profile, Node 24)**: features A/B both confirmed — a static-inject consumer resolved a real service with `version=0.6` (not a stub); the `dsh-notifier/sent` event was visible across plugins (15/15, complete payload shape); the zero-channel semantics matched the design (`ok:false` with three empty arrays; no crash, no startup block). It also settled that the callback-style `ctx.inject` never fires and that accessing a service property without a declaration throws — every recipe in this document was therefore finalized on the static declaration. Install note: when the host manages dependencies with pnpm, manually overwriting `node_modules/dsh-notifier` is rolled back; upgrade with `dsh plugin add file:<path>` instead.
+- **2026-08-16 · DSH 0.1.0-rc.6 (web profile, Node 24)**: the historical host probe confirmed static injection, the sent event, and the then-current v0.6 zero-channel behavior. This records that implementation only and does not describe the current API. Current v0.8 returns five empty evidence buckets for zero targets and has no `ok` field. The probe also confirmed that callback-style `ctx.inject` does not fire and accessing a service property without a declaration throws. Install note: when the host manages dependencies with pnpm, manually overwriting `node_modules/dsh-notifier` is rolled back; upgrade with `dsh plugin add file:<path>` instead.
 
 ## FAQ
 

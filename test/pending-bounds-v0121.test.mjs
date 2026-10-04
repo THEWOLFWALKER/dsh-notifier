@@ -14,7 +14,7 @@ test('P2-01：待确认绑定队列最多保留 512 条', () => {
   const store = memoryStore()
   const identity = createIdentity({ store, logger: { warn: () => {} } })
   for (let index = 0; index < 600; index += 1) {
-    assert.equal(identity.addPending({ channel: 'telegram', userId: `user-${index}` }).ok, true)
+    assert.equal(identity.addPending({ channel: 'telegram', accountId: 'tg-app', userId: `user-${index}` }).ok, true)
   }
   assert.ok(Object.keys(store.get('inbound:pending', {})).length <= 512)
 })

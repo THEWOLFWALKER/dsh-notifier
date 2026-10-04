@@ -12,7 +12,7 @@
 import { createRateLimiter } from './tool-register.mjs'
 
 /** 公共面版本。只在公共面 breaking 时 bump，不与包版本联动（审查 D2：消费方做能力探测，不做相等比较）。 */
-export const PUBLIC_API_VERSION = '0.7'
+export const PUBLIC_API_VERSION = '0.8'
 
 const utf8Encoder = typeof TextEncoder === 'function' ? new TextEncoder() : null
 
@@ -21,18 +21,20 @@ export function redactAuditRecord(record = {}) {
   const message = record?.message !== null && typeof record?.message === 'object' ? record.message : {}
   const title = typeof message.title === 'string' ? message.title : ''
   const content = typeof message.content === 'string' ? message.content : ''
-  const failed = Array.isArray(record?.failed)
-    ? record.failed.map((entry) => ({
-        channel: typeof entry?.channel === 'string' ? entry.channel : '(unknown)',
-        error: 'delivery-failed',
-      }))
-    : []
+  const rows = (key, reason) => Array.isArray(record?.[key]) ? record[key].map((entry) => {
+    const row = typeof entry === 'string' ? { channel: entry } : (entry ?? {})
+    return {
+      channel: typeof row.channel === 'string' ? row.channel : '(unknown)',
+      reason: typeof row.reason === 'string' ? row.reason : reason,
+    }
+  }) : []
   const redacted = {
     time: typeof record?.time === 'string' ? record.time : new Date().toISOString(),
-    ok: record?.ok === true,
-    delivered: Array.isArray(record?.delivered) ? [...record.delivered] : [],
-    skipped: Array.isArray(record?.skipped) ? [...record.skipped] : [],
-    failed,
+    accepted: Array.isArray(record?.accepted) ? [...record.accepted] : [],
+    confirmed: Array.isArray(record?.confirmed) ? [...record.confirmed] : [],
+    unknown: rows('unknown', 'outcome-unknown'),
+    failed: rows('failed', 'delivery-failed'),
+    skipped: rows('skipped', 'skipped'),
     titleLength: Array.from(title).length,
     contentLength: Array.from(content).length,
     titleBytes: utf8Encoder ? utf8Encoder.encode(title).length : title.length,
@@ -203,22 +205,51 @@ export function createPublicFacade({ notifier = null, config = {}, logger = null
     return trimmed === '' ? 'anonymous' : trimmed.slice(0, 64)
   }
 
+  const resultOf = (source, categories = {}) => ({
+    accepted: [...(categories.accepted ?? [])],
+    confirmed: [...(categories.confirmed ?? [])],
+    unknown: [...(categories.unknown ?? [])],
+    failed: [...(categories.failed ?? [])],
+    skipped: [...(categories.skipped ?? [])],
+    source,
+  })
+
+  const adaptOutcome = (outcome, source) => {
+    const confirmed = new Set(Array.isArray(outcome?.confirmed) ? outcome.confirmed : [])
+    const unknownChannels = new Set((Array.isArray(outcome?.unknown) ? outcome.unknown : []).map((row) => typeof row === 'string' ? row : row?.channel))
+    const unknown = [...unknownChannels].filter((channel) => typeof channel === 'string' && channel !== '').map((channel) => ({ channel, reason: 'outcome-unknown' }))
+    const failed = (Array.isArray(outcome?.failed) ? outcome.failed : [])
+      .filter((row) => row?.uncertain !== true && !unknownChannels.has(row?.channel))
+      .map((row) => ({ channel: String(row?.channel ?? '(unknown)'), reason: 'delivery-failed' }))
+    const skipped = (Array.isArray(outcome?.skipped) ? outcome.skipped : []).map((row) => {
+      const label = typeof row === 'string' ? row : String(row?.channel ?? '(unknown)')
+      return { channel: label.startsWith('(') && label.endsWith(')') ? '(request)' : label, reason: label.replace(/^\(|\)$/g, '') || 'skipped' }
+    })
+    const excluded = new Set([
+      ...unknown.map((row) => row.channel), ...failed.map((row) => row.channel),
+      ...skipped.map((row) => row.channel),
+    ])
+    const confirmedRows = [...confirmed].filter((channel) => !excluded.has(channel))
+    for (const channel of confirmedRows) excluded.add(channel)
+    const accepted = (Array.isArray(outcome?.accepted) ? outcome.accepted : [])
+      .filter((channel) => !excluded.has(channel))
+    return resultOf(source, { accepted, confirmed: confirmedRows, unknown, failed, skipped })
+  }
+
   const adaptSingle = (result, source) => {
     // 单渠道路径形状适配（设计稿 §2.2 第 5 步）：channelResult → outcome 形状。
     // 定向路径与广播共享内部审计回调；公共事件由 index.mjs 在 emit 边界脱敏。
     if (result?.skipped === true) {
-      return { ok: false, delivered: [], skipped: [`(${result.channel ?? 'channel'})`], failed: [], source }
+      return resultOf(source, { skipped: [{ channel: result.channel ?? '(unknown)', reason: 'skipped' }] })
     }
     if (result?.ok === true) {
-      return { ok: true, delivered: [result.channel], skipped: [], failed: [], source }
+      const channel = String(result.channel ?? '(unknown)')
+      return resultOf(source, result?.confirmed === true ? { confirmed: [channel] } : { accepted: [channel] })
     }
-    return {
-      ok: false,
-      delivered: [],
-      skipped: [],
-      failed: [{ channel: result?.channel, error: result?.error instanceof Error ? result.error.message : String(result?.error ?? 'unknown') }],
-      source,
-    }
+    const channel = String(result?.channel ?? '(unknown)')
+    return result?.uncertain === true || result?.error?.uncertain === true
+      ? resultOf(source, { unknown: [{ channel, reason: 'outcome-unknown' }] })
+      : resultOf(source, { failed: [{ channel, reason: 'delivery-failed' }] })
   }
 
   const facade = {
@@ -234,28 +265,28 @@ export function createPublicFacade({ notifier = null, config = {}, logger = null
       const sourceName = normalizeSourceName(options.sourceName)
       const source = { kind: 'plugin', name: sourceName }
       try {
-        if (disposed) return { ok: false, delivered: [], skipped: ['(disposed)'], failed: [], source }
+        if (disposed) return resultOf(source, { skipped: [{ channel: '(request)', reason: 'disposed' }] })
         const title = clampText(msg.title, warn)
         const content = clampText(msg.content, warn)
         if (title === '' && content === '') {
           // 双空 = 调用方错误：不推、不记账、不 emit、不占限流名额（返回值可见）
-          return { ok: false, delivered: [], skipped: ['(malformed)'], failed: [], source }
+          return resultOf(source, { skipped: [{ channel: '(request)', reason: 'malformed' }] })
         }
         if (notifier === null || notifier === undefined) {
-          return { ok: false, delivered: [], skipped: ['(disabled)'], failed: [], source }
+          return resultOf(source, { skipped: [{ channel: '(request)', reason: 'disabled' }] })
         }
         const payloadBytes = utf8Encoder
           ? utf8Encoder.encode(`${title}${content}`).length
           : Array.from(`${title}${content}`).length
         const acquired = await acquire()
-        if (!acquired) return { ok: false, delivered: [], skipped: ['(busy)'], failed: [], source }
-        if (disposed) { release(); return { ok: false, delivered: [], skipped: ['(disposed)'], failed: [], source } }
+        if (!acquired) return resultOf(source, { skipped: [{ channel: '(request)', reason: 'busy' }] })
+        if (disposed) { release(); return resultOf(source, { skipped: [{ channel: '(request)', reason: 'disposed' }] }) }
         // Reserve call/byte budget only after acquiring a bounded slot.  A
         // queue-full rejection must not consume lifetime budget, and a queued
         // call re-checks limits after earlier work has consumed them.
         if (shared.calls >= shared.maxCalls || shared.bytes + payloadBytes > shared.maxBytes) {
           release()
-          return { ok: false, delivered: [], skipped: ['(budget)'], failed: [], source }
+          return resultOf(source, { skipped: [{ channel: '(request)', reason: 'budget' }] })
         }
         shared.calls += 1
         shared.bytes += payloadBytes
@@ -266,10 +297,8 @@ export function createPublicFacade({ notifier = null, config = {}, logger = null
             ? options.channel.trim()
             : undefined
           const outcome = {
-            ok: false,
-            delivered: [],
-            skipped: ['(rate-limited)'],
-            failed: [],
+            accepted: [], confirmed: [], unknown: [], failed: [],
+            skipped: [{ channel: targetChannel ?? '(request)', reason: 'rate-limited' }],
           }
           const record = {
             time: new Date(now()).toISOString(),
@@ -279,7 +308,7 @@ export function createPublicFacade({ notifier = null, config = {}, logger = null
           }
           if (targetChannel !== undefined) record.channel = targetChannel
           try { audit?.(record) } catch { /* audit failure never affects caller */ }
-          return { ...record }
+          return resultOf(source, outcome)
         }
         const normalized = {
           title,
@@ -291,19 +320,21 @@ export function createPublicFacade({ notifier = null, config = {}, logger = null
           return adaptSingle(await notifier.notify(options.channel.trim(), normalized, { source }), source)
         }
         const outcome = await notifier.notifyAll(normalized, { source })
-        return { ...outcome, source }
+        return adaptOutcome(outcome, source)
         } finally { release() }
       } catch (error) {
         // never-reject（审查 S3）：内部异常吞掉，消费方无 try-catch 也不崩
         warn(`公共面 push 内部异常: ${error instanceof Error ? error.message : String(error)}`)
-        return { ok: false, delivered: [], skipped: [], failed: [{ reason: 'internal' }], source }
+        return resultOf(source, { failed: [{ channel: '(request)', reason: 'internal' }] })
       }
     },
 
     /** 等待在途送达（幂等；stub 形态即 resolve）。消费方卸载前调用。 */
     async flush() {
-      try { await notifier?.flush?.() } catch { /* flush 失败不致命 */ }
-      return { ok: true }
+      try {
+        const result = await notifier?.flush?.()
+        return { drained: result?.drained !== false }
+      } catch { return { drained: false } }
     },
 
   }

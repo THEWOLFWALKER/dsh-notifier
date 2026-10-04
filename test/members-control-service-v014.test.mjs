@@ -35,17 +35,17 @@ test('S02: 合法成员写入经服务落到 identity 权威（store 键与读�
   const identity = createIdentity({ store })
   const service = createMembersControlService({ identity })
 
-  const first = service.addMember({ channel: 'feishu', userId: 'ou_owner', label: '张三' })
+  const first = service.addMember({ channel: 'feishu', accountId: 'feishu-app', userId: 'ou_owner', label: '张三' })
   assert.equal(first.ok, true)
   assert.equal(first.record.role, 'owner', '首条成员即 owner（identity 语义）')
 
-  const second = service.addMember({ channel: 'qq', userId: 'qqmember01' })
+  const second = service.addMember({ channel: 'qq', accountId: 'qq-app', userId: 'qqmember01' })
   assert.equal(second.ok, true)
 
   // store 键与 identity 读回一致（服务未自持第二份写入状态）
   const table = store.get('inbound:bindings')
-  assert.equal(memberKeyOf(table['feishu:ou_owner']), 'feishu:ou_owner')
-  assert.equal(identity.allows('feishu', 'ou_owner'), true)
+  assert.equal(memberKeyOf(table['feishu:feishu-app:ou_owner']), 'feishu:feishu-app:ou_owner')
+  assert.equal(identity.allows('feishu', 'ou_owner', 'feishu-app'), true)
   assert.deepEqual(identity.list('feishu').map((record) => record.userId), ['ou_owner'])
   assert.equal(service.listMembers().length, 2)
 
@@ -63,11 +63,12 @@ test('S02: 非法身份（未知 channel / 非法 accountId / 空或超长 userI
   const service = createMembersControlService({ identity })
 
   const cases = [
-    { channel: 'slack', userId: 'u1' }, // 未知 channel
+    { channel: 'slack', accountId: 'slack-app', userId: 'u1' }, // 未知 channel
     { channel: 'feishu', accountId: 'a'.repeat(129), userId: 'u1' }, // accountId 超长
     { channel: 'feishu', accountId: 'bad:id', userId: 'u1' }, // accountId 含冒号
-    { channel: 'feishu', userId: '' }, // 空 userId
-    { channel: 'feishu', userId: 'u'.repeat(129) }, // 超长 userId
+    { channel: 'feishu', accountId: 'feishu-app', userId: '' }, // 空 userId
+    { channel: 'feishu', userId: 'u1' }, // 缺 accountId
+    { channel: 'feishu', accountId: 'feishu-app', userId: 'u'.repeat(129) }, // 超长 userId
   ]
   for (const input of cases) {
     const result = service.addMember(input)
@@ -83,7 +84,7 @@ test('S02: 非法身份（未知 channel / 非法 accountId / 空或超长 userI
 test('S02: pending→member 提升是原子的（落盘失败时内存与磁盘都不变、报 storage-failed）', () => {
   const seed = {
     'inbound:pending': {
-      'wxpusher:12345': { channel: 'wxpusher', userId: '12345', origin: 'learned', at: Date.now(), extra: {} },
+      'wxpusher:wxpusher-app:12345': { channel: 'wxpusher', accountId: 'wxpusher-app', userId: '12345', origin: 'learned', at: Date.now(), extra: {} },
     },
   }
   const { file } = tempState(seed)
@@ -98,7 +99,7 @@ test('S02: pending→member 提升是原子的（落盘失败时内存与磁盘�
   const identity = createIdentity({ store: failing })
   const service = createMembersControlService({ identity })
 
-  const result = service.approvePending('wxpusher:12345')
+  const result = service.approvePending('wxpusher:wxpusher-app:12345')
   assert.equal(result.ok, false)
   assert.equal(result.reason, 'storage-failed', '落盘失败必须如实报 storage-failed（I16）')
   // 内存不变：待确认条目仍在，绑定表无新增（绝不半提交）
@@ -113,13 +114,13 @@ test('S02: 真实落盘失败（state.json 父级是普通文件）→ storage-f
   const identity = createIdentity({ store })
   const service = createMembersControlService({ identity })
 
-  const added = service.addMember({ channel: 'telegram', userId: 'tg_user_1' })
+  const added = service.addMember({ channel: 'telegram', accountId: 'telegram-app', userId: 'tg_user_1' })
   assert.equal(added.ok, false)
   assert.equal(added.reason, 'storage-failed')
   assert.equal(store.get('inbound:bindings'), undefined, '未落盘不得写内存')
   assert.equal(identity.allows('telegram', 'tg_user_1'), false, '失败写入绝不生效')
 
-  const pending = service.addPending({ channel: 'telegram', userId: 'tg_user_2' })
+  const pending = service.addPending({ channel: 'telegram', accountId: 'telegram-app', userId: 'tg_user_2' })
   assert.equal(pending.ok, false)
   assert.equal(pending.reason, 'storage-failed')
   assert.equal(store.get('inbound:pending'), undefined, '待确认写入失败同样不假报成功')
@@ -132,8 +133,8 @@ test('S02: 返回视图不泄漏凭证/敏感字段（与 admin getMembers 脱�
   const pairing = createPairing({ store })
   const service = createMembersControlService({ identity, pairing })
 
-  identity.addBinding({ channel: 'feishu', userId: 'ou_owner', label: 'owner' })
-  identity.addPending({ channel: 'wxpusher', userId: '12345' })
+  identity.addBinding({ channel: 'feishu', accountId: 'feishu-app', userId: 'ou_owner', label: 'owner' })
+  identity.addPending({ channel: 'wxpusher', accountId: 'wxpusher-app', userId: '12345' })
   const minted = pairing.mint({ origin: 'admin', mintedBy: 'admin:web' })
   assert.equal(minted.ok, true)
 
@@ -167,14 +168,14 @@ test('S02: 配对 mint/revoke 与 owner-last 守卫经服务归一', () => {
   assert.equal(service.revokePairingCode(minted.id, { by: 'admin:web' }).ok, true)
   assert.equal(service.listPairingCodes().length, 0, '撤销后不在在铸列表')
 
-  identity.addBinding({ channel: 'feishu', userId: 'ou_owner' })
-  const downgrade = service.updateMember('feishu:ou_owner', { role: 'member' })
+  identity.addBinding({ channel: 'feishu', accountId: 'feishu-app', userId: 'ou_owner' })
+  const downgrade = service.updateMember('feishu:feishu-app:ou_owner', { role: 'member' })
   assert.equal(downgrade.ok, false)
   assert.equal(downgrade.reason, 'owner-last')
-  const removed = service.removeMember('feishu:ou_owner')
+  const removed = service.removeMember('feishu:feishu-app:ou_owner')
   assert.equal(removed.ok, false)
   assert.equal(removed.reason, 'owner-last')
 
-  assert.equal(service.updateMember('feishu:ghost', { label: 'x' }).reason, 'not-found')
+  assert.equal(service.updateMember('feishu:feishu-app:ghost', { label: 'x' }).reason, 'not-found')
   assert.equal(service.updateMember('bad-key', { label: 'x' }).reason, 'invalid-key')
 })

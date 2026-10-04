@@ -24,7 +24,6 @@ import { createNativeActions } from '../src/native/actions.mjs'
 import { createOutboundConfigService } from '../src/control-surface/outbound-config.mjs'
 import { createOutboundSource } from '../src/runtime/outbound-source.mjs'
 import { createInboundChannelConfigPort } from '../src/inbound/channel-config.mjs'
-import { migrateCanonicalChannelConfig } from '../src/control-surface/channel-config-migration.mjs'
 import { createSurfaceRevision } from '../src/control-surface/revision.mjs'
 import { createSurfaceActivity } from '../src/control-surface/activity.mjs'
 import { createSurfaceHealth } from '../src/control-surface/health.mjs'
@@ -70,70 +69,16 @@ function failingTransactStore({ initial = {}, failAt = [] } = {}) {
 /** 真实 store + 共享服务 rig（出站 canonical + 入站凭证域）。 */
 function rig(store) {
   const source = createOutboundSource([])
-  const outboundConfig = createOutboundConfigService({ store, yamlRows: new Map(), source, allowLegacy: false })
+  const outboundConfig = createOutboundConfigService({ store, yamlRows: new Map(), source })
   const inboundConfig = createInboundChannelConfigPort({ store })
   const channelControl = createChannelControlService({ outboundConfig, inboundConfig })
   return { source, outboundConfig, inboundConfig, channelControl }
 }
 
-// ———————— 迁移：v0.12/v0.13 fixture → current ————————
-
-test('S13 migration: v0.12/v0.13 legacy outbound fixture migrates to canonical once (real store)', () => {
-  const { file } = tempState({
-    'admin:channel:bark:outbound': { key: 'legacy-bark' },
-    'admin:channel:webhook:outbound': { url: 'https://example.com/hook' },
-    'unrelated:key': 'must-survive',
-  })
-  const store = createStore(file)
-
-  const result = migrateCanonicalChannelConfig({ store, channelTypes: ['bark', 'webhook', 'feishu'], adminEnabled: true })
-  assert.equal(result.ok, true)
-  assert.equal(result.already, false)
-  assert.deepEqual([...result.migrated].sort(), ['bark', 'webhook'])
-  assert.deepEqual(store.get('channel:bark:outbound'), { key: 'legacy-bark' })
-  assert.deepEqual(store.get('channel:webhook:outbound'), { url: 'https://example.com/hook' })
-  assert.equal(store.get('admin:channel:bark:outbound'), undefined, 'legacy Admin outbound key retired')
-  assert.equal(store.get('admin:channel:webhook:outbound'), undefined)
-  assert.equal(store.get('unrelated:key'), 'must-survive', '无关键必须存活')
-  assert.equal(store.get('state:schema-version'), 13)
-  assert.equal(store.get('state:migration:v0.13').status, 'complete')
-})
-
-test('S13 migration: re-running on an already-migrated store is an idempotent no-op (real store)', () => {
-  const { file } = tempState({ 'admin:channel:bark:outbound': { key: 'legacy-bark' } })
-  const store = createStore(file)
-
-  const first = migrateCanonicalChannelConfig({ store, channelTypes: ['bark'], adminEnabled: true })
-  assert.equal(first.ok, true)
-  assert.equal(first.already, false)
-  const snapshotAfterFirst = store.get('state:migration:v0.13')
-
-  const second = migrateCanonicalChannelConfig({ store, channelTypes: ['bark'], adminEnabled: true })
-  assert.equal(second.ok, true)
-  assert.equal(second.already, true, '第二次必须是 already，不重复迁移')
-  assert.deepEqual(second.migrated, [])
-  assert.deepEqual(store.get('state:migration:v0.13'), snapshotAfterFirst, 'marker 不被改写')
-  assert.deepEqual(store.get('channel:bark:outbound'), { key: 'legacy-bark' })
-})
-
-test('S13 migration: canonical wins over legacy conflict — legacy never resurrected (real store)', () => {
-  const { file } = tempState({
-    'channel:bark:outbound': { key: 'canonical' },
-    'admin:channel:bark:outbound': { key: 'legacy' },
-  })
-  const store = createStore(file)
-
-  const result = migrateCanonicalChannelConfig({ store, channelTypes: ['bark'], adminEnabled: true })
-  assert.equal(result.ok, true)
-  assert.deepEqual(result.migrated, [], 'canonical 已存在则不迁移')
-  assert.deepEqual(store.get('channel:bark:outbound'), { key: 'canonical' }, 'canonical 胜出')
-  assert.equal(store.get('admin:channel:bark:outbound'), undefined, 'legacy 冲突键仍被退役')
-})
-
 // ———————— state 读取失败 / 损坏：fail-closed（真实 store）————————
 // state.json 是一个目录 → readFileSync 抛 EISDIR → bootStatus=unavailable（真实 I/O 失败路径）。
 
-test('S13 read failure (real store): migration refuses and shared writes fail closed, nothing published', () => {
+test('S13 read failure (real store): shared writes fail closed, nothing published', () => {
   const dir = mkdtempSync(join(tmpdir(), 'dsh-v014-hardening-readfail-'))
   const statePath = join(dir, 'state.json')
   mkdirSync(statePath) // 目录占位：读取必失败
@@ -141,10 +86,6 @@ test('S13 read failure (real store): migration refuses and shared writes fail cl
   assert.equal(store.bootStatus().status, 'unavailable')
 
   const { source, outboundConfig, channelControl } = rig(store)
-  const migration = migrateCanonicalChannelConfig({ store, channelTypes: ['bark'], adminEnabled: true })
-  assert.equal(migration.ok, false)
-  assert.equal(migration.reason, 'state-untrusted')
-
   assert.throws(() => channelControl.saveOutbound('bark', { key: 'never' }), (error) => error?.code === 'storage-failed')
   assert.throws(() => channelControl.saveChannelAccount('telegram', { botToken: 'never' }), (error) => error?.code === 'storage-failed')
   assert.equal(store.get('channel:bark:outbound'), undefined)
@@ -153,14 +94,13 @@ test('S13 read failure (real store): migration refuses and shared writes fail cl
   assert.deepEqual(outboundConfig.raw('bark'), {}, '读取失败时 canonical raw 为空，绝不回显幽灵配置')
 })
 
-test('S13 corrupt state (real store): migration refuses and shared writes fail closed, nothing published', () => {
+test('S13 corrupt state (real store): shared writes fail closed, nothing published', () => {
   const { file } = tempState()
   writeFileSync(file, '{"broken": ') // 半截 JSON
   const store = createStore(file)
   assert.equal(store.bootStatus().status, 'corrupt')
 
   const { source, channelControl } = rig(store)
-  assert.equal(migrateCanonicalChannelConfig({ store, channelTypes: ['bark'], adminEnabled: true }).reason, 'state-untrusted')
   assert.throws(() => channelControl.saveOutbound('bark', { key: 'never' }), (error) => error?.code === 'storage-failed')
   assert.throws(() => channelControl.saveChannelAccount('telegram', { botToken: 'never' }), (error) => error?.code === 'storage-failed')
   assert.equal(store.get('channel:bark:outbound'), undefined)
@@ -200,7 +140,7 @@ test('S13 write failure (real store): blocked state path fails closed, live sour
 test('S13 write/rename failure (injected at the durable boundary): no publish, mock cannot fake success', () => {
   const store = failingTransactStore({ initial: { 'channel:bark:outbound': { key: 'old' } }, failAt: [1] })
   const source = createOutboundSource([{ type: 'bark', config: { key: 'old' } }])
-  const outboundConfig = createOutboundConfigService({ store, yamlRows: new Map(), source, allowLegacy: false })
+  const outboundConfig = createOutboundConfigService({ store, yamlRows: new Map(), source })
   const channelControl = createChannelControlService({ outboundConfig })
 
   assert.throws(() => channelControl.saveOutbound('bark', { barkUrl: 'https://self.example' }), (error) => error?.code === 'storage-failed')

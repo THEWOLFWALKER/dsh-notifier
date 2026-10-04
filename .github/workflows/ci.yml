@@ -25,6 +25,8 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
       - run: node --version
+      # Root lockfile pins the isolated DOM-tool versions for repeatable CI installs.
+      - run: npm ci --ignore-scripts
       # 零强制运行时依赖：无需 npm install，直接跑 node:test；optionalDependencies 仍可声明
       # 显式钉到 test/ 下两种命名：默认发现 glob（test-*）会误吞 scripts/test-channel.mjs
       # （node --test 自 v21 起原生支持 glob 模式，Windows 上不经 shell 展开也能匹配）
@@ -34,10 +36,7 @@ jobs:
       # test/dom 安装，绝不进核心零依赖 runner）。根 runner 显式排除 test/dom，因此这里
       # 必须单独安装并执行，否则 DOM 套件会在 CI 中静默缺失。
       - name: Run DOM workspace tests
-        run: |
-          cd test/dom
-          npm install --ignore-scripts --no-package-lock
-          npm test
+        run: npm run test:dom
       - name: Verify zero mandatory runtime dependencies
         shell: bash # if [ -f ... ] 是 bash 语法，Windows runner 默认 pwsh 需显式指定
         run: |

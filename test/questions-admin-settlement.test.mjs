@@ -9,7 +9,7 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createQuestionBridge } from '../src/questions/router.mjs'
-import { createInboundBus } from '../src/inbound/bus.mjs'
+import { createPrivateFlowBus as createInboundBus } from './helpers/private-flow-bus.mjs'
 import { createTokenVault } from '../src/inbound/tokens.mjs'
 import { createStore } from '../src/inbound/store.mjs'
 import { createIdentity } from '../src/inbound/identity.mjs'
@@ -27,7 +27,7 @@ function makeRig() {
   const vault = createTokenVault({ secret: SENTINEL })
   const bus = createInboundBus({ allowUsers: ['the-owner'], store, vault })
   const identity = createIdentity({ store, logger: null })
-  identity.addBinding({ channel: 'telegram', userId: 'the-owner' })
+  identity.addBinding({ channel: 'telegram', accountId: 'telegram', userId: 'the-owner' })
   const raw = {
     channel: 'telegram',
     accountId: 'telegram',
@@ -60,7 +60,7 @@ function refOf(rig) { return rig.bridge.adminPending()[0].ref }
 function phoneAnswer(rig, key, optIdxes, eventId) {
   return rig.control.handle({
     command: 'question-answer', eventId, qKey: key, trusted: true,
-    channel: 'telegram', accountId: 'telegram', chatId: '900113',
+    channel: 'telegram', accountId: 'telegram', userId: 'the-owner', chatId: '900113', chatType: 'private',
     via: 'telegram:button', optIdxes,
   })
 }
@@ -171,7 +171,7 @@ test('Control Core 不可用（dispose）→ fail-closed not_available，账本�
   const vault2 = createTokenVault({ secret: sentinel })
   const bus2 = createInboundBus({ allowUsers: ['the-owner'], store: store2, vault: vault2 })
   const id2 = createIdentity({ store: store2, logger: null })
-  id2.addBinding({ channel: 'telegram', userId: 'the-owner' })
+  id2.addBinding({ channel: 'telegram', accountId: 'telegram', userId: 'the-owner' })
   const raw2 = {
     channel: 'telegram',
     accountId: 'telegram',

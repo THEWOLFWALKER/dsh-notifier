@@ -16,7 +16,7 @@ import assert from 'node:assert/strict'
 
 import { createIdentity } from '../src/inbound/identity.mjs'
 import { createMembersControlService } from '../src/control-plane/members.mjs'
-import { createInboundBus } from '../src/inbound/bus.mjs'
+import { createPrivateFlowBus as createInboundBus } from './helpers/private-flow-bus.mjs'
 import { createInboundChannelConfigPort } from '../src/inbound/channel-config.mjs'
 import { createOutboundConfigService } from '../src/control-surface/outbound-config.mjs'
 import { createOutboundSource } from '../src/runtime/outbound-source.mjs'
@@ -75,60 +75,28 @@ function durableStore(initial = {}) {
 test('B1 members: update storage-failed 不得改写成 not-found（透传底层 reason）', () => {
   const store = txMemoryStore()
   const identity = createIdentity({ store })
-  assert.equal(identity.addBinding({ channel: 'telegram', userId: '1', label: 'A' }).ok, true)
-  assert.equal(identity.addBinding({ channel: 'telegram', userId: '2', label: 'B' }).ok, true)
+  assert.equal(identity.addBinding({ channel: 'telegram', accountId: 'tg-app', userId: '1', label: 'A' }).ok, true)
+  assert.equal(identity.addBinding({ channel: 'telegram', accountId: 'tg-app', userId: '2', label: 'B' }).ok, true)
   const members = createMembersControlService({ identity })
 
   store.setFail(true)
-  const updated = members.updateMember('telegram:1', { label: 'A2' })
+  const updated = members.updateMember('telegram:tg-app:1', { label: 'A2' })
   assert.equal(updated.ok, false)
   assert.equal(updated.reason, 'storage-failed') // 绝非 not-found
-  const removed = members.removeMember('telegram:2')
+  const removed = members.removeMember('telegram:tg-app:2')
   assert.equal(removed.ok, false)
   assert.equal(removed.reason, 'storage-failed')
   store.setFail(false)
 
   // 明确不存在才 not-found；末位 owner 降级/删除仍是 owner-last——三类错误不串码。
-  assert.equal(members.updateMember('telegram:999', { label: 'x' }).reason, 'not-found')
-  assert.equal(members.updateMember('telegram:1', { role: 'member' }).reason, 'owner-last')
-  assert.equal(members.removeMember('telegram:1').reason, 'owner-last')
+  assert.equal(members.updateMember('telegram:tg-app:999', { label: 'x' }).reason, 'not-found')
+  assert.equal(members.updateMember('telegram:tg-app:1', { role: 'member' }).reason, 'owner-last')
+  assert.equal(members.removeMember('telegram:tg-app:1').reason, 'owner-last')
   // 失败写不留下任何内存/盘上痕迹：label 原值仍在。
-  assert.equal(members.listMembers('telegram').find((m) => m.key === 'telegram:1').label, 'A')
+  assert.equal(members.listMembers('telegram').find((m) => m.key === 'telegram:tg-app:1').label, 'A')
 })
 
-// ——————————————————— B2 identity.migrate 单事务 ———————————————————
-
-test('B2 migrate: 事务失败 -> bindings/marker 都不变', () => {
-  const store = txMemoryStore()
-  const identity = createIdentity({ store })
-  store.setFail(true)
-  assert.deepEqual(identity.migrate(['42'], ['telegram']), { added: 0, reason: 'storage-failed' })
-  assert.deepEqual(store.snapshot(), {}) // 半提交被消除：两键都不落盘
-})
-
-test('B2 migrate: 成功一次提交两键 + 重跑幂等 + 不覆盖更新的 canonical', () => {
-  const store = txMemoryStore()
-  const identity = createIdentity({ store })
-  const first = identity.migrate(['42'], ['telegram'])
-  assert.equal(first.added, 1)
-  const snap = store.snapshot()
-  assert.ok(snap['inbound:bindings']['telegram:42'])
-  assert.equal(snap['inbound:migrated'], true) // 同一次事务一起落盘
-
-  assert.deepEqual(identity.migrate(['42'], ['telegram']), { added: 0, skipped: true })
-
-  const store2 = txMemoryStore({
-    'inbound:bindings': {
-      'telegram:42': { channel: 'telegram', userId: '42', label: '自定义', role: 'owner', pairedAt: 1, lastSeenAt: 0, origin: 'paired' },
-    },
-  })
-  const identity2 = createIdentity({ store: store2 })
-  const r = identity2.migrate(['42', '43'], ['telegram'])
-  assert.equal(r.added, 1) // 只补 43
-  const table = store2.snapshot()['inbound:bindings']
-  assert.equal(table['telegram:42'].label, '自定义') // 更新的 canonical 不被 legacy 覆盖
-  assert.equal(table['telegram:43'].origin, 'migrated')
-})
+// v0.15 initializes a fresh state and deliberately has no identity.migrate path.
 
 // ——————————————————— B3 SessionRegistry commit -> publish ———————————————————
 
@@ -163,7 +131,7 @@ test('B4 bus: 已授权消息 durable dedup 失败 -> handler 计数 0（fail-cl
   let hits = 0
   bus.onMessage(() => { hits += 1; return true })
 
-  const envelope = { channel: 'telegram', userId: 'u1', messageId: 'm1', text: 'hi' }
+  const envelope = { channel: 'telegram', chatType: 'private', accountId: 'test-account', chatId: 'u1', userId: 'u1', messageId: 'm1', text: 'hi' }
   store.setFail(true)
   assert.deepEqual(bus.accept(envelope), { ok: false, reason: 'storage-failed' })
   assert.equal(hits, 0) // 去重未落盘 -> 绝不释放业务副作用

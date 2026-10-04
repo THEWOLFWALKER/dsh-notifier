@@ -108,7 +108,7 @@ function paired(identity, event) {
  * `register()` is deliberately small so legacy routers can retain their
  * existing ledgers and handlers while routing the final decision through here.
  */
-export function createControlEntry({ policy = {}, identity = null, now = Date.now, logger = null, onAudit = null, policyForSession = null, sessionPolicy = null } = {}) {
+export function createControlEntry({ policy = {}, identity = null, now = Date.now, logger = null, onAudit = null, policyForSession = null, sessionPolicy = null, privateChatEnabled = null } = {}) {
   const basePolicy = normalizeSessionPolicy(policy, now())
   // `sessionPolicy` is the descriptive alias retained for callers that already
   // use that term.  Two different resolvers are ambiguous and are disabled;
@@ -135,6 +135,11 @@ export function createControlEntry({ policy = {}, identity = null, now = Date.no
 
   const handle = (input = {}) => {
     if (disposed) return makeReceipt('desktop_fallback', input, 'disposed')
+    if (input.via !== 'admin:web' && typeof privateChatEnabled === 'function') {
+      try {
+        if (privateChatEnabled(String(input.channel ?? '')) !== true) return makeReceipt('rejected', input, 'private_chat_disabled')
+      } catch { return makeReceipt('rejected', input, 'private_chat_disabled') }
+    }
     const admission = privateControlAdmission(input)
     if (!admission.ok) return makeReceipt('rejected', input, admission.reason)
     const command = text(input.command)
@@ -163,6 +168,11 @@ export function createControlEntry({ policy = {}, identity = null, now = Date.no
     }
     const candidateAdmission = privateControlAdmission(candidate)
     if (!candidateAdmission.ok) return makeReceipt('rejected', candidate, candidateAdmission.reason)
+    if (input.via !== 'admin:web' && typeof privateChatEnabled === 'function') {
+      try {
+        if (privateChatEnabled(String(candidate.channel ?? '')) !== true) return makeReceipt('rejected', candidate, 'private_chat_disabled')
+      } catch { return makeReceipt('rejected', candidate, 'private_chat_disabled') }
+    }
     const normalized = normalizeControlEvent(candidate, now())
     if (!normalized.ok) return makeReceipt(normalized.reason === 'expired' ? 'expired' : 'rejected', candidate, normalized.reason)
     const event = normalized.event

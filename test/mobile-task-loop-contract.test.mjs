@@ -58,7 +58,7 @@ test('contract: dual-end first-win settlement', () => {
 test('contract: multi-task ambiguity fails before delivering', () => {
   // 多活跃任务无绑定时不先投最近再提示；先任务选择卡；选择成功后原消息只投一次。
   const sel = createTaskSelection({ store: memoryStore() })
-  const eg = { channel: 'telegram', userId: '42', chatId: '42' }
+  const eg = { channel: 'telegram', accountId: 'bot-a', userId: '42', chatId: '42' }
   const begun = sel.begin(eg, ['sid-a', 'sid-b'], '帮我构建')
   assert.deepEqual(begun.candidates, ['sid-a', 'sid-b'])
   assert.equal(sel.has(eg), true)

@@ -134,7 +134,7 @@ test('微信：凭证 durable 成功 → 退出码 0，落盘 wechat:account，�
   assert.equal(code, 0)
   assert.equal(store.get('wechat:account').accountId, 'wx-bot-1')
   const bindings = store.get('inbound:bindings')
-  assert.equal(bindings['wechat:wx-user-9'].role, 'owner')
+  assert.equal(bindings['wechat:wx-bot-1:wx-user-9'].role, 'owner')
   assert.match(sink.out.join('\n'), /微信连接成功/)
 })
 

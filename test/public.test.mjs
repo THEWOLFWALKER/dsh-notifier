@@ -12,6 +12,8 @@ import { createPublicFacade, composeOnSend, deepFreeze, redactAuditRecord, PUBLI
 import { createNotifier } from '../src/notify.mjs'
 import { resolveConfig } from '../src/config.mjs'
 import { apply } from '../src/index.mjs'
+import './helpers/urlguard-public.mjs'
+import { __setRequestImplForTests } from '../src/security/network-policy.mjs'
 
 // ---------------------------------------------------------------- 测试基建
 
@@ -20,8 +22,12 @@ function makeLogger() {
   return { warnings, warn: (...args) => warnings.push(args.join(' ')) }
 }
 
+function assertAccepted(result, channel = 'webhook') {
+  assert.ok(result.accepted.includes(channel) || result.confirmed.includes(channel), `expected accepted/confirmed ${channel}`)
+}
+
 /** 可注入 fetch 的真 notifier（webhook 渠道）+ onSend record 捕获。 */
-function makeRig({ channels = [{ type: 'webhook', url: 'http://x/hook' }], logger } = {}) {
+function makeRig({ channels = [{ type: 'webhook', url: 'http://public-hook.test/hook' }], logger } = {}) {
   const resolved = resolveConfig({ channels })
   assert.equal(resolved.skipped.length, 0)
   const records = []
@@ -33,6 +39,18 @@ function makeRig({ channels = [{ type: 'webhook', url: 'http://x/hook' }], logge
 
 async function withFetch(ok = true, fn, { timeout = false } = {}) {
   const original = globalThis.fetch
+  __setRequestImplForTests(async (_target, init) => {
+    if (!timeout) return { ok, status: ok ? 200 : 500, json: async () => ({}), text: async () => 'err' }
+    return new Promise((resolve, reject) => {
+      const fail = () => {
+        const error = new Error('aborted')
+        error.name = 'AbortError'
+        reject(error)
+      }
+      init?.signal?.addEventListener?.('abort', fail, { once: true })
+      setTimeout(fail, 25)
+    })
+  })
   if (timeout) {
     // G-58：超时支路——请求挂起直到被终止，fetch 以 AbortError 拒绝。
     // postJson 把 AbortError 归为 TIMEOUT + noRetry（G-50 语义，见 adapters.test.mjs
@@ -55,6 +73,7 @@ async function withFetch(ok = true, fn, { timeout = false } = {}) {
     return await fn()
   } finally {
     globalThis.fetch = original
+    __setRequestImplForTests(null)
   }
 }
 
@@ -91,12 +110,12 @@ test('facade 广播：走 notifyAll 带 source，返回值同构 + source；reco
   const facade = createPublicFacade({ notifier, logger: { warn() {} } })
   await withFetch(true, async () => {
     const result = await facade.push({ title: 't', content: 'c', level: 'timeSensitive' }, { sourceName: 'dsh-email' })
-    assert.equal(result.ok, true)
-    assert.deepEqual(result.delivered, ['webhook'])
+    assertAccepted(result)
+    assert.deepEqual(result.accepted, ['webhook'])
     assert.deepEqual(result.source, { kind: 'plugin', name: 'dsh-email' })
     assert.equal(records.length, 1)
     assert.deepEqual(records[0].source, { kind: 'plugin', name: 'dsh-email' })
-    assert.deepEqual(records[0].delivered, ['webhook'])
+    assert.deepEqual(records[0].accepted, ['webhook'])
     assert.deepEqual(records[0].message, { title: 't', content: 'c', level: 'timeSensitive', group: undefined })
   })
 })
@@ -106,8 +125,8 @@ test('facade 定向推送：走 notify 单渠道路径，返回值兼容且统�
   const facade = createPublicFacade({ notifier, logger: { warn() {} } })
   await withFetch(true, async () => {
     const result = await facade.push({ title: 't', content: 'c' }, { channel: 'webhook', sourceName: 'ci' })
-    assert.equal(result.ok, true)
-    assert.deepEqual(result.delivered, ['webhook'])
+    assertAccepted(result)
+    assert.deepEqual(result.accepted, ['webhook'])
     assert.equal(records.length, 1)
     assert.equal('message' in records[0], true)
     assert.equal(records[0].channel, 'webhook')
@@ -119,16 +138,14 @@ test('facade 定向推送：skipped 与 failed 的形状适配', async () => {
   const { notifier: okNotifier, records } = makeRig()
   const facade = createPublicFacade({ notifier: okNotifier, logger: { warn() {} } })
   const skipped = await facade.push({ title: 't', content: 'c' }, { channel: 'telegram' }) // 未配置
-  assert.equal(skipped.ok, false)
-  assert.deepEqual(skipped.skipped, ['(telegram)'])
+  assert.deepEqual(skipped.skipped, [{ channel: 'telegram', reason: 'skipped' }])
   assert.equal(records.length, 1)
   assert.equal(records[0].channel, 'telegram')
   await withFetch(false, async () => {
     const failed = await facade.push({ title: 't', content: 'c' }, { channel: 'webhook', sourceName: 'x' })
-    assert.equal(failed.ok, false)
     assert.equal(failed.failed.length, 1)
     assert.equal(failed.failed[0].channel, 'webhook')
-    assert.ok(failed.failed[0].error.length > 0)
+    assert.equal(failed.failed[0].reason, 'delivery-failed')
     assert.equal(records.length, 2)
     assert.equal(records[1].channel, 'webhook')
     assert.equal(records[1].failed[0].channel, 'webhook')
@@ -141,13 +158,11 @@ test('G-58 超时支路：fetch AbortError → TIMEOUT noRetry 文案（结果�
   const facade = createPublicFacade({ notifier, logger: { warn() {} } })
   await withFetch(true, async () => {
     const timedOut = await facade.push({ title: 't', content: 'c' }, { channel: 'webhook' })
-    assert.equal(timedOut.ok, false)
-    assert.equal(timedOut.failed.length, 1)
-    assert.equal(timedOut.failed[0].channel, 'webhook')
-    assert.match(timedOut.failed[0].error, /投递超时.*结果未知.*不再重试/)
+    assert.deepEqual(timedOut.unknown, [{ channel: 'webhook', reason: 'outcome-unknown' }])
+    assert.deepEqual(timedOut.failed, [])
     assert.equal(records.length, 1)
     assert.equal(records[0].channel, 'webhook')
-    assert.match(records[0].failed[0].error, /投递超时|TIMEOUT/)
+    assert.equal(records[0].failed[0].uncertain, true)
   }, { timeout: true })
 })
 
@@ -156,8 +171,7 @@ test('facade never-reject：notifyAll 内部抛错 → failed:[{reason:"internal
   const logger = makeLogger()
   const facade = createPublicFacade({ notifier: broken, logger })
   const result = await facade.push({ title: 't', content: 'c' }, { sourceName: 'a' })
-  assert.equal(result.ok, false)
-  assert.deepEqual(result.failed, [{ reason: 'internal' }])
+  assert.deepEqual(result.failed, [{ channel: '(request)', reason: 'internal' }])
   assert.ok(logger.warnings.some((w) => /内部异常/.test(w)))
 })
 
@@ -168,10 +182,10 @@ test('按源限流：每源独立滑动窗（A 超限不影响 B）', async () =
   let clock = 1_000_000
   const facade = createPublicFacade({ notifier, config: { limitPerMinutePerSource: 2 }, logger: { warn() {} }, now: () => clock })
   await withFetch(true, async () => {
-    assert.equal((await facade.push({ title: 'a', content: 'x' }, { sourceName: 'A' })).ok, true)
-    assert.equal((await facade.push({ title: 'a', content: 'x' }, { sourceName: 'A' })).ok, true, '额度 2 内第 2 次放行')
-    assert.equal((await facade.push({ title: 'a', content: 'x' }, { sourceName: 'A' })).skipped[0], '(rate-limited)', '第 3 次超限')
-    assert.equal((await facade.push({ title: 'b', content: 'x' }, { sourceName: 'B' })).ok, true, 'B 独立窗口照常放行')
+    assertAccepted(await facade.push({ title: 'a', content: 'x' }, { sourceName: 'A' }))
+    assertAccepted(await facade.push({ title: 'a', content: 'x' }, { sourceName: 'A' }))
+    assert.deepEqual((await facade.push({ title: 'a', content: 'x' }, { sourceName: 'A' })).skipped, [{ channel: '(request)', reason: 'rate-limited' }])
+    assertAccepted(await facade.push({ title: 'b', content: 'x' }, { sourceName: 'B' }))
   })
 })
 
@@ -181,9 +195,9 @@ test('限流拦截：返回 (rate-limited)，统一内部审计一次并保留�
   await withFetch(true, async () => {
     await facade.push({ title: 'a', content: 'x' }, { sourceName: 'A' })
     const limited = await facade.push({ title: 'a', content: 'x' }, { sourceName: 'A', channel: 'webhook' })
-    assert.deepEqual(limited.skipped, ['(rate-limited)'])
+    assert.deepEqual(limited.skipped, [{ channel: 'webhook', reason: 'rate-limited' }])
     assert.equal(records.length, 2)
-    assert.equal(records[1].ok, false)
+    assert.deepEqual(records[1].skipped, [{ channel: 'webhook', reason: 'rate-limited' }])
     assert.deepEqual(records[1].source, { kind: 'plugin', name: 'A' })
     assert.equal(records[1].message.title, 'a')
     assert.equal(records[1].channel, 'webhook')
@@ -196,7 +210,7 @@ test('限流：limitPerMinutePerSource: 0 = 不限', async () => {
   await withFetch(true, async () => {
     for (let i = 0; i < 12; i += 1) {
       const result = await facade.push({ title: 'a', content: 'x' }, { sourceName: 'A' })
-      assert.equal(result.ok, true, `第 ${i + 1} 次不应被限`)
+      assertAccepted(result)
     }
   })
 })
@@ -205,9 +219,9 @@ test('限流：anonymous 共享单窗（两次匿名调用共享额度）', asyn
   const { notifier } = makeRig()
   const facade = createPublicFacade({ notifier, config: { limitPerMinutePerSource: 1 }, logger: { warn() {} } })
   await withFetch(true, async () => {
-    assert.equal((await facade.push({ title: 'a', content: 'x' })).ok, true)
+    assertAccepted(await facade.push({ title: 'a', content: 'x' }))
     const second = await facade.push({ title: 'a', content: 'x' }) // 不传 sourceName = anonymous
-    assert.equal(second.skipped[0], '(rate-limited)')
+    assert.deepEqual(second.skipped[0], { channel: '(request)', reason: 'rate-limited' })
     assert.equal(second.source.name, 'anonymous')
   })
 })
@@ -222,7 +236,7 @@ test('限流：LRU 淘汰最旧源且 warn（容量 32）', async () => {
     }
     assert.ok(logger.warnings.some((w) => /限流表已满.*src-0.*窗口归零/.test(w)), '淘汰最旧源 src-0 必须 warn')
     // 被淘汰的 src-0 获得全新窗口（限流归零是已知安全代价，warn 已显性化）
-    assert.equal((await facade.push({ title: 'a', content: 'x' }, { sourceName: 'src-0' })).ok, true)
+    assertAccepted(await facade.push({ title: 'a', content: 'x' }, { sourceName: 'src-0' }))
   })
 })
 
@@ -232,9 +246,9 @@ test('限流：滑动窗跨分钟恢复（t+60s 再放行）', async () => {
   const facade = createPublicFacade({ notifier, config: { limitPerMinutePerSource: 1 }, logger: { warn() {} }, now: () => clock })
   await withFetch(true, async () => {
     await facade.push({ title: 'a', content: 'x' }, { sourceName: 'A' })
-    assert.equal((await facade.push({ title: 'a', content: 'x' }, { sourceName: 'A' })).ok, false)
+    assert.deepEqual((await facade.push({ title: 'a', content: 'x' }, { sourceName: 'A' })).skipped, [{ channel: '(request)', reason: 'rate-limited' }])
     clock += 60_001
-    assert.equal((await facade.push({ title: 'a', content: 'x' }, { sourceName: 'A' })).ok, true, '窗口滑出后恢复')
+    assertAccepted(await facade.push({ title: 'a', content: 'x' }, { sourceName: 'A' }))
   })
 })
 
@@ -244,8 +258,8 @@ test('no-op stub：notifier=null 时 push 返回 (disabled)、flush 即 resolve�
   const facade = createPublicFacade({ notifier: null, logger: { warn() {} } })
   assert.equal(facade.enabled(), false)
   const result = await facade.push({ title: 't', content: 'c' })
-  assert.deepEqual(result.skipped, ['(disabled)'])
-  assert.deepEqual(await facade.flush(), { ok: true })
+  assert.deepEqual(result.skipped, [{ channel: '(request)', reason: 'disabled' }])
+  assert.deepEqual(await facade.flush(), { drained: true })
   assert.equal(typeof facade.version, 'string')
 })
 
@@ -253,7 +267,7 @@ test('facade version 与 PUBLIC_API_VERSION 一致；真 notifier 时 enabled()=
   const { notifier } = makeRig()
   const facade = createPublicFacade({ notifier, logger: { warn() {} } })
   assert.equal(facade.version, PUBLIC_API_VERSION)
-  assert.equal(PUBLIC_API_VERSION, '0.7')
+  assert.equal(PUBLIC_API_VERSION, '0.8')
   assert.equal(facade.enabled(), true)
 })
 
@@ -263,7 +277,7 @@ test('输入防御：非字符串 title/content 归一为空不炸；双空返�
   const { notifier, records } = makeRig()
   const facade = createPublicFacade({ notifier, logger: { warn() {} } })
   const malformed = await facade.push({ title: Symbol('nope'), content: null })
-  assert.deepEqual(malformed.skipped, ['(malformed)'])
+  assert.deepEqual(malformed.skipped, [{ channel: '(request)', reason: 'malformed' }])
   assert.equal(records.length, 0)
 })
 
@@ -272,9 +286,9 @@ test('输入防御：双空不占限流名额', async () => {
   const facade = createPublicFacade({ notifier, config: { limitPerMinutePerSource: 1 }, logger: { warn() {} } })
   await withFetch(true, async () => {
     const empty = await facade.push({ title: '', content: '' }, { sourceName: 'A' }) // 真双空（空白串不算空）
-    assert.deepEqual(empty.skipped, ['(malformed)'])
+    assert.deepEqual(empty.skipped, [{ channel: '(request)', reason: 'malformed' }])
     const next = await facade.push({ title: 'ok', content: 'x' }, { sourceName: 'A' })
-    assert.equal(next.ok, true, 'malformed 不消耗 A 的额度')
+    assertAccepted(next)
   })
 })
 
@@ -285,7 +299,7 @@ test('输入防御：20000 码点长度钳制（截断 + warn，码点安全）'
   const long = '🍅'.repeat(20_001) // 4 字节 emoji：UTF-16 slice 会把它截成乱码，Array.from 不会
   await withFetch(true, async () => {
     const result = await facade.push({ title: long, content: 'c' }, { sourceName: 'A' })
-    assert.equal(result.ok, true)
+    assertAccepted(result)
     assert.ok(logger.warnings.some((w) => /超长.*截断/.test(w)))
   })
 })
@@ -313,21 +327,21 @@ test('输入防御：sourceName 归一（空/非字符串→anonymous，超长�
 
 test('A3：sourceName 轮换不能绕过实例调用预算，控制字符被替换', async () => {
   const calls = []
-  const notifier = { notifyAll: async (_message, { source }) => { calls.push(source); return { ok: true, delivered: ['x'], skipped: [], failed: [] } } }
+  const notifier = { notifyAll: async (_message, { source }) => { calls.push(source); return { accepted: ['x'], confirmed: [], unknown: [], skipped: [], failed: [] } } }
   const facade = createPublicFacade({ notifier, config: { maxCalls: 2, maxBytes: 1024 }, logger: { warn() {} } })
-  assert.equal((await facade.push({ title: 'a', content: 'b' }, { sourceName: ' one\u001b[31m' })).ok, true)
-  assert.equal((await facade.push({ title: 'a', content: 'b' }, { sourceName: 'two' })).ok, true)
+  assertAccepted(await facade.push({ title: 'a', content: 'b' }, { sourceName: ' one\u001b[31m' }), 'x')
+  assertAccepted(await facade.push({ title: 'a', content: 'b' }, { sourceName: 'two' }), 'x')
   const blocked = await facade.push({ title: 'a', content: 'b' }, { sourceName: 'three' })
-  assert.deepEqual(blocked.skipped, ['(budget)'])
+  assert.deepEqual(blocked.skipped, [{ channel: '(request)', reason: 'budget' }])
   assert.equal(calls[0].name.includes('\u001b'), false)
 })
 
 test('A3：字节预算按 UTF-8 计算并在分发前拒绝', async () => {
   let sent = 0
-  const notifier = { notifyAll: async () => { sent += 1; return { ok: true, delivered: ['x'], skipped: [], failed: [] } } }
+  const notifier = { notifyAll: async () => { sent += 1; return { accepted: ['x'], confirmed: [], unknown: [], skipped: [], failed: [] } } }
   const facade = createPublicFacade({ notifier, config: { maxBytes: 4, maxCalls: 10 }, logger: { warn() {} } })
-  assert.equal((await facade.push({ title: '🍅', content: '' })).ok, true) // 4 UTF-8 bytes
-  assert.deepEqual((await facade.push({ title: 'a', content: '' })).skipped, ['(budget)'])
+  assertAccepted(await facade.push({ title: '🍅', content: '' }), 'x') // 4 UTF-8 bytes
+  assert.deepEqual((await facade.push({ title: 'a', content: '' })).skipped, [{ channel: '(request)', reason: 'budget' }])
   assert.equal(sent, 1)
 })
 
@@ -335,15 +349,15 @@ test('A3：并发/排队预算有界，队列满只拒绝当前调用', async ()
   let releaseFirst
   const firstDone = new Promise((resolve) => { releaseFirst = resolve })
   let calls = 0
-  const notifier = { notifyAll: async () => { calls += 1; if (calls === 1) await firstDone; return { ok: true, delivered: ['x'], skipped: [], failed: [] } } }
+  const notifier = { notifyAll: async () => { calls += 1; if (calls === 1) await firstDone; return { accepted: ['x'], confirmed: [], unknown: [], skipped: [], failed: [] } } }
   const facade = createPublicFacade({ notifier, config: { maxConcurrent: 1, maxQueue: 1, maxCalls: 10 }, logger: { warn() {} } })
   const first = facade.push({ title: '1', content: 'x' })
   const queued = facade.push({ title: '2', content: 'x' })
   const busy = await facade.push({ title: '3', content: 'x' })
-  assert.deepEqual(busy.skipped, ['(busy)'])
+  assert.deepEqual(busy.skipped, [{ channel: '(request)', reason: 'busy' }])
   releaseFirst()
-  assert.equal((await first).ok, true)
-  assert.equal((await queued).ok, true)
+  assertAccepted(await first, 'x')
+  assertAccepted(await queued, 'x')
 })
 
 test('A4：facade 冻结且不暴露 dispose；内部 disposer 幂等并阻止排队调用', async () => {
@@ -351,7 +365,7 @@ test('A4：facade 冻结且不暴露 dispose；内部 disposer 幂等并阻止�
   let releaseFirst
   const firstDone = new Promise((resolve) => { releaseFirst = resolve })
   let calls = 0
-  const notifier = { notifyAll: async () => { calls += 1; await firstDone; return { ok: true, delivered: ['x'], skipped: [], failed: [] } } }
+  const notifier = { notifyAll: async () => { calls += 1; await firstDone; return { accepted: ['x'], confirmed: [], unknown: [], skipped: [], failed: [] } } }
   const facade = createPublicFacade({ notifier, config: { maxConcurrent: 1, maxQueue: 1 }, onDispose: (fn) => { dispose = fn }, logger: { warn() {} } })
   assert.equal(Object.isFrozen(facade), true)
   assert.equal('dispose' in facade, false)
@@ -361,11 +375,11 @@ test('A4：facade 冻结且不暴露 dispose；内部 disposer 幂等并阻止�
   const queued = facade.push({ title: '2', content: 'x' })
   dispose()
   dispose()
-  assert.deepEqual((await queued).skipped, ['(busy)'])
+  assert.deepEqual((await queued).skipped, [{ channel: '(request)', reason: 'busy' }])
   releaseFirst()
-  assert.equal((await first).ok, true)
+  assertAccepted(await first, 'x')
   assert.equal(calls, 1)
-  assert.deepEqual((await facade.push({ title: '3', content: 'x' })).skipped, ['(disposed)'])
+  assert.deepEqual((await facade.push({ title: '3', content: 'x' })).skipped, [{ channel: '(request)', reason: 'disposed' }])
 })
 
 // ---------------------------------------------------------------- source 穿透（notify.mjs 侧）
@@ -436,12 +450,14 @@ test('deepFreeze：metadata 与数组逐层冻结（delivered.push 抛 TypeError
     time: 't',
     titleLength: 1,
     contentLength: 1,
-    delivered: ['webhook'],
+    accepted: ['webhook'],
+    confirmed: [],
+    unknown: [],
     skipped: [],
-    failed: [{ channel: 'bark', error: 'delivery-failed' }],
+    failed: [{ channel: 'bark', reason: 'delivery-failed' }],
     source: { kind: 'plugin', name: 'a' },
   })
-  assert.throws(() => { record.delivered.push('fake') }, TypeError)
+  assert.throws(() => { record.accepted.push('fake') }, TypeError)
   assert.throws(() => { record.failed[0].channel = 'hack' }, TypeError)
   assert.equal(record.titleLength, 1)
 })
@@ -462,10 +478,9 @@ test('redactAuditRecord：冻结事件不会冻结内部 source，且 Unicode �
   const internal = {
     time: 't',
     message: { title: '标题🍅', content: '正文' },
-    ok: false,
-    delivered: [],
+    accepted: [], confirmed: [], unknown: [],
     skipped: [],
-    failed: [{ channel: 'webhook', error: 'SECRET adapter body' }],
+    failed: [{ channel: 'webhook', reason: 'delivery-failed' }],
     source,
   }
   const event = deepFreeze(redactAuditRecord(internal))
@@ -477,7 +492,7 @@ test('redactAuditRecord：冻结事件不会冻结内部 source，且 Unicode �
   assert.equal(event.contentLength, 2)
   assert.equal(event.titleBytes, Buffer.byteLength('标题🍅'))
   assert.equal(event.contentBytes, Buffer.byteLength('正文'))
-  assert.deepEqual(event.failed, [{ channel: 'webhook', error: 'delivery-failed' }])
+  assert.deepEqual(event.failed, [{ channel: 'webhook', reason: 'delivery-failed' }])
   assert.equal(JSON.stringify(event).includes('SECRET'), false)
 })
 
@@ -486,8 +501,7 @@ test('redactAuditRecord：只投影 source 标量字段，不泄露或冻结嵌�
   const event = deepFreeze(redactAuditRecord({
     time: 't',
     message: { title: 'title', content: 'content' },
-    ok: true,
-    delivered: [],
+    accepted: [], confirmed: [], unknown: [],
     skipped: [],
     failed: [],
     source,
@@ -512,7 +526,7 @@ test('装配：无 provide（测试桩宿主）→ 回退直接赋值 ctx.notifi
   const state = bootCtx()
   apply(state.ctx, { channels: [{ type: 'webhook', url: 'http://public-hook.test/hook' }] })
   assert.equal(typeof state.ctx.notifier?.push, 'function')
-  assert.equal(state.ctx.notifier.version, '0.7')
+  assert.equal(state.ctx.notifier.version, '0.8')
 })
 
 test('装配：顶层 enabled:false → 仍提供 no-op stub（服务缺失会阻塞宿主启动），不注册工具', async () => {
@@ -523,8 +537,8 @@ test('装配：顶层 enabled:false → 仍提供 no-op stub（服务缺失会�
   assert.equal(state.provided.length, 1, '但 notifier 服务必须照常提供')
   const stub = state.provided[0].value
   const result = await stub.push({ title: 't', content: 'c' })
-  assert.deepEqual(result.skipped, ['(disabled)'])
-  assert.deepEqual(await stub.flush(), { ok: true })
+  assert.deepEqual(result.skipped, [{ channel: '(request)', reason: 'disabled' }])
+  assert.deepEqual(await stub.flush(), { drained: true })
   assert.ok(state.warnings.some((w) => /no-op 形态照常提供/.test(w)))
 })
 
@@ -537,7 +551,7 @@ test('装配：public.enabled:false → 真 notifier 在场也注入 stub（push
   const stub = state.provided[0].value
   assert.equal(stub.enabled(), false)
   const result = await stub.push({ title: 't', content: 'c' })
-  assert.deepEqual(result.skipped, ['(disabled)'])
+  assert.deepEqual(result.skipped, [{ channel: '(request)', reason: 'disabled' }])
 })
 
 test('装配 + emit：push 一次 → dsh-notifier/sent 收到冻结的 metadata-only record', async () => {
@@ -546,12 +560,12 @@ test('装配 + emit：push 一次 → dsh-notifier/sent 收到冻结的 metadata
   const facade = state.provided[0].value
   await withFetch(true, async () => {
     const result = await facade.push({ title: 'et', content: 'ec' }, { sourceName: 'emit-test' })
-    assert.equal(result.ok, true)
+    assertAccepted(result)
     assert.equal(state.emitted.length, 1)
     const { event, payload } = state.emitted[0]
     assert.equal(event, 'dsh-notifier/sent')
-    assert.equal(payload.ok, true)
-    assert.deepEqual(payload.delivered, ['webhook'])
+    assert.deepEqual(payload.confirmed, [])
+    assert.deepEqual(payload.accepted, ['webhook'])
     assert.deepEqual(payload.source, { kind: 'plugin', name: 'emit-test' })
     assert.equal('message' in payload, false)
     assert.equal(payload.titleLength, 2)
@@ -562,7 +576,7 @@ test('装配 + emit：push 一次 → dsh-notifier/sent 收到冻结的 metadata
     assert.equal(JSON.stringify(payload).includes('SECRET'), false)
     assert.equal(JSON.stringify(payload).includes('error'), false)
     assert.equal(typeof payload.time, 'string')
-    assert.throws(() => { payload.delivered.push('hack') }, TypeError, 'payload 深冻结')
+    assert.throws(() => { payload.accepted.push('hack') }, TypeError, 'payload 深冻结')
     assert.throws(() => { payload.titleLength = 99 }, TypeError)
   })
 })
@@ -573,7 +587,7 @@ test('装配 + emit：定向成功只发一条 metadata-only 事件并保留目�
   const facade = state.provided[0].value
   await withFetch(true, async () => {
     const result = await facade.push({ title: 'directed', content: 'body' }, { channel: 'webhook', sourceName: 'directed-test' })
-    assert.equal(result.ok, true)
+    assertAccepted(result)
     assert.equal(state.emitted.length, 1)
     const payload = state.emitted[0].payload
     assert.equal(payload.channel, 'webhook')
@@ -602,7 +616,7 @@ test('装配 + emit：宿主无 ctx.emit → push 照常成功，仅 warn 一次
   const facade = state.provided[0].value
   await withFetch(true, async () => {
     const result = await facade.push({ title: 't', content: 'c' }, { sourceName: 'A' })
-    assert.equal(result.ok, true, 'emit 缺席不影响推送主链路')
+    assertAccepted(result)
     assert.ok(state.warnings.some((w) => /宿主不支持 ctx\.emit/.test(w)), '缺 emit 必须 warn 一次（可观测降级）')
   })
 })

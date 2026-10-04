@@ -11,6 +11,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createInboundBus } from '../src/inbound/bus.mjs'
+import { createIdentity } from '../src/inbound/identity.mjs'
 
 /** 记录所有写入键的 mock store（返回 true = 落盘成功，即真 store 的 durable 语义）。 */
 function trackingStore() {
@@ -29,7 +30,7 @@ test('P1-14：未绑定来源的消息不得把去重键落进 store（state.jso
   const bus = createInboundBus({ store })
 
   for (let index = 0; index < 50; index += 1) {
-    const result = bus.accept({ channel: 'telegram', userId: 'stranger', messageId: `m-${index}`, text: 'hi' })
+    const result = bus.accept({ channel: 'telegram', chatType: 'private', userId: 'stranger', messageId: `m-${index}`, text: 'hi' })
     assert.equal(result.ok, false, '未绑定来源必须被拒绝')
   }
 
@@ -45,7 +46,7 @@ test('P1-14：未绑定来源的消息不得把去重键落进 store（state.jso
 test('P1-14：未绑定来源的重复消息仍被内存 FIFO 拦住（去重能力未被削弱）', () => {
   const store = trackingStore()
   const bus = createInboundBus({ store })
-  const envelope = { channel: 'telegram', userId: 'stranger', messageId: 'dup-1', text: 'hi' }
+  const envelope = { channel: 'telegram', accountId: 'telegram', userId: 'stranger', chatId: 'stranger', chatType: 'private', messageId: 'dup-1', text: 'hi' }
 
   assert.equal(bus.accept(envelope).reason, 'whitelist')
   assert.equal(bus.accept(envelope).reason, 'duplicate', '同一 messageId 重投仍必须被内存 FIFO 拦住')
@@ -54,10 +55,29 @@ test('P1-14：未绑定来源的重复消息仍被内存 FIFO 拦住（去重能
 
 test('P1-14：绑定成员的去重仍必须持久化（跨重启防重复消费）', () => {
   const store = trackingStore()
-  const bus = createInboundBus({ store, allowUsers: ['42'] })
+  const identity = createIdentity({ store })
+  identity.addBinding({ channel: 'telegram', accountId: 'telegram', userId: '42' })
+  const bus = createInboundBus({ store, identity })
 
-  const result = bus.accept({ channel: 'telegram', userId: '42', messageId: 'b-1', text: 'hi' })
+  const result = bus.accept({ channel: 'telegram', accountId: 'telegram', chatType: 'private', userId: '42', chatId: '42', messageId: 'b-1', text: 'hi' })
   assert.notEqual(result.reason, 'whitelist', '绑定成员不应被拒')
   assert.equal(store.keys('dedup:').length, 1, '绑定成员的去重键必须落盘（本项不得削弱这条军规）')
+  bus.dispose()
+})
+
+test('R02：相同 channel/user/messageId 在不同 account 中各自去重', () => {
+  const store = trackingStore()
+  const identity = createIdentity({ store })
+  identity.addBinding({ channel: 'telegram', accountId: 'bot-a', userId: '42' })
+  identity.addBinding({ channel: 'telegram', accountId: 'bot-b', userId: '42' })
+  const bus = createInboundBus({ store, identity })
+  const make = (accountId) => ({
+    channel: 'telegram', accountId, chatType: 'private', userId: '42', chatId: '42',
+    messageId: 'same-provider-id', text: 'hello',
+  })
+  assert.deepEqual(bus.accept(make('bot-a')), { ok: true })
+  assert.deepEqual(bus.accept(make('bot-a')), { ok: false, reason: 'duplicate' })
+  assert.deepEqual(bus.accept(make('bot-b')), { ok: true }, '不同账号的同值 messageId 不能相互吞消息')
+  assert.equal(store.keys('dedup:').length, 2)
   bus.dispose()
 })

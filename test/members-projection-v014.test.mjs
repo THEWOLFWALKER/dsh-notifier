@@ -27,57 +27,57 @@ const rig = ({ withPairing = false } = {}) => {
 
 test('S06: 投影读取走共享服务，update/remove 落到 identity 权威', () => {
   const { identity, service, projection } = rig()
-  service.addMember({ channel: 'feishu', userId: 'ou_owner', label: '张三' })
-  service.addMember({ channel: 'qq', userId: 'qqmember01' })
+  service.addMember({ channel: 'feishu', accountId: 'feishu-app', userId: 'ou_owner', label: '张三' })
+  service.addMember({ channel: 'qq', accountId: 'qq-app', userId: 'qqmember01' })
 
   const rows = projection.list()
   assert.equal(rows.length, 2)
-  assert.deepEqual(rows.map((row) => row.key).sort(), ['feishu:ou_owner', 'qq:qqmember01'])
+  assert.deepEqual(rows.map((row) => row.key).sort(), ['feishu:feishu-app:ou_owner', 'qq:qq-app:qqmember01'])
   // 脱敏形状：不得出现凭证/哈希等敏感字段
-  assert.deepEqual(Object.keys(rows[0]).sort(), ['channel', 'key', 'label', 'lastSeenAt', 'origin', 'pairedAt', 'role', 'userId'])
+  assert.deepEqual(Object.keys(rows[0]).sort(), ['accountId', 'channel', 'key', 'label', 'lastSeenAt', 'origin', 'pairedAt', 'role', 'userId'])
 
   // 提升第二位为 owner 后删除首位 owner（末位守卫不触发）
-  assert.deepEqual(projection.update({ key: 'qq:qqmember01', role: 'owner' }), { key: 'qq:qqmember01', saved: true })
+  assert.deepEqual(projection.update({ key: 'qq:qq-app:qqmember01', role: 'owner' }), { key: 'qq:qq-app:qqmember01', saved: true })
   assert.equal(identity.list('qq')[0].role, 'owner', '写入落到 identity 权威')
-  assert.deepEqual(projection.remove({ key: 'feishu:ou_owner' }), { key: 'feishu:ou_owner', deleted: true })
-  assert.equal(identity.allows('feishu', 'ou_owner'), false, '删除落到 identity 权威')
+  assert.deepEqual(projection.remove({ key: 'feishu:feishu-app:ou_owner' }), { key: 'feishu:feishu-app:ou_owner', deleted: true })
+  assert.equal(identity.allows('feishu', 'ou_owner', 'feishu-app'), false, '删除落到 identity 权威')
   assert.equal(projection.list().length, 1)
 })
 
 test('S06: 末位 owner 降级/删除 → conflict（绝不假成功）', () => {
   const { service, projection } = rig()
-  service.addMember({ channel: 'feishu', userId: 'ou_only', label: '唯一所有者' })
+  service.addMember({ channel: 'feishu', accountId: 'feishu-app', userId: 'ou_only', label: '唯一所有者' })
 
-  assert.throws(() => projection.update({ key: 'feishu:ou_only', role: 'member' }), (error) => error.code === 'conflict')
-  assert.throws(() => projection.remove({ key: 'feishu:ou_only' }), (error) => error.code === 'conflict')
+  assert.throws(() => projection.update({ key: 'feishu:feishu-app:ou_only', role: 'member' }), (error) => error.code === 'conflict')
+  assert.throws(() => projection.remove({ key: 'feishu:feishu-app:ou_only' }), (error) => error.code === 'conflict')
   assert.equal(projection.list().length, 1, '被拒操作零副作用')
 })
 
 test('S06: 键/字段非法 → bad-request；未知成员 → not-found', () => {
   const { service, projection } = rig()
-  service.addMember({ channel: 'feishu', userId: 'ou_owner' })
+  service.addMember({ channel: 'feishu', accountId: 'feishu-app', userId: 'ou_owner' })
 
-  assert.throws(() => projection.update({ key: 'feishu:ou_owner', role: 'admin' }), (error) => error.code === 'bad-request')
-  assert.throws(() => projection.update({ key: 'feishu:ou_owner' }), (error) => error.code === 'bad-request')
+  assert.throws(() => projection.update({ key: 'feishu:feishu-app:ou_owner', role: 'admin' }), (error) => error.code === 'bad-request')
+  assert.throws(() => projection.update({ key: 'feishu:feishu-app:ou_owner' }), (error) => error.code === 'bad-request')
   assert.throws(() => projection.update({ key: 'slack:u1', label: 'x' }), (error) => error.code === 'bad-request')
-  assert.throws(() => projection.remove({ key: 'qq:missing' }), (error) => error.code === 'not-found')
+  assert.throws(() => projection.remove({ key: 'qq:qq-app:missing' }), (error) => error.code === 'not-found')
 })
 
 test('S06: 服务缺失 → 空表 / not-supported（fail-closed，不伪造成员）', () => {
   const projection = createMembersProjection({})
   assert.equal(projection.canList, false)
   assert.deepEqual(projection.list(), [])
-  assert.throws(() => projection.update({ key: 'feishu:ou_owner', role: 'member' }), (error) => error.code === 'not-supported')
-  assert.throws(() => projection.remove({ key: 'feishu:ou_owner' }), (error) => error.code === 'not-supported')
+  assert.throws(() => projection.update({ key: 'feishu:feishu-app:ou_owner', role: 'member' }), (error) => error.code === 'not-supported')
+  assert.throws(() => projection.remove({ key: 'feishu:feishu-app:ou_owner' }), (error) => error.code === 'not-supported')
 })
 
 test('S402: legacy members.* 已从 daily RPC 删除（能力不存在，不是 UI 不可见）', async () => {
   const { service, projection } = rig()
-  service.addMember({ channel: 'feishu', userId: 'ou_owner' })
+  service.addMember({ channel: 'feishu', accountId: 'feishu-app', userId: 'ou_owner' })
   const surface = createControlSurfaceService({ native: { call: async () => ({ ok: true, value: {} }) }, members: projection })
 
   for (const method of ['members.list', 'members.pending', 'members.update', 'members.remove', 'members.approve', 'members.dismiss']) {
-    const result = await surface.call(method, { key: 'feishu:ou_owner', role: 'owner' })
+    const result = await surface.call(method, { key: 'feishu:feishu-app:ou_owner', role: 'owner' })
     assert.equal(result.ok, false, `${method} 必须被拒绝`)
     assert.equal(result.error.code, 'dsh-notifier/not-supported', `${method} 应返回 not-supported`)
   }
@@ -92,28 +92,28 @@ test('S07: 待确认身份投影 approve/dismiss 落到 identity 权威', () => 
   assert.equal(projection.canApprove, true)
   assert.equal(projection.canDismiss, true)
 
-  service.addPending({ channel: 'qq', userId: 'u9', origin: 'learned' })
+  service.addPending({ channel: 'qq', accountId: 'qq-app', userId: 'u9', origin: 'learned' })
   const rows = projection.listPending()
   assert.equal(rows.length, 1)
   // 脱敏形状：只有复合键与来源，绝不透传内部 extra / 凭证
-  assert.deepEqual(Object.keys(rows[0]).sort(), ['at', 'channel', 'key', 'origin', 'userId'])
+  assert.deepEqual(Object.keys(rows[0]).sort(), ['accountId', 'at', 'channel', 'key', 'origin', 'userId'])
 
   // 转正 → 正式成员（单事务提升，I3）
-  assert.deepEqual(projection.approve({ key: 'qq:u9' }), { key: 'qq:u9', saved: true })
-  assert.equal(identity.allows('qq', 'u9'), true, '转正落到 identity 权威')
+  assert.deepEqual(projection.approve({ key: 'qq:qq-app:u9' }), { key: 'qq:qq-app:u9', saved: true })
+  assert.equal(identity.allows('qq', 'u9', 'qq-app'), true, '转正落到 identity 权威')
   assert.equal(projection.listPending().length, 0)
 
   // 忽略 → 不转正，仅清除条目
-  service.addPending({ channel: 'feishu', userId: 'ou_x' })
-  assert.deepEqual(projection.dismiss({ key: 'feishu:ou_x' }), { key: 'feishu:ou_x', dismissed: true })
-  assert.equal(identity.allows('feishu', 'ou_x'), false, '忽略不产生成员绑定')
+  service.addPending({ channel: 'feishu', accountId: 'feishu-app', userId: 'ou_x' })
+  assert.deepEqual(projection.dismiss({ key: 'feishu:feishu-app:ou_x' }), { key: 'feishu:feishu-app:ou_x', dismissed: true })
+  assert.equal(identity.allows('feishu', 'ou_x', 'feishu-app'), false, '忽略不产生成员绑定')
   assert.equal(projection.listPending().length, 0)
 })
 
 test('S07: 待确认身份缺失 → not-found；非法键 → bad-request', () => {
   const { projection } = rig()
-  assert.throws(() => projection.approve({ key: 'qq:missing' }), (error) => error.code === 'not-found')
-  assert.throws(() => projection.dismiss({ key: 'qq:missing' }), (error) => error.code === 'not-found')
+  assert.throws(() => projection.approve({ key: 'qq:qq-app:missing' }), (error) => error.code === 'not-found')
+  assert.throws(() => projection.dismiss({ key: 'qq:qq-app:missing' }), (error) => error.code === 'not-found')
   assert.throws(() => projection.approve({ key: 'slack:u1' }), (error) => error.code === 'bad-request')
   assert.throws(() => projection.dismiss({ key: '' }), (error) => error.code === 'bad-request')
 })

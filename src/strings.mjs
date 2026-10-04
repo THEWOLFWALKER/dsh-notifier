@@ -49,7 +49,7 @@ const ZH = {
     parallelTimeout: '⏱ 手机端等待结束：请到桌面处理（按钮已失效）',
     timeoutResolved: '⏱ 超时未响应：已交还桌面处理（按钮失效）',
     // v0.13（C11.5 / R5）：终态 durable 落盘失败的诚实话术（不伪装已落盘的超时/终止）。
-    terminalUncertain: '⚠️ 状态未确认：终态未能落盘，请回桌面并到管理台确认（按钮失效）',
+    terminalUncertain: '⚠️ 状态未确认：终态未能落盘，请回桌面并到宿主 Native 界面确认（按钮失效）',
     remoteApproved: '✅ 已远程批准（本次）',
     remoteRejected: '❌ 已远程拒绝',
     desktopHandled: '🖥️ 已在桌面处理（手机按钮已失效）',
@@ -71,17 +71,17 @@ const ZH = {
     guidedHelp: `引导模式：白名单为空，仅注册命令可用。
   /pair <配对码> [备注] — 绑定你的身份（首位绑定者成为 owner）
   /whoami — 查看你的渠道身份
-配对码位置：本机引导码文件或管理台「成员」页。其余消息在完成绑定前不受理。`,
+配对码位置：本机引导码文件或宿主 Native 界面的「成员」页。其余消息在完成绑定前不受理。`,
     memberHelp: `身份命令：
   /whoami — 查看你的绑定身份
   /unpair — 解绑当前身份（换号时用，之后重新 /pair）
 会话命令见 /help（由会话路由应答）。`,
-    pairUsage: '用法：/pair <配对码> [备注]\n配对码由管理员在管理台生成（10 分钟内有效）；首次部署的引导码见本机引导码文件。',
+    pairUsage: '用法：/pair <配对码> [备注]\n配对码由管理员在宿主 Native 界面的「成员」页生成（10 分钟内有效）；首次部署的引导码见本机引导码文件。',
     pairNotInGroup: '配对码请勿在群聊中发送（会被其他人抢用）。请私聊我发送 /pair <配对码>。',
     alreadyBound: '你已绑定过身份（/whoami 查看）。如需换号，先发送 /unpair。',
-    pairExpiredBootstrapPending: '配对码已过期。当前已有在铸引导码，请管理员查看本机引导码文件或管理台获取新码后重试。',
-    pairExpiredReminted: '配对码已过期。已重铸一枚引导码，请管理员查看本机引导码文件或管理台获取新码后重试。',
-    pairExpiredRemintFailed: '配对码已过期。引导码重铸失败或节流中，请稍后再试或使用管理台铸码。',
+    pairExpiredBootstrapPending: '配对码已过期。当前已有在铸引导码，请管理员查看本机引导码文件或到宿主 Native 界面的「成员」页获取新码后重试。',
+    pairExpiredReminted: '配对码已过期。已重铸一枚引导码，请管理员查看本机引导码文件或到宿主 Native 界面的「成员」页获取新码后重试。',
+    pairExpiredRemintFailed: '配对码已过期。引导码重铸失败或节流中，请稍后再试或到宿主 Native 界面的「成员」页铸码。',
     reasonInvalidCode: '配对码无效（核对后重试；连续错 5 次将临时锁定）。',
     reasonLockedOut: '尝试次数过多，已临时锁定 10 分钟。',
     reasonExpired: '配对码已过期，请联系管理员重新生成。',
@@ -93,7 +93,7 @@ const ZH = {
     pairSuccessOwner: (help) => `配对成功！你是首位成员（owner），已可使用全部功能。\n${help}`,
     pairSuccess: (label, help) => `配对成功！你的身份已绑定${label !== '' ? `（${label}）` : ''}。\n${help}`,
     unpairNotBound: '你尚未绑定身份，无需解绑。',
-    unpairLastOwner: '你是唯一的 owner，不能自解绑（否则实例将无人可管理）。请先在管理台添加成员或转移角色，再解绑旧号。',
+    unpairLastOwner: '你是唯一的 owner，不能自解绑（否则实例将无人可管理）。请先在宿主 Native 界面的「成员」页添加成员或转移角色，再解绑旧号。',
     unpairFailed: (reason) => `解绑失败：${reason}`,
     unpaired: '已解绑。换新号后重新发送 /pair <配对码> 即可。',
     internalError: '命令内部错误，请稍后重试；若持续失败请联系管理员查看宿主日志。',
@@ -159,7 +159,7 @@ const ZH = {
     answerTooLong: (max) => `回答过长（超过 ${max} 字符），已拒绝；请精简后重发或在桌面端直接回答`,
     answeredCustom: (text) => `✅ 已作答（自定义）：${text}`,
     emptyCustomAnswer: '请在「答：」后面写回答',
-    noChatContextHint: '该回复未能定位到提问卡片（缺少会话上下文），请回到原卡片回复或使用管理台裁决',
+    noChatContextHint: '该回复未能定位到提问卡片（缺少会话上下文），请回到原卡片回复或到宿主 Native 界面裁决',
     notAuthorizedToAnswer: '此提问不是你作答的（无权回答）',
     singleOnlyHint: '本题是单选，请只回复一个编号',
     outOfRangeHint: (max, multi) => `编号需在 1-${max} 之间${multi ? '，多选用逗号分隔（如 1,3）' : ''}`,
@@ -172,7 +172,7 @@ const ZH = {
     skippedResolvedText: '⏭ 已跳过：交还桌面处理',
     timeoutResolvedText: '⏱ 超时未作答：已交还桌面（按钮失效）',
     // v0.13（C11.5 / R5）：live 终态已发生但 durable 落盘失败——明确 uncertain，绝不伪装成已落盘的超时/终止。
-    terminalUncertainText: '⚠️ 状态未确认：终态未能落盘，已交还桌面，请到管理台确认（按钮失效）',
+    terminalUncertainText: '⚠️ 状态未确认：终态未能落盘，已交还桌面，请到宿主 Native 界面确认（按钮失效）',
     answeredWithLabelsVia: (labels, via) => `✅ 已作答：${labels.join('、')}（来源 ${via}）`,
   },
   // 裁决失败话术（inbound/verdict-text.mjs）——按钮/回执失败按原因分层

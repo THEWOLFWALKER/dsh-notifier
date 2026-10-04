@@ -54,6 +54,9 @@ window.__ModuleLoader__.load({
       accountCollapse: '收起设置',
       accountNoFields: '这个渠道没有可填的选项，直接保存即可。',
       accountSaved: '已保存',
+      privateEnable: '开启私聊',
+      privateDisable: '关闭私聊',
+      privateRestart: '已开启；重启宿主后连接生效',
       connectionHelp: '连接帮助',
       telegramAutoFallback: '自动准备备用连接',
       telegramCustomAddress: '使用自定义地址',
@@ -72,6 +75,8 @@ window.__ModuleLoader__.load({
       privateConfirmCodeHint: '把这个码发给机器人，就能确认是你：',
       privateConfirmPendingTitle: '等待确认',
       privateTaskHint: '选一个私聊要汇报的任务。',
+      privateSelectOwner: '选择要设置当前任务的使用者。',
+      reconfigureNotice: '旧使用者记录没有关联渠道账号，不能用于访问。请重新配对本人并选择当前任务；如需旧资料，请从本机状态备份离线核对。',
       privateTaskEmpty: '现在没有正在运行的任务。',
       privateTaskUse: '就用这个',
       privateTryHint: '在手机私聊里发送「状态」，看看能不能收到回复。',
@@ -84,12 +89,14 @@ window.__ModuleLoader__.load({
       privateNoChannel: '还没有确认的渠道',
       privateNoTask: '还没有任务',
       privatePeople: '使用者',
-      pendingLater: '稍后处理',
+      pendingIgnore: '忽略',
       pendingAlreadyHandled: '这件事已经被处理过了',
       channels: '通知渠道',
       activity: '最近活动',
       noChannels: '尚未配置通知渠道',
       noChannelsHint: '配置一个渠道后，DSH 的重要事件可以直接送到你的设备。',
+      reconfigureStateTitle: '已为此版本建立空白状态',
+      reconfigureStateSteps: '请重新添加通知渠道，重新确认私聊身份并选择当前任务。旧状态已另存为本机备份；需要旧资料时，请离线手工查看备份，不要直接恢复整份文件。',
       setupFirst: '设置第一个通知渠道',
       save: '保存',
       test: '发送测试通知',
@@ -148,7 +155,6 @@ window.__ModuleLoader__.load({
       startSetup: '开始设置',
       pluginReady: '通知已就绪',
       openControl: '打开通知与控制',
-      pluginAdvanced: '仅用于故障恢复。',
       unknownError: '发生未知错误',
       staleData: '连接中断，当前显示的是上次成功读取的数据。',
       yes: '是',
@@ -233,6 +239,9 @@ window.__ModuleLoader__.load({
       accountCollapse: 'Collapse settings',
       accountNoFields: 'This channel has nothing to fill in — just save.',
       accountSaved: 'Saved',
+      privateEnable: 'Enable private chat',
+      privateDisable: 'Disable private chat',
+      privateRestart: 'Enabled; restart the host to connect',
       connectionHelp: 'Connection help',
       telegramAutoFallback: 'Prepare a fallback connection',
       telegramCustomAddress: 'Use a custom address',
@@ -251,6 +260,8 @@ window.__ModuleLoader__.load({
       privateConfirmCodeHint: 'Send this code to the bot to confirm it is you:',
       privateConfirmPendingTitle: 'Waiting to confirm',
       privateTaskHint: 'Pick the task private chat should report on.',
+      privateSelectOwner: 'Choose who should use this current task.',
+      reconfigureNotice: 'A saved user record has no linked channel account, so it cannot be used for access. Pair yourself again and choose a current task. Use the local state backup for offline reference if needed.',
       privateTaskEmpty: 'No task is running right now.',
       privateTaskUse: 'Use this one',
       privateTryHint: 'Send "status" in the private chat on your phone and see if it replies.',
@@ -263,12 +274,14 @@ window.__ModuleLoader__.load({
       privateNoChannel: 'No confirmed channel yet',
       privateNoTask: 'No task yet',
       privatePeople: 'People',
-      pendingLater: 'Handle later',
+      pendingIgnore: 'Ignore',
       pendingAlreadyHandled: 'This one was already handled',
       channels: 'Notification channels',
       activity: 'Recent activity',
       noChannels: 'No notification channel yet',
       noChannelsHint: 'Add a channel to send important DSH events to your device.',
+      reconfigureStateTitle: 'A clean state is ready for this version',
+      reconfigureStateSteps: 'Add notification channels again, confirm your private-chat identity, and choose a current task. The old state is preserved in a local backup; inspect it offline if you need reference material, and do not restore the whole file.',
       setupFirst: 'Set up first channel',
       save: 'Save',
       test: 'Send test notification',
@@ -327,7 +340,6 @@ window.__ModuleLoader__.load({
       startSetup: 'Start setup',
       pluginReady: 'Notifications are ready',
       openControl: 'Open Notify & Control',
-      pluginAdvanced: 'Use this page only to recover from a problem.',
       unknownError: 'An unknown error occurred',
       staleData: 'Connection interrupted; showing the last successfully loaded data.',
       yes: 'Yes',
@@ -648,8 +660,8 @@ window.__ModuleLoader__.load({
         }
       }
       // v0.15（Stage 1 / S4）：确认本人（待确认身份 → 正式使用者）。
-      async function nativeSelectTask(taskRef) {
-        const value = await rpc.call('native.selectTask', { taskRef })
+      async function nativeSelectTask(taskRef, ownerId) {
+        const value = await rpc.call('native.selectTask', { taskRef, ownerId })
         await loadNative()
         return value
       }
@@ -665,16 +677,24 @@ window.__ModuleLoader__.load({
           setBusy(key, false)
         }
       }
-      // v0.15（Stage 1 / S4）：关闭私聊 = 移除入站配置（既有一个 authority）。
+      // 私聊开关与凭证分离，关闭只撤销运行准入，不删除账号配置。
       async function nativeClosePrivateChat(type) {
-        const key = `save:${type}:inbound`
+        return nativeSetPrivateChatEnabled(type, false)
+      }
+      async function nativeSetPrivateChatEnabled(type, enabled) {
+        const key = `private-chat:${type}`
         if (snapshot.busy[key] === true) return { removed: false, duplicate: true }
         setBusy(key, true)
         try {
-          const value = await rpc.call('native.removeChannel', { type, direction: 'inbound' })
+          const value = await rpc.call('native.setPrivateChatEnabled', { type, enabled })
           setError(null)
-          await loadNative().catch(() => {})
+          await Promise.all([loadNative().catch(() => {}), loadNativeChannel(type).catch(() => {})])
           return value
+        } catch (error) {
+          // A failed durable close still fences admission in this process; refresh the
+          // Native projection before showing the storage error so it reflects that fence.
+          await Promise.all([loadNative().catch(() => {}), loadNativeChannel(type).catch(() => {})])
+          throw error
         } finally {
           setBusy(key, false)
         }
@@ -769,7 +789,7 @@ window.__ModuleLoader__.load({
         // v0.15（Stage 1 / S3）：账号卡保存/测试（仍走窄动作表）。
         nativeSaveChannel, nativeTestChannel,
         // v0.15（Stage 1 / S4）：待处理结算、确认本人、关闭私聊（每个只调一个 authority）。
-        nativeSettlePending, nativeMintPairing, nativeClosePrivateChat, nativeSelectTask,
+        nativeSettlePending, nativeMintPairing, nativeClosePrivateChat, nativeSetPrivateChatEnabled, nativeSelectTask,
         refreshCurrent, validateRemoteUrl,
         exportConfig: () => rpc.call('portability.export'),
         previewImport: text => rpc.call('portability.preview', { text }),
@@ -1247,7 +1267,7 @@ window.__ModuleLoader__.load({
     }
 
     // 待处理：不是永久导航，只在有待处理时从顶部浅色提示进入。
-    // 身份确认项直接确认/忽略；提问项就地选择或稍后处理（结算走窄动作表）。
+    // 身份确认项直接确认/忽略；提问项按明确的选择或拒绝结算。
     // 已被手机端处理过的项不再执行一次，只提示「已经被处理过了」（防重放）。
     function PendingList({ controller, state, items, t }) {
       const [note, setNote] = useState({})
@@ -1313,6 +1333,7 @@ window.__ModuleLoader__.load({
       const native = state.native
       const [minted, setMinted] = useState(null)
       const [picked, setPicked] = useState(null)
+      const [selectedOwnerId, setSelectedOwnerId] = useState(null)
       const [showTry, setShowTry] = useState(false)
       const [closing, setClosing] = useState(false)
       const back = h('div', { className: 'dn-detailBack' },
@@ -1329,6 +1350,8 @@ window.__ModuleLoader__.load({
       }
       const setup = pc.setup ?? { step: 'confirm', pendingIdentities: [], tasks: [] }
       const users = pc.users ?? []
+      const owners = setup.owners ?? []
+      const activeOwnerId = selectedOwnerId ?? (owners.length === 1 ? owners[0].id : null)
       const channelType = pc.channel ? String(pc.channel.id).split(':')[0] : null
 
       const mint = () => {
@@ -1336,7 +1359,12 @@ window.__ModuleLoader__.load({
           .then(value => { if (value?.code) setMinted(value.code) })
           .catch(error => controller.reportError(error))
       }
-      const pickTask = (task) => { void controller.nativeSelectTask(task.id).then(() => { setPicked(task); setShowTry(true) }).catch(error => controller.reportError(error)) }
+      const pickTask = (task) => {
+        if (activeOwnerId === null) return
+        void controller.nativeSelectTask(task.id, activeOwnerId)
+          .then(() => { setSelectedOwnerId(activeOwnerId); setPicked(task); setShowTry(true) })
+          .catch(error => controller.reportError(error))
+      }
       const closePrivate = () => {
         if (channelType === null) return
         void Promise.resolve(controller.nativeClosePrivateChat(channelType))
@@ -1354,6 +1382,9 @@ window.__ModuleLoader__.load({
 
       return h('div', { className: 'dn-privatePage' }, back,
         h('h2', { className: 'dn-pageTitle' }, setup.step === 'ready' ? t('privateReadyTitle') : t('privateSetupTitle')),
+        pc.reconfigurationRequired === true
+          ? h('p', { className: 'dn-note', role: 'status' }, t('reconfigureNotice'))
+          : null,
         steps,
         // 第一步：确认是你。
         h(Section, { title: t('privateStepConfirm') },
@@ -1373,7 +1404,7 @@ window.__ModuleLoader__.load({
                   h(Button, {
                     disabled: state?.busy?.[`pending:${identity.id}`] === true,
                     onClick: () => void controller.nativeDismissUser(identity.id).catch(error => controller.reportError(error)),
-                  }, t('pendingLater'))))))
+                  }, t('pendingIgnore'))))))
             : h('div', null,
                 h('p', { className: 'dn-note' }, t('privateConfirmHint')),
                 h('p', { className: 'dn-empty' }, t('privateConfirmWaiting')),
@@ -1385,6 +1416,21 @@ window.__ModuleLoader__.load({
                       h(Button, { onClick: mint }, t('privateConfirmMint'))))),
         // 第二步：选择任务。
         h(Section, { title: t('privateStepTask') },
+          owners.length > 1
+            ? h('div', { className: 'dn-list' },
+                h('p', { className: 'dn-note' }, t('privateSelectOwner')),
+                ...owners.map(owner => h('button', {
+                  key: owner.id,
+                  type: 'button',
+                  className: `dn-row dn-rowButton ${activeOwnerId === owner.id ? 'is-current' : ''}`,
+                  'aria-pressed': activeOwnerId === owner.id,
+                  onClick: () => setSelectedOwnerId(owner.id),
+                },
+                  h('span', { className: 'dn-rowMain' },
+                    h('strong', { className: 'dn-rowTitle' }, owner.displayName),
+                    h('span', { className: 'dn-rowMeta' }, owner.channelName)),
+                  owner.currentTask ? h('span', { className: 'dn-rowAside' }, owner.currentTask.title) : null)))
+            : null,
           setup.tasks.length > 0
             ? h('div', null,
                 h('p', { className: 'dn-note' }, t('privateTaskHint')),
@@ -1393,7 +1439,7 @@ window.__ModuleLoader__.load({
                 },
                   h('span', { className: 'dn-rowMain' }, h('strong', { className: 'dn-rowTitle' }, task.title)),
                   h('span', { className: 'dn-rowAside' },
-                    h(Button, { onClick: () => pickTask(task) }, t('privateTaskUse')))))))
+                    h(Button, { disabled: owners.length > 1 && activeOwnerId === null, onClick: () => pickTask(task) }, t('privateTaskUse')))))))
             : h('p', { className: 'dn-empty' }, t('privateTaskEmpty'))),
         // 第三步：试用。
         h(Section, { title: t('privateStepTry') },
@@ -1405,17 +1451,27 @@ window.__ModuleLoader__.load({
         setup.step === 'ready'
           ? h(Section, { title: t('privateCurrentChannel') },
               h('div', { className: 'dn-list' },
-                pc.channel
+                owners.length > 1
+                  ? h('div', { className: 'dn-list' }, ...owners.map(owner => h('div', { key: owner.id, className: 'dn-row' },
+                      h('span', { className: 'dn-rowMain' },
+                        h('strong', { className: 'dn-rowTitle' }, owner.displayName),
+                        h('span', { className: 'dn-rowMeta' }, owner.channelName)))))
+                  : pc.channel
                   ? h('div', { className: 'dn-row' },
                       h(ChannelLogo, { brand: brandRowOf(native.channels, pc.channel.id)?.brand, name: pc.channel.name, size: 28 }),
                       h('span', { className: 'dn-rowMain' },
                         h('strong', { className: 'dn-rowTitle' }, pc.channel.name),
                         h('span', { className: 'dn-rowMeta' }, pc.verifiedText)))
                   : h('p', { className: 'dn-empty' }, t('privateNoChannel')),
-                h('div', { className: 'dn-row' },
-                  h('span', { className: 'dn-rowMain' },
-                    h('strong', { className: 'dn-rowTitle' }, (picked ?? pc.currentTask)?.title ?? t('privateNoTask')),
-                    h('span', { className: 'dn-rowMeta' }, t('currentTask')))),
+                owners.length > 1
+                  ? h('div', { className: 'dn-list' }, ...owners.map(owner => h('div', { key: owner.id, className: 'dn-row' },
+                      h('span', { className: 'dn-rowMain' },
+                        h('strong', { className: 'dn-rowTitle' }, owner.displayName),
+                        h('span', { className: 'dn-rowMeta' }, owner.currentTask?.title ?? t('privateNoTask'))))))
+                  : h('div', { className: 'dn-row' },
+                      h('span', { className: 'dn-rowMain' },
+                        h('strong', { className: 'dn-rowTitle' }, (picked ?? pc.currentTask)?.title ?? t('privateNoTask')),
+                        h('span', { className: 'dn-rowMeta' }, t('currentTask')))),
                 h('div', { className: 'dn-row' },
                   h('span', { className: 'dn-rowMain' },
                     h('strong', { className: 'dn-rowTitle' }, String(users.length)),
@@ -1442,6 +1498,12 @@ window.__ModuleLoader__.load({
       const rail = native.rail ?? []
       if (rail.length === 0) {
         return h('div', { className: 'dn-emptyState' },
+          native.setup?.reconfigurationRequired === true
+            ? h('div', { className: 'dn-note', role: 'status' },
+                h('strong', null, t('reconfigureStateTitle')),
+                h('p', null, t('reconfigureStateSteps')),
+                h(Button, { kind: 'primary', onClick: onAdd }, t('pickerTitle')))
+            : null,
           h('strong', null, t('noChannels')),
           h('span', null, t('noChannelsHint')))
       }
@@ -1450,6 +1512,11 @@ window.__ModuleLoader__.load({
       // 待处理不是永久导航：只在有待处理时于主页顶部给一条浅色提示，点击进入待处理页。
       const pendingCount = (native.pending ?? []).length
       return h('div', null,
+        native.setup?.reconfigurationRequired === true
+          ? h('div', { className: 'dn-note', role: 'status' },
+              h('strong', null, t('reconfigureStateTitle')),
+              h('p', null, t('reconfigureStateSteps')))
+          : null,
         pendingCount > 0
           ? h(PendingBanner, {
               count: pendingCount,
@@ -1504,7 +1571,7 @@ window.__ModuleLoader__.load({
     // 字段以**数组**形状来自 read-model（secret 只有 presence，没有值），这里适配成 SchemaField 的
     // meta 形状。secret 三态仍是 保留 / 替换 / 清除——空串既不表示保留也不表示清除（由 authority 判定）。
     // 组件是**模块级稳定**的：轮询刷新时输入节点不 remount，连续输入不丢焦点（U05）。
-    function NativeDirectionForm({ ctx, controller, state, t, type, direction, fields, values, revision, canTest, hiddenKeys = [], importDraft = null }) {
+    function NativeDirectionForm({ ctx, controller, state, t, type, direction, fields, values, revision, canTest, enabled, configured, hiddenKeys = [], importDraft = null }) {
       const hidden = new Set(hiddenKeys)
       const visible = (fields ?? []).filter(field => !hidden.has(field.key))
       const fieldsByKey = useMemo(
@@ -1555,6 +1622,7 @@ window.__ModuleLoader__.load({
 
       const saveBusy = state?.busy?.[`save:${type}:${direction}`] === true
       const testBusy = state?.busy?.[`test:${type}`] === true
+      const privateBusy = state?.busy?.[`private-chat:${type}`] === true
       const hasDirty = dirty.size > 0
 
       const save = async () => {
@@ -1598,6 +1666,14 @@ window.__ModuleLoader__.load({
         }).catch(error => controller.reportError(error))
       }
 
+      const togglePrivateChat = () => {
+        void controller.nativeSetPrivateChatEnabled(type, enabled !== true)
+          .then(receipt => {
+            if (receipt?.needsRestart === true) setNotice({ kind: 'warn', text: t('privateRestart') })
+          })
+          .catch(error => controller.reportError(error))
+      }
+
       const metaOf = (field) => ({
         required: field.required,
         secret: field.secret,
@@ -1632,6 +1708,12 @@ window.__ModuleLoader__.load({
                 title: hasDirty ? t('unsavedChangesHint') : t('testCommittedConfig'),
                 onClick: runTest,
               }, testBusy ? t('testing') : t('test'))
+            : null,
+          direction === 'inbound'
+            ? h(Button, {
+                disabled: privateBusy || hasDirty || (enabled !== true && configured !== true),
+                onClick: togglePrivateChat,
+              }, privateBusy ? t('saving') : enabled === true ? t('privateDisable') : t('privateEnable'))
             : null),
         direction === 'outbound' && hasDirty ? h('p', { className: 'dn-note' }, t('unsavedChangesHint')) : null,
         notice
@@ -1732,6 +1814,8 @@ window.__ModuleLoader__.load({
                       ctx, controller, state, t, type, direction: 'inbound',
                       fields: account.privateChat.fields ?? [],
                       values: account.privateChat.values ?? {},
+                      enabled: account.privateChat.enabled === true,
+                      configured: account.privateChat.configured === true,
                       importDraft: state.view?.importDirection === 'inbound' ? state.view.importDraft : null,
                       revision,
                     }))
@@ -2229,6 +2313,10 @@ window.__ModuleLoader__.load({
           data?.job ? h(Button, { disabled: busy, onClick: () => call('cancel') }, t('cancelAction')) : null),
         data?.login ? h('div', { className: 'dn-code' }, h('a', { href: data.login.url, target: '_blank', rel: 'noopener noreferrer' }, words('打开授权页面', 'Open authorization page')), data.login.code ? h('strong', null, data.login.code) : null) : null,
         data?.job ? h('p', { role: 'status', className: 'dn-note' }, steps[data.job.step] || t('loading')) : null,
+        ...(data?.recoveries ?? []).map(recovery => h('p', { key: recovery.id, role: 'alert', className: 'dn-note' }, words(
+          `上次 ${recovery.type === 'telegram' ? 'Telegram' : 'Bark'} 操作的外部结果需要核对。重启不会自动重复部署；登录后点“设置 / 重试”会先读取现有服务。`,
+          `The last ${recovery.type === 'telegram' ? 'Telegram' : 'Bark'} operation needs a result check. Restart will not redeploy automatically; after login, choose “Set up / retry” to read the existing service first.`,
+        ))),
         error || data?.error ? h('p', { role: 'alert', className: 'dn-error' }, error?.message || data.error) : null,
         h('label', { className: 'dn-field' }, words('账号', 'Account'), h('select', { 'aria-label': 'Cloudflare account', value: account, disabled, onChange: e => setAccount(e.target.value) }, h('option', { value: '' }, '—'), ...(data?.accounts ?? []).map(a => h('option', { key: a.id, value: a.id }, a.name)))),
         h('label', { className: 'dn-field' }, words('服务', 'Service'), h('select', { 'aria-label': 'Cloudflare service', value: type, disabled, onChange: e => setType(e.target.value) }, h('option', { value: 'telegram' }, 'Telegram Fallback connection'), h('option', { value: 'bark' }, 'Bark'))),
@@ -2281,7 +2369,7 @@ window.__ModuleLoader__.load({
               controller.navigate(ready ? { kind: 'native' } : { kind: 'native', picker: true })
             },
           }, ready ? t('openControl') : t('setupFirst'))),
-        h('p', { className: 'dn-note' }, t('pluginAdvanced')))
+        null)
     }
 
     function Activation({ onDismiss, onOpenDetails, ctx }) {

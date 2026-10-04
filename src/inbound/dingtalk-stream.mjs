@@ -139,6 +139,7 @@ export function resolveDingtalkInboundConfig(raw, { credentials } = {}) {
     config: {
       appKey,
       appSecret,
+      accountId: String(cfg.accountId ?? appKey).trim(),
       apiBase: (String(cfg.apiBase ?? '').trim() || DEFAULT_API_BASE).replace(/\/+$/, ''),
       oapiBase: (String(cfg.oapiBase ?? '').trim() || DEFAULT_OAPI_BASE).replace(/\/+$/, ''),
       notifyUsers,
@@ -153,7 +154,7 @@ export function resolveDingtalkInboundConfig(raw, { credentials } = {}) {
  * @param {ReturnType<typeof resolveDingtalkInboundConfig>['config']} options.config
  * @param {ReturnType<typeof import('./bus.mjs').createInboundBus>} options.bus
  * @param {import('./store.mjs').store} [options.store] - robotCode 学习持久化
- * @param {string[]} [options.fallbackTargets] - 未配置 notifyUsers 时的推送目标（全局白名单回落）
+ * Private recipients must be explicit or provider-proven.
  * @param {object} [options.logger]
  * @param {typeof fetch} [options.fetchImpl] - fetch 注入（测试用）
  * @param {typeof WebSocket} [options.webSocketImpl] - WebSocket 构造器注入（测试用；默认 globalThis.WebSocket）
@@ -164,7 +165,7 @@ export function resolveDingtalkInboundConfig(raw, { credentials } = {}) {
  *   approval.fallbackText；缺省回落 zh——须先在 strings.mjs 落 `dingtalk` 节）
  */
 export function createDingtalkInbound(options = {}) {
-  const { config, bus, store = null, fallbackTargets = [], logger = null, identity = null } = options
+  const { config, bus, store = null, logger = null, identity = null } = options
   const STRINGS = options.strings ?? stringsOf()
   const t = STRINGS.dingtalk
   // 防御性兜底：绕过 resolveDingtalkInboundConfig 直接构造时也保证两个 base 可用
@@ -239,6 +240,8 @@ export function createDingtalkInbound(options = {}) {
   // 两表均有界（CHAT_STATE_MAX，setBounded 淘汰最旧；见文件头常量注释）
   const sessionWebhooks = new Map()
   const chatSenders = new Map()
+  const privateChatTargets = new Map() // conversationType=1 provider proof
+  const privateUserTargets = new Map() // provider user ID observed in a type-1 conversation
   const seenMsgIds = new Map() // msgId → 首见时间戳（60s 重推吸收窗口 + MSG_DEDUP_MAX 硬顶）
   const warnChatStateEvicted = createThrottledWarn(warn)
   const warnDedupEvicted = createThrottledWarn(warn)
@@ -353,6 +356,13 @@ export function createDingtalkInbound(options = {}) {
     const msgId = String(msg.msgId ?? '')
     const userId = String(msg.senderStaffId ?? '')
     if (chatId === '' || msgId === '' || userId === '') return
+    if (String(msg.conversationType ?? '') !== '1') return
+    privateChatTargets.delete(chatId)
+    privateChatTargets.set(chatId, Date.now())
+    while (privateChatTargets.size > 2048) privateChatTargets.delete(privateChatTargets.keys().next().value)
+    privateUserTargets.delete(userId)
+    privateUserTargets.set(userId, Date.now())
+    while (privateUserTargets.size > 2048) privateUserTargets.delete(privateUserTargets.keys().next().value)
     if (!isFreshMsgId(msgId)) return
     breaker.reset() // 任一入站消息复位熔断（新消息即解锁配额）
     const code = String(msg.robotCode ?? '')
@@ -573,7 +583,9 @@ export function createDingtalkInbound(options = {}) {
   async function sendReply(chatId, text) {
     const target = String(chatId ?? '')
     const content = String(text ?? '').trim()
-    if (target === '' || content === '') return null
+    const isPrivate = privateChatTargets.has(target) || privateUserTargets.has(target)
+      || (Array.isArray(config?.notifyUsers) && config.notifyUsers.map(String).includes(target))
+    if (!isPrivate || target === '' || content === '') return null
     try {
       if (await replyViaWebhook(target, content) !== null) {
         // G-24：旧 hash6(`${chatId}:${content}`) 合成在同会话同内容两次回复时必然同 ID
@@ -619,13 +631,13 @@ export function createDingtalkInbound(options = {}) {
       startPromise = null
     },
 
-    /** 审批推送目标（v0.7 三级解析）：绑定成员 → notifyUsers → 全局回落（仅绑定表整体空）。 */
+    /** Private approval targets from paired identities or explicit user IDs. */
     notifyTargets() {
       return resolveNotifyTargets({
         identity,
         channel: 'dingtalk',
+        accountId: String(config?.accountId ?? config?.appKey ?? '').trim(),
         configTargets: Array.isArray(config?.notifyUsers) ? config.notifyUsers.map(String) : [],
-        fallbackTargets,
       })
     },
 

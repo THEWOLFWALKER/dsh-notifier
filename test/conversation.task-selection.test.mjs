@@ -7,7 +7,7 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { registerConversationRouter } from '../src/inbound/conversation.mjs'
-import { createInboundBus } from '../src/inbound/bus.mjs'
+import { createPrivateFlowBus as createInboundBus } from './helpers/private-flow-bus.mjs'
 import { createStore } from '../src/inbound/store.mjs'
 import { createAgentRouter } from '../src/routing/agent-router.mjs'
 import { createSessionRegistry } from '../src/routing/session-registry.mjs'
@@ -35,7 +35,7 @@ function makeAgent(id, status = 'idle', cwd = '/home/u/proj/alpha') {
 
 function makeRig({ agents = [], attentionOf } = {}) {
   const store = createStore(tempPath())
-  const bus = createInboundBus({ allowUsers: ['42'], store })
+  const bus = createInboundBus({ store })
   const handlers = {}
   const agentMap = new Map(agents.map((a) => [a.id, a]))
   const ctx = {
@@ -61,7 +61,7 @@ function makeRig({ agents = [], attentionOf } = {}) {
     ...(attentionOf === undefined ? {} : { attentionOf }),
   })
   const userSays = (text, { userId = '42', chatId = userId } = {}) =>
-    bus.accept({ channel: 'telegram', userId, chatId, messageId: `m${Math.random()}`, text })
+    bus.accept({ channel: 'telegram', accountId: 'tg-app', userId, chatId, chatType: 'private', messageId: `m${Math.random()}`, text })
   const flush = async (text) => { userSays(text); await sleep(FLUSH_MS + 10) }
   const fire = (event, payload) => (handlers[event] ?? []).forEach((h) => h(payload))
   const advance = (ms = 1) => { clockMs += ms }
@@ -85,7 +85,23 @@ test('多活跃任务无绑定：先下发任务选择卡，不投最近活跃',
   assert.match(card.text, /有多个活跃任务/)
   assert.match(card.text, /1\. alpha/)
   assert.match(card.text, /2\. alpha/)
-  assert.equal(rig.taskSelection.has({ channel: 'telegram', userId: '42', chatId: '42' }), true)
+  assert.equal(rig.taskSelection.has({ channel: 'telegram', accountId: 'tg-app', userId: '42', chatId: '42' }), true)
+  rig.dispose()
+})
+
+test('R02 task selection：同一用户在两个账号的待决选择互相隔离', () => {
+  const agent = makeAgent(ALPHA_1, 'idle')
+  const rig = makeRig({ agents: [agent] })
+  rig.fire('agent/created', agent)
+  const a = { channel: 'telegram', accountId: 'bot-a', userId: '42', chatId: '42' }
+  const b = { ...a, accountId: 'bot-b' }
+  assert.ok(rig.taskSelection.begin(a, [ALPHA_1], 'from A'))
+  assert.ok(rig.taskSelection.begin(b, [ALPHA_1], 'from B'))
+  assert.equal(rig.taskSelection.has(a), true)
+  assert.equal(rig.taskSelection.has(b), true)
+  assert.equal(rig.taskSelection.resolve(a, '1').originalText, 'from A')
+  assert.equal(rig.taskSelection.has(a), false)
+  assert.equal(rig.taskSelection.get(b).originalText, 'from B')
   rig.dispose()
 })
 
@@ -99,14 +115,14 @@ test('编号回复消解选择卡：原消息只投一次到所选任务', async
   rig.router.setChannelDefault('telegram', 'alpha')
 
   await rig.flush('帮我看看构建')
-  assert.equal(rig.taskSelection.has({ channel: 'telegram', userId: '42', chatId: '42' }), true)
+  assert.equal(rig.taskSelection.has({ channel: 'telegram', accountId: 'tg-app', userId: '42', chatId: '42' }), true)
 
   // 候选按 lastActiveAt 降序：newer(2) 在 1 号，older 在 2 号
   await rig.flush('2')
   assert.equal(older.calls.followup.length, 1, '选择 2 号投递到 older')
   assert.equal(older.calls.followup[0].content[0].text, '帮我看看构建')
   assert.equal(newer.calls.followup.length, 0)
-  assert.equal(rig.taskSelection.has({ channel: 'telegram', userId: '42', chatId: '42' }), false, '消解后待决清空')
+  assert.equal(rig.taskSelection.has({ channel: 'telegram', accountId: 'tg-app', userId: '42', chatId: '42' }), false, '消解后待决清空')
   assert.match(rig.replies.at(-1).text, /已选择 .* 并投递/)
   rig.dispose()
 })
@@ -125,7 +141,7 @@ test('越界编号：不清待决并提示有效范围，原消息不投', async
   assert.equal(older.calls.followup.length, 0)
   assert.equal(newer.calls.followup.length, 0)
   assert.match(rig.replies.at(-1).text, /请回复 1\.\.2 选择任务/)
-  assert.equal(rig.taskSelection.has({ channel: 'telegram', userId: '42', chatId: '42' }), true)
+  assert.equal(rig.taskSelection.has({ channel: 'telegram', accountId: 'tg-app', userId: '42', chatId: '42' }), true)
   rig.dispose()
 })
 
@@ -143,7 +159,7 @@ test('/use <workspace> 选择后投原消息一次', async () => {
   await sleep(10) // /use 投递链现为异步（Host P0-A 图片 admission）；等待微任务/回调落定
   const followups = older.calls.followup.length + newer.calls.followup.length
   assert.equal(followups, 1, '/use 选定后原消息只投一次')
-  assert.equal(rig.taskSelection.has({ channel: 'telegram', userId: '42', chatId: '42' }), false)
+  assert.equal(rig.taskSelection.has({ channel: 'telegram', accountId: 'tg-app', userId: '42', chatId: '42' }), false)
   rig.dispose()
 })
 

@@ -1,8 +1,7 @@
-// dsh-notifier v0.14 — channel control application service.
+// Channel control application service.
 //
 // Single orchestration entry for channel-config mutation, shared by the Native
-// control surface (src/control-surface/service.mjs) and the Advanced Console
-// adapter (src/admin/api.mjs). It owns *orchestration only*:
+// control surface (src/control-surface/service.mjs). It owns orchestration only:
 //
 //   - save / remove outbound channel config
 //   - save / remove inbound channel config
@@ -105,7 +104,14 @@ export function createChannelControlService({
     throw error
   }
 
-  // v0.14（S12）：凭证域 `<type>:account` 的事务化字段级合并写，收敛 Admin legacy 兼容路由
+  const setInboundEnabled = (type, enabled) => {
+    if (hasInboundPort && isFn(inboundConfig.setPrivateChatEnabled)) return inboundConfig.setPrivateChatEnabled(type, enabled)
+    const error = new Error('私聊开关当前不可用')
+    error.code = 'not-supported'
+    throw error
+  }
+
+  // v0.14（S12）：凭证域 `<type>:account` 的事务化字段级合并写，收敛账号凭证字段级写入
   // （`PUT /api/channels/:type`）的持久化入口——适配器不再直接写 store（I9），服务不再自持第二套
   // 读-改-写（I10）。只做持久化，字段校验留给调用方（I9 允许表现层做形态校验）。
   // 落盘失败归一为 `storage-failed`，绝不假报成功（I2/I16）。
@@ -147,6 +153,7 @@ export function createChannelControlService({
     describeOutbound,
     saveInbound,
     removeInbound,
+    setInboundEnabled,
     saveChannelAccount,
     testOutbound,
   }

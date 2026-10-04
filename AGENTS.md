@@ -1,79 +1,27 @@
 # dsh-notifier Agent Rules
 
-## Source Of Truth
+## Current authority
 
-- Runtime truth is the tracked source under `src/` and its tests under `test/`.
-- `package.json` is the package and version authority.
-- `README.md` and `README.zh-CN.md` are user-facing entry points.
-- `docs/developer/HANDOFF.md` is the detailed engineering snapshot; do not copy it into this file.
-- `docs/developer/KNOWLEDGE_BASE.md` is the documentation map. `docs/developer/memory/` contains concise durable facts, not a second implementation spec.
-- Tracked `.agents/` workstreams and `docs/developer/memory/` are the only collaboration-state authority; chat messages are not durable project state. Runtime truth remains `src/` and `test/`.
-- The npm package archive is an output. It never overrides the engineering tree.
-- Every task completion or milestone handoff must read and execute the project-local `.agents/skills/neat-freak/SKILL.md` checklist before the final response. Its canonical copy lives under `.agents/skills/neat-freak/`; tool-specific skill directories contain pointers only.
-- Single-repo two-branch model: `https://github.com/THEWOLFWALKER/dsh-notifier` is the canonical repository. Develop on `dev`, release on `main`; there is no separate private dev or public mirror repository to juggle.
+- Work only on `dev`. Do not operate on `main`, force push, tag, create a GitHub Release, or publish to npm without separate final authorization.
+- The current implementation brief is `docs/developer/rebuild-v015/README.md`, especially `IMPLEMENTER_PROMPT.md`, `PLAN.md`, `PRODUCT_UX.md`, `DESIGN_REVIEW.md`, `TEST_AUDIT.md`, `TEST_REVIEW_ADJUDICATION.md`, `HIGH_RISK_IMPLEMENTATION.md`, `DECISIONS.md`, and the issue crosswalk. Read it before editing. Historical plans and workstreams were removed from the working tree; git history remains available as evidence only.
+- The user's current decisions override old docs and tests: private chat only, no positive group support, Native-first, old Advanced Console code deleted, no old-version compatibility or automatic state conversion; back up old state and guide users through reconfiguration, no Big Bang rewrite, no Store-wide async rewrite as a goal. dsh-im is a competitor and upstream contract reference, not the main project.
+- `src/` is evidence of current behavior, not a product specification. Tests that merely mirror current behavior are not authority. Public upstream contracts require fixed-source fixtures; missing real-provider evidence is `unknown`.
 
-## Hard Boundaries
+## Implementation discipline
 
-- Preserve the zero-runtime-dependency design: use platform `fetch`, `node:*`, and native WebSocket; optional dependencies stay optional and lazy-loaded.
-- A failed or missing notification channel must not break startup or other channels.
-- Every listener and assembly block is defensive: catch failures, log through the host logger and stderr where diagnostics matter.
-- Approval, action, and question paths are fail-closed: timeout, malformed input, invalid token, wrong source, or any exception must return control to the desktop; silence never approves.
-- Inbound access is denied by default. Identity is a `(channel, userId)` binding, not a global user string.
-- Tokens are single-use and time-limited. A callback or reply must be scoped to its original channel/chat when the record carries source metadata.
-- State writes must preserve unrelated keys, use the existing store locking/merge behavior, and never expose credentials in logs or API responses.
-- The admin server binds to `127.0.0.1` only. Never weaken this in a convenience change.
-- Behavior changes require focused tests, a full `npm test`, and a CHANGELOG entry with the review/security reason when applicable.
-- Real HTTP shape, payload length, callback limits, and long-running connections require real-device or protocol-level validation; mocked fetch alone is insufficient.
+- Execute the five continuous stages in the taskpack. Finish each stage's focused tests, integration gate, adversarial review, and source-ID dispositions before moving to the next. Keep `docs/developer/rebuild-v015/PROGRESS.md` current with commits, tests, unresolved evidence, and next stage. Do not wait for routine product or architecture decisions; `DECISIONS.md` resolves them.
+- Preserve proven provider protocol behavior and security invariants while deleting dead architecture. Every input admission, account authority, interaction transition, external effect, and durable claim must fail closed when its evidence is missing.
+- No fake pass: local mocks verify fault handling, not real Host/provider/device compatibility. Do not let a bookkeeping failure turn an external success into reported failure or auto-retry an unknown outcome.
+- Use behavior, fault, integration, and real DOM tests for contracts. Source grep is only a supplemental invariant. If an old test conflicts with the new product, replace or delete it with a reason in `TEST_AUDIT.md`; do not preserve a bug to keep a test green.
+- User UI and user docs use simple action/result language. Show unavailable and unknown honestly, provide a recovery path, and keep internal IDs and infrastructure jargon out of daily flows.
 
-## Product And Engineering Principles
+## Repo and commits
 
-- Start from the user's job and first-principles failure modes; prioritize a reliable, understandable workflow over feature count.
-- Favor mature, composable capabilities and progressive disclosure. Keep the interface simple, calm, responsive, accessible, and friendly; expose complexity only when the user needs it.
-- Every task begins with a written plan covering scope, affected files, risks, and validation. Do not make unplanned edits, speculative abstractions, or roadmap work disguised as cleanup.
-- Use the mandatory loop: plan -> implement -> adversarial review -> revise -> focused tests -> full validation. A change is not complete until review findings are fixed or explicitly recorded.
-- Preserve maintainable boundaries: prefer existing contracts and local patterns, keep modules cohesive, and choose the smallest durable design that leaves a clear path for future growth.
-- Any sub-agent console or admin GUI must inherit the existing DSH visual language and interaction patterns from `src/admin/ui.mjs`; do not introduce a separate product style or competing navigation model.
-- Long-term plans describe staged outcomes and decision points, not speculative features. Implement only the smallest slice that proves user value and keeps later options open.
-
-## Working Tree And Branches
-
-- Start every task with `git status --short --branch` and `git log --oneline -5`.
-- Work on `codex/<topic>` branches off `dev`. Do not develop directly on `main` (the release branch) or `master`; merge to `main` only when cutting a release.
-- Keep the first baseline commit immutable. Group each follow-up by one logical concern.
-- Do not mix source, release metadata, and unrelated cleanup in one commit.
-- Before handoff, the working tree must be clean, the branch must identify its purpose, and the final commit list must be reported.
-- Relay handoff cadence: every agent completion must commit and push before leaving a machine, update its detailed `.agents/workstreams/<topic>.md` identity/status/tests/review/commit record, and refresh the current handoff snapshot in `docs/developer/HANDOFF.md`. Do not append chat transcripts; consolidate the snapshot so it stays readable.
-- Never commit `node_modules/`, `package-lock.json`, credentials, state files, `.log` files, or generated local artifacts.
-- Release packing must never include development-tool directories: `.claude/`, `.codex/`, `.opencode/` (and any future agent config), or the npm payload would expose personal tool config. Keep these out of `package.json.files` and the npm archive. The npm payload boundary is independent of the git branch: tracked `.agents/` (project collaboration knowledge) lives in the repo but stays out of the npm archive — see `docs/developer/VERSIONING.md`.
-
-## Multi-Agent Protocol
-
-- Read `docs/developer/KNOWLEDGE_BASE.md` and `docs/developer/memory/README.md` before editing.
-- Reserve a workstream by creating one file under `.agents/workstreams/` from `TEMPLATE.md`. Each agent owns its file and must not edit another agent's reservation.
-- Agents may edit disjoint files in parallel. If two tasks touch the same file, the later task must rebase its reasoning on the current file rather than overwrite it.
-- Every workstream records scope, files, tests, and handoff notes. Mark it `done` before the agent exits; keep only durable records, not chat transcripts.
-- Prefer narrow commits. The parent agent integrates commits after checking `git diff`, tests, and version guards.
+- Start with `git status --short --branch`, `git log --oneline -5`, and the latest `origin/dev`; do not overwrite remote changes. Work and push only `dev`, without force push.
+- All commits: Author `THEWOLFWALKER`, Committer `THEWOLFWALKER`, using the existing repository email for that identity.
+- Do not commit credentials, state files, node_modules, generated logs, or user account evidence. Keep the working tree clean at each stage checkpoint.
+- Before every final handoff, read `.agents/skills/neat-freak/SKILL.md` and reconcile current docs with actual behavior. The taskpack tracks implementation decisions; `CHANGELOG.md` records user-visible changes.
 
 ## Validation
 
-```text
-npm test
-node scripts/verify-release.mjs
-node scripts/gen-channel-matrix.mjs --check
-node --check src/index.mjs
-```
-
-For a channel change, also run the relevant adapter contract test and `node scripts/channel-selfcheck.mjs` with safe test credentials when available. For inbound changes, use the matching `test/inbound.*.test.mjs` suite and record any real-device gap in `docs/developer/memory/risks.md`.
-
-## Deep References
-
-| Need | Read |
-|---|---|
-| Project map and source hierarchy | `docs/developer/KNOWLEDGE_BASE.md` |
-| Stable architecture and state flows | `docs/developer/architecture.md` |
-| Local operation and troubleshooting | `docs/developer/OPERATIONS.md` and `docs/user/guide.md` |
-| Version/release anti-split rules | `docs/developer/VERSIONING.md` |
-| Durable facts and decisions | `docs/developer/memory/` |
-| Existing detailed handoff | `docs/developer/HANDOFF.md` |
-| Adapter contribution contract | `docs/developer/ADAPTER.md` |
-| Plugin consumer contract | `docs/developer/PLUGINS.md` |
+Run focused tests for each changed module and its cross-layer caller. At stage gates run the relevant Node, DOM, package, channel, and Host checks. The final gate must include `npm test`, `npm run test:dom`, `npm run verify:release`, `node scripts/gen-channel-matrix.mjs --check`, `node scripts/verify-host-compat.mjs`, package dry-run/exports, and the taskpack's fault/UX/evidence requirements. A green count alone does not establish release readiness.

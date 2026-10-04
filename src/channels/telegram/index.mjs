@@ -29,7 +29,7 @@ export function normalizeTelegramCallback(input) {
 
 export function createTelegramTransport(options = {}) {
   // Never use botToken as an account identifier: account ids may appear in receipts/audit.
-  const accountId = String(options.config?.accountId ?? 'default').trim() || 'default'
+  const accountId = String(options.config?.accountId ?? '').trim()
   // Feed the resolved accountId through to the shared inbound so it is injected into every
   // normalized envelope (message, callback, action, approval, question).
   const legacy = createLegacyInbound({ ...options, accountId })

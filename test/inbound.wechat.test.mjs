@@ -20,7 +20,7 @@ import {
   randomWechatUin,
   createIlinkClient,
 } from '../src/inbound/_ilink-api.mjs'
-import { createInboundBus } from '../src/inbound/bus.mjs'
+import { createPrivateTestBus as createInboundBus } from './helpers/private-bus.mjs'
 import { createStore } from '../src/inbound/store.mjs'
 
 const BASE = 'https://ilinkai.weixin.qq.com'
@@ -675,7 +675,7 @@ test('notifyTargets：notifyUsers 优先回落白名单；capabilities.buttons=f
     { chatId: 'WX_B', userId: 'WX_B' },
   ])
   const fallback = makeRig({ config: { fallbackTargets: ['WX_GLOBAL'] } })
-  assert.deepEqual(fallback.inbound.notifyTargets(), [{ chatId: 'WX_GLOBAL', userId: 'WX_GLOBAL' }])
+  assert.deepEqual(fallback.inbound.notifyTargets(), [], 'legacy fallbackTargets 不再创建通知或准入目标')
   assert.deepEqual(rig.inbound.capabilities, { buttons: false })
 })
 

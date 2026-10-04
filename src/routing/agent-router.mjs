@@ -303,8 +303,8 @@ export function createAgentRouter({ store, agentsList, currentTask = createCurre
      *   ambiguous=true 时附带 candidates（该 workspace 全部活跃会话，按 lastActiveAt 降序）；
      *   sessionId=null 表示无处可投（无显式选择）。
      */
-    resolveInbound(channel, userId, accountId = 'default') {
-      if (typeof accountId === 'object') accountId = accountId?.accountId ?? 'default'
+    resolveInbound(channel, userId, accountId) {
+      if (typeof accountId === 'object') accountId = accountId?.accountId
       // L1 显式绑定：值为字符串即命中（损坏数据跳过）。
       // G-49：读键与 conversation 的写键同走 identity.bindingKey（分量 trim + channel
       // 小写）——带空白/大小写漂移的分量两侧同键，绝不裂键（休眠边界封口）。
@@ -530,7 +530,7 @@ export function createAgentRouter({ store, agentsList, currentTask = createCurre
     },
 
     /**
-     * v0.14（S03）双表绑定提交（Native / Advanced Console 共用写路径）。
+     * v0.14（S03）双表绑定提交（Native 共用写路径）。
      *
      * 语义：只出现的一侧退化为单键写（保持既有 store 单键原子写）；两侧同时出现时——
      * store 具备 transact 能力则在**一个事务**内提交两键（I3：多键业务动作原子化），

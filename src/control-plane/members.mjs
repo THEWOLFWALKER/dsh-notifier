@@ -1,8 +1,7 @@
-// dsh-notifier v0.14 — members / pairing control application service.
+// Members and pairing control application service.
 //
 // Single orchestration entry for member identity and pairing-code lifecycle,
-// shared by the Native control surface (future S06/S07) and the Advanced
-// Console adapter (src/admin/api.mjs). It owns *orchestration only*:
+// shared by the Native control surface. It owns orchestration only:
 //
 //   - member list / add / remove / update (label·role), incl. the last-owner guard
 //   - pending identity list / add / remove / approve (pending -> binding)
@@ -30,17 +29,13 @@ import { INBOUND_CHANNEL_SET } from '../inbound/channels-registry.mjs'
 const VALID_CHANNELS = INBOUND_CHANNEL_SET
 const isFn = (value) => typeof value === 'function'
 
-/** 成员键形状提示（管理台 adapter 与 CLI 共用同一文案）。 */
-export const MEMBER_KEY_HINT = '成员键形状：<channel>:<userId> 或 <channel>:<accountId>:<userId>（channel ∈ telegram/feishu/qq/wxpusher/wechat/dingtalk）'
+/** Native 成员键只包含完整的稳定账号身份。 */
+export const MEMBER_KEY_HINT = '成员键形状：<channel>:<accountId>:<userId>（channel ∈ telegram/feishu/qq/wxpusher/wechat/dingtalk）'
 
 /**
- * v0.7 成员复合键 "<channel>:<userId>" / v0.13 "<channel>:<accountId>:<userId>" 解析。
- * userId 内含冒号也容忍（只按第一个冒号切）；渠道必须属六入站通道，userId 非空且 ≤128，
- * accountId 非空且 ≤128（缺省 = default 账号，非默认账号走三段键）。
+ * 解析完整的 "<channel>:<accountId>:<userId>" principal。userId 内含冒号也容忍。
  *
- * 说明（与 admin/api.mjs 原实现逐字等价）：本函数**故意不拒**含冒号的 userId——纵深
- * 防御设在「写入面」（identity.addBinding/addPending fail-closed），此处只服务读改删，
- * 否则 C3 之前落盘的存量冒号绑定行将再也无法经管理台降级/删除（唯一清理入口被堵死）。
+ * 含冒号 userId 只按第二个分隔符以后完整保留；写入面仍负责 ID 形态校验。
  * @returns {{ channel: string, accountId?: string, userId: string, raw: string } | null}
  */
 export function parseMemberKey(key) {
@@ -50,19 +45,18 @@ export function parseMemberKey(key) {
   const channel = raw.slice(0, colon)
   const remainder = raw.slice(colon + 1)
   const parts = remainder.split(':')
-  const accountId = parts.length >= 2 ? parts[0] : undefined
-  const userId = parts.length >= 2 ? parts.slice(1).join(':') : remainder
+  if (parts.length < 2) return null
+  const accountId = parts[0]
+  const userId = parts.slice(1).join(':')
   if (!VALID_CHANNELS.has(channel)) return null
-  if (userId === '' || userId.length > 128 || (accountId !== undefined && (accountId === '' || accountId.length > 128))) return null
-  return { channel, ...(accountId === undefined ? {} : { accountId }), userId, raw }
+  if (userId === '' || userId.length > 128 || accountId === '' || accountId === 'default' || accountId.length > 128) return null
+  return { channel, accountId, userId, raw }
 }
 
 /** 由记录反推复合键（含 accountId 时用三段键）。 */
 export function memberKeyOf(record) {
-  if (record?.accountId !== undefined && String(record.accountId) !== '') {
-    return `${record.channel}:${record.accountId}:${record.userId}`
-  }
-  return `${record?.channel}:${record?.userId}`
+  if (record?.accountId === undefined || String(record.accountId).trim() === '' || String(record.accountId) === 'default') return ''
+  return `${record.channel}:${record.accountId}:${record.userId}`
 }
 
 /** 成员记录 → 脱敏视图（与 admin getMembers 口径逐字一致；身份记录本身不含凭证）。 */

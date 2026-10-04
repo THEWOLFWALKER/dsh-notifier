@@ -16,7 +16,6 @@ import { isPublicExposure } from '../security/exposure.mjs'
 import { splitSecretPatch } from '../security/secret-patch.mjs'
 
 const OUTBOUND = new Set(CHANNEL_TYPES)
-const DUAL_INBOUND_DOMAIN = new Set(['feishu', 'dingtalk'])
 const RESERVED = new Set(['__proto__', 'constructor', 'prototype'])
 const MAX_KEYS = 64
 const MAX_STRING_BYTES = 8 * 1024
@@ -24,7 +23,6 @@ const MAX_STRING_BYTES = 8 * 1024
 const plain = (value) => value !== null && typeof value === 'object' && !Array.isArray(value) ? value : null
 const clone = (value) => JSON.parse(JSON.stringify(value))
 const canonicalKey = (type) => `channel:${type}:outbound`
-const oldAdminKey = (type) => `admin:channel:${type}:outbound`
 
 function safeGet(store, key) {
   try { return typeof store?.get === 'function' ? store.get(key) : undefined } catch { return undefined }
@@ -35,24 +33,6 @@ function rawYaml(yamlRows, type) {
   const obj = plain(row) ?? {}
   const { type: _type, enabled: _enabled, ...raw } = obj
   return raw
-}
-
-function legacyOverlay(store, type, adminEnabled) {
-  const canonical = plain(safeGet(store, canonicalKey(type)))
-  if (canonical !== null) return canonical
-
-  // v0.11 Admin-owned overlays (`admin:channel:<type>:outbound` and legacy `<type>:account`)
-  // are compatibility-only. Do not revive them when the user explicitly disabled Admin,
-  // so projection/raw/test/remove stay consistent with the runtime OutboundSource.
-  if (adminEnabled !== true) return {}
-
-  const oldAdmin = plain(safeGet(store, oldAdminKey(type)))
-  if (oldAdmin !== null) return oldAdmin
-
-  if (!DUAL_INBOUND_DOMAIN.has(type)) {
-    return plain(safeGet(store, `${type}:account`)) ?? {}
-  }
-  return {}
 }
 
 function allowedKeys(type) {
@@ -173,8 +153,6 @@ export function createOutboundConfigService({
   yamlRows,
   resolvedRows = null,
   source,
-  adminEnabled = false,
-  allowLegacy = true,
   onChange = null,
   onAudit = null,
 } = {}) {
@@ -187,9 +165,7 @@ export function createOutboundConfigService({
     try { onChange?.(topic, detail) } catch {}
   }
 
-  const overlayOf = (type) => allowLegacy === true
-    ? legacyOverlay(store, type, adminEnabled)
-    : (plain(safeGet(store, canonicalKey(type))) ?? {})
+  const overlayOf = (type) => plain(safeGet(store, canonicalKey(type))) ?? {}
   const baseRawOf = (type) => ({
     ...rawYaml(yamlRows, type),
     ...(yamlRows instanceof Map && yamlRows.has(type)
@@ -423,43 +399,21 @@ export function createOutboundConfigService({
       return result
     },
 
-    /**
-     * 删除 canonical 出站配置。
-     * mode='fallback'（缺省）保留既有 legacy/YAML 回退；mode='revoke' 同时删除可删的
-     * legacy 覆盖源，使凭证不会在下次启动时从旧覆盖域复活。YAML bootstrap 仍不可删除。
-     */
+    /** 删除 canonical 出站配置；YAML bootstrap 仍不可删除。 */
     remove(type, options = {}) {
       const key = String(type ?? '').trim()
       if (!OUTBOUND.has(key)) throw Object.assign(new Error(`未知出站通道类型 "${key}"`), { code: 'bad-request' })
       const existing = plain(safeGet(store, canonicalKey(key)))
       if (existing === null) throw Object.assign(new Error(`出站配置不存在：${key}`), { code: 'not-found' })
 
-      // Pre-resolve fallback only for pre-v0.13 compatibility callers.  The
-      // production service is canonical-only, so revoke can never be blocked by
-      // malformed legacy data.
       const fallbackRaw = { ...baseRawOf(key) }
-      if (allowLegacy === true && adminEnabled === true) {
-        const oldAdmin = plain(safeGet(store, oldAdminKey(key)))
-        if (oldAdmin !== null) {
-          Object.assign(fallbackRaw, oldAdmin)
-        } else if (!DUAL_INBOUND_DOMAIN.has(key)) {
-          const account = plain(safeGet(store, `${key}:account`))
-          if (account !== null) Object.assign(fallbackRaw, account)
-        }
-      }
 
       let fallback = null
       if (Object.keys(fallbackRaw).length > 0) fallback = resolveCandidate(key, fallbackRaw)
 
       // v0.12.1（P0-02）：delete() 返回 existed，不表达 durable 结果；删除未落盘时
       // 禁止切换 live source，否则重启后配置会复活。
-      const removal = options?.mode === 'revoke'
-        ? removeDurable([
-          canonicalKey(key),
-          oldAdminKey(key),
-          ...(!DUAL_INBOUND_DOMAIN.has(key) ? [`${key}:account`] : []),
-        ])
-        : removeDurable([canonicalKey(key)])
+      const removal = removeDurable([canonicalKey(key)])
       if (removal.durable !== true) {
         // v0.13（C11.5 / R1）：同 save —— transactional store 失败即未提交，回写旧值只会
         // 制造 lost update；仅遗留 store 需要补回滚，避免内存/磁盘分裂。

@@ -55,7 +55,7 @@ test('types contract: required public symbols are exported', () => {
   const symbols = exportedSymbols()
   for (const name of [
     'NotifyLevel', 'NotifyMessage', 'NotifyOptions', 'NotifySkip', 'NotifierSource',
-    'PushFailure', 'PushResult', 'NotifierFacade', 'SentEventFailure', 'SentEventRecord',
+    'PushChannelReason', 'PushResult', 'NotifierFacade', 'SentEventRecord',
     'FakeSimulation', 'FakeNotifyOptions', 'FakeNotifierCall', 'FakeNotifier',
   ]) {
     assert.equal(symbols.has(name), true, `types/index.d.ts must export ${name}`)
@@ -72,7 +72,7 @@ test('types contract: the facade version literal tracks the runtime public API v
 test('types contract: push/flush signatures match the runtime facade', () => {
   const block = interfaceBlock('NotifierFacade')
   assert.match(block, /push\(message: NotifyMessage, options\?: NotifyOptions\): Promise<PushResult>/)
-  assert.match(block, /flush\(\): Promise<void>/)
+  assert.match(block, /flush\(\): Promise<{ drained: boolean }>/)
 })
 
 test('types contract: NotifyMessage declares only real public fields', () => {
@@ -91,7 +91,7 @@ test('types contract: NotifyOptions mirrors the fields public.mjs actually reads
 test('types contract: SentEventRecord stays metadata-only (privacy boundary)', () => {
   const block = interfaceBlock('SentEventRecord')
   for (const key of [
-    'time', 'ok', 'delivered', 'skipped', 'failed',
+    'time', 'accepted', 'confirmed', 'unknown', 'skipped', 'failed',
     'titleLength', 'contentLength', 'titleBytes', 'contentBytes', 'hasContent',
     'source', 'channel',
   ]) {

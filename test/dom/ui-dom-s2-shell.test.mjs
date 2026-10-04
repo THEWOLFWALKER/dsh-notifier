@@ -53,7 +53,7 @@ const CHANNELS = [
   { id: 'bark', name: 'Bark', usage: 'Push to your iPhone', brand: 'bark', group: 'other', state: 'not-set', stateText: 'Not set up', notifyEnabled: false, privateChatEnabled: false },
 ]
 
-function snapshotValue() {
+function snapshotValue(setup = null) {
   return {
     epoch: 'e', revision: 1, cursor: 'tok.1',
     rail: CHANNELS.filter((row) => row.state !== 'not-set'),
@@ -61,9 +61,21 @@ function snapshotValue() {
     privateChat: { enabled: false, users: [] },
     pending: [],
     storage: { canSave: true, text: 'Changes are saved' },
+    setup,
     truncated: { rail: false, channels: false, pending: false },
   }
 }
+
+test('S2 shell — a fresh-state migration shows concrete reconfiguration steps', async () => {
+  const { ctx } = shellContext({
+    'native.snapshot': { ok: true, value: snapshotValue({ reconfigurationRequired: true, legacyBackupAvailable: true }) },
+  })
+  const { view } = mountShell(ctx)
+  await flush()
+  assert.match(view.container.textContent, /reconfigureStateTitle/)
+  assert.match(view.container.textContent, /reconfigureStateSteps/)
+  assert.ok(buttonByText(view.container, 'pickerTitle'), 'the notice offers an add-channel action')
+})
 
 function channelDetail(type) {
   const row = CHANNELS.find((candidate) => candidate.id === type)

@@ -3,7 +3,11 @@ import assert from 'node:assert/strict'
 import { normalizeSessionPolicy, canAcceptCommand, revokePolicy, chooseCommand, createSessionArbiter, canSettleApproval, normalizeControlOverlay, CONTROL_OVERLAY_MAX_MEMBERS } from '../src/control/session-arbiter.mjs'
 
 const policy = (extra = {}) => normalizeSessionPolicy({ sessionId: 's1', channel: 'telegram', accountId: 'a1', userId: 'u1', chatId: 'c1', owner: 'u1', policyVersion: 'p1', ...extra }, 100)
-const event = (extra = {}) => ({ eventId: 'e1', sessionId: 's1', channel: 'telegram', accountId: 'a1', userId: 'u1', chatId: 'c1', policyVersion: 'p1', command: 'stop', createdAt: 10, expiresAt: 200, ...extra })
+const event = (extra = {}) => {
+  const channel = extra.channel ?? 'telegram'
+  const chatType = extra.chatType ?? (channel === 'feishu' ? 'p2p' : channel === 'dingtalk' ? '1' : 'private')
+  return { eventId: 'e1', sessionId: 's1', channel, accountId: 'a1', userId: 'u1', chatId: 'c1', chatType, policyVersion: 'p1', command: 'stop', createdAt: 10, expiresAt: 200, ...extra }
+}
 const teamPolicy = (extra = {}) => policy({ mode: 'team', capabilities: { approve: true }, approvalMembers: [{ channel: 'telegram', accountId: 'a1', userId: 'u2' }], ...extra })
 
 test('personal defaults are safe and group/conversation are off', () => {
@@ -24,7 +28,9 @@ test('policy binding and capability gates are exact', () => {
   assert.equal(canAcceptCommand(p, event({ command: 'steer', chatType: 'group' })).reason, 'group_chat_disabled')
   assert.equal(canAcceptCommand(p, event({ policyVersion: 'old' })).reason, 'stale_policy')
   for (const key of ['sessionId', 'channel', 'accountId', 'userId', 'chatId']) {
-    assert.match(canAcceptCommand(p, event({ [key]: 'wrong' })).reason, new RegExp(`source_mismatch_${key}`))
+    const decision = canAcceptCommand(p, event({ [key]: 'wrong' }))
+    if (key === 'channel') assert.equal(decision.reason, 'source_chat_type_unknown')
+    else assert.match(decision.reason, new RegExp(`source_mismatch_${key}`))
   }
 })
 

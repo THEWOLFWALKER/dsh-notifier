@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import { createFeishuInbound, resolveFeishuInboundConfig } from '../src/inbound/feishu-bot.mjs'
 import { buildApprovalAction, buildQuestionAction } from '../src/inbound/_contract.mjs'
 import { createTokenVault } from '../src/inbound/tokens.mjs'
-import { createInboundBus } from '../src/inbound/bus.mjs'
+import { createPrivateTestBus as createInboundBus } from './helpers/private-bus.mjs'
 import { createActionDispatcher } from '../src/actions.mjs'
 
 // ---------------------------------------------------------------- fake SDK
@@ -147,7 +147,7 @@ function makeRig({ allowUsers = ['ou_1'], config = {}, sdkOptions = {}, fallback
   const bus = createInboundBus({ allowUsers, logger })
   const fake = makeFakeSdk(sdkOptions)
   const inbound = createFeishuInbound({
-    config: { appId: 'cli_a', appSecret: 's', allowUsers: config.allowUsers, domain: config.domain, accountId: config.accountId },
+    config: { appId: 'cli_a', appSecret: 's', notifyUsers: config.notifyUsers, domain: config.domain, accountId: config.accountId },
     bus,
     fallbackTargets,
     logger,
@@ -169,7 +169,7 @@ test('resolveFeishuInboundConfig：缺 appId/appSecret 时 ok=false 且中文指
   assert.equal(resolveFeishuInboundConfig({ appId: 'cli_a', appSecret: 's' }).ok, true)
 })
 
-test('resolveFeishuInboundConfig：默认 domain + allowUsers 归一化 + envRefs 展开', () => {
+test('resolveFeishuInboundConfig：默认 domain + envRefs 展开 + 不解析 allowUsers 权限', () => {
   const resolved = resolveFeishuInboundConfig(
     { appId: '$FS_ID', appSecret: '$FS_SECRET', allowUsers: [' ou_1 ', '', 'ou_2'] },
     { envRefs: (v) => (typeof v === 'string' && v.startsWith('$') ? v.slice(1) : v) },
@@ -178,7 +178,7 @@ test('resolveFeishuInboundConfig：默认 domain + allowUsers 归一化 + envRef
   assert.equal(resolved.config.appId, 'FS_ID')
   assert.equal(resolved.config.appSecret, 'FS_SECRET')
   assert.equal(resolved.config.domain, 'https://open.feishu.cn')
-  assert.deepEqual(resolved.config.allowUsers, ['ou_1', 'ou_2'])
+  assert.equal(Object.hasOwn(resolved.config, 'allowUsers'), false)
 })
 
 // ---------------------------------------------------------------- 启动/降级
@@ -200,9 +200,8 @@ test('SDK 缺失：start 不抛异常，warn 含安装指引，卡片能力降�
   const logger = makeLogger()
   const bus = createInboundBus({ allowUsers: ['ou_1'], logger })
   const inbound = createFeishuInbound({
-    config: { appId: 'a', appSecret: 's' },
+    config: { appId: 'a', appSecret: 's', notifyUsers: ['ou_1'] },
     bus,
-    fallbackTargets: ['ou_1'],
     logger,
     sdkLoader: async () => { throw new Error('Cannot find package @larksuiteoapi/node-sdk') },
   })
@@ -266,6 +265,7 @@ test('im.message.receive_v1：文本入站 → bus.accept 规范化 envelope（@
     message: {
       message_id: 'om_1',
       chat_id: 'oc_group',
+      chat_type: 'p2p',
       message_type: 'text',
       content: JSON.stringify({ text: '@_user_1 跑一下测试' }),
     },
@@ -386,7 +386,7 @@ test('G-25 mentions 缺失/未命中映射：退回旧行为（删占位符）�
   // 事件完全不带 mentions（旧 schema / 部分网关裁剪）→ 无从还原，删占位符
   rig.fake.state.dispatcher.handlers['im.message.receive_v1']({
     sender: { sender_id: { open_id: 'ou_1' } },
-    message: { message_id: 'om_e1', chat_id: 'oc_g', message_type: 'text', content: JSON.stringify({ text: '帮我提醒 @_user_2 开会' }) },
+    message: { message_id: 'om_e1', chat_id: 'oc_g', chat_type: 'p2p', message_type: 'text', content: JSON.stringify({ text: '帮我提醒 @_user_2 开会' }) },
   })
   // mentions 在但缺 name（异常负载）→ 该项不入映射
   rig.fake.state.dispatcher.handlers['im.message.receive_v1'](mentionEvent({
@@ -438,7 +438,7 @@ test('G-26 非文本消息：静默忽略 + 回执「暂不支持该消息类型
   await tick()
   rig.fake.state.dispatcher.handlers['im.message.receive_v1']({
     sender: { sender_id: { open_id: 'ou_1' } },
-    message: { message_id: 'om_2', chat_id: 'oc_g', message_type: 'image', content: '' },
+    message: { message_id: 'om_2', chat_id: 'oc_g', chat_type: 'p2p', message_type: 'image', content: '' },
   })
   await tick()
   // G-26：占位符文本会进 agent 语境被当指令解读（注入面）——非文本消息不再投递
@@ -486,7 +486,7 @@ test('card.action.trigger：批准按钮 → bus.decide(token 核销) + toast + 
     operator: { open_id: 'ou_1' },
     open_message_id: 'om_card1',
     action: { value: { act: buildApprovalAction('allowed-once', key, token) } },
-    context: { open_chat_id: 'oc_1' },
+    context: { open_chat_id: 'oc_1' , open_chat_type: 'p2p'},
   })
   assert.equal(toast.toast.type, 'success')
   assert.equal((await outcome).decision, 'allowed-once')
@@ -512,7 +512,7 @@ test('card.action.trigger：重复点击同一审批 → already-resolved toast�
   const outcome = bus.wait(key, 2000, { allowChats: new Map([['feishu', new Set(['oc_2'])]]) })
   const fire = () => fake.state.dispatcher.handlers['card.action.trigger']({
     operator: { open_id: 'ou_1' },
-    context: { open_chat_id: 'oc_2' },
+    context: { open_chat_id: 'oc_2' , open_chat_type: 'p2p'},
     action: { value: { act: buildApprovalAction('rejected', key, token) } },
   })
   const first = fire()
@@ -544,7 +544,7 @@ test('v0.8.7 卡片回调：approval/question 载荷把稳定 eventId 传进 Con
   fake.state.dispatcher.handlers['card.action.trigger']({
     operator: { open_id: 'ou_1' },
     open_message_id: 'om_card1',
-    context: { open_chat_id: 'oc_1' },
+    context: { open_chat_id: 'oc_1' , open_chat_type: 'p2p'},
     action: { value: { act: approveAct, srcChat: 'oc_1' } },
   })
   const qKey = 'aq:q1'
@@ -553,7 +553,7 @@ test('v0.8.7 卡片回调：approval/question 载荷把稳定 eventId 传进 Con
   fake.state.dispatcher.handlers['card.action.trigger']({
     operator: { open_id: 'ou_1' },
     open_message_id: 'om_card2',
-    context: { open_chat_id: 'oc_1' },
+    context: { open_chat_id: 'oc_1' , open_chat_type: 'p2p'},
     action: { value: { act: aqAct, srcChat: 'oc_1' } },
   })
   assert.equal(received.length, 2)
@@ -622,11 +622,12 @@ test('sendApprovalCard：发送异常返回 null（caller 降级纯通知）', a
   await rig.inbound.stop()
 })
 
-test('sendText：oc_ 前缀走 chat_id 接收类型（群聊回执）；ou_ 走 open_id', async () => {
+test('sendText：已证明的 P2P oc_ 会话走 chat_id；ou_ 走 open_id', async () => {
   const rig = makeRig()
   rig.inbound.start()
   await tick()
-  assert.equal(await rig.inbound.sendText('oc_group', '命令回执'), true)
+  rig.fake.state.dispatcher.handlers['im.message.receive_v1']({ sender: { sender_id: { open_id: 'ou_1' } }, message: { message_id: 'om_private_proof', chat_id: 'oc_private', chat_type: 'p2p', message_type: 'text', content: JSON.stringify({ text: 'hi' }) } })
+  assert.equal(await rig.inbound.sendText('oc_private', '命令回执'), true)
   assert.equal(await rig.inbound.sendText('ou_1', '私聊回执'), true)
   assert.equal(rig.fake.state.sent[0].receiveIdType, 'chat_id')
   assert.equal(rig.fake.state.sent[1].receiveIdType, 'open_id')
@@ -653,14 +654,11 @@ test('editResolved：按账本 target.messageId patch 终态卡片', async () =>
   await rig.inbound.stop()
 })
 
-test('notifyTargets：通道 allowUsers 优先，缺省回落全局白名单；都空为 []', () => {
-  const withOwn = makeRig({ config: { allowUsers: ['ou_a', 'ou_b'] }, fallbackTargets: ['ou_global'] })
-  assert.deepEqual(withOwn.inbound.notifyTargets(), [
-    { chatId: 'ou_a', userId: 'ou_a' },
-    { chatId: 'ou_b', userId: 'ou_b' },
-  ])
+test('notifyTargets：只使用显式的私聊用户目标，不从 allowUsers/global fallback 学习', () => {
+  const withOwn = makeRig({ config: { notifyUsers: ['ou_a', 'oc_group1'] }, fallbackTargets: ['ou_global'] })
+  assert.deepEqual(withOwn.inbound.notifyTargets(), [{ chatId: 'ou_a', userId: 'ou_a' }])
   const fallback = makeRig({ fallbackTargets: ['ou_global'] })
-  assert.deepEqual(fallback.inbound.notifyTargets(), [{ chatId: 'ou_global', userId: 'ou_global' }])
+  assert.deepEqual(fallback.inbound.notifyTargets(), [])
   const none = makeRig({})
   assert.deepEqual(none.inbound.notifyTargets(), [])
 })
@@ -669,7 +667,7 @@ test('notifyTargets：通道 allowUsers 优先，缺省回落全局白名单；�
 
 test('normalizeInbound：feishu 实例直接走新契约（无需旧形状适配）', async () => {
   const { normalizeInbound } = await import('../src/inbound/_contract.mjs')
-  const rig = makeRig({ fallbackTargets: ['ou_1'] })
+  const rig = makeRig({ config: { notifyUsers: ['ou_1'] } })
   const normalized = normalizeInbound(rig.inbound)
   assert.equal(normalized.channel, 'feishu')
   assert.deepEqual(normalized.notifyTargets(), [{ chatId: 'ou_1', userId: 'ou_1' }])
@@ -784,7 +782,7 @@ test('ap: 审批回调不受 v0.5 改动影响（回归）', async () => {
     operator: { open_id: 'ou_1' },
     open_message_id: 'om_7',
     action: { value: { act: buildApprovalAction('allowed-once', key, token) } },
-    context: { open_chat_id: 'oc_3' },
+    context: { open_chat_id: 'oc_3' , open_chat_type: 'p2p'},
   })
   assert.equal(toast.toast.type, 'success')
   assert.match(toast.toast.content, /已批准/)
@@ -809,7 +807,7 @@ test('card.action.trigger：SEC-1 来源会话匹配通过 / 转发到其他会�
   const makeEvent = (chatId, messageId) => ({
     operator: { open_id: 'ou_1' },
     action: { value },
-    context: { open_message_id: messageId, open_chat_id: chatId },
+    context: { open_message_id: messageId, open_chat_id: chatId , open_chat_type: 'p2p'},
   })
 
   // 转发到与原会话不同的 chat → 拒绝，不调用 bus.decide，不 patch
@@ -839,6 +837,13 @@ test('ac: 卡片回调：F-08 来源会话匹配通过 / 转发拒绝；缺 srcC
     get: (key, fallback) => (storeData.has(key) ? storeData.get(key) : fallback),
     set: (key, value) => { storeData.set(key, value) },
     delete: (key) => { storeData.delete(key) },
+    transact: (mutator) => {
+      const draft = Object.fromEntries([...storeData].map(([key, value]) => [key, structuredClone(value)]))
+      const value = mutator(draft)
+      storeData.clear()
+      for (const [key, row] of Object.entries(draft)) storeData.set(key, row)
+      return { committed: true, durable: true, value }
+    },
   }
   const actions = createActionDispatcher({ vault, store, logger })
   const dispatched = []
@@ -858,7 +863,7 @@ test('ac: 卡片回调：F-08 来源会话匹配通过 / 转发拒绝；缺 srcC
   const makeEvent = (value, chatId) => ({
     operator: { open_id: 'ou_1' },
     action: { value },
-    context: { open_message_id: 'om_aq', open_chat_id: chatId },
+      context: { open_message_id: 'om_aq', open_chat_id: chatId, open_chat_type: 'p2p' },
   })
 
   const value = { act: `ac:${minted.key}:${minted.token}`, srcChat: 'oc_orig' }
@@ -874,12 +879,13 @@ test('ac: 卡片回调：F-08 来源会话匹配通过 / 转发拒绝；缺 srcC
   assert.equal(dispatched.length, 1)
   assert.equal(dispatched[0].chatId, 'oc_orig')
 
-  // 独立 legacy 卡（账本无 srcChats、卡片无 srcChat）→ 兼容放行
+  // 独立 legacy 卡（账本无 srcChats、卡片无 srcChat）→ fail-closed
   const legacy = fake.state.dispatcher.handlers['card.action.trigger'](
     makeEvent({ act: `ac:${legacyMinted.key}:${legacyMinted.token}` }, 'oc_legacy'),
   )
-  assert.equal(legacy.toast.type, 'success', '缺来源元数据旧卡兼容放行')
-  assert.equal(dispatched.length, 2)
+  assert.equal(legacy.toast.type, 'info', '来源元数据缺失的旧卡必须 fail-closed')
+  assert.equal(dispatched.length, 2, 'legacy 卡仍进入统一 dispatcher 判定')
+  assert.equal(storeData.get(legacyMinted.key).status, 'pending', '来源缺失时不得执行或结算')
   await inbound.stop()
 })
 
@@ -904,7 +910,7 @@ test('aq: 卡片回调：SEC-1 来源会话匹配通过 / 转发拒绝；缺 src
   const makeEvent = (value, chatId) => ({
     operator: { open_id: 'ou_1' },
     action: { value },
-    context: { open_message_id: 'om_q', open_chat_id: chatId },
+    context: { open_message_id: 'om_q', open_chat_id: chatId , open_chat_type: 'p2p'},
   })
 
   // 缺 srcChat（升级前在途卡片）：兼容放行，进入 questions.decide
@@ -960,7 +966,7 @@ test('C1 飞书来源比对：srcChat 在场但缺点击会话 → fail-closed �
   const empty = fake.state.dispatcher.handlers['card.action.trigger']({
     operator: { open_id: 'ou_1' },
     action: { value },
-    context: { open_message_id: 'om_e', open_chat_id: '' },
+    context: { open_message_id: 'om_e', open_chat_id: '' , open_chat_type: 'p2p'},
   })
   assert.match(empty.toast.content, /请到原会话操作/, '空串点击会话必须拒绝')
   assert.equal(bus.pendingCount(), 1)
@@ -969,7 +975,7 @@ test('C1 飞书来源比对：srcChat 在场但缺点击会话 → fail-closed �
   const ok = fake.state.dispatcher.handlers['card.action.trigger']({
     operator: { open_id: 'ou_1' },
     action: { value },
-    context: { open_message_id: 'om_ok', open_chat_id: 'oc_orig' },
+    context: { open_message_id: 'om_ok', open_chat_id: 'oc_orig' , open_chat_type: 'p2p'},
   })
   assert.equal(ok.toast.type, 'success')
   assert.equal((await outcome).decision, 'allowed-once')
@@ -1079,7 +1085,7 @@ test('卡片终态 patch：messageId 读 data.context.open_message_id（#6），
     // 真机实测负载形状：顶层 keys 只有 schema/event_id/…/operator/action/host/context
     operator: { open_id: 'ou_1' },
     action: { value: { act: buildApprovalAction('allowed-once', key, token) } },
-    context: { open_message_id: 'om_ctx_1', open_chat_id: 'oc_ctx' },
+    context: { open_message_id: 'om_ctx_1', open_chat_id: 'oc_ctx' , open_chat_type: 'p2p'},
   })
   assert.equal(toast.toast.type, 'success')
   await tick()
@@ -1114,7 +1120,7 @@ test('Stage-6 入站 envelope：accountId 注入每条规范化消息（config.a
   await tick()
   rig.fake.state.dispatcher.handlers['im.message.receive_v1']({
     sender: { sender_id: { open_id: 'ou_1' } },
-    message: { message_id: 'om_s6', chat_id: 'oc_g', message_type: 'text', content: JSON.stringify({ text: 'hi' }) },
+    message: { message_id: 'om_s6', chat_id: 'oc_g', chat_type: 'p2p', message_type: 'text', content: JSON.stringify({ text: 'hi' }) },
   })
   assert.equal(accepted.length, 1)
   assert.equal(accepted[0].accountId, 'acct_fs', '消息 envelope 必须带稳定 accountId')
@@ -1150,44 +1156,23 @@ test('Stage-6 生命周期：starting→connected；SDK 缺失→unavailable；W
   await err.inbound.stop()
 })
 
-test('Stage-6 群聊敏感控制降级：审批不发群消息，动作通知仍可纯文本', async () => {
+test('D01 飞书群聊与未证明会话：入站和所有出站均零副作用', async () => {
   const rig = makeRig()
+  const accepted = []
+  rig.bus.onMessage((event) => accepted.push(event))
   rig.inbound.start()
   await tick()
-  // 审批卡到群
-  const ap = await rig.inbound.sendApprovalCard({ chatId: 'oc_group1', title: '需要批准', content: '敏感审批', approvalKey: 'ap:x:1', token: 'tk' })
-  assert.equal(ap.downgraded, true, '群聊审批须标记降级')
-  assert.equal(ap.messageId, '', '群聊审批降级不得伪造消息送达证据')
-  assert.equal(rig.fake.state.sent.length, 0, '个人模式敏感审批不得泄漏到群聊')
-  // 动作卡到群
-  const ac = await rig.inbound.sendActionCard({ chatId: 'oc_group2', title: '操作', content: 'c', actions: [{ label: '⏹ 停止', data: 'ac:x:y' }] })
-  assert.equal(ac.downgraded, true)
-  assert.equal(rig.fake.state.sent[0].msgType, 'text', '普通动作通知仍可降级为文本')
-  // 提问卡到群 → 直接拦截（不发任何消息）
-  const q = await rig.inbound.sendQuestionCard({ chatId: 'oc_group3', title: '提问', content: 'q', qKey: 'aq:1', token: 'tk', options: ['是', '否'] })
-  assert.equal(q, null, '提问按钮绝不放给整群')
-  assert.equal(rig.fake.state.sent.length, 1, '提问卡群发不产生任何消息')
-  await rig.inbound.stop()
-})
-
-test('Stage-6 群聊敏感编号兜底：提问文本在群聊被抑制，普通文本仍可发送', async () => {
-  const rig = makeRig()
-  rig.inbound.start()
-  await tick()
-  assert.equal(await rig.inbound.sendText('oc_group-q', '提问：是否继续？\n1. 是\n2. 否\n（回复编号）'), false)
-  assert.equal(rig.fake.state.sent.length, 0, '提问编号兜底不得泄漏到群聊')
-  assert.equal(await rig.inbound.sendText('oc_group-q', '任务仍在运行'), true, '普通状态文本仍可发群聊')
-  assert.equal(rig.fake.state.sent.length, 1)
-  await rig.inbound.stop()
-})
-
-test('Stage-6 群聊降级不影响私聊：ou_* 仍发完整 interactive 审批卡', async () => {
-  const rig = makeRig()
-  rig.inbound.start()
-  await tick()
-  const card = await rig.inbound.sendApprovalCard({ chatId: 'ou_1', title: '需要批准', content: 'c', approvalKey: 'ap:p1', token: 'tk' })
-  assert.deepEqual(card, { messageId: 'om_1' })
-  assert.equal(rig.fake.state.sent[0].msgType, 'interactive', '私聊必须仍发卡片')
+  rig.fake.state.dispatcher.handlers['im.message.receive_v1']({
+    sender: { sender_id: { open_id: 'ou_1' } },
+    message: { message_id: 'om_group', chat_id: 'oc_group', chat_type: 'group', message_type: 'text', content: JSON.stringify({ text: 'hi' }) },
+  })
+  assert.equal(accepted.length, 0, '群聊入站不得进入 bus')
+  assert.equal(await rig.inbound.sendText('oc_unproven', '状态'), false)
+  assert.equal(await rig.inbound.sendApprovalCard({ chatId: 'oc_group', title: '批准', content: '敏感', approvalKey: 'ap:g:1', token: 'tk' }), null)
+  assert.equal(await rig.inbound.sendActionCard({ chatId: 'oc_group', title: '动作', content: '敏感', actions: [] }), null)
+  assert.equal(await rig.inbound.sendQuestionCard({ chatId: 'oc_group', title: '提问', content: '敏感', qKey: 'aq:g:1', token: 'tk', options: ['是'] }), null)
+  assert.equal(rig.fake.state.sent.length, 0)
+  assert.equal(rig.fake.state.patched.length, 0)
   await rig.inbound.stop()
 })
 
@@ -1205,7 +1190,7 @@ test('Stage-6 patch 失败：卡片回调补发「恰好一条」文本兜底（
   const toast = fake.state.dispatcher.handlers['card.action.trigger']({
     operator: { open_id: 'ou_1' },
     action: { value: { act: buildApprovalAction('allowed-once', key, token) } },
-    context: { open_message_id: 'om_pf', open_chat_id: 'oc_pf' },
+    context: { open_message_id: 'om_pf', open_chat_id: 'oc_pf' , open_chat_type: 'p2p'},
   })
   assert.equal(toast.toast.type, 'success')
   assert.equal((await outcome).decision, 'allowed-once', '裁决本身不受 patch 失败影响')
@@ -1290,7 +1275,7 @@ test('Host P0 #31：patch transport timeout → 恰好一次文本兜底 attempt
   const toast = fake.state.dispatcher.handlers['card.action.trigger']({
     operator: { open_id: 'ou_1' },
     action: { value: { act: buildApprovalAction('allowed-once', key, token) } },
-    context: { open_message_id: 'om_pft', open_chat_id: 'oc_pft' },
+    context: { open_message_id: 'om_pft', open_chat_id: 'oc_pft' , open_chat_type: 'p2p'},
   })
   assert.equal(toast.toast.type, 'success')
   assert.equal((await outcome).decision, 'allowed-once', '裁决本身不受 transport timeout 影响')

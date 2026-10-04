@@ -5,7 +5,6 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { ADAPTERS, resolveConfig, REMOTE_LOG_HARD_MAX_LINES, REMOTE_LOG_HARD_MAX_BYTES } from '../src/config.mjs'
 import { INBOUND_CHANNELS as REGISTRY } from '../src/inbound/channels-registry.mjs'
-import { INBOUND_CHANNELS as FROM_ADMIN } from '../src/admin/api.mjs'
 import { INBOUND_CHANNELS as FROM_MATRIX, INBOUND_CHANNEL_SET } from '../src/inbound/capability-matrix.mjs'
 
 // S-02：urlguard DNS 恒公网夹具（postText 测试用 .test 假域名，不夹具会打真网）
@@ -15,8 +14,7 @@ const resolveOf = (type) => ADAPTERS[type].resolve
 
 // ---------------------------------------------------------------- G-13 枚举收敛
 
-test('G-13：渠道枚举单一事实来源——admin/api 与 capability-matrix 的 INBOUND_CHANNELS 同源同冻结', () => {
-  assert.equal(FROM_ADMIN, REGISTRY, 'admin/api 转发导出的是同一个冻结数组实例（非拷贝）')
+test('G-13：渠道枚举单一事实来源——capability-matrix 的 INBOUND_CHANNELS 与 registry 同源同冻结', () => {
   assert.equal(FROM_MATRIX, REGISTRY, 'capability-matrix 同上')
   assert.deepEqual(REGISTRY, ['telegram', 'feishu', 'qq', 'wxpusher', 'wechat', 'dingtalk'])
   assert.ok(Object.isFrozen(REGISTRY), '清单冻结：运行时不可 push/splice 漂移')

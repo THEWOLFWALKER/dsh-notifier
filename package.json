@@ -1,7 +1,7 @@
 {
   "name": "dsh-notifier",
-  "version": "0.13.1",
-  "description": "DSH 通知与私聊审批插件，支持 28 个出站渠道和原生通知管理界面；无需强制运行时依赖。",
+  "version": "0.15.0",
+  "description": "DSH 通知与私聊审批插件，支持 28 个通知渠道和原生宿主管理界面；无需强制运行时依赖。",
   "type": "module",
   "main": "src/plugin-entry.mjs",
   "exports": {
@@ -75,7 +75,7 @@
     "test:dom": "node test/dom/run.mjs"
   },
   "dshQuality": {
-    "testCount": 2447
+    "testCount": 2103
   },
   "dsh": {
     "bundle": {
@@ -188,5 +188,11 @@
       "hotReload": null,
       "remove": null
     }
+  },
+  "devDependencies": {
+    "jsdom": "30.1.1",
+    "miniflare": "3.20250718.3",
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
   }
 }

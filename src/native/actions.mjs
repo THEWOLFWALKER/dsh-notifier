@@ -97,12 +97,19 @@ export function createNativeActions({
   const resolveUser = makeUserResolver(members, resolveUserId)
 
   return {
-    selectTask({ taskRef } = {}) {
+    selectTask({ taskRef, ownerId } = {}) {
       requireFn(currentTask, 'select', '当前任务暂时无法保存')
       const owners = (members?.list?.() ?? []).filter(row => row.role === 'owner')
-      if (owners.length !== 1) throw badRequest('请先确认使用者')
+      let owner = null
+      if (typeof ownerId === 'string' && ownerId.trim() !== '') {
+        const key = toMemberKey(resolveUser, ownerId)
+        owner = owners.find((row) => String(row.key ?? '') === key) ?? null
+      } else if (owners.length === 1) {
+        owner = owners[0]
+      }
+      if (owner === null) throw badRequest('请选择要设置当前任务的使用者')
       if (!(tasks?.list?.() ?? []).some(row => row.taskRef === taskRef)) throw badRequest('任务已结束，请重新选择')
-      const result = currentTask.select(owners[0], taskRef)
+      const result = currentTask.select(owner, taskRef)
       if (!result.ok) throw Object.assign(new Error('当前任务未保存，请重试'), { code: result.reason })
       touch('tasks')
       return { saved: true }
@@ -130,6 +137,32 @@ export function createNativeActions({
         channel: String(type ?? ''), direction: 'inbound', saved: saved?.saved === true, hotApplied: hot,
       })
       return { saved: saved?.saved === true, needsRestart: !hot, applyMode: inboundApplyMode() }
+    },
+
+    /** 私聊开关与凭证分离；关闭后 admission 立即拒绝，开启需要新一轮 transport 装配。 */
+    setPrivateChatEnabled({ type, enabled } = {}) {
+      requireFn(channelControl, 'setInboundEnabled', '私聊开关当前不可用')
+      if (typeof enabled !== 'boolean') throw badRequest('私聊开关必须是开启或关闭')
+      let result
+      try {
+        result = channelControl.setInboundEnabled(String(type ?? ''), enabled)
+      } catch (error) {
+        if (!enabled) {
+          // The config port has already fenced this process before attempting I/O.
+          // Publish that safety state even when the durable marker could not be saved.
+          touch('channels')
+          record('configuration', 'private-chat-disabled', {
+            channel: String(type ?? ''), direction: 'inbound', enabled: false,
+            durable: false, errorCode: String(error?.code ?? 'storage-failed'),
+          })
+        }
+        throw error
+      }
+      touch('channels')
+      record('configuration', enabled ? 'private-chat-enabled' : 'private-chat-disabled', {
+        channel: String(type ?? ''), direction: 'inbound', enabled,
+      })
+      return { enabled: result?.enabled === true, needsRestart: enabled, applied: enabled !== true }
     },
 
     /** 删除渠道（出站默认保留回退；revoke 同时清掉可删的旧覆盖源）。 */

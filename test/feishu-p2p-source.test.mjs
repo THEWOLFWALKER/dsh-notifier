@@ -17,7 +17,7 @@ import { isOpenIdTarget, feishuP2pEquivalent } from '../src/inbound/target-guard
 import { createFeishuInbound } from '../src/inbound/feishu-bot.mjs'
 import { buildApprovalAction, buildQuestionAction } from '../src/inbound/_contract.mjs'
 import { createTokenVault } from '../src/inbound/tokens.mjs'
-import { createInboundBus } from '../src/inbound/bus.mjs'
+import { createPrivateFlowBus as createInboundBus } from './helpers/private-flow-bus.mjs'
 import { createStore } from '../src/inbound/store.mjs'
 import { createQuestionBridge } from '../src/questions/router.mjs'
 import { createControlEntry } from '../src/control/entry.mjs'

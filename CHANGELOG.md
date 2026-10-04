@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [0.15.0] - Unreleased
 
 - Remove obsolete daily browser controllers and the unused standalone Recovery launch RPC.
 - Require dsh-im contract v1 checked delivery and remove the unsupported guessed config importer.
@@ -8,6 +8,8 @@
 - Allocate runtime generations per instance and exclude late health results.
 - Persist Cloud deployment jobs, recover by readback and keep secrets in configuration.
 - Count real Node test leaves instead of suite events.
+- Bump the public notifier API to 0.8 with mutually exclusive delivery evidence and a truthful `{ drained }` flush result.
+- Back up pre-v0.15 state before initializing a clean schema; show the user what to configure again and keep legacy files offline-only.
 - Remove the unshipped in-memory cloud-storage placeholder and its future-contract documentation.
 - Keep internal execution records and agent instructions out of the npm package.
 - Describe the plugin by its user-facing notification, private-chat, and approval workflows.

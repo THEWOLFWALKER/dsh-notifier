@@ -80,7 +80,7 @@ test('apply: 注册 session/event 与 agent/error 两个监听', () => {
   assert.equal(listeners['agent/error'].length, 1)
 })
 
-test('apply: inbound 白名单 + approval 配置 → 注册 approval/request；state 落指定目录', () => {
+test('apply: legacy inbound allowUsers do not authorize or start approval routes', () => {
   const { ctx, listeners, warnings } = bootCtx()
   const stateDir = mkdtempSync(join(tmpdir(), 'dsh-notifier-wire-'))
   apply(ctx, {
@@ -88,8 +88,8 @@ test('apply: inbound 白名单 + approval 配置 → 注册 approval/request；s
     inbound: { allowUsers: ['42'], stateDir },
     approval: { mode: 'observe' },
   })
-  assert.equal(listeners['approval/request'].length, 1)
-  assert.ok(warnings.some((w) => /未启动.*telegram/i.test(w) === false))
+  assert.equal(listeners['approval/request'], undefined)
+  assert.ok(warnings.some((w) => /没有任何入站通道凭证.*远程审批未启动/.test(w)))
 })
 
 test('apply: approval 配置但无任何入站通道凭证 → 只 warn 不注册（无回传通道可承载裁决）', () => {
@@ -113,22 +113,19 @@ test('apply: 未配置 inbound/approval → 不注册 approval/request，零额�
 // ReferenceError）。配置任一 inbound 通道（含凭证不全被跳过的）都必须不崩启动。
 test('apply: 配置 inbound.feishu/qq/dingtalk 不因 store TDZ 崩启动', () => {
   for (const channel of ['feishu', 'qq', 'dingtalk']) {
-    const { ctx, warnings } = bootCtx()
+    const { ctx, warnings, listeners } = bootCtx()
     const stateDir = mkdtempSync(join(tmpdir(), 'dsh-notifier-tdz-'))
     // 凭证齐全会真启动长连接，这里给凭证不全的形态：resolve 读 store 回退后仍跳过
     apply(ctx, {
       channels: [{ type: 'webhook', url: 'http://127.0.0.1:1/hook' }],
-      inbound: { allowUsers: ['u1'], stateDir, [channel]: {} },
+      inbound: { allowUsers: ['u1'], stateDir, [channel]: { enabled: true } },
     })
-    assert.ok(
-      warnings.some((w) => w.includes(`inbound.${channel} 跳过`) || w.includes(`inbound 已启动：${channel}`)),
-      `${channel}：应出现跳过 warn 或启动提示（实际：${warnings.join(' | ')}）`,
-    )
+    assert.equal(listeners['approval/request'], undefined, `${channel} without credentials must not attach approval handling`)
   }
 })
 
-// v0.3.1 扫码凭证回退：state.json 预置 feishu:account → inbound.feishu: {} 直接可用
-test('apply: 扫码凭证回退——state 预置 feishu:account 后 inbound.feishu 空配置即启用', () => {
+// 凭证不是授权；v0.15 不会读取旧状态凭证，用户需显式重设渠道信息。
+test('apply: YAML 显式 enabled:true + 凭证才启动私聊，旧状态凭证不自动装配', () => {
   const { ctx, warnings } = bootCtx()
   const stateDir = mkdtempSync(join(tmpdir(), 'dsh-notifier-scan-'))
   writeFileSync(join(stateDir, 'state.json'), JSON.stringify({
@@ -136,9 +133,35 @@ test('apply: 扫码凭证回退——state 预置 feishu:account 后 inbound.fei
   }))
   apply(ctx, {
     channels: [{ type: 'webhook', url: 'http://127.0.0.1:1/hook' }],
-    inbound: { allowUsers: ['u1'], stateDir, feishu: {} },
+    inbound: { allowUsers: ['u1'], stateDir, feishu: { enabled: true, appId: 'cli_new', appSecret: 'new-secret' } },
   })
   assert.ok(warnings.some((w) => /inbound 已启动：feishu/.test(w)), `应启动 feishu（实际：${warnings.join(' | ')}）`)
+  assert.ok(warnings.some((w) => /已备份旧状态并建立全新 v0.15 状态/.test(w)), 'first-run notice reports state reinitialization')
+})
+
+test('apply: legacy state credential is not loaded after the v0.15 reset', () => {
+  const { ctx, warnings } = bootCtx()
+  const stateDir = mkdtempSync(join(tmpdir(), 'dsh-notifier-legacy-quarantine-'))
+  writeFileSync(join(stateDir, 'state.json'), JSON.stringify({
+    'feishu:account': { appId: 'old_app', appSecret: 'old_secret' },
+  }))
+  apply(ctx, {
+    channels: [{ type: 'webhook', url: 'http://127.0.0.1:1/hook' }],
+    inbound: { allowUsers: ['u1'], stateDir, feishu: { enabled: true } },
+  })
+  assert.ok(!warnings.some((w) => /inbound 已启动：feishu/.test(w)), 'legacy credentials never start a private transport')
+  assert.ok(warnings.some((w) => /建立全新 v0.15 状态/.test(w)), 'backup and reconfigure are surfaced')
+})
+
+test('私聊准入：只有凭证但没有 enabled:true 时不启动 Telegram inbound', () => {
+  const { ctx, warnings } = bootCtx()
+  const stateDir = mkdtempSync(join(tmpdir(), 'dsh-notifier-private-default-off-'))
+  apply(ctx, {
+    channels: [{ type: 'webhook', url: 'http://127.0.0.1:1/hook' }],
+    approval: { mode: 'answer' },
+    inbound: { allowUsers: ['42'], stateDir, telegram: { botToken: 'T0KEN' } },
+  })
+  assert.ok(!warnings.some((w) => /inbound 已启动：telegram/.test(w)), '凭证和 YAML 对象不能代替授权')
 })
 
 // v0.6.1 真机事故修复（TG inbound 装配问题报告）：告警双写 stderr，
@@ -168,7 +191,7 @@ test('v0.6.1 inbound 逐通道隔离：telegram 装配炸了不崩 apply，其�
     inbound: {
       allowUsers: ['42'],
       stateDir: mkdtempSync(join(tmpdir(), 'dsh-notifier-iso-')),
-      telegram: { botToken: 'T0KEN', apiBase: evilApiBase },
+      telegram: { enabled: true, botToken: 'T0KEN', accountId: 'test-telegram', apiBase: evilApiBase },
     },
   })
   assert.ok(warnings.some((w) => /inbound:telegram 装配失败，已跳过/.test(w)),
@@ -183,14 +206,24 @@ test('v0.6.1 inbound 逐通道隔离：telegram 装配炸了不崩 apply，其�
 // stderr 只印路径。这里往死里测「码面绝不出现在任何 warn/stderr 里」。
 
 /** 引导态启动（空 allowUsers + telegram 凭证就绪但 apiBase 不可达 → 只走装配不真联网）。 */
-function guidedBoot(stateDir) {
+function guidedBoot(stateDir, allowUsers = []) {
   const rig = bootCtx()
   apply(rig.ctx, {
     channels: [{ type: 'webhook', url: 'http://127.0.0.1:1/hook' }],
-    inbound: { stateDir, telegram: { botToken: 'T0KEN', apiBase: 'http://127.0.0.1:1' } },
+    inbound: { stateDir, allowUsers, telegram: { enabled: true, botToken: 'T0KEN', accountId: 'test-telegram', apiBase: 'http://127.0.0.1:1' } },
   })
   return rig
 }
+
+test('D02: legacy allowUsers cannot create a principal or suppress fresh pairing setup', async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), 'dsh-notifier-legacy-allowusers-'))
+  const rig = guidedBoot(stateDir, ['42'])
+  try {
+    assert.ok(existsSync(join(stateDir, 'bootstrap-paircode.txt')), 'legacy allowUsers remains unauthorized and pairing setup stays available')
+  } finally {
+    await rig.cleanup()
+  }
+})
 
 /** 码面形状：8 位 [A-Z2-9]（pairing.mjs CODE_ALPHABET，无 0/1/I/O 等易混字符）。 */
 const CODE_TOKEN = /\b[A-Z2-9]{8}\b/
@@ -239,7 +272,7 @@ test('B1-3 引导码零泄漏：码面绝不出现在任何 warn 条目里（LEA
   }
 })
 
-test('B1-1b 引导码文件写入失败：warn 指引管理台且绝不回退印码面（不静默、不泄漏）', async () => {
+test('B1-1b 引导码文件写入失败：warn 指引 Native 成员页且绝不回退印码面（不静默、不泄漏）', async () => {
   // stateDir 的父路径是普通文件 → mkdirSync ENOTDIR，写文件必失败
   const base = mkdtempSync(join(tmpdir(), 'dsh-notifier-b1-enotdir-'))
   const blocker = join(base, 'blocker')
@@ -247,7 +280,7 @@ test('B1-1b 引导码文件写入失败：warn 指引管理台且绝不回退印
   const rig = guidedBoot(join(blocker, 'nested'))
   try {
     assert.ok(rig.warnings.some((w) => /引导码文件写入失败/.test(w)), '写失败必须可见（宪法#3 静默即事故）')
-    assert.ok(rig.warnings.some((w) => /【引导配对码】文件写入失败，请使用管理台铸码/.test(w)), '给出可用的替代路径')
+    assert.ok(rig.warnings.some((w) => /【引导配对码】文件写入失败，请到宿主 Native 界面的「成员」页铸码/.test(w)), '给出可用的替代路径')
     for (const line of rig.warnings) {
       const withoutPaths = line.replace(/\/\S+/g, '')
       assert.ok(!CODE_TOKEN.test(withoutPaths), `写失败路径不得回退印码面：${line}`)
@@ -286,20 +319,20 @@ test('B1-1c 引导码文件写入前先 unlink：预置 symlink 不被跟随写�
   }
 })
 
-test('B1-2c 启动清理：非引导态（allowUsers 非空）启动删掉上一轮残留码文件', async () => {
+test('D03 启动保留：旧 allowUsers 不结束重设流程，残留配对码继续可见', async () => {
   const stateDir = mkdtempSync(join(tmpdir(), 'dsh-notifier-b1-stale-'))
   const first = guidedBoot(stateDir) // 第一轮：引导态铸码写文件
   const codePath = join(stateDir, 'bootstrap-paircode.txt')
   assert.ok(existsSync(codePath), '前置：第一轮写了码文件')
   await first.cleanup()
-  // 第二轮：白名单已配 → 非引导态，陈旧码文件必须被清
+  // 第二轮：旧 allowUsers 不恢复身份，进程仍处于重新配对状态。
   const second = bootCtx()
   apply(second.ctx, {
     channels: [{ type: 'webhook', url: 'http://127.0.0.1:1/hook' }],
-    inbound: { stateDir, allowUsers: ['42'], telegram: { botToken: 'T0KEN', apiBase: 'http://127.0.0.1:1' } },
+    inbound: { stateDir, allowUsers: ['42'], telegram: { enabled: true, botToken: 'T0KEN', accountId: 'test-telegram', apiBase: 'http://127.0.0.1:1' } },
   })
   try {
-    assert.ok(!existsSync(codePath), '引导态结束后不得残留码面文件')
+    assert.ok(existsSync(codePath), '旧 allowUsers 不得清除重设流程中的配对码')
   } finally {
     await second.cleanup()
   }

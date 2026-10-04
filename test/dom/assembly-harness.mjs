@@ -57,7 +57,7 @@ export function createFakeWebServer() {
 
 /** Fake connection service. No `rpc.handle` by default → exercises the webServer mount. */
 export function createFakeConnection({ admit, rpcHandle } = {}) {
-  const connection = { admit: admit ?? (() => null) }
+  const connection = { admit: admit ?? (() => ({ peer: {} })) }
   if (typeof rpcHandle === 'function') {
     const handles = new Map()
     connection.rpc = {

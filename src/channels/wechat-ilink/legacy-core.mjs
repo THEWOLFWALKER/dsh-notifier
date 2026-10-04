@@ -101,7 +101,7 @@ export function resolveWechatInboundConfig(raw, { credentials } = {}) {
  * @param {ReturnType<typeof resolveWechatInboundConfig>['config']} options.config
  * @param {ReturnType<typeof import('../../inbound/bus.mjs').createInboundBus>} options.bus
  * @param {import('../../inbound/store.mjs').store} [options.store] - 游标 / context_token / 凭证持久化
- * @param {string[]} [options.fallbackTargets] - 未配置 notifyUsers 时的推送目标（全局白名单回落）
+ * Private recipients must be explicit or provider-proven.
  * @param {object} [options.logger]
  * @param {typeof fetch} [options.fetchImpl] - fetch 注入（测试用）
  * @param {() => number} [options.now] - 时钟注入（测试用；默认 Date.now）
@@ -110,7 +110,7 @@ export function resolveWechatInboundConfig(raw, { credentials } = {}) {
  *   编号回复，跨节复用 approval.fallbackText；缺省回落 zh，零行为变化）
  */
 export function createWechatIlinkInbound(options = {}) {
-  const { config, bus, store = null, fallbackTargets = [], logger = null, identity = null } = options
+  const { config, bus, store = null, logger = null, identity = null } = options
   const STRINGS = options.strings ?? stringsOf()
   // 新 provider slice 通过 accountScoped 开启账号命名空间；旧入口默认保留历史键名。
   const accountScoped = options.accountScoped === true
@@ -465,13 +465,13 @@ export function createWechatIlinkInbound(options = {}) {
       loopPromise = null
     },
 
-    /** 审批推送目标（v0.7 三级解析）：绑定成员 → notifyUsers → 全局回落（仅绑定表整体空）。 */
+    /** Private approval targets from paired identities or explicit user IDs. */
     notifyTargets() {
       return resolveNotifyTargets({
         identity,
         channel: 'wechat',
+        accountId: String(config?.accountId ?? ''),
         configTargets: Array.isArray(config.notifyUsers) ? config.notifyUsers.map(String) : [],
-        fallbackTargets,
       })
     },
 

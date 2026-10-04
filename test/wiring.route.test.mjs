@@ -26,12 +26,20 @@ import { createNotifier } from '../src/notify.mjs'
 import { resolveConfig } from '../src/config.mjs'
 import { createAgentRouter } from '../src/routing/agent-router.mjs'
 import { createStore } from '../src/inbound/store.mjs'
-import { createInboundBus } from '../src/inbound/bus.mjs'
+import { createPrivateFlowBus as createInboundBus } from './helpers/private-flow-bus.mjs'
 import { createTokenVault } from '../src/inbound/tokens.mjs'
 import { createControlEntry } from '../src/control/entry.mjs'
+import './helpers/urlguard-public.mjs'
+import { __setRequestImplForTests } from '../src/security/network-policy.mjs'
+
+__setRequestImplForTests((target, init) => globalThis.fetch(target.url.href, { ...init, redirect: 'manual' }))
 
 function tempDir() {
   return mkdtempSync(join(tmpdir(), 'dsh-notifier-wiring-'))
+}
+
+function writeCurrentState(file, value) {
+  writeFileSync(file, JSON.stringify({ 'state:schema-version': 15, ...value }))
 }
 
 /** fake tools ctx（tool-register.test.mjs 同款）。 */
@@ -225,7 +233,7 @@ test('notify 工具分流：channelTypes 未提供时回落 notifier.channels �
 
 // ---------------------------------------------------------------- index 装配
 
-test('index 装配：预置 bind:telegram:u1 旧绑定 → apply 后 route:sessions 出现 u1 目标会话最小记录', () => {
+test('D03: unmarked legacy bind state is quarantined and never auto-migrated', () => {
   const stateDir = tempDir()
   writeFileSync(join(stateDir, 'state.json'), JSON.stringify({ 'bind:telegram:u1': 'sess-legacy' }))
   const { ctx, warnings } = bootCtx()
@@ -233,14 +241,11 @@ test('index 装配：预置 bind:telegram:u1 旧绑定 → apply 后 route:sessi
     channels: [{ type: 'webhook', url: 'http://public-hook.test/hook' }],
     inbound: { allowUsers: ['u1'], stateDir },
   })
-  const sessions = createStore(join(stateDir, 'state.json')).get('route:sessions')
-  const record = sessions?.['sess-legacy']
-  assert.ok(record !== undefined, 'route:sessions 应出现旧绑定会话的最小记录（迁移生效）')
-  assert.equal(record.inherit, '', 'inherit 空串占位（等 agent/created 或出站事件补全）')
-  assert.equal(record.workspace, '', 'workspace 空串占位')
-  assert.equal(typeof record.createdAt, 'number')
-  assert.equal(typeof record.lastActiveAt, 'number')
-  assert.ok(warnings.some((w) => /迁移/.test(w)), 'migrated > 0 应 warn')
+  const restarted = createStore(join(stateDir, 'state.json'))
+  assert.equal(restarted.get('route:sessions'), undefined)
+  assert.equal(restarted.get('bind:telegram:u1'), undefined)
+  assert.equal(restarted.get('state:schema-version'), 15)
+  assert.ok(warnings.some((w) => /已备份旧状态并建立全新 v0.15 状态/.test(w)))
 })
 
 test('index 装配：apply 返回 resolved；createAgentRouter/createSessionRegistry/workspaceOf 三导出可用', () => {
@@ -275,7 +280,8 @@ test('index 装配：questions.enabled 时注册 ask_user', async () => {
   const port = await freePort()
   apply(ctx, {
     channels: [{ type: 'webhook', url: 'http://public-hook.test/hook' }],
-    inbound: { stateDir, wxpusher: { appToken: 'token-1', port } },
+    questions: { enabled: true },
+    inbound: { stateDir, wxpusher: { enabled: true, accountId: 'wx-test', appToken: 'token-1', port } },
   })
   assert.equal(defs.some((def) => def.name === 'ask_user'), true)
   await cleanup()
@@ -324,9 +330,9 @@ test('index 装配冒烟：注入的真 router 生效——route:agents 绑定�
   globalThis.fetch = async (url) => { hits.push(String(url)); return { ok: true, status: 200, json: async () => ({ code: 200 }) } }
   try {
     const stateDir = tempDir()
-    writeFileSync(join(stateDir, 'state.json'), JSON.stringify({
+    writeCurrentState(join(stateDir, 'state.json'), {
       'route:agents': { 'ws-a': { channels: ['webhook'] } },
-    }))
+    })
     const { ctx, defs } = bootCtx()
     apply(ctx, {
       channels: [
@@ -349,10 +355,10 @@ test('index 装配冒烟：注入的真 router 生效——route:agents 绑定�
 test('状态清扫：aq 已决行超 24h 删除，窗口内保留', async () => {
   const stateDir = tempDir()
   const now = Date.now()
-  writeFileSync(join(stateDir, 'state.json'), JSON.stringify({
+  writeCurrentState(join(stateDir, 'state.json'), {
     'aq:old': { status: 'resolved', decision: 'terminated', resolvedAt: now - 25 * 60 * 60 * 1000 },
     'aq:new': { status: 'resolved', decision: 'answered', resolvedAt: now - 60 * 60 * 1000 },
-  }))
+  })
   const { ctx, cleanup } = bootCtx()
   apply(ctx, {
     channels: [{ type: 'webhook', url: 'http://public-hook.test/hook' }],
@@ -367,10 +373,10 @@ test('状态清扫：aq 已决行超 24h 删除，窗口内保留', async () => 
 test('状态清扫：aq 崩溃残留跨重启回收，在途 pending 保留', async () => {
   const stateDir = tempDir()
   const now = Date.now()
-  writeFileSync(join(stateDir, 'state.json'), JSON.stringify({
+  writeCurrentState(join(stateDir, 'state.json'), {
     'aq:orphan': { status: 'pending', createdAt: now - 3 * 60 * 60 * 1000 },
     'aq:live': { status: 'pending', createdAt: now },
-  }))
+  })
   const { ctx, cleanup } = bootCtx()
   apply(ctx, {
     channels: [{ type: 'webhook', url: 'http://public-hook.test/hook' }],
@@ -386,11 +392,11 @@ test('状态清扫：aq 崩溃残留跨重启回收，在途 pending 保留', as
 test('状态清扫：ap answer 孤儿删除，observe 与旧行保留', async () => {
   const stateDir = tempDir()
   const now = Date.now()
-  writeFileSync(join(stateDir, 'state.json'), JSON.stringify({
+  writeCurrentState(join(stateDir, 'state.json'), {
     'ap:answer-orphan': { mode: 'answer', status: 'pending', createdAt: now - 3 * 60 * 60 * 1000 },
     'ap:observe': { mode: 'observe', status: 'pending', createdAt: now - 3 * 60 * 60 * 1000 },
     'ap:legacy': { status: 'pending', createdAt: now - 3 * 60 * 60 * 1000 },
-  }))
+  })
   const { ctx, cleanup } = bootCtx()
   apply(ctx, {
     channels: [{ type: 'webhook', url: 'http://public-hook.test/hook' }],
@@ -407,10 +413,10 @@ test('状态清扫：ap answer 孤儿删除，observe 与旧行保留', async ()
 test('状态清扫：approval 超时配置放大时保留在途 answer，清扫更老孤儿', async () => {
   const stateDir = tempDir()
   const now = Date.now()
-  writeFileSync(join(stateDir, 'state.json'), JSON.stringify({
+  writeCurrentState(join(stateDir, 'state.json'), {
     'ap:inflight': { mode: 'answer', status: 'pending', createdAt: now - 5 * 60 * 60 * 1000 },
     'ap:orphan': { mode: 'answer', status: 'pending', createdAt: now - 7 * 60 * 60 * 1000 },
-  }))
+  })
   const { ctx, cleanup } = bootCtx()
   apply(ctx, {
     channels: [{ type: 'webhook', url: 'http://public-hook.test/hook' }],
@@ -426,12 +432,12 @@ test('状态清扫：approval 超时配置放大时保留在途 answer，清扫�
 test('状态清扫：act 孤儿 pending 回收，dedup 既有窗口行为不变', async () => {
   const stateDir = tempDir()
   const now = Date.now()
-  writeFileSync(join(stateDir, 'state.json'), JSON.stringify({
+  writeCurrentState(join(stateDir, 'state.json'), {
     'act:orphan': { status: 'pending', createdAt: now - 3 * 60 * 60 * 1000 },
     'act:resolved': { status: 'resolved', resolvedAt: now - 25 * 60 * 60 * 1000 },
     'dedup:old': now - 26 * 60 * 60 * 1000,
     'dedup:new': now,
-  }))
+  })
   const { ctx, cleanup } = bootCtx()
   apply(ctx, {
     channels: [{ type: 'webhook', url: 'http://public-hook.test/hook' }],
@@ -509,7 +515,7 @@ test('审批分流：request.agent 有 id 时 notifyAll 收到的 channelTypes �
   assert.equal(qq.state.cards.length, 1, '绑定的 qq 收到卡片')
   assert.equal(feishu.state.cards.length, 0, '未绑定的 feishu 不发卡片')
   const card = qq.state.cards[0]
-  rig.bus.decide({ approvalKey: card.approvalKey, decision: 'rejected', token: card.token, via: 'qq:button', userId: 'u2', chatId: 'opengrp01' })
+  rig.bus.decide({ approvalKey: card.approvalKey, decision: 'rejected', token: card.token, via: 'qq:button', channel: 'qq', accountId: 'QQ_APP', userId: 'u2', chatId: 'opengrp01' })
   assert.equal(await outcome, 'rejected')
   rig.dispose()
 })

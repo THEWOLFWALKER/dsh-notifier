@@ -13,7 +13,7 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { registerConversationRouter } from '../src/inbound/conversation.mjs'
-import { createInboundBus } from '../src/inbound/bus.mjs'
+import { createPrivateFlowBus as createInboundBus } from './helpers/private-flow-bus.mjs'
 import { createStore } from '../src/inbound/store.mjs'
 import { stringsOf } from '../src/strings.mjs'
 
@@ -33,7 +33,7 @@ function makeEntry({ title = '任务完成', kind = 'turn', level = 'info', deli
 }
 
 /** owner 是 channel-scoped：仅 'telegram' 渠道的 42 是 owner。 */
-const telegramOwner = { list: (channel) => (channel === 'telegram' ? [{ userId: '42', role: 'owner' }] : []) }
+const telegramOwner = { list: (channel) => (channel === 'telegram' ? [{ userId: '42', accountId: 'tg-app', role: 'owner' }] : []) }
 
 /**
  * 测试替身账本（copy-on-read）：`recent(n)` 返回最近 n 条（正序）并记录调用实参，
@@ -80,7 +80,7 @@ function makeRig({
   if (withRemoteLog) deps.remoteLog = remoteLog === undefined ? { enabled: true, maxLines: 200, maxBytes: 8192 } : remoteLog
   const dispose = registerConversationRouter(deps, stringsOf(lang))
   const say = async (text, { userId = '42' } = {}) => {
-    bus.accept({ channel: 'telegram', userId, chatId: userId, messageId: `m${Math.random()}`, text })
+    bus.accept({ channel: 'telegram', accountId: 'tg-app', userId, chatId: userId, chatType: 'private', messageId: `m${Math.random()}`, text })
     await sleep(15)
     return replies.at(-1)?.text
   }
@@ -136,13 +136,24 @@ test('/log identity.list 抛错：fail-closed 拒绝，绝不 crash', async () =
   rig.dispose()
 })
 
-test('/log 跨渠道 owner：同 userId 在别的渠道是 owner 不算数（channel-scoped）', async () => {
+test('/log 跨渠道 owner：同 userId 在别的渠道是 owner 不算数', async () => {
   const rig = makeRig({
     entries: [makeEntry()],
-    identity: { list: (channel) => (channel === 'wechat' ? [{ userId: '42', role: 'owner' }] : []) },
+    identity: { list: (channel) => (channel === 'wechat' ? [{ userId: '42', accountId: 'tg-app', role: 'owner' }] : []) },
   })
   const text = await rig.say('/log')
   assert.equal(text, rig.t.logOwnerOnly, 'telegram 渠道未登记 owner → 拒绝')
+  rig.dispose()
+})
+
+test('/log 跨账号 owner：另一账号的 owner 不能借权', async () => {
+  const rig = makeRig({
+    entries: [makeEntry()],
+    identity: { list: (channel) => (channel === 'telegram' ? [{ userId: '42', accountId: 'TG_OTHER', role: 'owner' }] : []) },
+  })
+  const text = await rig.say('/log') // 当前 envelope accountId = default
+  assert.equal(text, rig.t.logOwnerOnly)
+  assert.equal(text.includes('任务完成'), false)
   rig.dispose()
 })
 

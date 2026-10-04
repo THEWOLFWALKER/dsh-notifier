@@ -381,19 +381,6 @@ export function resolveConfig(config = {}) {
     }
   }
 
-  // Web 管理台（v0.3.3）：默认关闭（opt-in）。host 不可配——红线：永远只绑 127.0.0.1，
-  // 公网暴露管理台 = 暴露全部凭证写权限，需要公网由用户自行反代（设计稿 §0.5-6）。
-  // token 缺省由 index.mjs 自动生成并打印（state 只存哈希）；显式提供则以其为准。
-  const rawAdmin = (raw.admin !== null && typeof raw.admin === 'object' && !Array.isArray(raw.admin)) ? raw.admin : {}
-  const adminPort = typeof rawAdmin.port === 'number' && Number.isFinite(rawAdmin.port)
-    ? Math.min(65535, Math.max(1, Math.trunc(rawAdmin.port)))
-    : 8104
-  const admin = {
-    enabled: rawAdmin.enabled === true,
-    port: adminPort,
-    token: typeof rawAdmin.token === 'string' && rawAdmin.token.trim() !== '' ? rawAdmin.token : '',
-  }
-
   // 公共面（v0.6，设计稿 §2）：其他插件经 ctx.notifier 服务注入推送 + 订阅 sent 事件。
   // enabled 默认开——服务注入是消费插件的硬依赖（spike 验证：缺服务宿主直接拒绝启动），
   // 关闭时 index 仍注入 no-op stub（push 返回 skipped），消费方永不崩。
@@ -440,7 +427,6 @@ export function resolveConfig(config = {}) {
     segment,
     digest: (raw.digest !== null && typeof raw.digest === 'object') ? raw.digest : {},
     keywords: (raw.keywords !== null && typeof raw.keywords === 'object') ? raw.keywords : {},
-    admin,
     public: publicBlock,
     channels,
     skipped,

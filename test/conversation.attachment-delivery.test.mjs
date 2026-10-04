@@ -9,7 +9,7 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { registerConversationRouter } from '../src/inbound/conversation.mjs'
-import { createInboundBus } from '../src/inbound/bus.mjs'
+import { createPrivateFlowBus as createInboundBus } from './helpers/private-flow-bus.mjs'
 import { createStore } from '../src/inbound/store.mjs'
 import { createAgentRouter } from '../src/routing/agent-router.mjs'
 import { createSessionRegistry } from '../src/routing/session-registry.mjs'
@@ -40,7 +40,7 @@ function makeAgent(id = SID, status = 'idle') {
 
 function makeRig({ agents = [], downloadImageBytes, downloadFileBytes, attachments, logger = null, strings, bind } = {}) {
   const store = createStore(tempPath())
-  const bus = createInboundBus({ allowUsers: ['42'], store })
+  const bus = createInboundBus({ store })
   const handlers = {}
   const agentMap = new Map(agents.map((a) => [a.id, a]))
   const saved = { images: [], files: [] }
@@ -78,7 +78,7 @@ function makeRig({ agents = [], downloadImageBytes, downloadFileBytes, attachmen
   const userSays = (payload) => {
     const { userId = '42', chatId = userId, text = '', image, file, attachments: list } = payload
     bus.accept({
-      channel: 'telegram', userId, chatId, messageId: `m${Math.random()}`, text,
+      channel: 'telegram', accountId: 'tg-app', userId, chatId, chatType: 'private', messageId: `m${Math.random()}`, text,
       ...(image === undefined ? {} : { image }),
       ...(file === undefined ? {} : { file }),
       ...(list === undefined ? {} : { attachments: list }),

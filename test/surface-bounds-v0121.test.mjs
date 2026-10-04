@@ -23,7 +23,7 @@ const DELAY = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 function rig(service) {
   const routes = []
   const ctx = {
-    connection: { admit: () => null },
+    connection: { admit: () => ({ peer: {} }) },
     webServer: { register: (route) => { routes.push(route); return () => {} } },
     effect: (fn) => { const dispose = fn(); return typeof dispose === 'function' ? dispose : () => {} },
   }

@@ -56,12 +56,10 @@ export function createTelegramInbound({ config, bus, vault, store = null, logger
   const apiBase = (config.apiBase || DEFAULT_API_BASE).replace(/\/+$/, '')
   const botToken = String(config.botToken ?? '')
   const backoffMs = Math.max(0, Number(errorBackoffMs) || DEFAULT_ERROR_BACKOFF_MS)
-  // Stable per-provider account id, injected into every normalized envelope so shared
-  // Control Core source binding accepts valid callbacks and rejects a different account.
-  // NEVER derived from botToken — account ids may appear in audit receipts and pushing a
-  // secret there would leak it. Explicit config.accountId wins; otherwise a literal stable
-  // default. The facade owns this decision and passes it down as a top-level option.
-  const resolvedAccountId = String(accountId ?? config.accountId ?? '').trim() || 'default'
+  // Account identity is explicit and stable. Missing ids remain missing so admission can
+  // reject them; a synthetic shared "default" would merge unrelated provider principals.
+  const resolvedAccountId = String(accountId ?? config.accountId ?? '').trim()
+  const isPrivateTarget = (chatId) => /^\d{1,16}$/.test(String(chatId ?? '').trim())
   const doFetch = fetchImpl ?? globalThis.fetch.bind(globalThis)
   // v0.6.2 按钮短引用注册表：callback_data 64 字节硬限的修复载体（见 callback-refs.mjs 头注）
   const refs = createCallbackRefs({ ttlMs: callbackTtlMs })
@@ -369,6 +367,7 @@ export function createTelegramInbound({ config, bus, vault, store = null, logger
      * @returns {Promise<{ messageId: number } | null>} 失败返回 null（caller 降级）
      */
     async sendApprovalCard({ chatId, title, content, approvalKey, token }) {
+      if (!isPrivateTarget(chatId)) return null
       try {
         // v0.6.2：callback_data 只放短引用 r:<ref>（恒定 10 字节）——完整
         // ap:<decision>:<key>:<token> ≈ 131~165 字节，超 TG 64 字节硬限（真机 400
@@ -410,6 +409,7 @@ export function createTelegramInbound({ config, bus, vault, store = null, logger
      * @returns {Promise<{ messageId: number } | null>} 无有效按钮/失败返回 null（caller 降级）
      */
     async sendActionCard({ chatId, title, content, actions: buttons = [] }) {
+      if (!isPrivateTarget(chatId)) return null
       try {
         const rowEntries = (Array.isArray(buttons) ? buttons : [])
           .filter((button) => button !== null && typeof button === 'object'
@@ -537,6 +537,7 @@ export function createTelegramInbound({ config, bus, vault, store = null, logger
      * @returns {Promise<boolean>} 是否成功
      */
     async sendText(chatId, text) {
+      if (!isPrivateTarget(chatId)) return false
       try {
         // clampTelegramText keeps the reply within the UTF-16 4096 hard limit and never
         // splits a surrogate pair (millions of astral emoji would otherwise 400 on device).
@@ -548,23 +549,18 @@ export function createTelegramInbound({ config, bus, vault, store = null, logger
       }
     },
 
-    /** v0.7 三级解析：绑定成员 → 配置 notifyChatIds（正数=用户）→（无全局回落，
-     *  telegram 的 v0.6 契约本就没有 allowUsers 兜底，行为不变）。
-     *  负数 id（-100…）是群/超级群/频道——渠道属性不是身份属性，走 extras 无条件保留
-     *  （与 qq notifyGroups 同语义；R5 审查：首版全塞 configTargets，绑定接管用户目标
-     *  后群目标被整体替换消失——群通知双杀 P1）。 */
+    /** Paired identities or explicit positive Telegram private chat IDs. */
     notifyTargets() {
       const chats = (Array.isArray(config.notifyChatIds) ? config.notifyChatIds : []).map(String)
       return resolveNotifyTargets({
         identity,
         channel: 'telegram',
+        accountId: resolvedAccountId,
         configTargets: chats.filter((id) => !id.startsWith('-')),
-        extraTargets: chats.filter((id) => id.startsWith('-')),
-        fallbackTargets: [],
-      })
+      }).filter((target) => isPrivateTarget(target.chatId))
     },
 
-    /** 目标 chat 列表（配置 notifyChatIds；legacy 契约保留——identity 未注入时二者等价）。 */
+    /** Explicit configured chat IDs; send paths still apply the private-chat guard. */
     notifyChatIds() {
       return Array.isArray(config.notifyChatIds) ? config.notifyChatIds.map(String) : []
     },

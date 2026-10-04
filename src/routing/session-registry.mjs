@@ -3,14 +3,13 @@
 // 职责一句话：把「宿主 agent 生命周期」翻译成「state.json 里的会话台账」，供三处共用——
 //   1) 出站路由（agent-router / event-listener 分流）读 outbound diff 与 workspace 快照；
 //   2) 入站消歧（conversation 命令族）读 lastActiveAt / activeSessions / latestActiveOf（§0.5-4「投最近活跃」）；
-//   3) v0.3.3 Web 管理台（admin/api）读写会话列表与会话覆盖层。
+//   3) DSH Host Native surface 通过共享 control-plane 服务读取会话与覆盖层。
 // 生命周期要点：
 //   - agent/created 自动建档，inherit = workspace 名（§0.5-2 默认路由键）——「创建会话即继承默认通道与设置」；
 //   - agent/disposed 只标记 disposedAt、不删记录，保留 ttlHours（默认 24h，§4）供同 id resume 重连；
 //   - resume（同 id 重建）清 disposedAt：reactive() 显式调用，或下一次 agent/created 自动完成；
 //   - 回收惰性化：常规调用内联摊销 sweep（默认 60s 至多一次真扫）+ disposed 后 ttl 到期点定时兜底
 //     （最长 5min——防御性回收而非精确闹钟，配合内联摊销共同兜住长跑进程）；
-//   - 迁移兼容：bind:<channel>:<userId> → sessionId 的旧绑定值补最小记录（apply 时调用一次）。
 // 军规：与宿主事件 / store 的一切交互全防御——事件注册失败降级为「首次出站事件惰性建档」模式（§4），
 // 存储失败退化为内存态，任何输入形状异常都不抛（上游是对话线与宿主总线，绝不能弄崩宿主）。
 
@@ -97,7 +96,7 @@ function sessionIdOf(agentLike) {
  *     inherit: "<workspace|agentId>",              // 创建时自动绑定来源（默认 = workspace 名）
  *     workspace: "<name>",                         // 建档时的工作区名快照（展示/筛选用，解析仍实时取）
  *     outbound?: { channels?: [...], quiet?: bool }, // 会话覆盖层：仅存 diff，未覆盖项实时跟随上游
- *     inbound?:  [{ channel, userId }],            // 反查：哪些对话挂在此会话
+ *     inbound?:  [{ channel, accountId, userId }],  // 反查：哪些私聊挂在此会话
  *     createdAt, lastActiveAt, disposedAt? } }
  * ```
  *
@@ -774,17 +773,18 @@ export function createSessionRegistry(options = {}) {
       if (id === '') return undefined
       const channel = binding?.channel
       const userId = binding?.userId
-      if (channel === undefined || channel === null || userId === undefined || userId === null) {
+      const accountId = String(binding?.accountId ?? '').trim()
+      if (channel === undefined || channel === null || userId === undefined || userId === null || accountId === '' || accountId === 'default') {
         const existing = recordOf(id)
         return existing === undefined ? undefined : recordCopy(existing)
       }
       const outcome = withDurableRecord(id, () => {
         const record = ensureRecord(id)
         const list = Array.isArray(record.inbound) ? record.inbound.filter((item) => item != null) : []
-        if (list.some((item) => item.channel === channel && item.userId === userId && (item.accountId ?? 'default') === (binding?.accountId ?? 'default'))) {
+        if (list.some((item) => item.channel === channel && item.userId === userId && String(item.accountId ?? '') === accountId)) {
           return { changed: false, result: record }
         }
-        record.inbound = [...list, { channel, userId, ...(binding?.accountId && binding.accountId !== 'default' ? { accountId: binding.accountId } : {}) }]
+        record.inbound = [...list, { channel, userId, accountId }]
         markDirty(id, 'inbound')
         return { changed: true, result: record }
       })
@@ -807,7 +807,9 @@ export function createSessionRegistry(options = {}) {
         const record = recordOf(id)
         if (record === undefined) return { changed: false, result: undefined }
         const list = Array.isArray(record.inbound) ? record.inbound : []
-        const next = list.filter((item) => !(item?.channel === channel && item?.userId === userId && (item?.accountId ?? 'default') === (binding?.accountId ?? 'default')))
+        const accountId = String(binding?.accountId ?? '').trim()
+        if (accountId === '' || accountId === 'default') return { changed: false, result: record }
+        const next = list.filter((item) => !(item?.channel === channel && item?.userId === userId && String(item?.accountId ?? '') === accountId))
         if (next.length === list.length) return { changed: false, result: record }
         if (next.length === 0) delete record.inbound
         else record.inbound = next
@@ -819,34 +821,6 @@ export function createSessionRegistry(options = {}) {
     },
 
     /**
-     * 迁移兼容（apply 时调用一次）：遍历 store.keys('bind:')，值为 sessionId 字符串但
-     * route:sessions 尚无该记录时，惰性补一条最小记录（inherit/workspace 空串占位，
-     * 等出站事件或 agent/created 再补全）——旧绑定会话在台账里立即可见。
-     * @returns {number} 本次补建的记录数
-     */
-    migrateLegacyBinds() {
-      let keys = []
-      try { keys = store?.keys?.('bind:') ?? [] } catch { keys = [] }
-      const nowMs = now()
-      const addedIds = []
-      for (const key of keys) {
-        let value
-        try { value = store?.get?.(key) } catch { continue }
-        if (typeof value !== 'string' || value === '') continue
-        if (recordOf(value) !== undefined) continue
-        sessions[value] = { inherit: '', workspace: '', createdAt: nowMs, lastActiveAt: nowMs }
-        markRecordDirty(value, sessions[value])
-        addedIds.push(value)
-      }
-      if (addedIds.length === 0) return 0
-      if (persist() !== true) {
-        // v0.14（P1-02）：补建未落盘 → 回滚内存，绝不让 caller 看到未持久化的迁移记录。
-        for (const id of addedIds) { delete sessions[id]; dirtyFields.delete(id) }
-        return 0
-      }
-      return addedIds.length
-    },
-
     /** 反注册宿主事件 + 清理全部定时兜底（幂等，可重复调用）。 */
     dispose() {
       // v0.12.1（P2-12）：退出前先把节流窗口内的最后一批会话状态落盘。

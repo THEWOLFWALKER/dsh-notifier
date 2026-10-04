@@ -11,7 +11,7 @@
 //  - Secondary：当前真实 UI 仍在使用、且不属于 Native 的动作面（配置导出/导入、Cloudflare、
 //    远程入口校验、只读诊断快照、revision wait、可选 dsh-im 投递桥）。
 //  - Legacy：已无 UI 调用者、由 Native 等价能力取代的旧接口——本阶段删除，不再列出。
-//  - Recovery：Advanced Console 的后端（admin/server.mjs）自有独立只读路由，不经本 RPC 通道。
+//  - Recovery is an offline operator workflow, not a separate HTTP service.
 
 import { NATIVE_METHODS } from '../native/register.mjs'
 

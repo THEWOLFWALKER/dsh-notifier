@@ -114,7 +114,7 @@ export function buildDesktopCommand(platform, resolved, msg, probe = null) {
     if (probe !== true) {
       return {
         unsupported: 'burnttoast',
-        hint: 'Windows 桌面通知需要 BurntToast 模块：以管理员身份运行 PowerShell 执行 Install-Module -Name BurntToast -Scope CurrentUser，或改用 bell / 浏览器通知（管理台「通知」页）',
+        hint: 'Windows 桌面通知需要 BurntToast 模块：以管理员身份运行 PowerShell 执行 Install-Module -Name BurntToast -Scope CurrentUser，或改用 bell / 浏览器通知（宿主 Native 界面的「通知」页）',
       }
     }
     // New-BurntToastNotification -Text @('标题','正文') [-SuppressSound]

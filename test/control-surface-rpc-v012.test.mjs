@@ -100,6 +100,13 @@ test('route enforces admission, path and envelope guards', async () => {
   await route.handler(fakeReq({ url: `${CONTROL_SURFACE_CHANNEL}/surface.home`, body: '{}' }), denied)
   assert.equal(denied.status, 401)
 
+  for (const malformed of [null, undefined, {}, { peer: null }, { peer: 'operator' }]) {
+    ctx.connection.admit = () => malformed
+    const rejected = fakeRes()
+    await route.handler(fakeReq({ url: `${CONTROL_SURFACE_CHANNEL}/surface.home`, body: '{}' }), rejected)
+    assert.equal(rejected.status, 403, `malformed admission ${String(malformed)} must fail closed`)
+  }
+
   ctx.connection.admit = () => ({ peer: {} })
 
   const offChannel = fakeRes()

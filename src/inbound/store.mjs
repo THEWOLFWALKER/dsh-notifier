@@ -14,8 +14,9 @@
 //    再以内存全量快照重建写路径——中止会让 dirty 无限积压、CLI↔宿主共享永久断裂；
 //  - 只有启动 load() 保留 fail-open（无记忆好过误清空）。
 
-import { chmodSync, closeSync, copyFileSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs'
+import { chmodSync, closeSync, copyFileSync, constants, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
+import { randomBytes } from 'node:crypto'
 
 /**
  * v0.15（T04）业务拒绝哨兵：mutator 返回它 = 「业务拒绝，勿写盘、勿发布」。
@@ -23,6 +24,9 @@ import { basename, dirname, join } from 'node:path'
  * 故 `transact` 的既有语义（false/undefined 不是 abort）完全不变。
  */
 const BUSINESS_ABORT = Symbol('dsh-notifier.store.business-abort')
+export const FRESH_STATE_SCHEMA_VERSION = 15
+export const FRESH_STATE_SCHEMA_KEY = 'state:schema-version'
+export const FRESH_STATE_SETUP_KEY = 'state:setup'
 function businessAbort(reason) {
   return { [BUSINESS_ABORT]: true, reason: reason === undefined ? null : reason }
 }
@@ -76,6 +80,8 @@ export function createStore(filePath) {
   // 的一等标志——旧实现只告警取证后 fail-open 成 {}，上层会把「不可信旧 state」误当新实例
   // （bootstrap owner / 重发 admin token / 空实例 migration）。损坏必须显式 fail-closed。
   let bootCorrupt = false
+  let freshResetRequired = false
+  let allowFreshResetCommit = false
 
   // 启动载入：损坏/缺省 fail-open 到空态（无记忆好过误清空——审批丢失只导致超时回退）
   const loadBoot = () => {
@@ -178,7 +184,7 @@ export function createStore(filePath) {
 
   // v0.6.3 脏键追踪（审查 R3 P1-1）：CLI（route/channel-login/wechat-login）与运行中
   // 宿主各持一份内存快照同写一个文件，原「整快照覆写」会互相抹掉对方的键
-  // （admin:token-hash 被抹 = 已知 token 失效）。改为写时重读文件、只落本实例动过的
+  // （旧控制台 token 状态不再属于本版本）。改为写时重读文件、只落本实例动过的
   // 键（键级合并），并在写回后让内存收敛到合并结果（顺带吃到别人的更新）。
   const dirty = new Set()
 
@@ -304,6 +310,9 @@ export function createStore(filePath) {
    */
   const transact = (mutator) => {
     if (typeof mutator !== 'function') return { ok: false, committed: false, durable: false, code: 'BAD_MUTATOR' }
+    if (freshResetRequired && !allowFreshResetCommit) {
+      return { ok: false, committed: false, durable: false, code: 'STATE_RESET_REQUIRED' }
+    }
     // v0.13（C11.5 / R3）：boot 时 state 不可信（读失败 / 损坏）→ stateful mutation 一律
     // fail-closed，绝不把不可信旧 state 当空世界覆盖（含 save 路径的「转存现场 + 内存态重建」）。
     // 仅当磁盘已被修复成合法对象（显式 operator recovery / 修好文件）才清除标志、恢复写路径。
@@ -379,10 +388,47 @@ export function createStore(filePath) {
      */
     bootStatus() {
       return {
-        status: bootReadFailed ? 'unavailable' : bootCorrupt ? 'corrupt' : 'ready',
+        status: freshResetRequired ? 'reset-required' : bootReadFailed ? 'unavailable' : bootCorrupt ? 'corrupt' : 'ready',
         readFailed: bootReadFailed,
         corrupt: bootCorrupt,
+        resetRequired: freshResetRequired,
       }
+    },
+    /**
+     * Initialize the v0.15 state model without interpreting legacy keys. Existing
+     * state is copied first; the new schema commit then replaces every old key in
+     * one durable transaction. If either step fails, reads and writes stay fenced
+     * for this process so old credentials cannot leak back into runtime assembly.
+     */
+    initializeFreshSchema(version = FRESH_STATE_SCHEMA_VERSION) {
+      const targetVersion = Number(version)
+      if (!Number.isInteger(targetVersion) || targetVersion < FRESH_STATE_SCHEMA_VERSION) {
+        return { ok: false, reason: 'invalid-version' }
+      }
+      if (bootReadFailed || bootCorrupt) return { ok: false, reason: bootReadFailed ? 'state-unavailable' : 'state-corrupt' }
+      const currentVersion = Number(state[FRESH_STATE_SCHEMA_KEY] ?? 0)
+      if (currentVersion >= targetVersion) return { ok: true, already: true, backupPath: null }
+
+      freshResetRequired = true
+      const hadLegacyState = existsSync(filePath) && Object.keys(state).length > 0
+      const backup = this.backup('pre-v0.15')
+      if (backup.ok !== true) return { ok: false, reason: 'backup-failed' }
+
+      allowFreshResetCommit = true
+      const result = transact((draft) => {
+        for (const key of Object.keys(draft)) delete draft[key]
+        draft[FRESH_STATE_SCHEMA_KEY] = targetVersion
+        draft[FRESH_STATE_SETUP_KEY] = {
+          status: hadLegacyState ? 'reconfigure' : 'new-install',
+          version: targetVersion,
+          legacyBackupAvailable: backup.path !== null && backup.path !== undefined,
+        }
+        return true
+      })
+      allowFreshResetCommit = false
+      if (result.ok !== true) return { ok: false, reason: 'state-write-failed', code: result.code }
+      freshResetRequired = false
+      return { ok: true, already: false, backupPath: backup.path ?? null, hadLegacyState }
     },
     /**
      * Create an idempotent forensic copy before an application-level migration.
@@ -395,17 +441,29 @@ export function createStore(filePath) {
       try {
         const dir = dirname(filePath)
         const prefix = `${basename(filePath)}.${safeLabel}.`
-        const existing = readdirSync(dir).find((name) => name.startsWith(prefix))
-        if (existing !== undefined) return { ok: true, path: join(dir, existing), existing: true }
-        const target = join(dir, `${prefix}${Date.now()}`)
-        copyFileSync(filePath, target)
-        try { chmodSync(target, 0o600) } catch { /* Windows/受限环境无 chmod：尽力而为 */ }
+        const source = readFileSync(filePath)
+        const existing = readdirSync(dir).filter((name) => name.startsWith(prefix)).sort().reverse()
+        for (const name of existing) {
+          const candidate = join(dir, name)
+          try {
+            const copy = readFileSync(candidate)
+            if (copy.length === source.length && copy.equals(source)) return { ok: true, path: candidate, existing: true }
+          } catch { /* a missing/incomplete older copy is not a usable backup */ }
+        }
+        const target = join(dir, `${prefix}${Date.now()}.${process.pid}.${randomBytes(6).toString('hex')}`)
+        copyFileSync(filePath, target, constants.COPYFILE_EXCL) // Concurrent reset attempts never overwrite a backup.
+        chmodSync(target, 0o600)
+        const backupFd = openSync(target, 'r')
+        try { fsyncSync(backupFd) } finally { closeSync(backupFd) }
+        const dirFd = openSync(dir, 'r')
+        try { fsyncSync(dirFd) } finally { closeSync(dirFd) }
         return { ok: true, path: target, existing: false }
       } catch (error) {
         return { ok: false, path: null, error }
       }
     },
     get(key, fallback = undefined) {
+      if (freshResetRequired) return fallback
       try { refreshIfChanged() } catch { /* 收敛失败：退回内存态 */ }
       const value = state[key]
       return value === undefined ? fallback : value
@@ -420,6 +478,7 @@ export function createStore(filePath) {
       return result.committed === true
     },
     delete(key) {
+      if (freshResetRequired) return false
       try { refreshIfChanged() } catch { /* 收敛失败：退回内存态 */ }
       const existed = key in state
       if (existed) {
@@ -435,6 +494,7 @@ export function createStore(filePath) {
      * @returns {{ existed: boolean, durable: boolean }}
      */
     deleteDurable(key) {
+      if (freshResetRequired) return { existed: false, durable: false }
       try { refreshIfChanged() } catch { /* 收敛失败：退回内存态 */ }
       const existed = key in state
       if (!existed) return { existed: false, durable: !isStorageUntrusted({ readFailed: bootReadFailed, corrupt: bootCorrupt }) }
@@ -442,10 +502,12 @@ export function createStore(filePath) {
       return { existed: true, durable: result.committed === true }
     },
     keys(prefix = '') {
+      if (freshResetRequired) return []
       try { refreshIfChanged() } catch { /* 收敛失败：退回内存态 */ }
       return Object.keys(state).filter((key) => key.startsWith(prefix))
     },
     size() {
+      if (freshResetRequired) return 0
       return Object.keys(state).length
     },
     /** 清理超期的键（如去重窗口），返回清理数量（v0.6.3 走脏键合并，单次落盘）。 */

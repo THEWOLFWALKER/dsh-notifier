@@ -20,15 +20,15 @@ test('telegram facade: factory default is the transport facade (assembly wires t
   assert.equal(createTelegramInbound, createTelegramTransport, 'assembly default factory must be the facade')
 })
 
-test('telegram facade: accountId resolves from config.accountId, defaults to a literal, never botToken', () => {
+test('telegram facade: accountId resolves from config.accountId and stays empty when absent', () => {
   const explicit = createTelegramTransport({ config: { botToken: 'SECRET', accountId: 'acct_tg' }, bus: {}, vault: {} })
   assert.equal(explicit.accountId, 'acct_tg')
 
   const defaulted = createTelegramTransport({ config: { botToken: 'SECRET' }, bus: {}, vault: {} })
-  assert.equal(defaulted.accountId, 'default')
+  assert.equal(defaulted.accountId, '', 'missing local principal must stay missing')
 
   const blank = createTelegramTransport({ config: { botToken: 'SECRET', accountId: '  ' }, bus: {}, vault: {} })
-  assert.equal(blank.accountId, 'default')
+  assert.equal(blank.accountId, '', 'blank local principal must stay missing')
 })
 
 test('telegram facade: normalizeCallback overlays transport accountId, never the event botToken/payload', () => {

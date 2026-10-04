@@ -40,7 +40,7 @@ const QQ_MARKDOWN_MAX_CODEPOINTS = 3000
 /** G-22：被动回复条数配额（QQ 官方平台限制：c2c 4 条 / 群 5 条，按同一 msg_id 的被动回复计）。
  *  超限时平台静默丢弃（无错误码、无回执）——本侧不硬阻塞投递（硬阻塞把「可能仍送达」
  *  变成「必然不送达」），仅 warn 出声让丢弃可见。主动消息（无 msg_id）不受此配额约束。 */
-const QQ_PASSIVE_REPLY_QUOTA = { user: 4, group: 5 }
+const QQ_PASSIVE_REPLY_QUOTA = 4
 /** #26 对齐腾讯 dsh-qqbot 参考实现（`src/features/button-utils.ts` 的 BUTTON_LABEL_MAX=10）：
  *  QQ keyboard 按钮 label 上限 ≤10 码点。按码点截断（不用 .length 的 UTF-16 语义——
  *  emoji/星体字符按码元切会把代理项劈成两半，G-22 同根），超长取前 9 码点补省略号。 */
@@ -76,6 +76,7 @@ export function resolveQqInboundConfig(raw, options = {}) {
   }
   const notifyUsers = (Array.isArray(cfg.notifyUsers) ? cfg.notifyUsers : []).map((id) => String(id).trim()).filter((id) => id !== '')
   const notifyGroups = (Array.isArray(cfg.notifyGroups) ? cfg.notifyGroups : []).map((id) => String(id).trim()).filter((id) => id !== '')
+  if (notifyGroups.length > 0) return { ok: false, reason: 'QQ 群聊目标已不受支持；请配置私聊用户并重新配对' }
   const intents = Number.isInteger(cfg.intents) && cfg.intents >= 0 ? cfg.intents : (INTENT_GROUP_AND_C2C | INTENT_INTERACTION)
   return {
     ok: true,
@@ -85,25 +86,10 @@ export function resolveQqInboundConfig(raw, options = {}) {
       apiBase: (String(cfg.apiBase ?? '').trim() || DEFAULT_API_BASE).replace(/\/+$/, ''),
       intents,
       notifyUsers,
-      notifyGroups,
       timeoutMs: Math.min(60000, Math.max(1000, Number(cfg.timeoutMs) || 10000)),
     },
   }
 }
-
-/**
- * G-40：群消息 @ 机器人占位白名单化——仅剥已证实形态，绝不「假定剥不掉也无害」。
- * 已证实形态：`<@!数字ID>`、`<@数字ID>`（官方占位）与行首 `@名字+空格`（纯文本形态）。
- * 未命中白名单但形似提及（以 @ / <@ 开头）→ 保留原文并由调用方 debug 出声：
- * @ 残片会污染 agent 语境与 /pair 参数；平台若改格式，日志可见而非静默漏剥。
- * 官方文档称群 content 已自动去 @ 前缀（docs/protocol-preflight/qq-bot.md），但真机
- * 样本不足——白名单+出声是「漏剥可见」与「误剥可见」之间的保守中点。
- */
-const MENTION_WHITELIST = [
-  /^<@!\d+>\s*/, // 官方占位形态一：<@!数字ID>（占位自定界，尾随空格可缺省）
-  /^<@\d+>\s*/, // 官方占位形态二：<@数字ID>
-  /^@\S+\s+/, // 纯文本形态：行首 @名字+空格（空格是「名字结束」判据，缺空格视为未知）
-]
 
 /** QQ keyboard 按钮 label 截断（#26 对齐腾讯 dsh-qqbot `button-utils.ts` 的
  *  BUTTON_LABEL_MAX=10）：整体 ≤10 码点，超长取前 9 码点补省略号。按码点计
@@ -112,16 +98,6 @@ function clampButtonLabel(label) {
   const points = Array.from(String(label ?? '').trim())
   if (points.length <= QQ_BUTTON_LABEL_MAX_CODEPOINTS) return points.join('')
   return points.slice(0, QQ_BUTTON_LABEL_MAX_CODEPOINTS - 1).join('') + '…'
-}
-
-/** 剥离群消息行首的 @ 机器人占位；返回 { text, matched, mentionLike }（matched=命中
- *  白名单已剥；mentionLike=形似提及但未命中，调用方据此 debug 出声）。 */
-function stripMention(content) {
-  const text = String(content ?? '')
-  for (const pattern of MENTION_WHITELIST) {
-    if (pattern.test(text)) return { text: text.replace(pattern, '').trim(), matched: true }
-  }
-  return { text: text.trim(), matched: false, mentionLike: /^(@|<@)/.test(text) }
 }
 
 /**
@@ -172,9 +148,9 @@ function attachmentFields(attachments, withoutText) {
  * 发送失败自动降级文本编号回复）。
  * @param {object} options
  * @param {{ appId: string, appSecret: string, apiBase?: string, intents?: number,
- *           notifyUsers?: string[], notifyGroups?: string[], timeoutMs?: number }} options.config
+ *           notifyUsers?: string[], timeoutMs?: number }} options.config
  * @param {ReturnType<typeof import('./bus.mjs').createInboundBus>} options.bus
- * @param {string[]} [options.fallbackTargets] - 未配置 notifyUsers/Groups 时的推送目标（全局白名单回落，按单聊用户处理）
+ * QQ group targets are unsupported; private users must be explicit or provider-proven.
  * @param {object} [options.logger]
  * @param {typeof fetch} [options.fetchImpl] - fetch 注入（测试用）
  * @param {typeof WebSocket} [options.webSocketImpl] - WebSocket 构造器注入（测试用；默认 globalThis.WebSocket）
@@ -185,7 +161,7 @@ function attachmentFields(attachments, withoutText) {
  *   approval.fallbackText；缺省回落 zh——须先在 strings.mjs 落 `qq` 节）
  */
 export function createQqInbound(options = {}) {
-  const { config, bus, fallbackTargets = [], logger = null, identity = null } = options
+  const { config, bus, logger = null, identity = null } = options
   const STRINGS = options.strings ?? stringsOf()
   const t = STRINGS.qq
   // 防御性兜底：绕过 resolveQqInboundConfig 直接构造时也保证 apiBase 可用
@@ -205,13 +181,8 @@ export function createQqInbound(options = {}) {
     // v0.6.1 双写 stderr：宿主 logger 不落 stdout 时轮询/装配告警仍可见（真机事故复盘）
     try { console.error('[dsh-notifier/inbound:qq]', message) } catch { /* 控制台不可用不致命 */ }
   }
-  // debug 级诊断只走宿主 logger（不双写 stderr）：@ 形态采样这类低频诊断由宿主按需开启，
-  // 避免 stderr 噪音；宿主未接 debug 时静默跳过（fail-safe，不影响主路径）。
-  const debug = (message) => {
-    try { logger?.debug?.('[dsh-notifier/inbound:qq]', message) } catch { /* 日志失败绝不致命 */ }
-  }
   const evictionWarn = createThrottledWarn(warn, { intervalMs: 1000 })
-  const onEvict = (key) => evictionWarn((count) => `目标类型学习表达上限：淘汰 ${count} 个旧目标（最近淘汰 ${String(key).slice(0, 32)}）`)
+  const onEvict = (key) => evictionWarn((count) => `私聊目标缓存到达上限：淘汰 ${count} 条（最近淘汰 ${String(key).slice(0, 32)}）`)
 
   // #31 入站 transport 有限超时：config.timeoutMs 此前仅解析从未注入——换 token/发消息/
   // 回执/卡片全走裸 fetchImpl（无 signal），宿主线程或网络卡死时这些调用可无限挂起。
@@ -264,13 +235,13 @@ export function createQqInbound(options = {}) {
   let reconnectTimer = null
   let handshakeTimer = null
   // 发送侧运行态：目标类型学习表（事件来时记下 chatId 是单聊还是群）+ 每目标 msg_seq
-  const targetKinds = new Map() // chatId -> 'user' | 'group'
+  const privateTargets = new Map() // chatId -> last private chat observation
   const msgSeqs = new Map() // chatId -> 递增 seq
 
   function targetKindOf(chatId) {
-    const learned = targetKinds.get(String(chatId))
-    if (learned !== undefined) return learned
-    return (config.notifyGroups ?? []).includes(String(chatId)) ? 'group' : 'user'
+    const target = String(chatId)
+    if ((config.notifyUsers ?? []).includes(target) || privateTargets.has(target)) return 'user'
+    return 'unknown'
   }
 
   function scheduleReconnect({ resume = false, delayMs = null } = {}) {
@@ -436,7 +407,7 @@ export function createQqInbound(options = {}) {
         // 两者都只保留已知字段；malformed/未知形状的项直接丢弃，绝不变成文本或控制数据。
         const attachments = collectMessageAttachments(d)
         if (messageId === '' || userId === '' || (text === '' && attachments.length === 0)) return
-        setBounded(targetKinds, userId, 'user', CHAT_STATE_MAX, onEvict)
+        setBounded(privateTargets, userId, Date.now(), CHAT_STATE_MAX, onEvict)
         // v0.7：accept 返回值消费——拒绝/命令回执不再已读不回。
         // msg_id 必带（R5 审查 R5-3-P2-3：C2C 不带 msg_id 走主动消息额度，真机大概率被
         // 平台 4xx 拒掉——mock fetch 不校验被动回复权限，单测测不出；带 msg_id 走被动回复）
@@ -454,34 +425,8 @@ export function createQqInbound(options = {}) {
         }
         return
       }
-      if (t === 'GROUP_AT_MESSAGE_CREATE') {
-        const userId = String(d?.author?.member_openid ?? '')
-        const chatId = String(d?.group_openid ?? '')
-        const messageId = String(d?.id ?? '')
-        // G-40：白名单未命中但形似提及 → 保留原文 + debug 出声（@ 残片会污染 agent 语境
-        // 与 /pair 参数；平台改格式时靠日志发现而非静默漏剥）。头部截 32 字符便于采样。
-        const mention = stripMention(d?.content)
-        if (mention.mentionLike === true) {
-          debug(`群消息 @ 形态未命中白名单，已保留原文（QQ @ 占位真机样本不足，出现即需采样登记）: ${JSON.stringify(String(d?.content ?? '').slice(0, 32))}`)
-        }
-        const text = mention.text
-        // #36：群 @ 事件与 C2C 同源（官方 `attachments` 段），同样只收已知字段。
-        const attachments = collectMessageAttachments(d)
-        if (messageId === '' || userId === '' || chatId === '' || (text === '' && attachments.length === 0)) return
-        setBounded(targetKinds, chatId, 'group', CHAT_STATE_MAX, onEvict)
-        // v0.7：群聊拒绝回执发回群（含「请私聊发送 /pair」引导）
-        const result = bus.accept({
-          channel: 'qq', accountId: String(config?.appId ?? ''), userId, chatId, messageId, chatType: 'group',
-          text: text || placeholderOf(attachments),
-          ...attachmentFields(attachments, text === ''),
-        })
-        if (result?.reply !== undefined) {
-          postMessage(chatId, String(result.reply), messageId).catch((error) => {
-            warn(`回执发送失败: ${error instanceof Error ? error.message : String(error)}`) // 回执失败不致命
-          })
-        }
-        return
-      }
+      // Private-chat only: discard group messages before parsing, storage, routing or reply.
+      if (t === 'GROUP_AT_MESSAGE_CREATE') return
       if (t === 'INTERACTION_CREATE') {
         // v0.8.4 按钮回调（type=11 消息按钮）：先异步 ACK（PUT /interactions，3s 窗口，
         // 失败只影响客户端转圈不致命），再解析 apv 载荷送 bus——显式 key 裁决，
@@ -495,11 +440,12 @@ export function createQqInbound(options = {}) {
         const userOpenId = String(d?.user_openid ?? '')
         const chatId = String(groupOpenId || userOpenId)
         if (interactionId === '' || userId === '' || chatId === '') return
+        if (groupOpenId !== '') return
         void ackInteraction(interactionId).catch((error) => {
           warn(`互动 ACK 失败: ${error instanceof Error ? error.message : String(error)}`)
         })
-        setBounded(targetKinds, chatId, chatId === userId ? 'user' : 'group', CHAT_STATE_MAX, onEvict)
-        const chatType = groupOpenId !== '' ? 'group' : 'private'
+        const chatType = 'private'
+        setBounded(privateTargets, chatId, Date.now(), CHAT_STATE_MAX, onEvict)
         const parsed = parseApprovalAction(buttonData)
         const question = parseQuestionAction(buttonData)
         if (question !== null) {
@@ -631,23 +577,20 @@ export function createQqInbound(options = {}) {
    *  字符（emoji/生僻字）中间时产生孤立代理项（JSON 载荷非法，平台拒收或乱码）。
    *  分段点优先落在句末标点：硬切会把一句切成两条消息（后半截以残句开头，用户需自行
    *  拼接）；无标点的长段落（纯 emoji、大段代码）退化为等长硬切，与历史行为一致。
-   *  G-22 配额：被动回复（携带 msg_id）分段数超平台配额时 warn 出声但不阻塞（超限部分
-   *  平台静默丢弃，先让丢弃可见——见 QQ_PASSIVE_REPLY_QUOTA 注释）。
+   *  G-22 配额：被动私聊回复（携带 msg_id）分段数超平台配额时 warn 出声但不阻塞。
    *  任一段失败即抛错（已发段不撤回，与 iLink 分块语义一致）。 */
   async function postMessage(chatId, content, msgId = undefined) {
     if (fetchImpl === undefined) return null
-    const token = await tokens.get()
     const target = String(chatId)
-    const kind = targetKindOf(target)
-    const url = kind === 'group'
-      ? `${apiBase}/v2/groups/${target}/messages`
-      : `${apiBase}/v2/users/${target}/messages`
+    if (targetKindOf(target) !== 'user') throw new Error('QQ 目标未证明为私聊，不发送')
+    const token = await tokens.get()
+    const url = `${apiBase}/v2/users/${target}/messages`
     const chunks = splitByCodePoints(String(content ?? ''), QQ_TEXT_MAX_CODEPOINTS, { preferSentenceBoundary: true })
     const pieces = chunks.length > 0 ? chunks : ['']
     if (msgId !== undefined) {
-      const quota = kind === 'group' ? QQ_PASSIVE_REPLY_QUOTA.group : QQ_PASSIVE_REPLY_QUOTA.user
+      const quota = QQ_PASSIVE_REPLY_QUOTA
       if (pieces.length > quota) {
-        warn(`被动回复分段 ${pieces.length} 条超过${kind === 'group' ? '群' : 'c2c'}配额 ${quota} 条：超限部分平台将静默丢弃（本侧不硬阻塞，已照发）: ${target}`)
+        warn(`QQ 私聊被动回复分段 ${pieces.length} 条超过平台配额 ${quota}：${target}`)
       }
     }
     let lastId = null
@@ -686,15 +629,13 @@ export function createQqInbound(options = {}) {
   /** 发送 markdown + 内嵌键盘（审批按钮卡片，msg_type=2）。失败抛错，调用方降级文本。 */
   async function postMarkdownWithKeyboard(chatId, markdownContent, keyboard) {
     if (fetchImpl === undefined) return null
+    const target = String(chatId)
+    if (targetKindOf(target) !== 'user') throw new Error('QQ 目标未证明为私聊，不发送')
     const token = await tokens.get()
     await rateGate.gate()
-    const target = String(chatId)
     const seq = (msgSeqs.get(target) ?? 0) + 1
     setBounded(msgSeqs, target, seq, CHAT_STATE_MAX, onEvict)
-    const kind = targetKindOf(target)
-    const url = kind === 'group'
-      ? `${apiBase}/v2/groups/${target}/messages`
-      : `${apiBase}/v2/users/${target}/messages`
+    const url = `${apiBase}/v2/users/${target}/messages`
     // Markdown+键盘是单张卡片：超长只按码点截断（取首块），不拆多卡——键盘必须与卡片
     // 同体，拆卡会重复按钮/permission；码点截断同样不产生孤立代理项（G-22 同根）。
     const markdownText = splitByCodePoints(String(markdownContent ?? ''), QQ_MARKDOWN_MAX_CODEPOINTS)[0] ?? ''
@@ -749,16 +690,13 @@ export function createQqInbound(options = {}) {
       startPromise = null
     },
 
-    /** 审批推送目标（v0.7 三级解析）：绑定成员 → notifyUsers → 全局回落（仅绑定表整体空）；
-     *  notifyGroups 是渠道属性（群通知）不是身份属性，无条件并入——绑定表接管用户
-     *  目标不等于群通知就此消失（v0.6 行为保留）。 */
+    /** Private targets only: bound members, then explicitly configured private user ids. */
     notifyTargets() {
       return resolveNotifyTargets({
         identity,
         channel: 'qq',
+        accountId: String(config?.appId ?? ''),
         configTargets: (Array.isArray(config.notifyUsers) ? config.notifyUsers : []).map(String),
-        fallbackTargets,
-        extraTargets: (Array.isArray(config.notifyGroups) ? config.notifyGroups : []).map(String),
       })
     },
 

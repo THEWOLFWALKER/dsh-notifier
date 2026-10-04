@@ -167,7 +167,6 @@ test('F3 support report (diagnostics snapshot) never carries secret material', (
         token: JWT,
       }],
     },
-    advancedConsole: 'available',
     now: () => Date.parse('2026-09-30T00:00:00.000Z'),
   })
 
@@ -204,8 +203,7 @@ test('F4 diagnostics.snapshot RPC re-applies redaction on the support-report pay
       bindings: { get: () => ({}), canEdit: true },
       members: { list: () => [], canRemove: true },
       activity: { list: () => [{ level: 'error', at: '2026-09-30T00:00:00.000Z', category: 'notification', action: 'channel-test-failed', detail: { en: `token=${JWT}` } }] },
-      advancedConsole: 'available',
-      now: () => Date.parse('2026-09-30T00:00:00.000Z'),
+        now: () => Date.parse('2026-09-30T00:00:00.000Z'),
     }),
   }
   const surface = makeSurface({ revision, activity, channelControl, diagnostics })

@@ -18,14 +18,11 @@ import {
   hasInbound,
 } from '../src/inbound/capability-matrix.mjs'
 import { CHANNEL_TYPES } from '../src/config.mjs'
-import { INBOUND_CHANNELS as API_INBOUND_CHANNELS } from '../src/admin/api.mjs'
 import { collectContractFactories } from './_helpers.mjs'
 import { normalizeInbound } from '../src/inbound/_contract.mjs'
 
 describe('capability-matrix: 入站通道全集', () => {
-  it('与 admin/api.mjs INBOUND_CHANNELS 顺序和内容完全一致', () => {
-    assert.deepEqual([...INBOUND_CHANNELS], [...API_INBOUND_CHANNELS])
-  })
+  it('通道清单保持冻结', () => assert.ok(Object.isFrozen(INBOUND_CHANNELS)))
 
   it('六通道全集：telegram / feishu / qq / wxpusher / wechat / dingtalk', () => {
     assert.equal(INBOUND_CHANNELS.length, 6)

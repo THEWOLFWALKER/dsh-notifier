@@ -4,12 +4,12 @@
 //
 // 本模块只做**有界待决状态**（谁在选、候选是谁、原消息是什么、何时过期），不含任何
 // 投递/结算逻辑——投递由 conversation 路由在选择命中后按既有 followup/inject/steer 语义
-// 执行，本模块只负责记住与核销。持久层键 `taskselect:<channel>:<userId>:<chatId>`，
-// 与 bind:* 同域（state.json 一并落盘，重启不丢）。
+// 执行，本模块只负责记住与核销。持久层键使用 JSON tuple
+// `taskselect:[channel,accountId,userId,chatId]`，避免跨账号冲突与分隔符碰撞。
 //
 // 形状：
 // ```json
-// "taskselect:telegram:u11:u11": {
+// "taskselect:[\"telegram\",\"bot-a\",\"u11\",\"u11\"]": {
 //   "candidates": ["sid-a", "sid-b"],
 //   "originalText": "帮我看看构建",
 //   "image": { "url": "https://media.example/img.png" },
@@ -150,13 +150,23 @@ export function createTaskSelection(options = {}) {
   // 内存态（store 不可用时兜底；store 可用时同步读写，内存仅作开销优化不必需）。
   const memory = new Map()
 
-  /** 待决键：channel 小写 + userId trim + chatId 字符串，三个分量齐备才构成有效键。 */
+  /** 待决键：完整 principal 与 chatId 的 tuple；缺 accountId 时拒绝创建或读取。 */
   function keyOf(envelope) {
     const channel = String(envelope?.channel ?? '').trim().toLowerCase()
+    const accountId = String(envelope?.accountId ?? '').trim()
     const userId = String(envelope?.userId ?? '').trim()
     const chatId = String(envelope?.chatId ?? '')
-    if (channel === '' || userId === '') return null
-    return `${KEY_PREFIX}${channel}:${userId}:${chatId}`
+    if (channel === '' || accountId === '' || userId === '' || chatId === '') return null
+    return `${KEY_PREFIX}${JSON.stringify([channel, accountId, userId, chatId])}`
+  }
+
+  function decodeKey(key) {
+    if (!String(key).startsWith(KEY_PREFIX)) return null
+    try {
+      const tuple = JSON.parse(String(key).slice(KEY_PREFIX.length))
+      if (!Array.isArray(tuple) || tuple.length !== 4 || tuple.some((part) => typeof part !== 'string' || part === '')) return null
+      return { channel: tuple[0], accountId: tuple[1], userId: tuple[2], chatId: tuple[3] }
+    } catch { return null }
   }
 
   /** 归一候选：只留非空字符串，去重保序。 */
@@ -210,7 +220,7 @@ export function createTaskSelection(options = {}) {
     let removed = 0
     for (const key of safeKeys()) {
       const entry = readEntry(key)
-      if (entry === undefined || entry.expiresAt < nowMs) {
+      if (decodeKey(key) === null || entry === undefined || entry.expiresAt < nowMs) {
         const deleted = safeDelete(key)
         if (deleted.durable === true) {
           removed += deleted.existed === true ? 1 : 0
@@ -341,12 +351,10 @@ export function createTaskSelection(options = {}) {
       for (const key of safeKeys()) {
         const entry = readEntry(key)
         if (entry === undefined) continue
-        const rest = key.slice(KEY_PREFIX.length)
-        const [channel, userId, chatId] = rest.split(':')
+        const principal = decodeKey(key)
+        if (principal === null) continue
         rows.push({
-          channel: channel ?? '',
-          userId: userId ?? '',
-          chatId: chatId ?? '',
+          ...principal,
           candidates: [...entry.candidates],
           createdAt: entry.createdAt,
           expiresAt: entry.expiresAt,

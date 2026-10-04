@@ -1,4 +1,4 @@
-// dsh-notifier/testing（v0.11 W1；公共面版本 0.7）
+// dsh-notifier/testing（v0.11 W1；公共面版本 0.8）
 // 消费方插件单测用的 fake notifier：行为与公共面（`src/public.mjs` / PLUGINS.md「push API」）
 // 逐项对齐，让声明 `inject: ['notifier']` 的消费方不必手写 stub 就能测自己的推送分支。
 //
@@ -15,9 +15,9 @@
 // 与公共面的两处刻意差异（不是缺陷）：
 //  - `enabled()` 属于宿主诊断面，fake 不提供；消费方按能力探测（`typeof notifier?.push === 'function'`），
 //    见 PLUGINS.md「版本与兼容」。
-//  - 不做长度钳制/限流/预算记账——fake 只回放三态形状，真实资源语义由真 facade 的契约测试覆盖。
+//  - 不做长度钳制/限流/预算记账——fake 只回放公共投递证据形状，真实资源语义由真 facade 的契约测试覆盖。
 
-const FAKE_API_VERSION = '0.7'
+const FAKE_API_VERSION = '0.8'
 const FAKE_CHANNEL = 'fake'
 /** 与 `src/public.mjs` 的 LEVELS 同集合（非法值丢弃，与真服务一致）。 */
 const LEVELS = new Set(['timeSensitive', 'active', 'passive'])
@@ -72,9 +72,9 @@ function normalizeOptions(rawOptions, defaultSourceName) {
  * @param {string} [options.sourceName] - 缺省来源标注（每次 push 的 `options.sourceName` 覆盖它）；缺省 `anonymous`。
  * @param {() => number} [options.now] - 时钟注入，决定 `calls[].at`（缺省 `Date.now`）。
  * @returns {{
- *   version: '0.7',
+ *   version: '0.8',
  *   push: (message?: object, options?: object) => Promise<object>,
- *   flush: () => Promise<undefined>,
+ *   flush: () => Promise<{ drained: boolean }>,
  *   readonly calls: Array<{ message: object, options: object, at: unknown }>,
  * }}
  */
@@ -90,11 +90,12 @@ export function createFakeNotifier(options = {}) {
   const at = () => {
     try { return now() } catch { return undefined }
   }
-  const outcome = (sourceName, { delivered = [], skipped = [], failed = [], ok = true } = {}) => ({
-    ok,
-    delivered,
-    skipped,
+  const outcome = (sourceName, { accepted = [], confirmed = [], unknown = [], failed = [], skipped = [] } = {}) => ({
+    accepted,
+    confirmed,
+    unknown,
     failed,
+    skipped,
     source: { kind: 'plugin', name: sourceName },
   })
 
@@ -111,21 +112,21 @@ export function createFakeNotifier(options = {}) {
         calls.push({ message, options: normalized, at: at() })
         if (message.title === '' && message.content === '') {
           // 双空 = 调用方错误：与真服务一致返回 skipped:['(malformed)']，且 ok 仍为 true。
-          return outcome(source.name, { skipped: ['(malformed)'] })
+          return outcome(source.name, { skipped: [{ channel: '(request)', reason: 'malformed' }] })
         }
         const simulate = normalized.simulate
         if (simulate !== undefined && SIMULATIONS.has(simulate)) {
-          return outcome(source.name, { skipped: [`(${simulate})`] })
+          return outcome(source.name, { skipped: [{ channel: '(request)', reason: simulate }] })
         }
-        return outcome(source.name, { delivered: [FAKE_CHANNEL] })
+        return outcome(source.name, { accepted: [FAKE_CHANNEL] })
       } catch {
-        return outcome(source.name, { ok: false, failed: [{ channel: FAKE_CHANNEL, reason: 'internal' }] })
+        return outcome(source.name, { failed: [{ channel: FAKE_CHANNEL, reason: 'internal' }] })
       }
     },
 
     async flush() {
       flushCount += 1
-      return undefined
+      return { drained: true }
     },
 
     /** copy-on-read：每次返回新数组与新内层对象，改返回值绝不影响内部记录。 */
