@@ -1,0 +1,126 @@
+{
+  "task": "T02",
+  "status": "verified",
+  "sourceCommit": "9d69dd7a8908fcfec6e20d92d56509764a8f23ec",
+  "workingDiffSummary": "package.json (engines.dsh added; peerDependencies dsh-session repointed to 0.2.1-rc.5, cordis to ~4.0.5, old 0.1.7-* peer removed; dshWorkshop.compatibility.dshVersions -> [0.2.1-rc.5]); src/index.mjs (static inject narrowed to ['tools','agents']; connection/webServer mount kept in the unconditional ctx.inject sub-fiber); docs/compatibility-matrix.md (single verified row 0.2.1-rc.5 + machine block + notes); test/host-compat-matrix.test.mjs (VERIFIED -> ['0.2.1-rc.5'] and drift fixtures); docs/upgrade-guide.md + .en.md, docs/OPERATIONS.md, docs/KNOWLEDGE_BASE.md, docs/memory/project-state.md, docs/memory/risks.md, CHANGELOG.md (rc.5 gate documented, 0.1.7 support removed).",
+  "environment": {
+    "node": "v22.23.4",
+    "os": "Linux 6.1.0-35-amd64",
+    "dsh": "0.2.1-rc.5"
+  },
+  "checks": [
+    {
+      "command": "sed -n '276,300p' /home/orca/work/dsh-notifier-rc5/dsh-host/node_modules/@deepseek-ai/dsh-app-boot/lib/index.js",
+      "exitCode": 0,
+      "evidenceLevel": "host-rc5",
+      "observation": "Shipped rc.5 preflight: `unmetRequirements` -> `const engines = ...fields.engines...; if (Object.hasOwn(engines,'dsh')) { const range = engines.dsh; ... return satisfies(runtimeVersion, range) ? {} : { 'engines.dsh': range }; }`. So an own `engines.dsh` decides ALONE; the peerDependencies loop (`if (name !== '@deepseek-ai/dsh' && !name.startsWith('@deepseek-ai/dsh-')) continue`) is reached only when `engines.dsh` is absent. Declaring `engines.dsh: '0.2.1-rc.5'` therefore silences the old dsh-session peer evaluation entirely."
+    },
+    {
+      "command": "node -e \"require('semver').satisfies('0.2.1-rc.5','0.1.7-alpha.1 || 0.1.7-alpha.2 || 0.1.7-rc.1 || 0.1.7-rc.2',{includePrerelease:true})\"",
+      "exitCode": 0,
+      "evidenceLevel": "host-rc5",
+      "observation": "false — this is the T01 D1 blocker (the old peer range does not admit 0.2.1-rc.5). After the manifest change the range evaluated is `engines.dsh='0.2.1-rc.5'`, for which semver.satisfies('0.2.1-rc.5','0.2.1-rc.5',{includePrerelease:true})=true."
+    },
+    {
+      "command": "DSH_HOME=<scratch>/dshhome-t02 (bundle dsh-notifier) ; node <dsh-host>/node_modules/@deepseek-ai/dsh/lib/bin.js --profile web --dump-config | grep dsh-notifier",
+      "exitCode": 0,
+      "evidenceLevel": "host-rc5",
+      "observation": "With the OLD manifest a temp-copied profile printed `dsh: skipping profile bundle \"dsh-notifier\": Error: Plugin dsh-notifier@0.13.1 is incompatible with dsh 0.2.1-rc.5: requirements {\"@deepseek-ai/dsh-session\":\"0.1.7-alpha.1 || ...\"}...` (preflight denial; plugin row absent). With the FIXED manifest the same command composes the row: `# == dsh-notifier` / `- id: dsh-notifier` / `  name: dsh-notifier` and NO 'skipping' line. Install gate passes with NO exemption."
+    },
+    {
+      "command": "DSH_HOME=<scratch> node <dsh-host>/node_modules/@deepseek-ai/dsh/lib/bin.js --profile web  (boot, ~12s) ; tail log",
+      "exitCode": 124,
+      "evidenceLevel": "host-rc5",
+      "observation": "Web profile boots (timeout 124 = the long-running server was killed by `timeout`, expected). Log: `[dsh-notifier] 未配置任何可用渠道（已跳过 0 个配置项），事件推送与 notify 工具将无操作；可在 DSH Native Control Surface 或 profile 配置 channels` and `[dsh-notifier/admin:server] admin 管理台已监听 127.0.0.1:8104（仅本机回环，永不绑公网）` and `dsh web: http://127.0.0.1:3080/?token=...`. Plugin ACTIVATES in the real web profile."
+    },
+    {
+      "command": "boot web, exchange token for cookie, then: curl -b <cookiejar> -X POST -H 'content-type: application/json' --data '{\"type\":\"client-request\",\"rpcId\":\"r1\",\"method\":\"status\",\"payload\":{}}' http://127.0.0.1:3080/dsh-notifier/status",
+      "exitCode": 0,
+      "evidenceLevel": "host-rc5",
+      "observation": "HTTP=200 with body `{\"type\":\"server-response\",\"rpcId\":\"r1\",\"result\":{\"ok\":false,\"error\":{\"code\":\"dsh-notifier/bad-request\",\"message\":\"未知方法 \\\"status\\\"\",\"details\":{}}}}`. This is the plugin's OWN mountOnWebServer handler (its structured server-response envelope), proving the `ctx.inject(['connection','webServer'], cb)` sub-fiber ran and mounted the Native Control Surface in web. Controls: `GET /definitely-not-a-route` -> 404 (unrelated path), no-cookie POST to /dsh-notifier -> 401 `unauthorized` (plugin admission), authenticated POST -> 200. Web = FULL (notify + Native RPC)."
+    },
+    {
+      "command": "DSH_HOME=<scratch> node <dsh-host>/.../bin.js --profile headless --dump-config | grep -cE 'id: connection|id: webserver'",
+      "exitCode": 0,
+      "evidenceLevel": "host-rc5",
+      "observation": "0 — the headless profile composes NEITHER `connection` NOR `webServer`. So a static inject containing `connection` would keep the plugin PENDING forever (T01 D3). The fixed static inject is `['tools','agents']` only."
+    },
+    {
+      "command": "local webhook receiver on 127.0.0.1:8123; headless profile bundles [dsh-base, dsh-headless, dsh-notifier, dsh-notifier-t02-probe] with channels:[{type:webhook,url:http://127.0.0.1:8123/hook,allowPrivateNetwork:true}]; node <dsh-host>/.../bin.js --profile headless \"echo hello\"",
+      "exitCode": 1,
+      "evidenceLevel": "host-rc5",
+      "observation": "Probe (injects ['notifier','tools']) output: `[T02-PROBE] notifier-present {\"present\":true}`, `[T02-PROBE] notifier-enabled {\"enabled\":true}`, `[T02-PROBE] tools-registered {\"hasNotify\":true,\"hasAskUser\":false}`, `[T02-PROBE] push-result {\"ok\":true,\"delivered\":[\"webhook\"],\"skipped\":[],\"failed\":[],\"source\":{\"kind\":\"plugin\",\"name\":\"t02-probe\"}}`. The receiver logged `[RECEIVER] POST /hook body={\"title\":\"T02 headless probe\",\"content\":\"headless activation\",...}` and then two real event-driven posts for the task error. Headless activates: notify tool + ctx.notifier exist and deliver with NO UI / sessionController / connection. Exit 1 is the headless runner's own `MISSING_CREDENTIAL` (no LLM key in the throwaway env), unrelated to the plugin — plugin activation and delivery happened before it."
+    },
+    {
+      "command": "custom `headless-notools` profile (from --from-default-profile headless) with `- id: tools / disabled: true`; node <dsh-host>/.../bin.js --profile headless-notools \"echo hi\"",
+      "exitCode": 1,
+      "evidenceLevel": "host-rc5",
+      "observation": "`dsh: startup failed: 1 required plugin did not activate` followed by `Plugins waiting for services (21):` listing `dsh-notifier   tools` (alongside agent-loop, tool-*, etc.). A missing REQUIRED core service fails LOUDLY and clearly names the plugin + the missing service; it does not silently degrade. (First attempt without a template errored `profile \"headless-notools\" does not exist`; recreated with `--from-default-profile headless`.)"
+    },
+    {
+      "command": "npm test",
+      "exitCode": 0,
+      "evidenceLevel": "local-contract",
+      "observation": "# tests 2011 / # pass 2011 / # fail 0 / # suites 10. Baseline held (2011, 0 fail) after the inject narrowing and the host-compat test update."
+    },
+    {
+      "command": "node scripts/verify-host-compat.mjs",
+      "exitCode": 0,
+      "evidenceLevel": "local-contract",
+      "observation": "`host compatibility guard ok: 0.2.1-rc.5`. The peer range, docs/compatibility-matrix.md machine block, and dshWorkshop.compatibility.dshVersions are mutually consistent at 0.2.1-rc.5."
+    },
+    {
+      "command": "node scripts/verify-release.mjs",
+      "exitCode": 0,
+      "evidenceLevel": "local-contract",
+      "observation": "`release guard ok: dsh-notifier v0.13.1, documented tests=2011`. The release guard (which embeds hostCompatFailures) passes with the new manifest; it does not hard-code any 0.1.7 version."
+    },
+    {
+      "command": "git diff package.json",
+      "exitCode": 0,
+      "evidenceLevel": "source",
+      "observation": "Engines: `\"node\": \">=22\", \"dsh\": \"0.2.1-rc.5\"`. peerDependencies: `\"@deepseek-ai/cordis\": \"~4.0.5\"`, `\"@deepseek-ai/dsh-session\": \"0.2.1-rc.5\"` (old `0.1.7-*` OR-range and `^4.0.1` removed). dshWorkshop.compatibility.dshVersions: `[\"0.2.1-rc.5\"]`. peerDependenciesMeta.@deepseek-ai/dsh-session.optional stays true (the marker is not a runtime import)."
+    }
+  ],
+  "reviewFindings": [
+    "Authorization/side-effects: the `mountSurfaceRpc` child fiber is created UNCONDITIONALLY (both branches call `ctx.inject(['connection','webServer'], cb)` when `ctx.inject` exists, else `mountSurfaceRpc(ctx)`). In headless (no ctx.inject callback run) nothing is mounted — no route is exposed, no authority is granted; the surface only mounts when connection+webServer are present (web). Verified live: web 200 on the channel, headless never mounts it.",
+    "Packaging: the manifest change is the ONLY install gate that matters (app-boot `unmetRequirements`). Checked that `@deepseek-ai/cordis` is a non-`dsh` peer and is skipped by the preflight (`name !== '@deepseek-ai/dsh' && !name.startsWith('@deepseek-ai/dsh-')` -> continue), so tightening it to `~4.0.5` (satisfied by the shipped cordis 4.0.5) cannot brake loading; it only aligns the declared family with dsh-base's own `~4.0.5`.",
+    "Compat scripts: verify-release.mjs was read in full — it does NOT hard-code any DSH version; it delegates to hostCompatFailures(root), which reads the matrix. So only the matrix + peer range + dshVersions needed to move. Confirmed by green verify-release after the change.",
+    "Transaction/compat risk from narrowing inject: dropping the static `connection` inject must not regress web. Verified live that the web profile still mounts the Native Control Surface (200 + plugin envelope) and that the connection-dependent code paths (ctx.connection.rpc.handle / webServer.register) all live inside src/control-surface/rpc.mjs, which is only ever called from the sub-fiber via mountSurfaceRpc. grep of src/ for `ctx.connection`/`webServer` found no other live consumer.",
+    "Docs: grep for `0.1.7` across README/PLUGINS/guide/architecture/AGENTS/HANDOFF returned nothing user-facing that still claims old-host support; remaining `0.1.7-*` strings are historical release records in docs/memory and .agents/workstreams, which I annotated (project-state.md/risks.md) rather than rewrote, to avoid falsifying history.",
+    "One accepted limitation: the plugin still declares `peerDependenciesMeta['@deepseek-ai/dsh-session'].optional=true`, but that meta does not exempt anything now — with `engines.dsh` present the peer is not evaluated at all. Kept for consumer-side npm install comfort; harmless.",
+    "Not fixed here (owned by T17): the still-open observation that `0.1.7-rc.2` `ctx.connection.rpc.handle` is unusable and the channel mounts on webServer. That behavior is unchanged and still recorded; T02 only moved the (already-existing) mount into the sub-fiber and confirmed it works on rc.5."
+  ],
+  "reviewResolution": [
+    "Confirmed the install gate by reading the shipped rc.5 preflight source (not inference) AND by observing the real contrast: old manifest -> `skipping profile bundle \"dsh-notifier\": ... incompatible with dsh 0.2.1-rc.5`, fixed manifest -> row composed and plugin activates. This is a real host observation, not a source-only claim.",
+    "Confirmed 'no exemption' by never calling `dsh plugin allow-version` and never writing a profile exemption file; the profile dirs contain no `.*compatibility*` exemption document.",
+    "Confirmed headless degradation is real, not silent-failure: notify tool + notifier service verified present AND a real webhook delivery observed, in a profile whose dump-config has zero connection/webServer rows.",
+    "Confirmed missing-core is loud by disabling `tools` and capturing `startup failed: 1 required plugin did not activate` + `dsh-notifier   tools`.",
+    "Kept the connection/webServer mount in a single chokepoint (mountSurfaceRpc) so a future web-only guard change cannot leak authority into headless; re-verified the web path answers 200.",
+    "Updated test/host-compat-matrix.test.mjs (previously pinned VERIFIED=['0.1.7-*']) so the suite encodes the new contract instead of the old one; 11/11 pass.",
+    "Remaining (not a T02 defect): real-host activation was done via the profile-bundle path because pnpm is not installed in this environment, so `dsh plugin --profile <name> add <path>` (which forwards to pnpm) could not be exercised; the loader-resolved bundle path is equivalent for the install gate and is what the host itself uses at boot."
+  ],
+  "neatFiles": [
+    "package.json",
+    "src/index.mjs",
+    "docs/compatibility-matrix.md",
+    "docs/upgrade-guide.md",
+    "docs/upgrade-guide.en.md",
+    "docs/OPERATIONS.md",
+    "docs/KNOWLEDGE_BASE.md",
+    "docs/memory/project-state.md",
+    "docs/memory/risks.md",
+    "CHANGELOG.md",
+    "test/host-compat-matrix.test.mjs",
+    "docs/new-host/evidence/T02.json"
+  ],
+  "limitations": [
+    "pnpm is not installed in this environment, so `dsh plugin --profile <name> add <path-to-repo>` (which shells out to pnpm) could not be run; installation was performed through the host's own profile-bundle path (bundle entry in profiles/<name>/package.json + payload under profiles/<name>/node_modules/dsh-notifier) and verified with `--dump-config`. The app-boot preflight reads the path manifest directly (parseInstallSpec kind 'path' -> join(path,'package.json')), so the gate is exercised identically.",
+    "The web/headless boots use a throwaway DSH_HOME under scratch/dshhome-t02; the admin UI was not visually driven (that is T19) and no browser screenshot is claimed.",
+    "Headless activation was proven with a probe plugin + local webhook receiver; no LLM provider is available (headless exits 1 with MISSING_CREDENTIAL after the plugin has already activated and delivered), so a full agent turn was not driven.",
+    "The plugin-probe and profile scaffolds live under scratch/ and are NOT product files; nothing under scratch/ is committed."
+  ],
+  "providerLive": "out-of-scope-no-real-accounts",
+  "commit": "see git log for the T02 commit on codex/new-host-baseline",
+  "remoteDevSha": "da5db991792584f9524d7636e70279abadbcbf77"
+}

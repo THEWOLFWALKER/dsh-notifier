@@ -162,11 +162,14 @@ dsh plugin add dsh-notifier@latest --profile <profile名>
 4. `client.js` 确实在已安装包里；
 5. web profile 的 Client Module/slot 没报错。
 
-声明范围：
+声明范围（`engines.dsh`，rc.5 预检只认它、忽略 `@deepseek-ai/dsh*` peer）：
 
 ```text
-0.1.7-alpha.1 || 0.1.7-alpha.2 || 0.1.7-rc.1 || 0.1.7-rc.2
+0.2.1-rc.5
 ```
+
+`0.1.7-*` 不再支持：安装时会因 manifest 版本门被宿主预检拒绝（除非手工授予 exact-version
+豁免，本插件不提供豁免）。升级到本行后必须按新版重新配置/重新配对（见第八节）。
 
 ### 保存出站后仍要重启才生效
 
@@ -208,7 +211,30 @@ channel:<type>:outbound
 
 不要为了兼容降级手改运行中的 state 文件。
 
-## 七、开发者：真机基准用 registry 包
+## 七、DSH 0.2.1-rc.5 迁移与新数据 namespace
+
+本插件只对 DSH **0.2.1-rc.5** 声明激活（`engines.dsh`）。rc.5 的安装预检在插件自报
+`engines.dsh` 时只认它、忽略 `@deepseek-ai/dsh*` peer，因此无需任何版本豁免即可安装。
+
+### 七.1 旧状态不再作为权威
+
+state store 现在带显式 schema/namespace 版本。启动时：
+
+- 版本 = 当前版本：正常加载；
+- **未知/旧版本**（例如旧 `0.1.7-*` 期写入的 `state.json`）：**不**把其中的
+  身份绑定、待确认绑定、配对码、会话选择、游标当作权威——这些数据不执行、不授权；插件提示
+  **重新配置 / 重新配对**，但**不会删除原文件**（原样保留供排查，必要时另存一份 `.bak`）。
+
+因此升级后需要：在新版里重新配置渠道、重新 `/pair`。旧待决动作、旧配对码、旧账号归属成员
+不会被继承。
+
+### 七.2 账号身份键
+
+身份与授权主键为 `AuthorityKey = (channel, accountIdentity, userId)`（见
+[CONTRACTS.md](new-host/CONTRACTS.md) §身份与数据版本）。本地别名 `default` 不是主体证明；
+没有权威主体来源的 provider 会保守地重新建立本地账号身份并要求重新配对。
+
+## 八、开发者：真机基准用 registry 包
 
 `file:` 只适合临时开发。
 

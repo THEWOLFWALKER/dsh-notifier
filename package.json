@@ -83,8 +83,8 @@
     }
   },
   "peerDependencies": {
-    "@deepseek-ai/cordis": "^4.0.1",
-    "@deepseek-ai/dsh-session": "0.1.7-alpha.1 || 0.1.7-alpha.2 || 0.1.7-rc.1 || 0.1.7-rc.2"
+    "@deepseek-ai/cordis": "~4.0.5",
+    "@deepseek-ai/dsh-session": "0.2.1-rc.5"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/dsh-session": {
@@ -96,7 +96,8 @@
     "qrcode-terminal": "0.12.0"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=22",
+    "dsh": "0.2.1-rc.5"
   },
   "license": "MIT",
   "repository": {
@@ -158,10 +159,7 @@
     ],
     "compatibility": {
       "dshVersions": [
-        "0.1.7-alpha.1",
-        "0.1.7-alpha.2",
-        "0.1.7-rc.1",
-        "0.1.7-rc.2"
+        "0.2.1-rc.5"
       ]
     },
     "capability": {

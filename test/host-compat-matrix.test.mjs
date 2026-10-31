@@ -15,7 +15,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const packageJson = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8'))
 const matrix = parseMatrix(readFileSync(resolve(root, 'docs/compatibility-matrix.md'), 'utf8'))
 
-const VERIFIED = ['0.1.7-alpha.1', '0.1.7-alpha.2', '0.1.7-rc.1', '0.1.7-rc.2']
+const VERIFIED = ['0.2.1-rc.5']
 
 test('host compat: the shipped manifest and matrix verify cleanly', () => {
   assert.notEqual(matrix, null, 'docs/compatibility-matrix.md must carry a dsh-host-matrix block')
@@ -59,6 +59,7 @@ test('host compat: drift is caught — a non-verified runtime must not enter the
       '@deepseek-ai/dsh-session': `0.1.0-rc.6 || ${VERIFIED.join(' || ')}`,
     },
   }
+  // 0.1.0-rc.6 is the unverified historical row; the range must never cover it.
   const failures = verifyHostCompat(drifted, matrix)
   assert.equal(failures.some((line) => /non-verified runtime 0\.1\.0-rc\.6/.test(line)), true)
 })
@@ -66,16 +67,16 @@ test('host compat: drift is caught — a non-verified runtime must not enter the
 test('host compat: drift is caught — a verified runtime must be covered', () => {
   const drifted = {
     ...packageJson,
-    peerDependencies: { ...packageJson.peerDependencies, '@deepseek-ai/dsh-session': '0.1.7-rc.1' },
+    peerDependencies: { ...packageJson.peerDependencies, '@deepseek-ai/dsh-session': '0.1.0-rc.6' },
   }
   const failures = verifyHostCompat(drifted, matrix)
-  assert.equal(failures.some((line) => /verified runtime 0\.1\.7-rc\.2 is not covered/.test(line)), true)
+  assert.equal(failures.some((line) => /verified runtime 0\.2\.1-rc\.5 is not covered/.test(line)), true)
 })
 
 test('host compat: drift is caught — a guessed caret range is rejected', () => {
   const drifted = {
     ...packageJson,
-    peerDependencies: { ...packageJson.peerDependencies, '@deepseek-ai/dsh-session': '^0.1.7' },
+    peerDependencies: { ...packageJson.peerDependencies, '@deepseek-ai/dsh-session': '^0.2.1' },
   }
   const failures = verifyHostCompat(drifted, matrix)
   assert.equal(failures.some((line) => /not an exact version/.test(line)), true)
@@ -84,7 +85,7 @@ test('host compat: drift is caught — a guessed caret range is rejected', () =>
 test('host compat: drift is caught — the workshop list must match the verified rows', () => {
   const drifted = {
     ...packageJson,
-    dshWorkshop: { ...packageJson.dshWorkshop, compatibility: { dshVersions: ['0.1.7-rc.1'] } },
+    dshWorkshop: { ...packageJson.dshWorkshop, compatibility: { dshVersions: ['0.1.0-rc.6'] } },
   }
   const failures = verifyHostCompat(drifted, matrix)
   assert.equal(failures.some((line) => /dshVersions must equal the verified matrix rows/.test(line)), true)
@@ -93,12 +94,12 @@ test('host compat: drift is caught — the workshop list must match the verified
 test('host compat: drift is caught — a missing optional-peer marker or range is reported', () => {
   const noMeta = { ...packageJson, peerDependenciesMeta: {} }
   assert.equal(verifyHostCompat(noMeta, matrix).some((line) => /optional must be true/.test(line)), true)
-  const noPeer = { ...packageJson, peerDependencies: { '@deepseek-ai/cordis': '^4.0.1' } }
+  const noPeer = { ...packageJson, peerDependencies: { '@deepseek-ai/cordis': '~4.0.5' } }
   assert.equal(verifyHostCompat(noPeer, matrix).some((line) => /is missing/.test(line)), true)
 })
 
 test('host compat: the machine block parser fails closed on absent or malformed input', () => {
   assert.equal(parseMatrix('# no block here'), null)
   assert.equal(parseMatrix('```json dsh-host-matrix\n{ not json\n```'), null)
-  assert.deepEqual(parsePeerRange(' 0.1.7-rc.1 || 0.1.7-rc.2 '), ['0.1.7-rc.1', '0.1.7-rc.2'])
+  assert.deepEqual(parsePeerRange(' 0.2.1-rc.5 || 0.1.0-rc.6 '), ['0.2.1-rc.5', '0.1.0-rc.6'])
 })

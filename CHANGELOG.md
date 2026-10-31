@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+### rc.5 宿主对齐（T02：安装门禁与 profile 能力拆分）
+
+- **manifest 安装门禁**：新增 `engines.dsh: "0.2.1-rc.5"`（rc.5 预检在插件自报
+  `engines.dsh` 时只认它、忽略 `@deepseek-ai/dsh*` peer），`peerDependencies["@deepseek-ai/dsh-session"]`
+  更新为 `0.2.1-rc.5`，移除旧 `0.1.7-*` peer；`@deepseek-ai/cordis` peer 对齐到 rc.5 随附的
+  `~4.0.5`；`dshWorkshop.compatibility.dshVersions` 更新为 `["0.2.1-rc.5"]`。插件在 rc.5 上
+  **无需版本豁免**即可安装激活。
+- **核心 inject 与 Web 子 Fiber 拆分**：静态 `inject` 收窄为真正必需的 `['tools','agents']`；
+  `connection`/`webServer`（仅 web profile 存在）移入无条件的 `ctx.inject(['connection','webServer'], …)`
+  子 Fiber。headless 下插件不再永久 PENDING：notify 工具与 `ctx.notifier` 照常工作，Native RPC
+  静默降级；缺必需核心服务（如 `tools`）时启动明确失败（不静默）。
+- **compat 脚本与矩阵**：`scripts/verify-host-compat.mjs`、`docs/compatibility-matrix.md`、
+  `dshWorkshop.dshVersions` 三处一致更新到 `0.2.1-rc.5`；`test/host-compat-matrix.test.mjs`
+  同步。
+- 文档：`docs/upgrade-guide.md` / `.en.md`、`docs/OPERATIONS.md`、`docs/KNOWLEDGE_BASE.md`
+  移除 `0.1.7-*` 支持声明。
+
 ## [0.13.1] - 2026-09-26（v0.13 follow-up release）
 
 本次补丁发行收口 v0.13 后续验证与公开交付边界：管理台补齐中英文资源表与安全内联序列化，公开投递能力改为证据边界表述，npm 白名单覆盖 README 文档/图片并加入包内容回归；高风险专项复核同步完成。

@@ -60,7 +60,13 @@ import { registerControlSurfaceRpc } from './control-surface/rpc.mjs'
 import { stringsOf } from './strings.mjs'
 
 export const name = 'dsh-notifier'
-export const inject = ['tools', 'agents', 'connection']
+// 核心静态 inject 仅保留真正必需的服务：tools（notify/ask_user 工具注册）与 agents
+// （任务投影/会话路由读活 Agent）。connection 与 webServer 只在 web profile 存在
+// （dsh-base/dsh-headless 都不提供），若放进静态 inject，headless 下整插件会永久 PENDING
+// 而非降级——通知核心与工具都不会装配（T01 D3 / T02）。二者改由独立子 Fiber
+// （见下方 ctx.inject(['connection','webServer'], …)）拥有：服务缺席时回调不执行，headless
+// 静默降级为无 Native RPC 但仍提供 notify/工具；服务就绪（web）时装配 Native Control Surface。
+export const inject = ['tools', 'agents']
 
 /** 返回已解析配置（供测试与其它插件复用）。 */
 export function apply(ctx, config = {}) {
@@ -837,11 +843,12 @@ export function apply(ctx, config = {}) {
     launchTickets,
     adminLocation: () => adminListenInfo,
   })
-  // v0.12：Native 通道挂在宿主 HTTP server 上（`/dsh-notifier` prefix 路由），与宿主 connection
-  // 插件挂 `/api` 同款，故注册方必须能同时访问 connection（准入）与 webServer（挂路由）。
-  // 真机 0.1.7-rc.2 已复现：宿主 `connection.rpc.handle` 自身不可用（owner ctx 未声明 webServer），
-  // 详见 src/control-surface/rpc.mjs 文件头。webServer 只在 web profile 存在，故走条件注入；
-  // tui/headless 等无 webServer 的 profile 不装配、静默降级为 Standalone。
+  // v0.12/T02：Native 通道挂在宿主 HTTP server 上（`/dsh-notifier` prefix 路由），与宿主
+  // connection 插件挂 `/api` 同款，故注册方必须能同时访问 connection（准入）与 webServer（挂路由）。
+  // 二者只在 web profile 存在（dsh-base/dsh-headless 都不提供），且绝不在核心静态 inject 里
+  // （否则 headless 整插件 PENDING）。这里无条件创建子 Fiber：ctx.inject 的回调只在
+  // connection+webServer 就绪（web）时执行 → 装配 Native Control Surface；headless 下回调不跑，
+  // 静默降级为无 Native RPC（notify/tools/agents 核心不受影响）。
   const mountSurfaceRpc = (rpcCtx) => {
     try {
       const disposeSurfaceRpc = registerControlSurfaceRpc(rpcCtx, surfaceService)

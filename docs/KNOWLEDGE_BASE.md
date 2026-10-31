@@ -12,7 +12,7 @@
 - 生态收录：v0.13.1 已发布；Awesome DSH / dshfind 的公开描述刷新是发布后的外部同步步骤，不影响仓内版本事实。
 - Node.js ESM、Node `>=22`、无生产依赖、无构建步骤；28 个出站渠道，Telegram/Feishu/QQ Bot/WxPusher/WeChat iLink/DingTalk 六个入站控制通道。
 - v0.12 起 DSH Native「通知与控制」是日常主控制面（Sidebar/Main + Plugins 入口）；Standalone Web 管理台只监听 `127.0.0.1`，降级为 Advanced / Recovery；YAML / CLI 是高级、自动化与 headless 入口。出站保存 Hot Apply，不重启。
-- Native 与 Web/admin 的问题结算均复用 Control Core；desktop `ask_user` 没有安全宿主接口，不能声称桌面结算或双端共享。DSH `0.1.7-rc.2` Native 视觉/交互与 `alpha.1` 兼容性冒烟已通过；provider/device 级验证仍按 `docs/memory/risks.md` 单独记录。
+- Native 与 Web/admin 的问题结算均复用 Control Core；desktop `ask_user` 没有安全宿主接口，不能声称桌面结算或双端共享。新宿主目标为 DSH `0.2.1-rc.5`（`engines.dsh`，旧 `0.1.7-*` 不再支持）；provider/device 级验证仍按 `docs/memory/risks.md` 单独记录。
 
 ## 阅读顺序
 

@@ -124,7 +124,7 @@ Provider-specific media, callback ACK and long-connection behavior remains evide
 Declared peer range:
 
 ```text
-0.1.7-alpha.1 || 0.1.7-alpha.2 || 0.1.7-rc.1 || 0.1.7-rc.2
+0.2.1-rc.5
 ```
 
 Release evidence levels are documented in [compatibility-matrix.md](compatibility-matrix.md). `verify-host-compat.mjs` is part of the release guard.

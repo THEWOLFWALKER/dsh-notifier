@@ -135,11 +135,17 @@ Check:
 4. installed package contains `client.js`;
 5. the web profile reports no client-module/slot failure.
 
-Declared range:
+Declared requirement (`engines.dsh`; the rc.5 preflight reads it alone and ignores the
+`@deepseek-ai/dsh*` peers):
 
 ```text
-0.1.7-alpha.1 || 0.1.7-alpha.2 || 0.1.7-rc.1 || 0.1.7-rc.2
+0.2.1-rc.5
 ```
+
+The `0.1.7-*` line is no longer supported: the host preflight rejects the manifest version
+gate at install time (unless an exact-version exemption is granted by hand, which this
+plugin does not ship). After upgrading to this line you must re-configure / re-pair (see
+section 8).
 
 ### Outbound save still requires restart
 
@@ -167,7 +173,34 @@ A channel configured only through v0.12 Native UI may therefore disappear after 
 
 Do not edit a live state file by hand.
 
-## 7. Developers: use the registry artifact as the real-machine baseline
+## 7. DSH 0.2.1-rc.5 migration and the new data namespace
+
+This plugin declares activation against DSH **0.2.1-rc.5** only (`engines.dsh`). The rc.5
+install preflight reads an own `engines.dsh` alone and ignores the `@deepseek-ai/dsh*`
+peers, so the package installs with **no version exemption**.
+
+### 7.1 Old state is no longer authority
+
+The state store now carries an explicit schema/namespace version. At startup:
+
+- version == current: normal load;
+- **unknown/old version** (for example a `state.json` written by the old `0.1.7-*` line):
+  the identity bindings, pending bindings, pairing codes, session selection and cursors
+  inside are **not** treated as authority — they are not executed and not authorized; the
+  plugin asks you to **re-configure / re-pair**, and **never deletes the original file** (it
+  is preserved as-is for inspection, with an optional `.bak` copy).
+
+So after upgrading you must re-configure channels and re-`/pair`. Old pending actions, old
+pairing codes and old account-owned members are not inherited.
+
+### 7.2 Account identity key
+
+The identity/authority primary key is `AuthorityKey = (channel, accountIdentity, userId)`
+(see [CONTRACTS.md](new-host/CONTRACTS.md) §identity-and-data-version). The local alias
+`default` is not proof of a subject; a provider without an authoritative subject source
+conservatively re-establishes a local account identity and requires re-pairing.
+
+## 8. Developers: use the registry artifact as the real-machine baseline
 
 `file:` is for temporary development only.
 
