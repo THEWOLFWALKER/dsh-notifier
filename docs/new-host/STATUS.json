@@ -1,8 +1,8 @@
 {
-  "phase": "design-ready-implementation-not-started",
+  "phase": "implementation-in-progress",
   "updated_on": "2026-10-31",
   "target_host": "0.2.1-rc.5",
-  "implementation_started": false,
+  "implementation_started": true,
   "execution_authorization": {
     "local_tests": true,
     "real_dsh_disposable_profile": true,
@@ -11,8 +11,8 @@
     "main_merge_or_publish": false
   },
   "tasks": {
-    "T00": "planned",
-    "T01": "planned",
+    "T00": "verified",
+    "T01": "implemented",
     "T02": "planned",
     "T03": "planned",
     "T04": "planned",
@@ -42,8 +42,11 @@
     "T28": "planned",
     "T29": "planned"
   },
-  "evidence": {},
-  "note": "Only preparation documents exist. No task is verified from historical test counts.",
+  "evidence": {
+    "T00": "docs/new-host/evidence/T00.json",
+    "T01": "docs/new-host/evidence/T01.json"
+  },
+  "note": "T00 verified (dev rebuilt from main, old-dev bundle kept). T01 contract closure recorded. T02+ planned.",
   "delivery_policy": {
     "reset_dev_from_current_main": true,
     "old_dev_backup_required": true,
