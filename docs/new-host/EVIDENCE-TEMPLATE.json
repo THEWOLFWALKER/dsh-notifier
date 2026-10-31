@@ -1,0 +1,20 @@
+{
+  "task": "Txx",
+  "status": "planned",
+  "sourceCommit": null,
+  "workingDiffSummary": null,
+  "environment": {
+    "node": null,
+    "os": null,
+    "dsh": "0.2.1-rc.5"
+  },
+  "checks": [],
+  "reviewFindings": [],
+  "limitations": [],
+  "providerLive": "out-of-scope-no-real-accounts",
+  "note": "Each executed check must supply command, exitCode, evidenceLevel and sanitized observations. Do not prefill success.",
+  "reviewResolution": [],
+  "neatFiles": [],
+  "commit": null,
+  "remoteDevSha": null
+}

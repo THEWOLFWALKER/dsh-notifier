@@ -1,0 +1,69 @@
+{
+  "captured_on": "2026-10-31",
+  "notifier": {
+    "repository": "THEWOLFWALKER/dsh-notifier",
+    "ref": "main",
+    "commit": "9d69dd7a8908fcfec6e20d92d56509764a8f23ec",
+    "version": "0.13.1",
+    "working_branch": "codex/new-host-baseline"
+  },
+  "host": {
+    "repository": "deepseek-ai/deepseek-harness",
+    "implementation_target": "0.2.1-rc.5",
+    "selection": "latest and next registry tags at preparation time; implementation target, not verified support",
+    "tag": "dsh-v0.2.1-rc.5",
+    "commit": "b830ec950faba0a46dda564be3e2d854afed94f1",
+    "registry_dist_tags_observed": {
+      "latest": "0.2.1-rc.5",
+      "alpha": "0.2.2-alpha.2",
+      "next": "0.2.1-rc.5"
+    },
+    "artifact": {
+      "shasum": "8e1bfd31869414f7a5ec10c34403a852ac9c3dc7",
+      "tarball": "https://registry.npmjs.org/@deepseek-ai/dsh/-/dsh-0.2.1-rc.5.tgz",
+      "fileCount": 20,
+      "integrity": "sha512-WkyJZv4zl9sCAxSzRctGm58m0rilGqwR6pniBiLOz5CPDfHfDuAUicg0AAazXI7oj/Cph6/cjNTncA/rpLTXpw==",
+      "signatures": [
+        {
+          "sig": "MEQCICQYpubd5M4tkCKPB4cvjY9R3PMR89gdi9GrLVW08S9TAiApcZSuANw3YYe6r9Yl4A7JwankLXg6Sp441zRcpcX0bg==",
+          "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U"
+        },
+        {
+          "sig": "MEYCIQD50RhR6miEA7DAz4v+4aEXaPscBdpmx8Sf1ZwUioy+IgIhAI06HoMXdrDLbM3AnPU388InRjgR8SwlXDp0NFASfCCb",
+          "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U"
+        }
+      ],
+      "unpackedSize": 75972
+    },
+    "published_at": "2026-10-29T14:15:23.355Z",
+    "prior_audit_endpoint": "dsh-v0.2.1-rc.3",
+    "delta_status": "External rc.5 source audit preserved; implementation agent must verify published dependency closure in T01."
+  },
+  "execution": {
+    "project_code_run_this_phase": false,
+    "tests_run_this_phase": false,
+    "host_started": false,
+    "provider_calls": false,
+    "runtime_compatibility_verified": false,
+    "local_tests_allowed_next_agent": true,
+    "real_dsh_disposable_profile_allowed_next_agent": true,
+    "real_provider_accounts_allowed": false
+  },
+  "constraints": [
+    "no old-host compatibility",
+    "no dev rewrite",
+    "no forced legacy-data conversion",
+    "no automatic source or dependency updates after freeze",
+    "no destructive user-data cleanup",
+    "dev rebuild and reviewed/neat stage pushes authorized; no main merge/tag/publish"
+  ],
+  "delivery_policy": {
+    "reset_dev_from_current_main": true,
+    "old_dev_backup_required": true,
+    "initial_reset_exact_lease_only": true,
+    "stage_review_and_neat_required": true,
+    "stage_push_dev": true,
+    "main_merge_or_publish": false,
+    "remote_actions_performed_by_preparation_agent": false
+  }
+}

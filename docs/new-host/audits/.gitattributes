@@ -1,0 +1,2 @@
+# Preserve supplied audit bytes and intentional Markdown hard line breaks.
+* -text whitespace=-blank-at-eol

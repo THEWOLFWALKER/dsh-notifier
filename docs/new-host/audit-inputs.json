@@ -1,0 +1,62 @@
+{
+  "captured_on": "2026-10-31",
+  "note": "Reports are evidence inputs, not binding user requirements or implementation acceptance. Same-baseline repeated findings are deduplicated in PLAN.md.",
+  "files": [
+    {
+      "file": "audits/1-dsh-notifier_dsh-std_fixed-baseline_static-audit_2026-10-25-1.md",
+      "sha256": "049120c7f6583e9ad5f488c840c60ed5c6f6fce156aff135e8ecba78d1324788",
+      "bytes": 35695,
+      "kind": "external_static_audit",
+      "independently_verified_in_full": false
+    },
+    {
+      "file": "audits/2-dsh-notifier-main-account-lifecycle-static-audit-2026-10-25-1.md",
+      "sha256": "e979bfc191076d11a4c493908c6c4ac023f430e258659019e9234402f48e5d8d",
+      "bytes": 35433,
+      "kind": "external_static_audit",
+      "independently_verified_in_full": false
+    },
+    {
+      "file": "audits/3-dsh-notifier-main-v0131-DSH-rc-compat-and-28plus6-channel-static-audit-2026-10-31.md",
+      "sha256": "d77c2e4c156921d32d9900034244dc97d64389040f38238cddf8000c3ce15d83",
+      "bytes": 63374,
+      "kind": "external_static_audit",
+      "independently_verified_in_full": false
+    },
+    {
+      "file": "audits/1-dsh-notifier-native-rpc-security-audit-main-9d69dd7-2026-10-31.md",
+      "sha256": "fd5800d00d7373b7c6d5d104b0e42e875e6e2c2a482a3e6563f0bc8f596ba943",
+      "bytes": 42590,
+      "kind": "external_static_audit",
+      "independently_verified_in_full": false
+    },
+    {
+      "file": "audits/2-dsh-notifier-async-lifecycle-static-audit-main-9d69dd7-2026-10-31.md",
+      "sha256": "b63c4aceff4d92a1a62bbef086c2541f650ea70b98c9366ea8142c123f72a602",
+      "bytes": 43690,
+      "kind": "external_static_audit",
+      "independently_verified_in_full": false
+    },
+    {
+      "file": "audits/3-dsh-notifier-main-9d69dd7-channel-protocol-static-audit-2026-10-31.md",
+      "sha256": "fd6ec7494c1e63752d317be82b9d5f61f45b422b84bdaecb0c916136da599aac",
+      "bytes": 57017,
+      "kind": "external_static_audit",
+      "independently_verified_in_full": false
+    },
+    {
+      "file": "audits/4-dsh-notifier-account-identity-static-audit-9d69dd7.md",
+      "sha256": "6301ad14d65631281bd18e0988d7d3e7904aa41903b39297d24f54afec453403",
+      "bytes": 53383,
+      "kind": "external_static_audit",
+      "independently_verified_in_full": false
+    },
+    {
+      "file": "audits/1-DSH-0.2.1-rc.5_dsh-notifier_static-compat-audit_2026-10-31.md",
+      "sha256": "86c064a7d20dc2decc09744486714415937b54cc8d67da02945ee465756bef67",
+      "bytes": 66843,
+      "kind": "external_static_rc5_audit",
+      "independently_verified_in_full": false
+    }
+  ]
+}
