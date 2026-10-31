@@ -4,7 +4,7 @@
 // canonicalize -> normalize -> paired/source/policy check -> settle.
 
 import { normalizeControlEvent, makeReceipt } from './contract.mjs'
-import { createSessionArbiter, normalizeControlOverlay, normalizeSessionPolicy } from './session-arbiter.mjs'
+import { createSessionArbiter, normalizeControlOverlay, normalizeSessionPolicy, admitCommand, COMMAND_POLICY } from './session-arbiter.mjs'
 import { createHandledEvents } from './handled-events.mjs'
 
 const text = (value) => typeof value === 'string' && value.trim() !== '' ? value.trim() : null
@@ -288,12 +288,73 @@ export function createControlEntry({ policy = {}, identity = null, now = Date.no
     }
   }
 
+  /**
+   * Authorize a non-session-affecting inbound command (registry face: help/
+   * whoami/pair/unpair/status/tasks/sessions/bind/use/quiet/unquiet/log).
+   * This is the SAME authorization decision the arbiter's `canAcceptCommand`
+   * makes for session-affecting commands (`stop`/`steer`/`ordinary-message`/
+   * `approval`/`question-answer`); together they are the single gate every
+   * inbound action must clear before any side effect. The session overlay is
+   * resolved through the same `policyForSession` resolver so a per-session
+   * policy applies identically. Fail-closed: an unknown command, a denied
+   * source, a missing capability, or an owner-only command without an owner
+   * all return `{ ok: false }` and the caller must not act.
+   *
+   * @param {object} input - `{ command, channel?, accountId?, userId?, sessionId?, chatId?, chatType? }`
+   * @returns {{ ok: boolean, reason?: string }}
+   */
+  const admit = (input = {}) => {
+    if (disposed) return { ok: false, reason: 'disposed' }
+    const command = text(input.command)
+    if (command === null || COMMAND_POLICY[command] === undefined) return { ok: false, reason: 'unknown_command' }
+    const sessionId = text(input.sessionId)
+    let base = basePolicy
+    if (resolver !== null && sessionId !== null) {
+      try {
+        const resolved = resolverOverlay(resolver(sessionId))
+        if (resolved.ok && resolved.overlay !== null) {
+          base = normalizeSessionPolicy({ ...basePolicy, ...resolved.overlay }, now())
+        } else if (!resolved.ok) {
+          audit({ status: 'policy_overlay_ignored', sessionId, reason: resolved.reason })
+        }
+      } catch (error) {
+        audit({ status: 'policy_overlay_ignored', sessionId, reason: 'resolver_failed', error })
+      }
+    }
+    const event = {
+      command,
+      channel: text(input.channel),
+      accountId: text(input.accountId),
+      userId: text(input.userId),
+      sessionId,
+      chatId: text(input.chatId),
+      chatType: text(input.chatType) ?? undefined,
+    }
+    // `ownerProof`: independently established owner-ness for an owner-only row,
+    // using the SAME identity registry (role === 'owner', channel-scoped) the
+    // conversation router used for /log before this gate — fail-closed when the
+    // identity is missing or throws. Never a wildcard: a null userId is no proof.
+    let ownerProof = false
+    const ownerEntry = COMMAND_POLICY[command]
+    if (ownerEntry?.ownerOnly === true && identity !== null && event.userId !== null && event.channel !== null) {
+      try {
+        ownerProof = typeof identity.list === 'function'
+          && identity.list(event.channel).some((row) => String(row?.userId) === String(event.userId) && row?.role === 'owner')
+      } catch { ownerProof = false }
+    }
+    const verdict = admitCommand(base, event, now(), { ownerProof })
+    audit({ status: verdict.ok ? 'admitted' : 'admission_rejected', sessionId, command, reason: verdict.reason })
+    return verdict
+  }
+
   return {
     register,
     handle,
+    admit,
     handledCount: () => handled.size(),
     dispose() { disposed = true; handlers.clear(); handled.clear() },
     commands: Object.freeze([...COMMANDS]),
+    commandPolicy: COMMAND_POLICY,
   }
 }
 

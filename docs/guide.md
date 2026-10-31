@@ -228,6 +228,13 @@ DingTalk
 
 群聊默认不开放高风险远程控制语义。
 
+**命令准入（v0.14 / T04）**：上面每一条命令都要经过统一的授权闸才会生效。默认（未在
+`inbound.control.capabilities` 显式开启对应能力时）：`/status` `/tasks` `/sessions` `/help`
+`/whoami` 等只读命令可用；`/stop` 需 `stop`；普通文本与 `!steer` 需 `converse`；
+`/bind` `/use` 需 `assets`；`/quiet` `/unquiet` 需 `quiet`；`/log` 需 owner
+（`/log` 默认关闭）。未识别的 `/xxx` 一律**显式拒绝**（回执「未识别的命令」），不会再被
+当成普通文本投递给 agent。群聊中的控制、对话与敏感命令入口默认全部拒绝（群通知不受影响）。
+
 ---
 
 ## 第八步：高级管理台什么时候用

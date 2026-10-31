@@ -1,0 +1,91 @@
+{
+  "task": "T04",
+  "status": "verified",
+  "sourceCommit": "ff630ffac009eed5cb4b35aafd20855434d22a6d",
+  "workingDiffSummary": "src/control/session-arbiter.mjs (COMMAND_POLICY command-admission table + admitCommand(policy,event,now,{ownerProof}) + two new opt-in capabilities assets/quiet in normalizeSessionPolicy); src/control/entry.mjs (control.admit(input): resolves the same per-session policy overlay as handle(), computes ownerProof from the identity registry (role==='owner', channel-scoped), calls admitCommand, audits; exposes commandPolicy); src/inbound/conversation.mjs (SLASH_COMMAND_ADMISSION map; commandToken(); route() rewritten so EVERY inbound shape passes one admission decision before any side effect — known slash via control.admit, unknown slash explicitly refused, task-selection numbered reply admitted as resource-access on the strength of the live pending row, stop/steer/ordinary-message via control.handle as before; routeAdmitted(); admissionDeniedText(); routeUnsafe refuses slash-shaped text instead of delivering it; legacy control===null path keeps the historical chain but still refuses unknown slash and still resumes a live selection); test/admission-matrix.test.mjs (new, 18 cases, real bus+conversation+control+approval+questions); test/conversation.test.mjs (4 G-04/unknown-slash tests updated to the T04 semantics: unknown slash refused, not delivered); test/session-arbiter.test.mjs (capabilities shape + assets/quiet); CHANGELOG.md (T04 entry); docs/guide.md + .en.md (command-admission section); docs/new-host/STATUS.json (T04 verified + evidence).",
+  "environment": {
+    "node": "v22.23.4",
+    "os": "Linux 6.1.0-35-amd64",
+    "dsh": "0.2.1-rc.5"
+  },
+  "checks": [
+    {
+      "command": "node scripts/verify-host-compat.mjs && node scripts/verify-release.mjs",
+      "exitCode": 0,
+      "evidenceLevel": "local-contract",
+      "observation": "'host compatibility guard ok: 0.2.1-rc.5' and 'release guard ok: dsh-notifier v0.13.1, documented tests=2011'. Both guards still pass; no manifest change in T04."
+    },
+    {
+      "command": "node --check src/inbound/conversation.mjs && node --check src/control/entry.mjs && node --check src/control/session-arbiter.mjs ; git diff --check",
+      "exitCode": 0,
+      "evidenceLevel": "source",
+      "observation": "All three modules parse cleanly; git diff --check reports no whitespace errors (exit 0)."
+    },
+    {
+      "command": "npm test",
+      "exitCode": 0,
+      "evidenceLevel": "local-contract",
+      "observation": "# tests 2033 / # suites 10 / # pass 2033 / # fail 0. Baseline was 2015/0 (T03); +18 new admission-matrix cases (plus 2 session-arbiter capability-shape updates). 4 existing G-04/unknown-slash tests were updated to the T04 semantics (unknown slash refused, NOT delivered), which is the behavior this task exists to change."
+    },
+    {
+      "command": "node --test test/admission-matrix.test.mjs",
+      "exitCode": 0,
+      "evidenceLevel": "local-contract",
+      "observation": "18 tests / 18 pass / 0 fail. Builds the REAL bus + conversation router + Control Core (+ real approval + question bridges) with a controlled envelope and asserts: (1) converse=false blocks ordinary text, !steer, known slash, unknown slash, /agent, /quiet and media-only (no agent delivery, no cancel); (2) unknown slash is explicitly refused and never delivered even with converse on; (3) approve=false blocks approval button + numbered reply + question numbered reply (fail-closed), and a wrong-source button clicker does NOT settle while the correct recipient does; (4) a 1..N numbered reply that resumes a live selection card is admitted only via the resource-access (assets) gate — no assets → rejected with the pending kept, assets → original message delivered once; (5) QQ group AND generic group (telegram chatType=group) reject every shape (slash/unknown/media/text/numbered) with no delivery and no cancel; (6) positive controls: converse+private delivers text/steer, /tasks lists (and never delivers to the agent), /log is owner-only (member denied, owner reaches the feature switch), bare /stop cancels, /bind //use //quiet work when assets/quiet granted and are denied with no side effect when not."
+    },
+    {
+      "command": "node /tmp/probe3.mjs (bind/use/quiet denial + positive control) ; node /tmp/probe4.mjs (selection resume under converse=false)",
+      "exitCode": 0,
+      "evidenceLevel": "local-contract",
+      "observation": "Ad-hoc reverse-review probes against the real router: assets/quiet OFF → '/bind s1' '/use s1' '/quiet s1' all reply '远程控制被拒绝' and write NO bind key (store.get('bind:telegram:42') === undefined); assets/quiet ON → '/bind s1' writes the key and replies '已绑定 s1'. A task-selection numbered reply '1' under converse=false (no assets) delivers NOTHING to the agent and leaves the pending selection intact; under assets it delivers the original message exactly once."
+    },
+    {
+      "command": "node /tmp/probe6.mjs (slash edge forms under converse=true, custom steer prefix '>>')",
+      "exitCode": 0,
+      "evidenceLevel": "local-contract",
+      "observation": "'/ ', '/', '//', '/a/b', '/stop extra' → all refused with '未识别的命令' and zero agent calls; '>>go' (custom steer prefix) → steer delivered; '/help' → help text. Confirms unknown slash forms cannot smuggle text to the agent and the steer prefix is honored config."
+    }
+  ],
+  "reviewFindings": [
+    "Authorization/side-effects: the slash-command admission is evaluated BEFORE any side effect. Verified with a probe that a denied '/bind s1' leaves store.get('bind:telegram:42') === undefined (no binding written) and '/quiet s1' denied does not write router state. The known-slash branch calls control.admit() and only then fireAsync(routeAdmitted(...)); the denied branch replies and returns without touching handleCommand.",
+    "One admission path, not two: every action now funnels through the SAME control core. Session-affecting commands (stop/steer/ordinary-message) use the pre-existing canAcceptCommand via control.handle; the registry/conversation commands (help/status/bind/unbind/agent/route/tasks/sessions/use/quiet/unquiet/log) use the new control.admit -> admitCommand. Both read the same normalized policy and the same per-session overlay resolver, so a per-session policy applies identically. No parallel policy engine was created.",
+    "converse=false is not bypassable: an unknown slash is refused (t.unknownCommand) rather than echoed-then-delivered to the agent; a known slash that fails its minimum condition is refused with a reason; media-only text goes through the same ordinary-message gate; the legacy control===null path also refuses unknown slash and does not deliver. The only remaining route to the agent is a control-core 'accepted' verdict (or the control===null legacy ordinary-text path, which is never used by production wiring).",
+    "Adversarial probe found and FIXED a real bypass during this task: the task-selection numbered reply (a bare '1' resolving an ambiguity selection card) delivered the stored original message to the agent even under converse=false, because that resolution lived inside routeUnsafe before the gate. It is now admitted as a resource-access action (COMMAND_POLICY.bind = assets) but ONLY on the strength of a live pending row for the exact same (channel,accountId,userId,chatId) source — a wrong-source client sees no pending and falls through to the ordinary-message gate. Probes confirm: no assets -> rejected + pending kept; assets -> delivered once.",
+    "Adversarial finding: approval/question (button + numbered reply) do NOT require `converse` — they require `approve` (default true). This is correct per CONTRACTS §命令政策最小表 (approval/answer/action = live pending + correct source + validity + authorization + durable single claim), and it is not a converse bypass because settlement goes to the approval/question waiter, never to the agent conversation. The focused tests assert approve=false denies button + numbered reply + question reply (fail-closed) and that a wrong-source clicker cannot settle.",
+    "Group/source fail-closed: the QQ group path (channel lowercased === 'qq' && chatScope==='group') and the generic isGroupChat && caps.groupChatControl !== true path both return group_chat_disabled for every command shape. QQ unknown chatType returns source_chat_type_unknown. The group denial now runs inside admitCommand too, so registry commands (help/status/…) are covered by the same rule, not just the session commands. Group OUTBOUND notifications are unaffected (they never pass this ingress).",
+    "Two new opt-in capabilities (assets, quiet) were added to normalizeSessionPolicy (default off). This is a policy-shape extension (CONTRACTS: 新增字段同步types/projection/UI/测试). Without it, bind/use/quiet/unquiet would have been silently always-denied (the first implementation read caps.assets/caps.quiet off a capabilities object that never carried them) — caught by the reverse-review probe, fixed, and re-verified.",
+    "/log owner proof: the admission seam keeps the EXISTING owner determination (identity.list(channel) role === 'owner', channel-scoped, fail-closed when identity is missing/throws) via the ownerProof option rather than introducing a policy.owner requirement, so an identity owner is not locked out; policy.owner equality remains an alternative proof. An owner with the feature disabled still reaches t.logDisabled (feature switch), not a false 'not owner'.",
+    "Strings/diagnostics: invalid-token/invalid-chat errors return a generic '远程控制被拒绝' (t.controlRejected) — message content is never echoed back beyond the command token, and no source/account value is disclosed."
+  ],
+  "reviewResolution": [
+    "Replaced the pre-existing `command === null -> routeUnsafe` fall-through with an explicit SLASH_COMMAND_ADMISSION map + control.admit gate; unknown slash now returns t.unknownCommand and returns without delivery.",
+    "Kept the control===null legacy path but made it (a) refuse unknown slash and (b) still resume a live task-selection (provenance recomputed from taskSelection.get(envelope)), so the existing task-selection integration tests and any non-control caller keep working without weakening the control-attached path.",
+    "Moved the task-selection resume OUT of routeUnsafe's body-affecting position and up behind its own assets admission (with short-circuit resume) so a resolved session can no longer route a selection reply through the ordinary-message converse gate or bypass it.",
+    "Made admissionDeniedText map each reason (group_chat_disabled / source_chat_type_unknown / owner_only / capability_required:converse / default) to a specific receipt so the user is never left in a black hole.",
+    "Extended normalizeSessionPolicy with assets/quiet and updated the one session-arbiter test that deep-equals the capability shape.",
+    "Updated the 4 existing tests that encoded the OLD (buggy) 'unknown slash is delivered as text' behavior: they now assert explicit refusal + zero agent delivery, and the /stop-with-appendage case still asserts no cancellation. This is encoded behavior change, not a test weakening: the security assertion (no delivery) is strictly stronger than before."
+  ],
+  "neatFiles": [
+    "src/control/session-arbiter.mjs",
+    "src/control/entry.mjs",
+    "src/inbound/conversation.mjs",
+    "test/admission-matrix.test.mjs",
+    "test/conversation.test.mjs",
+    "test/session-arbiter.test.mjs",
+    "CHANGELOG.md",
+    "docs/guide.md",
+    "docs/guide.en.md",
+    "docs/new-host/STATUS.json",
+    "docs/new-host/evidence/T04.json"
+  ],
+  "limitations": [
+    "T04 is validated with the real bus + conversation router + Control Core via controlled envelopes (local-contract). It was NOT re-booted in a disposable DSH profile for this task (the T02 boot already established plugin activation; the admission gate is a pure JS contract that runs identically in-host). No host-only behavior is claimed for T04.",
+    "The approval/question button + numbered-reply paths are asserted through the real bridges with a stub interactive channel; no real IM card callback is exercised (no real accounts). The button path additionally relies on the pre-existing approval source checks (pushedTo/userId), which are unchanged by T04.",
+    "assets/quiet are new capabilities with no admin-UI toggle yet; they are set via inbound.control.capabilities in config. An owner enabling them from the Native/Recovery console would need the config surface (not added here; the overlay API intentionally cannot carry capabilities — normalizeControlOverlay drops them).",
+    "The `/agent` and `/unbind` aliases are admitted under the `bind` (assets) row, and `/route` under `status`; this groups aliases with their base command rather than giving each its own capability, which matches the minimum-table intent.",
+    "The steer classify/gate checks text.startsWith(steerPrefix) on the merged text; a text that begins with a custom steerPrefix is a steer regardless of a later '/', which is the pre-existing steer semantic and is now gated by converse."
+  ],
+  "providerLive": "out-of-scope-no-real-accounts",
+  "commit": "see git log for the T04 commit on codex/new-host-baseline",
+  "remoteDevSha": "da5db991792584f9524d7636e70279abadbcbf77"
+}

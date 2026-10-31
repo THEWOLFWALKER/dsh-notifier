@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+### 命令准入与来源统一（T04）
+
+- **单一准入路径**：每一条入站动作——slash 命令、未知 slash、纯媒体消息、按钮回调、编号
+  回复、任务选择编号回复——都必须先经过**同一个**授权决定（`control.admit` /
+  Control Core `canAcceptCommand`）才可能产生副作用。命令准入表
+  （`session-arbiter.mjs` 的 `COMMAND_POLICY`）逐行对应 CONTRACTS §命令政策最小表：
+  help/whoami 最小；status/tasks/sessions 只读；ordinary/steer 需 converse；stop 需 stop
+  能力；quiet/unquiet 需 quiet 能力；bind/use 需 assets 能力；log 需 owner。未登记命令
+  一律 `unknown_command` 拒绝。
+- **`converse=false` 不可绕过**：未知 slash 现在**显式拒绝**（回执「未识别的命令」），
+  不再回显后当作普通文本透传给 agent；已知但未被最低表允许的命令同样拒绝；普通文本、
+  `!`steer、纯媒体消息、按钮/编号回复全部经同一闸（审批/问题走 `approve` 能力，符合
+  最小表——审批不是对话动作）。
+- **敏感群入口默认拒绝**：QQ 群与通用群聊（`isGroupChat && !groupChatControl`）的
+  控制/对话/敏感命令入口一律 fail-closed（群出站通知不受影响，它们不经过本入口）。
+- **新增两项能力**（默认关）：`capabilities.assets`（bind/use 资源访问）、
+  `capabilities.quiet`（quiet/unquiet 出站静默管理范围）；在 `inbound.control.capabilities`
+  显式开启。默认未开启 → binding/选择/静默类命令默认拒绝（保守收紧，与「converse 默认关」
+  一致）。
+- **回执**：被拒命令按原因回执（群聊拒绝 / 来源不可确认 / 仅 owner / 对话关闭 /
+  远程控制被拒绝），绝无回执黑洞，也不回显命令原文之外的来源信息。
+- 测试：`test/admission-matrix.test.mjs`（真实 bus+conversation+control，覆盖 converse=false
+  全形状拒绝、未知 slash 拒绝、群入口拒绝、按钮/编号/选择编号回复、四种正控）。
+
 ### rc.5 宿主对齐（T02：安装门禁与 profile 能力拆分）
 
 - **manifest 安装门禁**：新增 `engines.dsh: "0.2.1-rc.5"`（rc.5 预检在插件自报

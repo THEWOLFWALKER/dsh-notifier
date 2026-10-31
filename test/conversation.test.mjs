@@ -253,17 +253,18 @@ test('命令集：/stop 调 agent.cancel', async () => {
 
 // ---------------------------------------------------------------- G-04 /stop 收紧
 
-test('G-04：/stop 附言形态不误杀长任务——不取消、回执未识别、附言按普通文本投递', async () => {
+test('G-04/T04：/stop 附言形态不误杀长任务——回执未识别且显式拒绝（决不投递给 agent）', async () => {
   const agent = makeAgent('s1', 'running')
   const rig = makeRig({ agents: [agent] })
   rig.fire('agent/created', agent)
-  // 旧行为：startsWith('/stop ') 命中 → 正在跑的长任务被误取消
+  // 旧行为：startsWith('/stop ') 命中 → 正在跑的长任务被误取消。
+  // T04：仍未识别为 stop（不取消），但 slash 形态不再作为普通文本透传给 agent——
+  // 未知 slash 显式拒绝（只回执「未识别的命令」）。
   rig.userSays('/stop 一下别急')
   await sleep(40)
   assert.deepEqual(agent.calls.cancel, [], '附言形态绝不取消正在跑的 turn')
   assert.ok(rig.replies.some((r) => /未识别的命令 \/stop/.test(r.text)), '落未知命令路径并回执「未识别的命令」')
-  assert.equal(agent.calls.inject.length, 1, '附言按普通文本投递（不吞消息）')
-  assert.equal(agent.calls.inject[0].content[0].text, '/stop 一下别急')
+  assert.equal(agent.calls.inject.length + agent.calls.followup.length + agent.calls.steer.length, 0, '未识别 slash 不投递给 agent')
   // 同一 rig 里裸 /stop 仍一键取消（收紧不能砍掉本义）
   rig.userSays('/stop')
   await sleep(40)
@@ -272,7 +273,7 @@ test('G-04：/stop 附言形态不误杀长任务——不取消、回执未识�
   rig.dispose()
 })
 
-test('G-04：Control Core 装配时同样收紧——/stop 附言不再以 stop 命令进闸', async () => {
+test('G-04/T04：Control Core 装配时同样收紧——/stop 附言以未知命令拒绝、不投递', async () => {
   const agent = makeAgent('s1', 'running')
   const control = createControlEntry({
     policy: { mode: 'team', capabilities: { converse: true, stop: true } },
@@ -283,7 +284,7 @@ test('G-04：Control Core 装配时同样收紧——/stop 附言不再以 stop 
   await sleep(20)
   assert.deepEqual(agent.calls.cancel, [], '不以 stop 控制命令进 Control Core')
   assert.ok(rig.replies.some((r) => /未识别的命令 \/stop/.test(r.text)))
-  assert.equal(agent.calls.inject.length, 1, '与未知命令同路径：按普通文本投递')
+  assert.equal(agent.calls.inject.length + agent.calls.followup.length + agent.calls.steer.length, 0, '未识别 slash 不投递')
   // 裸 /stop 仍经 Control Core 核销后取消
   rig.bus.accept({ channel: 'telegram', accountId: 'tg-app', userId: '42', chatId: '42', messageId: 'g04-cc-2', text: '/stop' })
   await sleep(20)
@@ -291,25 +292,25 @@ test('G-04：Control Core 装配时同样收紧——/stop 附言不再以 stop 
   rig.dispose()
 })
 
-test('G-04：未知命令回执不再静默（/foo 也有「未识别的命令」，投递语义不变）', async () => {
+test('G-04/T04：未知 slash 显式拒绝——回执「未识别的命令」且不投递给 agent', async () => {
   const agent = makeAgent('s1', 'idle')
   const rig = makeRig({ agents: [agent] })
   rig.fire('agent/created', agent)
   rig.userSays('/etc/passwd 看看这个')
   await sleep(60)
-  assert.equal(agent.calls.followup.length, 1, '不吞消息（既有语义）')
-  assert.ok(rig.replies.some((r) => /未识别的命令 \/etc\/passwd/.test(r.text)), '新增回执消除黑洞')
+  assert.equal(agent.calls.followup.length + agent.calls.inject.length + agent.calls.steer.length, 0, '未知 slash 不投递给 agent')
+  assert.ok(rig.replies.some((r) => /未识别的命令 \/etc\/passwd/.test(r.text)), '回执消除黑洞且拒绝透传')
   rig.dispose()
 })
 
-test('命令集：未知 /xxx 命令当普通文本投递（不吞消息）', async () => {
+test('T04：未知 /xxx 命令显式拒绝，绝不当作普通文本透传给 agent', async () => {
   const agent = makeAgent('s1', 'idle')
   const rig = makeRig({ agents: [agent] })
   rig.fire('agent/created', agent)
   rig.userSays('/etc/passwd 看看这个')
   await sleep(60)
-  assert.equal(agent.calls.followup.length, 1)
-  assert.equal(agent.calls.followup[0].content[0].text, '/etc/passwd 看看这个')
+  assert.equal(agent.calls.followup.length, 0)
+  assert.equal(agent.calls.inject.length, 0)
   rig.dispose()
 })
 

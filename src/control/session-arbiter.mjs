@@ -75,6 +75,12 @@ export function normalizeSessionPolicy(input = {}, now = Date.now()) {
     observe: input.capabilities?.observe !== false,
     approve: input.capabilities?.approve !== false,
     stop: input.capabilities?.stop !== false,
+    // T04：resource access (bind/use task selection) and outbound-quiet manage
+    // scope are their own opt-in capabilities (CONTRACTS §命令政策最小表 lists
+    // them separately from converse). Off by default — a policy that has not
+    // granted them denies the corresponding command.
+    assets: input.capabilities?.assets === true,
+    quiet: input.capabilities?.quiet === true,
     converse: input.capabilities?.converse === true,
     groupChatControl: input.capabilities?.groupChatControl === true,
   }
@@ -213,6 +219,100 @@ export function canAcceptCommand(policy, event, now = Date.now()) {
       if (bound(event[key]) === null || bound(policy[key]) === null) return { ok: false, reason: `source_mismatch_${key}` }
       if (bound(policy[key]) !== event[key]) return { ok: false, reason: `source_mismatch_${key}` }
     }
+  }
+  return { ok: true }
+}
+
+/**
+ * Command admission table — the SINGLE minimal condition for every inbound
+ * action that is not one of the five session-affecting control commands
+ * (`canAcceptCommand` still owns those). One row per registry/conversation
+ * command; `capability` names a policy capability that must be true, `ownerOnly`
+ * requires the sender to be the bound owner. This is a description of the
+ * existing minimal table in CONTRACTS.md §命令政策最小表, not a second policy
+ * engine: it is read by `admitCommand`, which is called from the one control
+ * ingress. New command → new row here, never a parallel authority.
+ *
+ * help/whoami minimal (neutral: only an allowed transport/chat/rate-limit, no
+ * capability) | pair/unpair neutral (the pairing code is itself the authority)
+ * | status/tasks/sessions read (neutral; scope-filtered) | ordinary/steer
+ * converse (strict-equality path also covers these) | stop stop-capability
+ * (strict-equality path covers) | quiet/unquiet manage-scope
+ * (conversation-scope quiet capability) | bind/use resource access (assets
+ * capability) | log owner.
+ */
+export const COMMAND_POLICY = Object.freeze({
+  help: Object.freeze({ capability: null, ownerOnly: false }),
+  whoami: Object.freeze({ capability: null, ownerOnly: false }),
+  pair: Object.freeze({ capability: null, ownerOnly: false }),
+  unpair: Object.freeze({ capability: null, ownerOnly: false }),
+  status: Object.freeze({ capability: null, ownerOnly: false }),
+  tasks: Object.freeze({ capability: null, ownerOnly: false }),
+  sessions: Object.freeze({ capability: null, ownerOnly: false }),
+  stop: Object.freeze({ capability: 'stop', ownerOnly: false }),
+  'steer': Object.freeze({ capability: 'converse', ownerOnly: false }),
+  'ordinary-message': Object.freeze({ capability: 'converse', ownerOnly: false }),
+  quiet: Object.freeze({ capability: 'quiet', ownerOnly: false }),
+  unquiet: Object.freeze({ capability: 'quiet', ownerOnly: false }),
+  bind: Object.freeze({ capability: 'assets', ownerOnly: false }),
+  use: Object.freeze({ capability: 'assets', ownerOnly: false }),
+  log: Object.freeze({ capability: null, ownerOnly: true }),
+})
+
+/**
+ * Authorize a non-session-affecting inbound command (registry/conversation).
+ * `event` carries the minimal shape the caller already binds: `command`, and
+ * the source fields `channel`/`accountId`/`userId`/`sessionId`/`chatId`.
+ * Returns `{ ok, reason }`, fail-closed on an unknown command, a denied source,
+ * a missing capability, or an owner check that cannot be satisfied.
+ *
+ * Strict-equality authorization (the same rule as `canAcceptCommand`) applies
+ * to every row: the event source must equal the bound policy source when the
+ * policy declares one, and must be present when the policy does. This keeps a
+ * single authorization path — an unknown/no-slash command cannot skip it.
+ *
+ * @param {object} policy - normalized session policy snapshot
+ * @param {object} event - `{ command, channel?, accountId?, userId?, sessionId?, chatId? }`
+ * @param {number} now
+ * @param {{ ownerProof?: boolean }} [options] - `ownerProof: true` means the
+ *   caller independently established that `event.userId` is the bound owner for
+ *   `event.channel` (via the identity registry, the same proof the conversation
+ *   router used before this gate). It satisfies an `ownerOnly` row; the
+ *   `policy.owner` equality is kept as an alternative proof.
+ * @returns {{ ok: boolean, reason?: string }}
+ */
+export function admitCommand(policy, event, now = Date.now(), options = {}) {
+  if (policy === null || typeof policy !== 'object' || event === null || typeof event !== 'object') return { ok: false, reason: 'malformed' }
+  if (isPolicyExpired(policy, now)) return { ok: false, reason: policy.revoked ? 'revoked' : 'expired' }
+  const entry = COMMAND_POLICY[event.command]
+  if (entry === undefined) return { ok: false, reason: 'unknown_command' }
+  const caps = policy.capabilities ?? {}
+  const chatScope = chatScopeOf(event)
+  if (String(event.channel ?? '').toLowerCase() === 'qq' && chatScope === 'unknown') {
+    return { ok: false, reason: 'source_chat_type_unknown' }
+  }
+  // Sensitive group entry points are denied by default for every command
+  // shape. QQ group control is never enabled by policy; a generic group chat
+  // needs the explicit `groupChatControl` capability. Group outbound
+  // notifications are unaffected (they never pass this ingress).
+  if (String(event.channel ?? '').toLowerCase() === 'qq' && chatScope === 'group') {
+    return { ok: false, reason: 'group_chat_disabled' }
+  }
+  if (isGroupChat(event) && caps.groupChatControl !== true) return { ok: false, reason: 'group_chat_disabled' }
+  if (entry.capability !== null && caps[entry.capability] !== true) {
+    return { ok: false, reason: `capability_required:${entry.capability}` }
+  }
+  // Per-person source binding: exact when the policy declares the source. An
+  // owner-only command additionally requires `policy.owner` to match.
+  for (const key of ['channel', 'accountId', 'userId']) {
+    if (bound(policy[key]) !== null && bound(policy[key]) !== event[key]) return { ok: false, reason: `source_mismatch_${key}` }
+    if (bound(policy[key]) === null && bound(event[key]) === null) return { ok: false, reason: `source_mismatch_${key}` }
+  }
+  if (entry.ownerOnly) {
+    const ownerProof = options.ownerProof === true
+    const policyOwner = bound(policy.owner)
+    const matchesPolicyOwner = policyOwner !== null && bound(event.userId) !== null && String(event.userId) === policyOwner
+    if (!ownerProof && !matchesPolicyOwner) return { ok: false, reason: 'owner_only' }
   }
   return { ok: true }
 }

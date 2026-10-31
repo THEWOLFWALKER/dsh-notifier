@@ -34,6 +34,26 @@ export const MAX_MERGE_KEYS = 256
 export const MAX_MERGE_PARTS = 32
 export const MAX_MERGE_UTF8_BYTES = 64 * 1024
 export const MAX_MERGE_ABSOLUTE_AGE_MS = 30_000
+/**
+ * T04：斜杠命令 → 准入命令名（与 control/session-arbiter.mjs 的 COMMAND_POLICY
+ * 表逐行对应）。每个 slash 命令都必须在此有准入身份，未知 slash 不在表内 →
+ * 显式拒绝（绝不回显后当普通文本透传）。stop/steer/ordinary-message 由 Control
+ * Core 的 canAcceptCommand 裁决；其余（help/status/bind/…）由 control.admit 裁决。
+ */
+const SLASH_COMMAND_ADMISSION = Object.freeze({
+  help: 'help',
+  status: 'status',
+  bind: 'bind',
+  unbind: 'bind',
+  agent: 'bind',
+  route: 'status',
+  tasks: 'tasks',
+  sessions: 'sessions',
+  use: 'use',
+  quiet: 'quiet',
+  unquiet: 'unquiet',
+  log: 'log',
+})
 /** 各 P0 通道「附件-only」占位正文（wechat/qq/dingtalk 沿用）；投递时不得把它当真实文本交给模型。 */
 const IMAGE_PLACEHOLDER_TEXT = '[图片消息]'
 const FILE_PLACEHOLDER_TEXT = '[文件消息]'
@@ -297,6 +317,10 @@ export function registerConversationRouter(deps, strings) {
   }
   // 旧名兼容（/status 等沿用）
   const boundSession = (envelope) => resolveTarget(envelope).sessionId
+
+  // T04：commandToken 抽到函数外，供 route() 的命令准入与 handleCommand 的命令
+  // 分派共用同一分词口径（命令词上的 @ 后缀已由适配器 stripCommandMention 剥除）。
+  const commandToken = (text) => String(text ?? '').slice(1).trim().split(/\s+/)[0]?.toLowerCase() ?? ''
 
   function handleCommand(envelope, text) {
     const [rawCmd, ...args] = text.slice(1).trim().split(/\s+/)
@@ -958,14 +982,21 @@ say(t.helpLines.join('\n'))
     const merged = entry.forceSteer ? `${steerPrefix}${text}` : text
     fireAsync(route(envelope, merged, entry.attachments ?? []))
   }
-  async function routeUnsafe(envelope, text, items = []) {
+  async function routeUnsafe(envelope, text, items = [], selectionResume = false) {
     if (text.startsWith('/')) {
       if (handleCommand(envelope, text)) return
+      // 命令形态文本绝不作为普通文本投递给 agent：已知命令在此已被 handleCommand
+      // 消费；未知/未识别命令只回执（与 routeUnsafe 的历史「未知命令回执」一致），
+      // 不再回显后当普通文本透传（T04：未知 slash 显式拒绝）。
+      reply(envelope.channel, envelope.chatId, t.unknownCommand(commandToken(text)))
+      return
     }
     // v0.10 编号回复消解任务选择卡（歧义前置）：有待决选择时先尝试按编号命中；
     // 命中即把存起的原消息投一次并返回（原消息只投一次）；编号越界提示有效范围，
     // 避免把「2」当新消息又 begin 覆盖待决。无待决（no-pending）时照常走下方路由。
-    if (taskSelection !== null) {
+    // T04：`selectionResume` = route() 已用 assets 授权放行该编号回复（选择任务 =
+    // 资源访问，必须有 assets 授权）；未放行时跳过选择消解（继续走普通准入闸）。
+    if (taskSelection !== null && selectionResume === true) {
       const selection = taskSelection.resolve(envelope, text)
       if (selection.ok === true) {
         await selectAndDeliver(envelope, selection.sessionId, selection.originalText,
@@ -1022,28 +1053,58 @@ say(t.helpLines.join('\n'))
     }
   }
 
-  // Control Core gate for session-affecting inbound text. Ordinary outbound
-  // notifications never pass here; only remote control/conversation commands do.
+  // Unified admission gate for EVERY inbound action. Ordinary outbound
+  // notifications never pass here; only remote control/conversation commands
+  // do. Without a wired Control Core the legacy path stays (backward compat for
+  // callers that did not wire the core) — production always wires it, and the
+  // focused tests build the real control so there is no bypass there.
   function route(envelope, text, items = []) {
+    // Legacy path (no Control Core wired): keep the historical chain, but a
+    // numbered reply that matches a live selection card this same source
+    // created must still resolve it (that resume is not a control action).
+    if (control === null) {
+      const legacyResume = taskSelection !== null
+        && !String(text ?? '').trim().startsWith('/')
+        && taskSelection.get(envelope) !== undefined
+      return routeUnsafe(envelope, text, items, legacyResume)
+    }
     const trimmed = String(text ?? '').trim()
+    const slash = trimmed.startsWith('/')
     // G-04：仅裸 '/stop' 归类为 stop 控制命令。'/stop 等等' 不再命中（旧 startsWith('/stop ')
     // 会把附言形态也送进 Control Core 当取消指令，误杀长任务），改走未知命令路径。
-    const command = trimmed === '/stop' ? 'stop'
-      : (trimmed.startsWith(steerPrefix) ? 'steer' : (trimmed.startsWith('/') ? null : 'ordinary-message'))
-    if (control === null || command === null) return routeUnsafe(envelope, text, items)
+    const command = slash
+      ? (trimmed === '/stop' ? 'stop' : null)
+      : (trimmed.startsWith(steerPrefix) ? 'steer' : 'ordinary-message')
+
     // QQ group/ambiguous envelopes must not fall through to the legacy route
-    // when no session is resolved; consume with a receipt instead.
+    // when no session is resolved; consume with a receipt instead (fail-closed
+    // before any resolution, so a group cannot reach a binding side effect).
     if (String(envelope.channel ?? '').toLowerCase() === 'qq' && chatScopeOf(envelope) !== 'private') {
       reply(envelope.channel, envelope.chatId, chatScopeOf(envelope) === 'group'
         ? t.groupControlDenied
         : t.controlSourceUnverified)
       return
     }
+
+    // Slash disambiguation. A known command carries its admission identity; an
+    // unknown slash is explicitly refused here and never echoed-then-delivered.
+    let slashAdmit = null
+    if (slash) {
+      const token = commandToken(trimmed)
+      const mapped = Object.prototype.hasOwnProperty.call(SLASH_COMMAND_ADMISSION, token)
+        ? SLASH_COMMAND_ADMISSION[token]
+        : null
+      // '/stop ...'（非裸）走未知命令路径；其余未登记 slash 一律拒绝。
+      if (command !== 'stop' && mapped === null) {
+        reply(envelope.channel, envelope.chatId, t.unknownCommand(token))
+        return
+      }
+      slashAdmit = mapped
+    }
+
     const target = resolveTarget(envelope)
-    if (target.sessionId === null) return routeUnsafe(envelope, text, items)
-    const receipt = control.handle({
-      eventId: String(envelope.messageId ?? ''),
-      command,
+    // The source fields below are shared by both admission shapes.
+    const admissionFields = {
       channel: envelope.channel,
       // v0.8.7：绝不把 channel 当 accountId 兜底（硬性规则）。accountId 缺失时这里得到空串，
       // normalizeControlEvent 会以 missing_accountId fail-closed 拒绝——来源必须真实存在。
@@ -1051,6 +1112,59 @@ say(t.helpLines.join('\n'))
       userId: String(envelope.userId ?? ''),
       chatId: String(envelope.chatId ?? ''),
       chatType: envelope.chatType,
+    }
+
+    // Known non-session slash command (help/status/bind/…): one admission
+    // decision through the SAME control core, then dispatch. No side effect
+    // (bind write, task listing) happens before the verdict.
+    if (slashAdmit !== null) {
+      const verdict = control.admit({
+        command: slashAdmit,
+        ...admissionFields,
+        sessionId: target.sessionId !== null ? String(target.sessionId) : undefined,
+      })
+      if (!verdict.ok) {
+        reply(envelope.channel, envelope.chatId, admissionDeniedText(verdict.reason, target.sessionId))
+        return
+      }
+      fireAsync(routeAdmitted(envelope, text, items))
+      return
+    }
+
+    // Task-selection numbered reply (a bare 1..N that resolves a live selection
+    // card this SAME source created): it is a resource-access action, admitted
+    // through the SAME gate on the strength of the live pending row — the
+    // taskSelection store key is bound to `(channel, accountId, userId, chatId)`,
+    // so only the original source can resolve it. This is not a blanket converse
+    // check (a wrong-source client sees no pending and falls through to the
+    // ordinary-message gate). We pass it as `bind` (resource access): a
+    // read-only/neutral reply would skip the assets gate entirely. On a granted
+    // verdict we resume immediately — the selection resume must not be blocked by
+    // the ordinary-message converse gate (the original message was already
+    // admitted when its selection card was created; the export is still the
+    // control-core authorization above).
+    if (command === 'ordinary-message' && taskSelection !== null && taskSelection.get(envelope) !== undefined) {
+      const selectionVerdict = control.admit({ command: 'bind', ...admissionFields, sessionId: undefined })
+      if (!selectionVerdict.ok) {
+        reply(envelope.channel, envelope.chatId, admissionDeniedText(selectionVerdict.reason, null))
+        return
+      }
+      fireAsync(routeUnsafe(envelope, text, items, true))
+      return
+    }
+
+    // Session-affecting command (stop/steer/ordinary-message). QQ group/unknown
+    // handled above; steer/ordinary-message also require a resolved session so
+    // group semantics cannot slip through the "no target" branch.
+    if (command === 'steer' || command === 'ordinary-message') {
+      if (target.sessionId === null) return routeUnsafe(envelope, text, items)
+    } else if (target.sessionId === null) {
+      return routeUnsafe(envelope, text, items)
+    }
+    const receipt = control.handle({
+      eventId: String(envelope.messageId ?? ''),
+      command,
+      ...admissionFields,
       sessionId: String(target.sessionId),
       policyVersion: '1',
       pending: { status: 'pending', sessionId: String(target.sessionId), createdAt: Date.now() - 1, expiresAt: Date.now() + 10 * 60 * 1000 },
@@ -1061,6 +1175,28 @@ say(t.helpLines.join('\n'))
     else if (receipt.reason === 'group_chat_disabled') reply(envelope.channel, envelope.chatId, t.groupControlDenied)
     else if (receipt.reason === 'not_paired') reply(envelope.channel, envelope.chatId, t.notPaired)
     else reply(envelope.channel, envelope.chatId, t.controlRejected)
+  }
+
+  /**
+   * 已准入的非会话命令投递（help/status/bind/…）：仅含 handleCommand 的同步分派，
+   * 换句话说这里**绝不**再走 routeUnsafe 的普通文本链（那会让命令文本漏进 agent）。
+   * 未识别分支（handleCommand 返回 false）只可能是准入与分派表出现漂移（一个命令
+   * 被准入却没有分派）——此时只回未知命令回执，绝不投递。
+   */
+  function routeAdmitted(envelope, text, items = []) {
+    if (handleCommand(envelope, text)) return
+    if (text.startsWith('/')) {
+      reply(envelope.channel, envelope.chatId, t.unknownCommand(commandToken(text)))
+    }
+  }
+
+  /** 从准入错误名生成按原因细分的回执文案（绝不回显命令内容/来源值）。 */
+  function admissionDeniedText(reason, sessionId = null) {
+    if (reason === 'group_chat_disabled') return t.groupControlDenied
+    if (reason === 'source_chat_type_unknown') return t.controlSourceUnverified
+    if (reason === 'owner_only') return t.logOwnerOnly
+    if (reason === 'capability_required:converse') return t.conversationDisabled
+    return t.controlRejected
   }
 
   // G-31：会话路由是消费链末位兜底（priority 100）——前面审批/提问未消费的消息才进 agent 会话。
