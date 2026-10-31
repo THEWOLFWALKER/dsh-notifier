@@ -1,0 +1,144 @@
+{
+  "task": "T01",
+  "status": "implemented",
+  "sourceCommit": "9d69dd7a8908fcfec6e20d92d56509764a8f23ec",
+  "workingDiffSummary": "docs/new-host/evidence/T01.json (new) + docs/new-host/RC5-CONTRACT-CLOSURE.md (new). No product code changed (src/, test/, scripts/, client.js, package.json untouched). T01 is evidence/contract-closure only; the required manifest edits are documented as planned T02 changes, not applied here.",
+  "environment": {
+    "node": "v22.23.4",
+    "os": "Linux 6.1.0-35-amd64",
+    "dsh": "0.2.1-rc.5"
+  },
+  "checks": [
+    {
+      "command": "npm view @deepseek-ai/dsh@0.2.1-rc.5 dist.integrity dist.shasum dist.tarball dist.fileCount dist.unpackedSize version",
+      "exitCode": 0,
+      "evidenceLevel": "host-rc5",
+      "observation": "integrity=sha512-WkyJZv4zl9sCAxSzRctGm58m0rilGqwR6pniBiLOz5CPDfHfDuAUicg0AAazXI7oj/Cph6/cjNTncA/rpLTXpw==; shasum=8e1bfd31869414f7a5ec10c34403a852ac9c3dc7; tarball=https://registry.npmjs.org/@deepseek-ai/dsh/-/dsh-0.2.1-rc.5.tgz; fileCount=20; unpackedSize=75972; version=0.2.1-rc.5. All five fields equal docs/new-host/baseline.json host.artifact exactly."
+    },
+    {
+      "command": "npm pack @deepseek-ai/dsh@0.2.1-rc.5 (in /tmp) then sha512/sha1 of the .tgz",
+      "exitCode": 0,
+      "evidenceLevel": "host-rc5",
+      "observation": "downloaded tarball /tmp/deepseek-ai-dsh-0.2.1-rc.5.tgz, 25131 bytes; recomputed sha512=sha512-WkyJZv4zl9sCAxSzRctGm58m0rilGqwR6pniBiLOz5CPDfHfDuAUicg0AAazXI7oj/Cph6/cjNTncA/rpLTXpw== and sha1=8e1bfd31869414f7a5ec10c34403a852ac9c3dc7; both equal baseline.json. Independent byte-level confirmation, not just registry metadata."
+    },
+    {
+      "command": "node -e \"require('./node_modules/.package-lock.json')['packages']['node_modules/@deepseek-ai/dsh']\" (cwd=/home/orca/work/dsh-notifier-rc5/dsh-host)",
+      "exitCode": 0,
+      "evidenceLevel": "host-rc5",
+      "observation": "dsh-host/node_modules/.package-lock.json (lockfileVersion 3, root name dsh-host) records node_modules/@deepseek-ai/dsh version=0.2.1-rc.5, resolved=https://registry.npmjs.org/@deepseek-ai/dsh/-/dsh-0.2.1-rc.5.tgz, integrity=sha512-WkyJZv4zl9sCAxSzRctGm58m0rilGqwR6pniBiLOz5CPDfHfDuAUicg0AAazXI7oj/Cph6/cjNTncA/rpLTXpw==. Locally installed tarball integrity matches baseline.json."
+    },
+    {
+      "command": "read ~/.npm/_cacache/index-v5/ad/97/8233c25b22e7551cf6af7b61d9aa6a26a33fa1e176df0e0a6ebd6348d75f",
+      "exitCode": 0,
+      "evidenceLevel": "host-rc5",
+      "observation": "npm cacache entry key=make-fetch-happen:request-cache:https://registry.npmjs.org/@deepseek-ai/dsh/-/dsh-0.2.1-rc.5.tgz carries integrity=sha512-WkyJZv4zl9sCAxSzRctGm58m0rilGqwR6pniBiLOz5CPDfHfDuAUicg0AAazXI7oj/Cph6/cjNTncA/rpLTXpw==, size=25131, matching the packed tarball and baseline.json. Cross-verified via registry + local pack + package-lock + cacache."
+    },
+    {
+      "command": "node -e read version of node_modules/@deepseek-ai/{cordis,cordis-plugin-loader,cordis-plugin-include,cordis-plugin-group,cordis-plugin-timer,dsh-session}",
+      "exitCode": 0,
+      "evidenceLevel": "host-rc5",
+      "observation": "cordis=4.0.5 (matches expected 4.0.5); cordis-plugin-loader=1.0.6 (matches expected); cordis-plugin-include=1.0.10 (matches expected); cordis-plugin-group=1.0.5 (matches expected); cordis-plugin-timer=1.1.7; dsh-session=0.2.1-rc.5 (NOT the 0.1.7-* the plugin declares). All four expected version targets confirmed; dsh-session resolved version diverges from the declared peer range."
+    },
+    {
+      "command": "for p in connection locale ui-renderer ui-layout ui-sidebar ui-plugin-manager; do node -e require('@deepseek-ai/dsh-client-'+p+'/package.json').version; done",
+      "exitCode": 0,
+      "evidenceLevel": "host-rc5",
+      "observation": "All 6 dsh.client.inject package names exist in rc.5 with exact names: dsh-client-connection=0.2.1-rc.5, dsh-client-locale=0.2.1-rc.5, dsh-client-ui-renderer=0.2.1-rc.5, dsh-client-ui-layout=0.2.1-rc.5, dsh-client-ui-sidebar=0.2.1-rc.5, dsh-client-ui-plugin-manager=0.2.1-rc.5. Package-name set is correct; only the plugin's declaration version (implicit) needs no change, but the surrounding compat metadata does."
+    },
+    {
+      "command": "sed -n '251,326p' /home/orca/work/dsh-notifier-rc5/dsh-host/node_modules/@deepseek-ai/dsh-app-boot/lib/index.js",
+      "exitCode": 0,
+      "evidenceLevel": "host-rc5",
+      "observation": "Shipped preflight evaluatePluginCompatibility: if manifest has engines.dsh the range decides ALONE; else every peer key that is '@deepseek-ai/dsh' or startsWith '@deepseek-ai/dsh-' is tested with semver.satisfies(runtime, range, {includePrerelease:true}). Only @deepseek-ai/dsh* peers participate; @deepseek-ai/cordis is NOT a dsh peer and is ignored. Plugin declares NO engines.dsh, so the ELSE branch runs and peerDependencies['@deepseek-ai/dsh-session']='0.1.7-alpha.1 || 0.1.7-alpha.2 || 0.1.7-rc.1 || 0.1.7-rc.2' is tested against runtime 0.2.1-rc.5."
+    },
+    {
+      "command": "node -e \"semver.satisfies('0.2.1-rc.5','0.1.7-alpha.1 || 0.1.7-alpha.2 || 0.1.7-rc.1 || 0.1.7-rc.2',{includePrerelease:true})\"",
+      "exitCode": 0,
+      "evidenceLevel": "host-rc5",
+      "observation": "Result false. The declared dsh-session peer range does NOT admit 0.2.1-rc.5, so unmetRequirements returns {'@deepseek-ai/dsh-session': '0.1.7-alpha.1 || 0.1.7-alpha.2 || 0.1.7-rc.1 || 0.1.7-rc.2'} and evaluatePluginCompatibility returns an issue. app-boot call sites (lib/index.js:1025 loadProfileDirectory throws; lib/index.js:2327 preflight sets row.disabled=true) DISABLE the plugin at load unless an exact-version exemption is granted. This is the single highest-severity finding."
+    },
+    {
+      "command": "sed -n '279,299p' /home/orca/work/dsh-notifier-rc5/dsh-host/node_modules/@deepseek-ai/dsh-app-boot/lib/index.js  # unmetRequirements",
+      "exitCode": 0,
+      "evidenceLevel": "host-rc5",
+      "observation": "Filter is `if (name !== '@deepseek-ai/dsh' && !name.startsWith('@deepseek-ai/dsh-')) continue;`. Therefore peerDependencies['@deepseek-ai/cordis']='^4.0.1' is skipped by the preflight regardless of value; rc.5 ships vendored @deepseek-ai/cordis 4.0.5 which satisfies ^4.0.1 anyway (semver.satisfies('4.0.5','^4.0.1')=true). No DSH peer or engines rule governs cordis; it is npm-level only and currently satisfied. Not a load blocker."
+    },
+    {
+      "command": "cat dsh-host/node_modules/@deepseek-ai/dsh-base/cordis.patch.yml | grep -nE 'connection|webServer|webserver|headless'",
+      "exitCode": 0,
+      "evidenceLevel": "host-rc5",
+      "observation": "dsh-base/cordis.patch.yml contains NO connection, webServer, or webserver row (grep returns no matches for those ids). base mounts tools, agents (agent), user-questions, approval, etc. connection and webServer are provided ONLY by the web app: dsh-web-app/cordis.patch.yml:179-180 inserts id=webserver name=@deepseek-ai/dsh-host-webserver (service name 'webServer', see dsh-host-webserver/lib/index.js:286 super(ctx,'webServer')); dsh-web-app/cordis.patch.yml:234-235 inserts id=connection name=@deepseek-ai/dsh-client-connection (service name 'connection', see dsh-client-connection/lib/index.js:710 super(ctx,'connection'))."
+    },
+    {
+      "command": "cat dsh-host/node_modules/@deepseek-ai/dsh-headless/cordis.patch.yml",
+      "exitCode": 0,
+      "evidenceLevel": "host-rc5",
+      "observation": "Headless patch mounts no Host/HTTP server/Web runtime/browser plugin (header comment) and inserts only headless-startup and headless-runner rows; it disables hmr/credentials/authorization/deepseek-account. Since dsh-base has no connection row either, the headless profile resolves NEITHER 'connection' NOR 'webServer'. A static `inject=['tools','agents','connection']` (src/index.mjs:63) therefore keeps the plugin PENDING forever in headless, not merely degraded."
+    },
+    {
+      "command": "grep -rn \"ctx\\.\\(provide\\|get\\|effect\\|inject\\|emit\\|on\\|waterfall\\|tools\\|agents\\|connection\\|slots\\|locale\\|attachments\\|userQuestions\\)\" src/ client.js | (manual review)",
+      "exitCode": 0,
+      "evidenceLevel": "source",
+      "observation": "Public-call inventory completed. Host services/events actually used: inject list (src/index.mjs:63); ctx.provide('notifier') (src/index.mjs:96); ctx.get('userQuestions'|'attachments') (src/host/capability.mjs:43, src/host/messages.mjs:40); ctx.effect (src/index.mjs:146,979; src/control-surface/rpc.mjs:142; client.js:1037,1042,1046,1054); ctx.inject(['userQuestions']) (src/index.mjs:713) and ctx.inject(['connection','webServer']) (src/index.mjs:854); ctx.emit('dsh-notifier/sent') (src/index.mjs:124); ctx.on('user-questions/request') (src/host/native-questions.mjs:256), ctx.on('approval/request') (src/approval/router.mjs:707), ctx.on('agent/created'|'agent/disposed') (src/inbound/conversation.mjs:1154,1157); ctx.tools.register (src/tool-register.mjs:108,192; src/questions/router.mjs:1215); ctx.agents.list (src/index.mjs:354, src/routing/session-registry.mjs:369, src/routing/task-projection.mjs:58, src/inbound/conversation.mjs:198) and ctx.agents.get (src/index.mjs:589, src/inbound/conversation.mjs:201); agent.cancel({kind:'user'}) (src/index.mjs:594, src/inbound/conversation.mjs:371); ctx.connection.rpc.handle (src/control-surface/rpc.mjs:154) + ctx.connection.rpc.call (client.js:175); webServer.register (src/control-surface/rpc.mjs:142)."
+    },
+    {
+      "command": "grep -n 'user-questions/request' dsh-host/node_modules/@deepseek-ai/dsh-user-questions/lib/index.js ; grep -n 'approval/request' dsh-host/node_modules/@deepseek-ai/dsh-user-approval/lib/index.js",
+      "exitCode": 0,
+      "evidenceLevel": "host-rc5",
+      "observation": "Both waterfall seam names confirmed in shipped rc.5 source: dsh-user-questions/lib/index.js:681 calls this.ctx.waterfall('user-questions/request', request, noAnswerer); dsh-user-approval/lib/index.js:176 calls this.ctx.waterfall(scopeTarget(...), 'approval/request', req, () => 'unavailable'). The plugin's ctx.on('user-questions/request', h, {prepend:true, global:true}) and ctx.on('approval/request', h) remain valid rc.5 seams."
+    },
+    {
+      "command": "grep -n 'register(definition)' dsh-host/node_modules/@deepseek-ai/dsh-tools/lib/index.js ; sed -n '1500,1531p' dsh-tools/lib/index.js",
+      "exitCode": 0,
+      "evidenceLevel": "host-rc5",
+      "observation": "dsh-tools exports ToolRuntime (default) with a public register(definition) at lib/index.js:2974; tool definitions still use an async execute(args, exec) signature (lib/index.js:2581,866,1248) and exec carries `agent` (exec.agent.session.id at lib/index.js:1531) and `signal` (run(exec.signal) at lib/index.js:1531). The plugin's ctx.tools.register({name,description,parameters,output,async execute(rawArgs,execContext)}) shape is compatible; rc.5's exec also exposes agent+signal that the plugin currently only partially consumes (T10)."
+    },
+    {
+      "command": "grep -rn 'slots.inject(\"main\"|\"sidebar.panellist\"|\"plugins.bundle.config\"|\"plugins.bundle.activation\"' dsh-host/node_modules/@deepseek-ai/dsh-client-ui-*/lib/client.js",
+      "exitCode": 0,
+      "evidenceLevel": "host-rc5",
+      "observation": "All four slot ids the plugin's client.js uses (client.js:1064 'main', 1071 'sidebar.panellist', 1077 'plugins.bundle.config', 1081 'plugins.bundle.activation') exist in shipped rc.5 client code: 'main' and 'sidebar.panellist' registered via ctx.slots.inject in dsh-client-ui-plugin-manager/lib/client.js:4411,4484; 'plugins.bundle.config'/'plugins.bundle.activation' consumed at lib/client.js:2964,4224 and declared at 4436-4440. Slot contract intact."
+    },
+    {
+      "command": "node -e \"p=require('./package.json'); p.engines, p.peerDependencies, p.dshWorkshop.compatibility, p.dsh.client.inject, p.dsh.bundle.patch\"",
+      "exitCode": 0,
+      "evidenceLevel": "source",
+      "observation": "Declared manifest: engines={\"node\":\">=22\"} (no engines.dsh); peerDependencies={'@deepseek-ai/cordis':'^4.0.1', '@deepseek-ai/dsh-session':'0.1.7-alpha.1 || 0.1.7-alpha.2 || 0.1.7-rc.1 || 0.1.7-rc.2'}; dshWorkshop.compatibility.dshVersions=['0.1.7-alpha.1','0.1.7-alpha.2','0.1.7-rc.1','0.1.7-rc.2']; dsh.client.inject=6 @deepseek-ai/dsh-client-* packages; dsh.bundle.patch='./cordis.patch.yml'. Four declared fields (engines, dsh-session peer, dshWorkshop versions, compatibility-matrix.md) all target the 0.1.7 family and must move to 0.2.1-rc.5."
+    },
+    {
+      "command": "git rev-parse HEAD ; git status --porcelain ; git ls-remote origin refs/heads/dev",
+      "exitCode": 0,
+      "evidenceLevel": "source",
+      "observation": "HEAD=da5db991792584f9524d7636e70279abadbcbf77; working tree shows only untracked docs/new-host/evidence/ (T00.json + this T01.json); no product file modified. origin refs/heads/dev=da5db991792584f9524d7636e70279abadbcbf77 (T00 stage). No floating version target: host target is pinned to 0.2.1-rc.5 / commit b830ec95."
+    }
+  ],
+  "reviewFindings": [
+    "HIGH: peerDependencies['@deepseek-ai/dsh-session'] = '0.1.7-alpha.1 || 0.1.7-alpha.2 || 0.1.7-rc.1 || 0.1.7-rc.2' does not admit 0.2.1-rc.5; with no engines.dsh present the rc.5 preflight evaluates exactly this peer and DISABLES the whole plugin (throw in loadProfileDirectory, row.disabled in preflight). The plugin cannot even load on rc.5 without a manual exact-version exemption.",
+    "HIGH: inject=['tools','agents','connection'] is a STATIC inject. Neither dsh-base nor dsh-headless supplies 'connection' (it is only in dsh-web-app). In the headless profile the plugin stays unresolved/PENDING instead of degrading to Standalone; the notification/tool core never mounts.",
+    "MEDIUM: engines declares only node>=22 with no engines.dsh. Per app-boot, an own engines.dsh range would decide alone and silence peer evaluation; the fix options are mutually exclusive (add engines.dsh, or repoint the dsh-session peer) — this is a deliberate design choice for T02, documented not decided here.",
+    "MEDIUM: dshWorkshop.compatibility.dshVersions and docs/compatibility-matrix.md still list the 0.1.7-* family; verify-host-compat.mjs enforces that peer range, verified matrix rows, and dshVersions are mutually consistent, so all three must move together or the guard fails.",
+    "MEDIUM: peerDependencies['@deepseek-ai/cordis']='^4.0.1' vs rc.5's vendored cordis 4.0.5. Semver-satisfied by 4.0.5 and ignored by the dsh preflight, but the plugin's declared range no longer reflects the shipped runtime family; aligning to '~4.0.5' would match dsh-base's own declaration.",
+    "LOW: cordis.patch.yml row sets admin.enabled=true by default. On headless/rc.5 the admin HTTP surface depends on webServer being present; the patch row itself is profile-agnostic but the behavior claim should be re-verified in T02/T19.",
+    "LOW: plugin tool 'notify' execute(rawArgs, execContext) only reads execContext.agent/session for routing and ignores execContext.signal; rc.5 supplies exec.signal (dsh-tools lib/index.js:1531). Cancel propagation is a T10 item, recorded here as an rc.5 seam that exists but is unused."
+  ],
+  "reviewResolution": [
+    "Confirmed both HIGH findings against shipped source (dsh-app-boot/lib/index.js preflight + unmetRequirements; dsh-base/dsh-headless/web-app cordis.patch.yml) rather than by inference; exact line numbers quoted in checks.",
+    "Ran the semver evaluation with the same options the host uses ({includePrerelease:true}) and recorded the literal false result.",
+    "Deferred ALL manifest edits to T02 (install gate). T01 wrote no product change, so the plugin is still load-blocked on rc.5 — this is expected and is the input T02 consumes. Documented proposed values (engines.dsh='0.2.1-rc.5'; dsh-session peer -> 0.2.1-rc.5; dshWorkshop.dshVersions=['0.2.1-rc.5']; matrix row 0.2.1-rc.5 verified) without applying them.",
+    "Recorded that the correct headless behavior is moving connection/webServer into a conditional sub-Fiber (ctx.inject already used at src/index.mjs:854 for the Native surface but the static inject list still gates the whole plugin). Mapped to T02/T16.",
+    "Cross-checked the artifact four ways (registry metadata, npm pack byte hash, node_modules/.package-lock.json, npm cacache) so the integrity claim is not single-sourced."
+  ],
+  "neatFiles": [
+    "docs/new-host/evidence/T01.json (new)",
+    "docs/new-host/RC5-CONTRACT-CLOSURE.md (new)"
+  ],
+  "limitations": [
+    "T01 proves contract mismatches by reading shipped rc.5 source and running semver/pack locally; it did NOT boot DSH rc.5 or install the plugin into a disposable profile. Actual activation/denial behavior is asserted from app-boot source paths (lib/index.js:1025 and :2327), which T02 must confirm with a real install attempt.",
+    "peerDependenciesMeta for @deepseek-ai/dsh-session marks optional:true, but app-boot's preflight reads peerDependencies regardless of optionality, so optional does not exempt the plugin from the denial. This was read from source, not observed live.",
+    "The npm 'dsh' binary metadata was not executed (no disposable profile created); no host process was started in T01.",
+    "No provider/IM/LLM accounts used; provider-live remains out of scope."
+  ],
+  "providerLive": "out-of-scope-no-real-accounts",
+  "commit": "see git log for the T01 docs commit on codex/new-host-baseline (docs(new-host): T01 rc.5 artifact identity and contract closure)",
+  "remoteDevSha": "da5db991792584f9524d7636e70279abadbcbf77"
+}
