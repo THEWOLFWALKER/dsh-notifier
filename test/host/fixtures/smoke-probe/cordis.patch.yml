@@ -1,0 +1,3 @@
+- insert:
+    - id: dsh-notifier-smoke-probe
+      name: 'dsh-notifier-smoke-probe'

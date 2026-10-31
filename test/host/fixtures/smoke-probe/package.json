@@ -1,0 +1,7 @@
+{
+  "name": "dsh-notifier-smoke-probe",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "index.mjs",
+  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } }
+}
