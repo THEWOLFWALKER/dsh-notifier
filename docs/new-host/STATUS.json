@@ -13,8 +13,8 @@
   "tasks": {
     "T00": "verified",
     "T01": "implemented",
-    "T02": "planned",
-    "T03": "planned",
+    "T02": "verified",
+    "T03": "verified",
     "T04": "planned",
     "T05": "planned",
     "T06": "planned",
@@ -44,9 +44,11 @@
   },
   "evidence": {
     "T00": "docs/new-host/evidence/T00.json",
-    "T01": "docs/new-host/evidence/T01.json"
+    "T01": "docs/new-host/evidence/T01.json",
+    "T02": "docs/new-host/evidence/T02.json",
+    "T03": "docs/new-host/evidence/T03.json"
   },
-  "note": "T00 verified (dev rebuilt from main, old-dev bundle kept). T01 contract closure recorded. T02+ planned.",
+  "note": "T00 verified (dev rebuilt from main, old-dev bundle kept). T01 contract closure recorded. T02 verified (rc.5 install gate + core/web inject split; real web+headless activation, loud missing-core). T03 verified (versioned store namespace + legacy-state isolation + re-pair signal; 4 focused tests). T04+ planned.",
   "delivery_policy": {
     "reset_dev_from_current_main": true,
     "old_dev_backup_required": true,

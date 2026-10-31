@@ -16,10 +16,12 @@ import { get } from 'node:http'
 
 import { apply, createStore } from '../src/index.mjs'
 
-/** 临时 state 目录 + 预置 state.json（可选）。 */
+/** 临时 state 目录 + 预置 state.json（可选；带当前 schema 标记，T03）。 */
 function tempDir(initial) {
   const dir = mkdtempSync(join(tmpdir(), 'dsh-notifier-admin-wiring-'))
-  if (initial !== undefined) writeFileSync(join(dir, 'state.json'), JSON.stringify(initial))
+  if (initial !== undefined) {
+    writeFileSync(join(dir, 'state.json'), JSON.stringify({ __schema: { version: 1, namespace: 'dsh-notifier' }, ...initial }))
+  }
   return dir
 }
 

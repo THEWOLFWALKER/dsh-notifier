@@ -159,7 +159,7 @@ test('保持：读失败（非损坏）仍静默 fail-open，不产生取证副�
 
 test('保持：正常 state 文件读取不受影响，且不误判为形状异常', () => {
   const { dir, path } = tempStorePath()
-  writeState(path, JSON.stringify({ 'ap:1': { status: 'pending' } }))
+  writeState(path, JSON.stringify({ __schema: { version: 1, namespace: 'dsh-notifier' }, 'ap:1': { status: 'pending' } }))
 
   let store = null
   const warnings = captureWarnings(() => { store = createStore(path) })
@@ -230,11 +230,11 @@ test('R3：修复损坏文件后写路径恢复（recovery），并保留修复�
   const store = createStore(path)
   assert.equal(store.set('k', 'v'), false, '前置：损坏时写被拒')
 
-  // operator 把损坏文件修复成合法对象（显式 recovery）
-  writeState(path, JSON.stringify({ repaired: true }))
+  // operator 把损坏文件修复成合法对象（显式 recovery）；T03：修复为当前 schema（带标记）。
+  writeState(path, JSON.stringify({ __schema: { version: 1, namespace: 'dsh-notifier' }, repaired: true }))
   const warnings = captureWarnings(() => { assert.equal(store.set('k', 'v'), true, '修复后写必须恢复') })
 
-  assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')), { repaired: true, k: 'v' }, '基于修复后的合法 state 提交')
+  assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')), { __schema: { version: 1, namespace: 'dsh-notifier' }, repaired: true, k: 'v' }, '基于修复后的合法 state 提交')
   assert.equal(store.bootStatus().status, 'ready', '恢复后状态回到 ready')
   assert.equal(corruptionWarnings(warnings).length, 0, '恢复路径不再产生损坏告警')
 })

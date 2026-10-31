@@ -60,7 +60,7 @@ test('v0.13 C2：live lock 超时返回 STATE_BUSY，绝不 unlocked write', () 
     assert.equal(result.committed, false)
     assert.equal(result.code, 'STATE_BUSY')
     assert.equal(store.get('late'), undefined)
-    assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { stable: 1 })
+    assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { __schema: { version: 1, namespace: 'dsh-notifier' }, stable: 1 })
   } finally {
     try { unlinkSync(lock) } catch {}
   }
@@ -73,8 +73,8 @@ test('v0.13 C2：每个事务 fresh-read disk，两个 store 的无关 key 不�
   const second = createStore(file)
   assert.equal(first.set('a', 1), true)
   assert.equal(second.set('b', 2), true)
-  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { a: 1, b: 2 })
-  assert.deepEqual(createStore(file).keys().sort(), ['a', 'b'])
+  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { __schema: { version: 1, namespace: 'dsh-notifier' }, a: 1, b: 2 })
+  assert.deepEqual(createStore(file).keys().sort(), ['__schema', 'a', 'b'])
 })
 
 test('S-04：加载时权限自检——mode 非 0600 → warn + chmod 收紧尝试（失败仅 warn 不阻塞启动）', () => {

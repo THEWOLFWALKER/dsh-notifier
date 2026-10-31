@@ -227,7 +227,7 @@ test('notify 工具分流：channelTypes 未提供时回落 notifier.channels �
 
 test('index 装配：预置 bind:telegram:u1 旧绑定 → apply 后 route:sessions 出现 u1 目标会话最小记录', () => {
   const stateDir = tempDir()
-  writeFileSync(join(stateDir, 'state.json'), JSON.stringify({ 'bind:telegram:u1': 'sess-legacy' }))
+  writeFileSync(join(stateDir, 'state.json'), JSON.stringify({ __schema: { version: 1, namespace: 'dsh-notifier' }, 'bind:telegram:u1': 'sess-legacy' }))
   const { ctx, warnings } = bootCtx()
   apply(ctx, {
     channels: [{ type: 'webhook', url: 'http://public-hook.test/hook' }],
@@ -325,6 +325,7 @@ test('index 装配冒烟：注入的真 router 生效——route:agents 绑定�
   try {
     const stateDir = tempDir()
     writeFileSync(join(stateDir, 'state.json'), JSON.stringify({
+    __schema: { version: 1, namespace: 'dsh-notifier' },
       'route:agents': { 'ws-a': { channels: ['webhook'] } },
     }))
     const { ctx, defs } = bootCtx()
@@ -350,6 +351,7 @@ test('状态清扫：aq 已决行超 24h 删除，窗口内保留', async () => 
   const stateDir = tempDir()
   const now = Date.now()
   writeFileSync(join(stateDir, 'state.json'), JSON.stringify({
+    __schema: { version: 1, namespace: 'dsh-notifier' },
     'aq:old': { status: 'resolved', decision: 'terminated', resolvedAt: now - 25 * 60 * 60 * 1000 },
     'aq:new': { status: 'resolved', decision: 'answered', resolvedAt: now - 60 * 60 * 1000 },
   }))
@@ -368,6 +370,7 @@ test('状态清扫：aq 崩溃残留跨重启回收，在途 pending 保留', as
   const stateDir = tempDir()
   const now = Date.now()
   writeFileSync(join(stateDir, 'state.json'), JSON.stringify({
+    __schema: { version: 1, namespace: 'dsh-notifier' },
     'aq:orphan': { status: 'pending', createdAt: now - 3 * 60 * 60 * 1000 },
     'aq:live': { status: 'pending', createdAt: now },
   }))
@@ -387,6 +390,7 @@ test('状态清扫：ap answer 孤儿删除，observe 与旧行保留', async ()
   const stateDir = tempDir()
   const now = Date.now()
   writeFileSync(join(stateDir, 'state.json'), JSON.stringify({
+    __schema: { version: 1, namespace: 'dsh-notifier' },
     'ap:answer-orphan': { mode: 'answer', status: 'pending', createdAt: now - 3 * 60 * 60 * 1000 },
     'ap:observe': { mode: 'observe', status: 'pending', createdAt: now - 3 * 60 * 60 * 1000 },
     'ap:legacy': { status: 'pending', createdAt: now - 3 * 60 * 60 * 1000 },
@@ -408,6 +412,7 @@ test('状态清扫：approval 超时配置放大时保留在途 answer，清扫�
   const stateDir = tempDir()
   const now = Date.now()
   writeFileSync(join(stateDir, 'state.json'), JSON.stringify({
+    __schema: { version: 1, namespace: 'dsh-notifier' },
     'ap:inflight': { mode: 'answer', status: 'pending', createdAt: now - 5 * 60 * 60 * 1000 },
     'ap:orphan': { mode: 'answer', status: 'pending', createdAt: now - 7 * 60 * 60 * 1000 },
   }))
@@ -427,6 +432,7 @@ test('状态清扫：act 孤儿 pending 回收，dedup 既有窗口行为不变'
   const stateDir = tempDir()
   const now = Date.now()
   writeFileSync(join(stateDir, 'state.json'), JSON.stringify({
+    __schema: { version: 1, namespace: 'dsh-notifier' },
     'act:orphan': { status: 'pending', createdAt: now - 3 * 60 * 60 * 1000 },
     'act:resolved': { status: 'resolved', resolvedAt: now - 25 * 60 * 60 * 1000 },
     'dedup:old': now - 26 * 60 * 60 * 1000,

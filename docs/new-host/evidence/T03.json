@@ -1,0 +1,93 @@
+{
+  "task": "T03",
+  "status": "verified",
+  "sourceCommit": "9d69dd7a8908fcfec6e20d92d56509764a8f23ec",
+  "workingDiffSummary": "src/inbound/store.mjs (schema/namespace version contract: STORE_SCHEMA_VERSION/STORE_SCHEMA_NAMESPACE/SCHEMA_KEY/AUTHORITY_KEY_PREFIXES; legacyUnknown+bootSchemaVersion flags; loadBoot/tryLoad version gate; fail-closed get/keys/size for authority prefixes; transact bases legacy drafts on {} + idempotent .bak forensic copy + stamps __schema; new schemaVersion()/migrationStatus(); hoisted forensicCopy helper); src/index.mjs (boot warn + storageStatus().schema); src/control-surface/service.mjs (summaryOf legacy branch -> attention + re-configure/re-pair detail); test/store-schema-version.test.mjs (new, 4 cases); test/_helpers.mjs (seedStateFile/SCHEMA_MARKER helpers); existing tests updated to seed/stamp the schema marker (index.test, store.test, inbound.test, admin-wiring.test, channel-config-migration-v013.test, store-shape-corrupt-v0121.test, wiring.route.test); CHANGELOG.md (T03 entry); docs/upgrade-guide.md + .en.md (re-pair section); docs/new-host/STATUS.json (T02 verified, T03 verified + evidence).",
+  "environment": {
+    "node": "v22.23.4",
+    "os": "Linux 6.1.0-35-amd64",
+    "dsh": "0.2.1-rc.5"
+  },
+  "checks": [
+    {
+      "command": "node -e \"import('./src/inbound/store.mjs') … createStore on a no-__schema file with inbound:bindings/inbound:pairing/admin:token-hash/route:sessions; read them back\"",
+      "exitCode": 0,
+      "evidenceLevel": "local-contract",
+      "observation": "migrationStatus()={legacy:true,reason:'legacy-schema-unknown',action:'reconfigure-or-repair',bootSchemaVersion:null,expectedVersion:1}. Stderr warn: 'state 文件 schema 版本不受信（读到 无标记，期望 v1）；其中的绑定/待决/配对/选择不作为权威，请在 Native/Recovery 重新配置或重新配对。原文件保留未删除'. get('inbound:bindings') -> FALLBACK (fail-closed), get('inbound:pairing') -> null, get('admin:token-hash') -> null. Original file still contains 'inbound:bindings' (never deleted/rewritten on read)."
+    },
+    {
+      "command": "node --test test/store-schema-version.test.mjs",
+      "exitCode": 0,
+      "evidenceLevel": "local-contract",
+      "observation": "4 tests / 4 pass / 0 fail. Cases: (1) missing/unknown schema version not authority + re-pair signal (legacy true, get/keys fail-closed, bootStatus stays ready, explicit v999 marker also legacy); (2) original file not deleted and first explicit write makes a `.bak` (`state.json.pre-v0.14-legacy.<ts>`) whose content equals the original; (3) new namespace isolated — written file has __schema and the old authority keys (inbound:bindings/pending/route:sessions/bind:/channel:) are NOT carried in; (4) transaction atomicity — a throwing mutator leaves memory+disk unchanged and legacy still true, success is the only commit point."
+    },
+    {
+      "command": "npm test",
+      "exitCode": 0,
+      "evidenceLevel": "local-contract",
+      "observation": "# tests 2015 / # pass 2015 / # fail 0 (2011 baseline + 4 new T03 cases). Every store assertion that deep-equals raw file content was updated to include the `__schema` marker; every test that pre-seeds a state file now seeds it as current-schema (no marker = legacy by contract)."
+    },
+    {
+      "command": "node scripts/verify-host-compat.mjs && node scripts/verify-release.mjs",
+      "exitCode": 0,
+      "evidenceLevel": "local-contract",
+      "observation": "'host compatibility guard ok: 0.2.1-rc.5' and 'release guard ok: dsh-notifier v0.13.1, documented tests=2011'. Both guards still pass after the store change."
+    },
+    {
+      "command": "node --check src/inbound/store.mjs && node --check src/index.mjs && node --check src/control-surface/service.mjs ; git diff --check",
+      "exitCode": 0,
+      "evidenceLevel": "source",
+      "observation": "All three modules parse cleanly; git diff --check reports no whitespace errors."
+    },
+    {
+      "command": "read src/control-surface/service.mjs summaryOf()",
+      "exitCode": 0,
+      "evidenceLevel": "source",
+      "observation": "summaryOf now returns status 'attention' with a bilingual detail when storageStatus.schema.legacy === true: en 'Stored state uses an old schema; its bindings, pending items and pairing are not trusted — re-configure or re-pair. The original file was preserved.' / zh '旧数据 schema：其中的绑定/待决/配对不作为权威，请重新配置或重新配对。原文件已保留。'. This is the surface Native/Recovery renders (surface.home returns both summary and raw storage)."
+    }
+  ],
+  "reviewFindings": [
+    "Authorization/side-effects: the gate is read-side fail-closed for ALL authority prefixes (inbound:, route:, bind:, taskselect:, dedup:, ap:, aq:, act:, admin:, channel:, <provider>:, tg:) — verified that an old owner binding, pairing code and admin token hash all read as absent. Nothing old is consumed as identity/authority/selection.",
+    "Transactions: transact bases a legacy draft on {} (never the old keys) and only stamps __schema + publishes after the atomic rename; a throwing mutator returns committed:false and leaves both memory and the on-disk file byte-identical (test case 4). legacyUnknown is cleared ONLY after a successful rename, so a refused/failed transaction cannot advertise the new schema.",
+    "Original-file preservation: reads never touch the file; the first explicit write calls forensicCopy('pre-v0.14-legacy') (idempotent copy, never rename/delete) BEFORE the new write. The .bak content equals the original bytes (test case 2). No code path deletes state.json.",
+    "Namespace isolation: because the legacy draft starts from {}, none of the old keys are merged into the new file — verified by parsing the post-write file (test case 3). The reverse risk (old keys leaking via refreshIfChanged's fresh-read merge) is closed: refreshIfChanged returns early when tryLoad reports legacy.",
+    "Design trade-off surfaced (and reviewed): a marker-less file could be a hand-authored fixture as well as a genuinely old file. Resolution: the contract treats marker-less as legacy (the new version ALWAYS writes __schema, so a marker-less real file IS pre-version). To avoid a false 'everything is gone' failure for non-authority keys, non-authority keys still READ (only authority prefixes are gated) — but they are NOT carried into the new namespace on write. This keeps the security property (no old authority) while not breaking harmless unknown keys. Existing tests were updated to seed current-schema files, which is the correct fixture for 'a file the current app wrote'.",
+    "Compat/packaging: no manifest change in T03; the guards (host-compat/release) still pass. test/_helpers.mjs imports store constants for the seeding helper, keeping the version literal single-sourced (no hard-coded '1' drift beyond the helper).",
+    "One accepted limitation: the gate protects the flock-ordered single file; a legacy file that ALSO fails JSON parse is handled by the pre-existing corrupt path (bootCorrupt), not the legacy path — both fail closed. That interaction was checked: corrupt wins, and is already covered by existing tests."
+  ],
+  "reviewResolution": [
+    "Chose read-side fail-closed + write-side empty-base rather than deleting/renaming the original, so the original is provably preserved (a .bak copy, never a delete/overwrite-aside).",
+    "Added the hoisted forensicCopy() because the first implementation referenced a `backup` symbol that was out of scope inside transact (silent no-op) — the focused test caught it, and it was fixed before commit (the .bak now reliably appears).",
+    "Bound the marker to a reserved top-level key (__schema) exactly as the coordinator directed, keeping version logic in store.mjs only; index.mjs/service.mjs merely READ migrationStatus().",
+    "Updated every existing test that either (a) pre-seeded a state file or (b) deep-equal'd raw file bytes, so the suite encodes the new contract; full suite is 2015/2015 green.",
+    "Scoped OUT (explicitly, per TASKS.csv): the bind/taskselect/Telegram-offset account scoping is T05/T06; T03 delivers only the schema/version contract, the isolation, and the re-pair prompt. The delegation audit's note that route/bind/taskselect keys are not yet account-scoped is recorded for T05."
+  ],
+  "neatFiles": [
+    "src/inbound/store.mjs",
+    "src/index.mjs",
+    "src/control-surface/service.mjs",
+    "test/store-schema-version.test.mjs",
+    "test/_helpers.mjs",
+    "test/index.test.mjs",
+    "test/store.test.mjs",
+    "test/inbound.test.mjs",
+    "test/admin-wiring.test.mjs",
+    "test/channel-config-migration-v013.test.mjs",
+    "test/store-shape-corrupt-v0121.test.mjs",
+    "test/wiring.route.test.mjs",
+    "CHANGELOG.md",
+    "docs/upgrade-guide.md",
+    "docs/upgrade-guide.en.md",
+    "docs/new-host/STATUS.json",
+    "docs/new-host/evidence/T03.json"
+  ],
+  "limitations": [
+    "T03 proves the schema gate with focused unit/integration tests and a direct store exercise; it was NOT re-booted in a disposable DSH profile for THIS task (the T02 boot already established plugin activation; the store gate is a pure JS contract that runs identically in-host). No host-only behavior is claimed for T03.",
+    "The AuthorityKey = (channel, accountIdentity, userId) contract is DOCUMENTED in CONTRACTS.md and referenced by the upgrade guides; the versioned shape (__schema) is implemented, but the account-scoping of bind/taskselect/offset keys is owned by T05/T06 and is NOT implemented here.",
+    "Non-authority keys in a legacy file remain readable (by design) — they are not authority data and are not persisted into the new namespace; if a future authority key is added it must be added to AUTHORITY_KEY_PREFIXES.",
+    "The `.bak` forensic copy uses Date.now() in its name; rapid successive first-writes to the same path could collide, but forensicCopy is idempotent (returns the existing copy) so at most one .bak per profile is created."
+  ],
+  "providerLive": "out-of-scope-no-real-accounts",
+  "commit": "see git log for the T03 commit on codex/new-host-baseline",
+  "remoteDevSha": "da5db991792584f9524d7636e70279abadbcbf77"
+}

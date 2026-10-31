@@ -13,9 +13,53 @@
 //  - save() 重读撞上解析失败时，把现场转存为 .corrupt.<ts>（取证保留，保护不降级），
 //    再以内存全量快照重建写路径——中止会让 dirty 无限积压、CLI↔宿主共享永久断裂；
 //  - 只有启动 load() 保留 fail-open（无记忆好过误清空）。
+//
+// v0.14/T03 数据 namespace 与 schema 版本（ARCHITECTURE §账号与传输 / CONTRACTS §身份与数据版本）：
+//  - state.json 顶层带保留键 `__schema` = { version, namespace }。写入路径每次落盘都会带上
+//    当前版本，新建即 v1；
+//  - 启动时若文件存在但**无版本标记或版本不同**（旧宿主期 0.1.7-* 写入的 state）→ 标记
+//    legacy-unknown：该文件里的身份绑定/待确认/配对码/会话选择/游标**不作权威**（相关前缀
+//    读侧一律 fail-closed 返回空），原文件**原样保留不删除**（可另存 .bak），并对外给出
+//    「重新配置/重新配对」信号；
+//  - 版本门拒绝时，内存态与盘上文件都不改动——绝不用不可信旧 state 覆盖新世界。
 
 import { chmodSync, closeSync, copyFileSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
+
+/**
+ * T03：当前数据 schema/namespace 版本。任何结构不兼容的变更都必须递增它——
+ * 旧版本文件将被判为 legacy-unknown，不再作为授权/待决/选择权威。
+ */
+export const STORE_SCHEMA_VERSION = 1
+/** T03：数据 namespace 标识（写入 __schema.namespace）。 */
+export const STORE_SCHEMA_NAMESPACE = 'dsh-notifier'
+/** T03：顶层保留键，承载 { version, namespace }。不属于业务键空间。 */
+export const SCHEMA_KEY = '__schema'
+/**
+ * T03：判为「权威身份/授权数据」的键前缀。legacy-unknown 时这些前缀的读侧 fail-closed。
+ * 涵盖：身份绑定/待确认/迁移标记、配对码与锁、出站/入站账号凭证、会话路由与选择、去重与
+ * 交互账本。目的是——不可信旧 state 的绑定、待决、凭证、游标、选择原文都不被消费。
+ */
+export const AUTHORITY_KEY_PREFIXES = Object.freeze([
+  'inbound:',
+  'route:',
+  'bind:',
+  'taskselect:',
+  'dedup:',
+  'ap:',
+  'aq:',
+  'act:',
+  'admin:',
+  'channel:',
+  'telegram:',
+  'feishu:',
+  'qq:',
+  'dingtalk:',
+  'wechat:',
+  'wxpusher:',
+  'tg:',
+])
+
 
 /**
  * 取证副本路径：.corrupt.<ts>.<pid>.<rand>。
@@ -49,6 +93,25 @@ export function createStore(filePath) {
   // 的一等标志——旧实现只告警取证后 fail-open 成 {}，上层会把「不可信旧 state」误当新实例
   // （bootstrap owner / 重发 admin token / 空实例 migration）。损坏必须显式 fail-closed。
   let bootCorrupt = false
+  // T03：启动时文件存在但无 schema 版本标记或版本不符（旧宿主期写入）→ legacy-unknown。
+  // 该文件不作为身份/待决/配对/选择的权威；原文件保留不删；对外给出重新配置/重新配对信号。
+  let legacyUnknown = false
+  // T03：启动读到的原始 schema 标记（供诊断；null = 文件存在但无标记）。
+  let bootSchemaVersion = null
+
+  /** T03：一个值是否带当前 schema 标记（且 namespace 匹配）。 */
+  const hasCurrentSchema = (value) => {
+    if (value === null || typeof value !== 'object') return false
+    const marker = value[SCHEMA_KEY]
+    if (marker === null || typeof marker !== 'object' || Array.isArray(marker)) return false
+    return marker.version === STORE_SCHEMA_VERSION && marker.namespace === STORE_SCHEMA_NAMESPACE
+  }
+
+  /**
+   * T03：命中权威前缀的键（身份绑定/待决/配对/凭证/路由/选择/账本）。
+   * legacy-unknown 时这些键读侧 fail-closed，绝不被消费。
+   */
+  const isAuthorityKey = (key) => typeof key === 'string' && AUTHORITY_KEY_PREFIXES.some((prefix) => key.startsWith(prefix))
 
   // 启动载入：损坏/缺省 fail-open 到空态（无记忆好过误清空——审批丢失只导致超时回退）
   const loadBoot = () => {
@@ -81,7 +144,26 @@ export function createStore(filePath) {
       // 无记忆可丢失、无现场可取证，按损坏告警纯属噪音（对抗性 review 第 3 轮修正）
       if (raw.trim() === '') return {}
       const parsed = JSON.parse(raw)
-      if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed
+      if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        // T03：版本门。合法对象但缺 __schema 标记（旧宿主期 0.1.7-* 写入）或版本/namespace
+        // 不符 → legacy-unknown：不把其中任何权威键当记忆/授权。文件原样保留（只读），
+        // 不在此处收敛写入（防止用旧 state 覆写新世界）；对外给出重新配置/重新配对信号。
+        const marker = parsed[SCHEMA_KEY]
+        bootSchemaVersion = (marker !== null && typeof marker === 'object' && !Array.isArray(marker) && typeof marker.version === 'number')
+          ? marker.version
+          : null
+        if (!hasCurrentSchema(parsed)) {
+          legacyUnknown = true
+          try {
+            console.error('[dsh-notifier/store]', `state 文件 schema 版本不受信（读到 ${bootSchemaVersion === null ? '无标记' : `v${bootSchemaVersion}`}，期望 v${STORE_SCHEMA_VERSION}）；其中的绑定/待决/配对/选择不作为权威，请在 Native/Recovery 重新配置或重新配对。原文件保留未删除: ${filePath}`)
+          } catch { /* 控制台不可用不致命 */ }
+          // T03：legacy 内容**不**作为权威被消费——权威前缀键的读侧由 get/keys fail-closed 屏蔽，
+          // 写侧（transact）以空 namespace 起草，绝不把旧键回写。非权威键（未知/第三方）仍可读，
+          // 因此不会把「无标记但仅含无害键」的现场误判为需要重新配置的强阻断（读侧仍能起）。
+          return parsed
+        }
+        return parsed
+      }
       throw Object.assign(new Error('state 文件形状异常（合法 JSON 但非对象）'), { code: 'SHAPE' })
     } catch {
       // v0.13（C11.5 / R3）：损坏不再只是告警——置 bootCorrupt，使 stateful mutation fail-closed，
@@ -126,7 +208,7 @@ export function createStore(filePath) {
    * @returns {{ ok: true, value: object, missing?: boolean } | { ok: false, reason: 'read-failed'|'corrupt' }}
    */
   const tryLoad = () => {
-    if (!existsSync(filePath)) return { ok: true, value: {}, missing: true }
+    if (!existsSync(filePath)) return { ok: true, value: {}, missing: true, legacy: false }
     let raw
     try { raw = readFileSync(filePath, 'utf8') } catch { return { ok: false, reason: 'read-failed' } }
     try {
@@ -134,7 +216,9 @@ export function createStore(filePath) {
       if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
         return { ok: false, reason: 'corrupt' }
       }
-      return { ok: true, value: parsed }
+      // T03：负载合法但 schema 不匹配 → 这是一个 legacy-unknown 现场（不是损坏）。
+      // 事务写路径据此不把它当基线。
+      return { ok: true, value: parsed, legacy: !hasCurrentSchema(parsed) }
     } catch {
       return { ok: false, reason: 'corrupt' } // 半截 JSON/坏块：transaction 必须保留现场
     }
@@ -260,6 +344,8 @@ export function createStore(filePath) {
     if (current === lastKnownMtimeMs || current === -1) return
     const disk = tryLoad()
     if (!disk.ok) return // 损坏：不吞内存态，等 save 路径去处理与告警
+    // T03：读到 legacy-unknown 现场（schema 不符）→ 绝不把旧权威键合并进内存；保持空 namespace。
+    if (disk.legacy) { legacyUnknown = true; return }
     const merged = { ...disk.value }
     for (const key of dirty) {
       if (key in state) merged[key] = state[key]
@@ -272,6 +358,30 @@ export function createStore(filePath) {
   const cloneState = (value) => {
     if (value === null || value === undefined || typeof value !== 'object') return value
     try { return JSON.parse(JSON.stringify(value)) } catch { return { ...value } }
+  }
+
+  /**
+   * Create an idempotent forensic copy before an application-level migration.
+   * The copy is intentionally outside state.json so the migration transaction
+   * can still be the single durable commit point for state changes.
+   * Hoisted (T03) so the transact path can take a copy before the legacy
+   * namespace is replaced; also surfaced as store.backup().
+   */
+  const forensicCopy = (label = 'backup') => {
+    const safeLabel = String(label).replace(/[^a-zA-Z0-9._-]/g, '-') || 'backup'
+    if (!existsSync(filePath)) return { ok: true, path: null, absent: true }
+    try {
+      const dir = dirname(filePath)
+      const prefix = `${basename(filePath)}.${safeLabel}.`
+      const existing = readdirSync(dir).find((name) => name.startsWith(prefix))
+      if (existing !== undefined) return { ok: true, path: join(dir, existing), existing: true }
+      const target = join(dir, `${prefix}${Date.now()}`)
+      copyFileSync(filePath, target)
+      try { chmodSync(target, 0o600) } catch { /* Windows/受限环境无 chmod：尽力而为 */ }
+      return { ok: true, path: target, existing: false }
+    } catch (error) {
+      return { ok: false, path: null, error }
+    }
   }
 
   /**
@@ -316,8 +426,24 @@ export function createStore(filePath) {
         disk = { ok: true, value: state }
       }
       // 文件被外部删除时，保留本实例已知快照，避免一次 unrelated write 抹掉其他键。
-      const base = disk.missing && Object.keys(state).length > 0 ? state : disk.value
+      // T03：disk.legacy（读到合法对象但 schema 不符）→ 绝不以旧权威键为基线；先从旧文件
+      // 取证（backup 幂等 copy，绝不删除原文件内容），再以全新空 namespace 起草。首个显式写
+      // 因此建立新 namespace。
+      if (disk.legacy && !legacyUnknown) legacyUnknown = true
+      const base = disk.legacy
+        ? {}
+        : disk.missing && Object.keys(state).length > 0
+          ? state
+          : disk.value
       const draft = cloneState(base)
+      if (disk.legacy) {
+        try { forensicCopy('pre-v0.14-legacy') } catch { /* 取证失败不阻塞新 namespace 建立 */ }
+      }
+      // T03：每次落盘带上当前 schema 标记（新建即 v1； legacy 覆盖时完成升级）。
+      if (draft === null || typeof draft !== 'object' || Array.isArray(draft)) {
+        return { ok: false, committed: false, durable: false, code: 'STATE_CORRUPT' }
+      }
+      draft[SCHEMA_KEY] = { version: STORE_SCHEMA_VERSION, namespace: STORE_SCHEMA_NAMESPACE }
       const value = mutator(draft)
       tmp = `${filePath}.${process.pid}.${Math.random().toString(36).slice(2, 8)}.tmp`
       writeFileSync(tmp, JSON.stringify(draft), { encoding: 'utf8', mode: 0o600 })
@@ -325,11 +451,15 @@ export function createStore(filePath) {
       renameSync(tmp, filePath)
       tmp = null
       state = draft
+      // 新 namespace 已建立（写盘带上了当前 schema 标记）→ 清除 legacy-unknown 标志。
+      legacyUnknown = false
+      bootSchemaVersion = STORE_SCHEMA_VERSION
       dirty.clear()
       lastKnownMtimeMs = mtimeOf()
       lastRefreshCheckMs = Date.now()
       return { ok: true, committed: true, durable: true, value }
     } catch (error) {
+      // 事务失败：内存与磁盘均保持原样（legacyUnknown 不被清除），绝不发布新状态。
       if (tmp !== null) try { unlinkSync(tmp) } catch { /* temp cleanup best effort */ }
       if (!warnedSaveError) {
         warnedSaveError = true
@@ -358,28 +488,45 @@ export function createStore(filePath) {
       }
     },
     /**
+     * T03：当前实例的 schema/namespace 版本与受信状态。
+     * @returns {{ version: number, namespace: string, legacyUnknown: boolean, bootSchemaVersion: number|null }}
+     */
+    schemaVersion() {
+      return {
+        version: STORE_SCHEMA_VERSION,
+        namespace: STORE_SCHEMA_NAMESPACE,
+        legacyUnknown,
+        bootSchemaVersion,
+      }
+    },
+    /**
+     * T03：旧状态隔离信号的单一出口，供 Native/Recovery 与装配层读取。
+     * @returns {{ legacy: boolean, reason: string|null, action: string|null, bootSchemaVersion: number|null, expectedVersion: number }}
+     */
+    migrationStatus() {
+      const legacy = legacyUnknown === true
+      return {
+        legacy,
+        reason: legacy ? 'legacy-schema-unknown' : null,
+        // 明确要求用户动作，不静默按空状态当已迁移。
+        action: legacy ? 'reconfigure-or-repair' : null,
+        bootSchemaVersion,
+        expectedVersion: STORE_SCHEMA_VERSION,
+      }
+    },
+    /**
      * Create an idempotent forensic copy before an application-level migration.
      * The copy is intentionally outside state.json so the migration transaction
      * can still be the single durable commit point for state changes.
      */
     backup(label = 'backup') {
-      const safeLabel = String(label).replace(/[^a-zA-Z0-9._-]/g, '-') || 'backup'
-      if (!existsSync(filePath)) return { ok: true, path: null, absent: true }
-      try {
-        const dir = dirname(filePath)
-        const prefix = `${basename(filePath)}.${safeLabel}.`
-        const existing = readdirSync(dir).find((name) => name.startsWith(prefix))
-        if (existing !== undefined) return { ok: true, path: join(dir, existing), existing: true }
-        const target = join(dir, `${prefix}${Date.now()}`)
-        copyFileSync(filePath, target)
-        try { chmodSync(target, 0o600) } catch { /* Windows/受限环境无 chmod：尽力而为 */ }
-        return { ok: true, path: target, existing: false }
-      } catch (error) {
-        return { ok: false, path: null, error }
-      }
+      return forensicCopy(label)
     },
     get(key, fallback = undefined) {
       try { refreshIfChanged() } catch { /* 收敛失败：退回内存态 */ }
+      // T03：legacy-unknown 时权威前缀键一律 fail-closed 返回 fallback——旧 state 的
+      // 绑定/待决/配对/凭证/游标/选择不作为记忆或授权被消费。
+      if (legacyUnknown && isAuthorityKey(key)) return fallback
       const value = state[key]
       return value === undefined ? fallback : value
     },
@@ -416,9 +563,15 @@ export function createStore(filePath) {
     },
     keys(prefix = '') {
       try { refreshIfChanged() } catch { /* 收敛失败：退回内存态 */ }
+      // T03：legacy-unknown 时权威前缀的键列表为空——上层不会枚举到旧权威键。
+      if (legacyUnknown && (prefix === '' || AUTHORITY_KEY_PREFIXES.some((p) => p.startsWith(prefix) || prefix.startsWith(p)))) {
+        return Object.keys(state).filter((key) => key.startsWith(prefix) && !isAuthorityKey(key))
+      }
       return Object.keys(state).filter((key) => key.startsWith(prefix))
     },
     size() {
+      // T03：legacy-unknown 时不计入旧权威键。
+      if (legacyUnknown) return Object.keys(state).filter((key) => !isAuthorityKey(key)).length
       return Object.keys(state).length
     },
     /** 清理超期的键（如去重窗口），返回清理数量（v0.6.3 走脏键合并，单次落盘）。 */

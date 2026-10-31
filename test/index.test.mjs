@@ -132,6 +132,7 @@ test('apply: 扫码凭证回退——state 预置 feishu:account 后 inbound.fei
   const { ctx, warnings } = bootCtx()
   const stateDir = mkdtempSync(join(tmpdir(), 'dsh-notifier-scan-'))
   writeFileSync(join(stateDir, 'state.json'), JSON.stringify({
+    __schema: { version: 1, namespace: 'dsh-notifier' },
     'feishu:account': { appId: 'cli_a', appSecret: 'sec', at: 0 },
   }))
   apply(ctx, {

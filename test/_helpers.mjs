@@ -7,6 +7,23 @@ import { createQqInbound } from '../src/inbound/qq-gw.mjs'
 import { createDingtalkInbound } from '../src/inbound/dingtalk-stream.mjs'
 import { createWxpusherInbound } from '../src/inbound/wxpusher-callback.mjs'
 import { createWechatIlinkInbound } from '../src/inbound/wechat-ilink.mjs'
+import { writeFileSync } from 'node:fs'
+import { SCHEMA_KEY, STORE_SCHEMA_VERSION, STORE_SCHEMA_NAMESPACE } from '../src/inbound/store.mjs'
+
+/**
+ * T03：写入一份「当前 schema」的 state 文件。测试预置 state 时**必须**用本 helper——
+ * 一个无 `__schema` 标记的文件会被 store 判为 legacy-unknown（旧宿主期数据，不作权威）。
+ * 返回写入的完整对象（含标记），供断言直接比较。
+ */
+export function seedStateFile(file, state = {}) {
+  const withSchema = { [SCHEMA_KEY]: { version: STORE_SCHEMA_VERSION, namespace: STORE_SCHEMA_NAMESPACE }, ...state }
+  writeFileSync(file, JSON.stringify(withSchema))
+  return withSchema
+}
+
+/** T03：当前 schema 标记字面量，供断言复用。 */
+export const SCHEMA_MARKER = { version: STORE_SCHEMA_VERSION, namespace: STORE_SCHEMA_NAMESPACE }
+
 
 export const CONTRACT_BASE = {
   bus: createInboundBus({ allowUsers: ['u1'] }),

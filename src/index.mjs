@@ -194,6 +194,14 @@ export function apply(ctx, config = {}) {
     ? inboundRaw.stateDir.trim()
     : defaultStateDir()
   const store = createStore(`${stateDir}/state.json`)
+  // T03：旧 schema 隔离在启动即告警（可观测），要求用户重新配置/重新配对；
+  // 不静默把旧 state 当空状态后宣称已迁移。原文件保留不删（store 只在首次显式写时取证）。
+  try {
+    const schema = typeof store.migrationStatus === 'function' ? store.migrationStatus() : null
+    if (schema?.legacy === true) {
+      warn(`检测到旧数据 schema（读到 ${schema.bootSchemaVersion === null ? '无版本标记' : `v${schema.bootSchemaVersion}`}，期望 v${schema.expectedVersion}）：其中的绑定/待决/配对/会话选择不作为权威，请在 Native/Recovery 重新配置或重新配对。原文件已保留（可另存 .bak）`)
+    }
+  } catch { /* 诊断失败不阻塞启动 */ }
   // v0.8.7 引导码文件交付（LEAK-2）：码面写本机 0600 文件，stderr 只印路径——
   // 日志聚合（journald/Loki/ELK）不再承载 owner 级凭证。
   const BOOTSTRAP_CODE_FILE = `${stateDir}/bootstrap-paircode.txt`
@@ -822,6 +830,10 @@ export function apply(ctx, config = {}) {
     health: surfaceHealth,
     storageStatus: () => {
       const boot = typeof store.bootStatus === 'function' ? store.bootStatus() : { readFailed: false }
+      // T03：旧 schema 隔离信号（Native/Recovery 据此提示重新配置/重新配对；不静默按空状态当已迁移）。
+      const schema = typeof store.migrationStatus === 'function'
+        ? store.migrationStatus()
+        : { legacy: false, reason: null, action: null }
       const migrated = Array.isArray(configMigration.migrated) ? configMigration.migrated.length : 0
       const status = configMigration.ok !== true
         ? 'failed'
@@ -832,6 +844,7 @@ export function apply(ctx, config = {}) {
             : 'complete'
       return {
         ...boot,
+        schema,
         migration: {
           status,
           migratedCount: migrated,

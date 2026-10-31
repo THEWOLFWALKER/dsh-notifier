@@ -31,6 +31,14 @@ function summaryOf(channelRows, questionRows, storageStatus = {}) {
       ? { en: 'Persistent state is corrupt; writes are blocked until repaired', zh: '持久化状态已损坏，修复前禁止写入' }
       : { en: 'Persistent state could not be read', zh: '持久化状态读取失败' },
   }
+  // T03：旧 schema 隔离 → 明确提示重新配置/重新配对，不把旧数据当权威。
+  if (storageStatus?.schema?.legacy === true) return {
+    status: 'attention',
+    detail: {
+      en: 'Stored state uses an old schema; its bindings, pending items and pairing are not trusted — re-configure or re-pair. The original file was preserved.',
+      zh: '旧数据 schema：其中的绑定/待决/配对不作为权威，请重新配置或重新配对。原文件已保留。',
+    },
+  }
   const configured = channelRows.some((row) => row?.notify?.configured === true)
   if (!configured) return {
     status: 'unconfigured',

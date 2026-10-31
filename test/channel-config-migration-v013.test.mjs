@@ -15,7 +15,8 @@ import { createStore } from '../src/inbound/store.mjs'
 const tempState = (initial) => {
   const dir = mkdtempSync(join(tmpdir(), 'dsh-v013-channel-config-'))
   const file = join(dir, 'state.json')
-  if (initial !== undefined) writeFileSync(file, JSON.stringify(initial))
+  // T03：预置当前 schema 标记；无标记的文件会被 store 判为 legacy-unknown。
+  if (initial !== undefined) writeFileSync(file, JSON.stringify({ __schema: { version: 1, namespace: 'dsh-notifier' }, ...initial }))
   return { dir, file }
 }
 

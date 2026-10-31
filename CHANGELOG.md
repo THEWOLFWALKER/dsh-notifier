@@ -19,6 +19,23 @@
 - 文档：`docs/upgrade-guide.md` / `.en.md`、`docs/OPERATIONS.md`、`docs/KNOWLEDGE_BASE.md`
   移除 `0.1.7-*` 支持声明。
 
+### 新版数据 namespace 与旧状态隔离（T03）
+
+- **schema/namespace 版本**：`state.json` 顶层新增保留键 `__schema = { version, namespace }`
+  （当前 v1 / `dsh-notifier`）。每次落盘都带标记；新建即 v1。
+- **旧状态不作权威**：启动读到**无版本标记或版本不符**的文件（旧宿主期写入）→ 标记
+  legacy-unknown：其中的身份绑定/待确认/配对码/会话选择/凭据/游标一律**不执行、不授权**
+  （相关前缀读侧 fail-closed），并对外给出 `reconfigure-or-repair` 信号（Native/Recovery 显示
+  attention + 明确提示；启动 warn 双写）。
+- **原文件不删除**：读路径绝不改写/删除原文件；首次显式写会先取证 `.bak`
+  （`state.json.pre-v0.14-legacy.*`）再建立新 namespace（旧键不被并入）。
+- **事务原子性保持**：写锁/fresh-read merge 不变；版本门拒绝或事务失败时**不发布**新内存态、
+  不动盘上文件。
+- `store` 新增 `schemaVersion()` / `migrationStatus()`；`storageStatus()`（Native/Recovery）带上
+  `schema` 字段。
+- 测试：`test/store-schema-version.test.mjs`（未知版本不作权威 / 原文件不删 / namespace 隔离 /
+  事务原子性）。
+
 ## [0.13.1] - 2026-09-26（v0.13 follow-up release）
 
 本次补丁发行收口 v0.13 后续验证与公开交付边界：管理台补齐中英文资源表与安全内联序列化，公开投递能力改为证据边界表述，npm 白名单覆盖 README 文档/图片并加入包内容回归；高风险专项复核同步完成。

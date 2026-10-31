@@ -33,7 +33,7 @@ test('store：set/get/delete 往返，且原子落盘（新实例可读）', () 
   assert.deepEqual(b.get('ap:1'), { status: 'pending' })
   assert.deepEqual(b.keys('ap:'), ['ap:1'])
   assert.deepEqual(b.keys('dedup:'), ['dedup:x'])
-  assert.equal(b.size(), 2)
+  assert.equal(b.size(), 3) // k 虽删但 ap:1/dedup:x + __schema 标记
 })
 
 test('store：损坏 JSON 启动回退空态；写路径 fail-closed，修复后恢复（v0.13 R3 替代 v0.6.5 自愈重建）', () => {
@@ -57,7 +57,7 @@ test('store：损坏 JSON 启动回退空态；写路径 fail-closed，修复后
     '不再触发 save 自愈转存（boot 取证已保留现场）',
   )
   // operator 显式修复文件 → 写路径恢复，且保留修复后的既有键（键级合并语义不变）
-  writeFileSync(path, '{"repaired":true}', 'utf8')
+  writeFileSync(path, '{"__schema":{"version":1,"namespace":"dsh-notifier"},"repaired":true}', 'utf8')
   assert.equal(store.set('k2', 'v2'), true, '磁盘修复后写路径必须恢复')
   const recovered = createStore(path)
   assert.equal(recovered.get('k2'), 'v2')
@@ -100,7 +100,7 @@ test('P1-2 store：空文件视作空态静默起步，不告警不取证（无�
   const backups = readdirSync(dir).filter((name) => name.startsWith('state.json.corrupt.'))
   assert.equal(backups.length, 0, '空文件无取证价值（外部 touch/首写中断），不算损坏')
   store.set('k', 'v')
-  assert.equal(readFileSync(path, 'utf8'), '{"k":"v"}', '后续 save 正常落盘')
+  assert.equal(readFileSync(path, 'utf8'), '{"__schema":{"version":1,"namespace":"dsh-notifier"},"k":"v"}', '后续 save 正常落盘（带 schema 标记）')
 })
 
 test('store：跨进程写锁——陈锁（持锁进程已死）当次回收，锁序恢复（v0.6.4 R2-P1-2 / v0.6.5 R4-1-P2-1）', () => {
