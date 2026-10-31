@@ -2,7 +2,8 @@
   "phase": "implementation-in-progress",
   "updated_on": "2026-10-31",
   "target_host": "0.2.1-rc.5",
-  "implementation_started": true,  "execution_authorization": {
+  "implementation_started": true,
+  "execution_authorization": {
     "local_tests": true,
     "real_dsh_disposable_profile": true,
     "real_provider_accounts": false,
@@ -48,7 +49,7 @@
     "T03": "docs/new-host/evidence/T03.json",
     "T04": "docs/new-host/evidence/T04.json"
   },
-  "note": "T00 verified (dev rebuilt from main, old-dev bundle kept). T01 contract closure recorded. T02 verified (rc.5 install gate + core/web inject split; real web+headless activation, loud missing-core). T03 verified (versioned store namespace + legacy-state isolation + re-pair signal; 4 focused tests). T04 verified (unified command admission: slash/unknown-slash/media/button/numbered/selection all pass one gate; converse=false not bypassable; group entry fail-closed; 18 focused tests). T05+ planned.",
+  "note": "T00-T04 verified: dev rebuilt from main; rc.5 install gate + core/web inject split; versioned store namespace + legacy isolation; unified command admission (converse unbypassable). Host harness (test/host) landed.",
   "delivery_policy": {
     "reset_dev_from_current_main": true,
     "old_dev_backup_required": true,
